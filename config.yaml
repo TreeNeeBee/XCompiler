@@ -1,0 +1,51 @@
+llm:
+  # 默认使用本地 ollama 上的 coder 模型
+  default: ollama_code
+  providers:
+    # 设计/需求向：gemma4:31b（推理与结构化输出更稳）
+    ollama_design:
+      base_url: ${OLLAMA_BASE_URL}
+      model: gemma4:31b
+    # 编码/测试/调试向：qwen3-coder:30b
+    ollama_code:
+      base_url: ${OLLAMA_BASE_URL}
+      model: qwen3-coder:30b
+    # 备用：OpenAI 兼容
+    openai:
+      api_key: ${OPENAI_API_KEY}
+      base_url: ${OPENAI_BASE_URL}
+      model: gpt-4o-mini
+
+  # 角色 → provider 路由
+  roles:
+    Planner: ollama_design     # 需求澄清/计划生成
+    Architect: ollama_design   # 架构与 requirements.txt
+    Coder: ollama_code         # 代码生成
+    Tester: ollama_code        # 测试用例
+    Debugger: ollama_code      # 调试与修复
+
+  # 全局 fallback 链：当主 provider 报错时依次尝试。
+  # 默认为空 — 如需在 ollama 不可用时退到 OpenAI，可设为 [openai]。
+  fallbacks: []
+  # 可选：按角色定制 fallback 链（覆盖全局）
+  # role_fallbacks:
+  #   Coder: [ollama_code, openai]
+
+agent:
+  language: python
+  max_steps: 50
+  max_debug_retries: 3
+  # 默认使用 subprocess：在实际工程目录直接 spawn，轻量、无需 docker。
+  # 如需隔离，设为 docker（宿主机必须能访问 /var/run/docker.sock、安装 docker CLI，且 toaa 未运行在容器内）。
+  sandbox: subprocess
+  sandbox_limits:
+    cpu: 1
+    memory_mb: 1024
+    wall_seconds: 60
+    network: pypi-only
+  sandbox_docker:
+    image: python:3.11-slim
+    workdir: /workspace
+    pull: false               # 如需拉取最新镜像设为 true
+    docker_bin: docker
+    extra_run_args: []        # 高级用户可追加 -u / extra mount 等

@@ -1,0 +1,49 @@
+{
+  "name": "@toaa/cli",
+  "version": "0.1.0",
+  "description": "TOAA — AI Software Factory: V-model driven, multi-LLM orchestrated software development agent.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "toaa": "./dist/cli/toaa.js",
+    "toaa_c": "./dist/cli/toaa_c.js",
+    "toaa_run": "./dist/cli/toaa_run.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/cli/toaa.ts",
+    "dev:c": "tsx src/cli/toaa_c.ts",
+    "dev:run": "tsx src/cli/toaa_run.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke:ollama": "tsx scripts/smoke_ollama.ts",
+    "lint": "eslint \"src/**/*.ts\""
+  },
+  "dependencies": {
+    "@inquirer/prompts": "^7.2.1",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "ora": "^8.1.1",
+    "simple-git": "^3.27.0",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

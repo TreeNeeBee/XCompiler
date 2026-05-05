@@ -1,0 +1,51 @@
+# TOAA docker-compose
+#
+# 用法：
+#   1) 准备 .env：cp .env.example .env  并填入 OLLAMA_BASE_URL / OPENAI_API_KEY
+#   2) 准备 config.yaml：cp config.example.yaml config.yaml
+#      ⚠️ 容器部署下 config.yaml 必须设 agent.sandbox: subprocess，不支持 docker 沙盒。
+#   3) 启动：docker compose run --rm toaa --help
+#           docker compose run --rm toaa c -i workspace/intake.md
+#           docker compose run --rm toaa run workspace/<project>/plan.json
+#
+# 沙盒模式：
+#   - sandbox=subprocess：容器内唯一支持项（镜像已内置 python3+venv）。
+#   - sandbox=docker：在容器内运行会被 TOAA 启动检测拦截。
+#     如需该模式，请在宿主上 `npm link` 使用 toaa。
+
+services:
+  toaa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: toaa:latest
+    env_file:
+      - .env
+    volumes:
+      # 项目工作区（编排产出）
+      - ./workspace:/workspace
+      # 配置（运行时按需覆盖）
+      - ./config.yaml:/home/toaa/app/config.yaml:ro
+      # 注意：容器内不支持 sandbox=docker，故不需挂载 /var/run/docker.sock
+    working_dir: /workspace
+    # 默认入口为 toaa --help；通过 `docker compose run --rm toaa <args>` 传参
+    # 长任务建议显式 -c /home/toaa/app/config.yaml
+
+  # 可选：本地 ollama（如已有外部 ollama，注释掉本块，并将 OLLAMA_BASE_URL 指向外部）
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama-data:/root/.ollama
+  #   # GPU 直通（NVIDIA Container Toolkit 已装时启用）
+  #   # deploy:
+  #   #   resources:
+  #   #     reservations:
+  #   #       devices:
+  #   #         - driver: nvidia
+  #   #           count: all
+  #   #           capabilities: [gpu]
+
+# volumes:
+#   ollama-data:

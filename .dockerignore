@@ -1,0 +1,13 @@
+node_modules
+dist
+.git
+.vscode
+.pytest_cache
+**/__pycache__
+*.log
+/tmp
+workspace
+.env
+coverage
+doc
+tests
