@@ -1,0 +1,22 @@
+// 用于"打包成单文件可执行程序"的专用 tsup 配置：
+//   - 仅打 toaa 这一个统一入口（toaa c / toaa run 都走它）
+//   - 输出 CJS 单文件（@yao-pkg/pkg 对 CJS 兼容性最佳，无需 ESM hack）
+//   - bundle 全量依赖，目标 node20，方便 pkg 直接吃
+import { defineConfig } from 'tsup';
+
+export default defineConfig({
+  entry: ['src/cli/toaa.ts'],
+  outDir: 'dist/pkg-build',
+  format: ['cjs'],
+  target: 'node20',
+  platform: 'node',
+  splitting: false,
+  sourcemap: false,
+  clean: true,
+  dts: false,
+  minify: false,
+  shims: true, // 让 __dirname / import.meta 在 cjs 下可用
+  // 把所有 deps 内联（pkg 之后只会看到这一个 .cjs 文件）
+  noExternal: [/.*/],
+  banner: { js: '#!/usr/bin/env node' },
+});

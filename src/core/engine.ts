@@ -1,6 +1,6 @@
 import path from 'node:path';
 import chalk from 'chalk';
-import ora from 'ora';
+import { spinner as ora } from '../util/spinner.js';
 import type { Plan, Step } from './plan.js';
 import { topoSort } from './lint.js';
 import { savePlan } from './storage.js';

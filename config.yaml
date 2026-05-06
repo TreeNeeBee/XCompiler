@@ -27,9 +27,13 @@ llm:
   # 全局 fallback 链：当主 provider 报错时依次尝试。
   # 默认为空 — 如需在 ollama 不可用时退到 OpenAI，可设为 [openai]。
   fallbacks: []
-  # 可选：按角色定制 fallback 链（覆盖全局）
-  # role_fallbacks:
-  #   Coder: [ollama_code, openai]
+  # 按角色定制 fallback 链（覆盖全局）。
+  # 默认让 Coder/Tester/Debugger 在 token-loop / 超时时交叉退到另一个本地模型，
+  # 避免“同一模型同一 prompt 重复陷入同一 loop”。
+  role_fallbacks:
+    Coder:    [ollama_design]
+    Tester:   [ollama_design]
+    Debugger: [ollama_design]
 
 agent:
   language: python

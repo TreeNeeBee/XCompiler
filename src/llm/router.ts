@@ -127,6 +127,8 @@ function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMC
       try {
         const out = await inner.chat(messages, options);
         await audit.llmResponse(role, inner.name, out);
+        // 通知调用者：本次响应的真实 provider 是谁（供上层追溯）。
+        try { options?.onProvider?.(inner.name); } catch { /* never break the call site */ }
         return out;
       } catch (err) {
         await audit.llmError(role, inner.name, err);

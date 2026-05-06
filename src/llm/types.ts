@@ -21,6 +21,12 @@ export interface ChatOptions {
    * 空输出、model token loop 等“表面成功但语义不可用”场景。
    */
   validate?: (text: string) => void;
+  /**
+   * 调用者可传入回调，与 LLM 输出一同拿到实际产出该响应的 provider 名。
+   * 主要用于追溯：在 FallbackClient 中服务于响应的是链中某一个后选 provider，
+   * 调用者（如 Executor）需要在审计 / Markdown 记录中为响应打上正确的“via 哪个模型”标签。
+   */
+  onProvider?: (name: string) => void;
 }
 
 export interface LLMClient {

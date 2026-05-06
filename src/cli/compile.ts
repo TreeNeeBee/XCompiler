@@ -1,6 +1,7 @@
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
-import ora from 'ora';
+import { spinner as ora } from '../util/spinner.js';
 import { confirm, editor, input, select } from '@inquirer/prompts';
 import { loadConfig } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
@@ -56,22 +57,36 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   const router = new LLMRouter(cfg, audit);
   const planner = new Planner(router.for('Planner'), audit);
 
+  const trace = (msg: string) => {
+    if (process.env.TOAA_TRACE === '1') process.stderr.write(`[toaa-trace] ${msg}\n`);
+  };
+
   // 1. Intake
+  trace('intake.start');
   const rawRequirement = await intake(opts.inputFile);
+  trace(`intake.done len=${rawRequirement.length}`);
   if (!rawRequirement.trim()) {
     console.error(chalk.red('需求为空，已退出。'));
     await audit.end({ status: 'aborted', reason: 'empty requirement' });
     process.exit(1);
   }
+  trace('audit.userInput.intake');
   await audit.userInput('原始需求 (Intake)', rawRequirement);
+  trace('audit.userInput.intake.done');
 
   // 2. Clarify
+  trace('clarify.section.enter');
   const clarifications: Array<{ question: string; answer: string }> = [];
+  trace(`clarify.section.flag yes=${opts.yes}`);
   if (!opts.yes) {
+    trace('ora.clarify.start');
     const spin = ora('Planner 正在澄清需求…').start();
+    trace('ora.clarify.started');
     let questions: Awaited<ReturnType<Planner['clarify']>> = [];
     try {
+      trace('planner.clarify.call');
       questions = await planner.clarify(rawRequirement);
+      trace(`planner.clarify.return n=${questions.length}`);
       spin.succeed(`澄清问题：${questions.length} 条`);
     } catch (err) {
       spin.fail('澄清失败');
@@ -84,13 +99,38 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     }
   }
 
+  // 2.5 用户自定义补充需求（预留位，可为空）
+  let userAddenda = '';
+  if (!opts.yes) {
+    const want = await confirm({
+      message: '是否有补充需求要追加？（会连同澄清一起发给 Planner，并保留在 plan.userAddenda 字段）',
+      default: false,
+    });
+    if (want) {
+      userAddenda = (
+        await editor({
+          message: '输入自定义补充需求（多行、Markdown 可）',
+          default: '',
+          postfix: '.md',
+        })
+      ).trim();
+      if (userAddenda) {
+        await audit.userInput('用户补充需求 (Addenda)', userAddenda);
+      }
+    }
+  }
+
   // 3. Draft topic.md + 确认门 1
   //   topic.md 是“需求澄清后的项目选题书”，作为后续 V 模型拆解的唯一输入。
   const draftDir = 'docs/.draft';
   const draftTopic = `${draftDir}/topic.md`;
+  trace('ws.ensure.draftDir');
   await ws.ensure(draftDir);
-  const topicMd = renderTopicDraft(rawRequirement, clarifications);
+  trace('renderTopicDraft');
+  const topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
+  trace('ws.writeFile.draftTopic');
   await ws.writeFile(draftTopic, topicMd);
+  trace('ws.writeFile.draftTopic.done');
 
   if (!opts.yes) {
     console.log('\n' + chalk.cyan('─── topic.md (preview) ───'));
@@ -119,13 +159,17 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   }
 
   // 4. Decompose — 以 topic.md 作为 V 模型输入
+  trace('ws.readFile.finalTopic');
   const finalTopicMd = await ws.readFile(draftTopic);
+  trace('ora.spin2.start');
   const spin2 = ora('Planner 正在按 V 模型拆解…').start();
+  trace('ora.spin2.started');
   let draft;
   try {
     draft = await planner.decompose({
       rawRequirement: finalTopicMd,
       clarifications,
+      userAddenda,
     });
   } catch (err) {
     spin2.fail('Planner 拆解失败');
@@ -140,7 +184,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   spin2.succeed(`已生成 ${draft.steps.length} 个 Step`);
 
   // 5. 构建并校验 plan
-  const plan = buildPlan(draft);
+  const plan = buildPlan(draft, { userAddenda });
   const parsed = PlanSchema.safeParse(plan);
   if (!parsed.success) {
     console.error(chalk.red('Plan schema 校验失败：'));
@@ -206,7 +250,6 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
 
 async function intake(inputFile?: string): Promise<string> {
   if (inputFile) {
-    const { promises: fs } = await import('node:fs');
     return fs.readFile(path.resolve(inputFile), 'utf8');
   }
   console.log(chalk.gray('请描述你的需求（多行，输入空行结束）:'));
@@ -214,28 +257,43 @@ async function intake(inputFile?: string): Promise<string> {
 }
 
 async function readMultiline(): Promise<string> {
-  const { createInterface } = await import('node:readline');
+  // 避开 node:readline —— 在 pkg 打包下 TTY 场景下 readline 的 native cleanup
+  // 会在 rl.close() 后下一个 tick 触发 SIGSEGV。改为手工读取 stdin chunk。
   return new Promise((resolve) => {
     const lines: string[] = [];
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false,
-    });
-    rl.on('line', (line) => {
-      if (line.trim() === '') {
-        rl.close();
-        return;
+    let buf = '';
+    const onData = (chunk: Buffer | string) => {
+      buf += chunk.toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, '');
+        buf = buf.slice(idx + 1);
+        if (line.trim() === '') {
+          process.stdin.removeListener('data', onData);
+          process.stdin.removeListener('end', onEnd);
+          try { process.stdin.pause(); } catch {}
+          resolve(lines.join('\n'));
+          return;
+        }
+        lines.push(line);
       }
-      lines.push(line);
-    });
-    rl.on('close', () => resolve(lines.join('\n')));
+    };
+    const onEnd = () => {
+      if (buf.trim()) lines.push(buf.replace(/\r$/, ''));
+      process.stdin.removeListener('data', onData);
+      try { process.stdin.pause(); } catch {}
+      resolve(lines.join('\n'));
+    };
+    process.stdin.on('data', onData);
+    process.stdin.once('end', onEnd);
+    try { process.stdin.resume(); } catch {}
   });
 }
 
 function renderTopicDraft(
   raw: string,
   qa: Array<{ question: string; answer: string }>,
+  addenda: string = '',
 ): string {
   const lines: string[] = [];
   lines.push('# Project Topic (项目选题)');
@@ -253,6 +311,13 @@ function renderTopicDraft(
       lines.push(`- **Q${i + 1}** ${c.question}`);
       lines.push(`  - **A** ${c.answer}`);
     }
+    lines.push('');
+  }
+  const trimmed = addenda.trim();
+  if (trimmed) {
+    lines.push('## 用户补充需求 (Addenda)');
+    lines.push('');
+    lines.push(trimmed);
     lines.push('');
   }
   return lines.join('\n');

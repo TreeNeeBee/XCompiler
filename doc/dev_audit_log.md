@@ -1,4 +1,4 @@
-# TOAA 开发交付日志（dev_journal）
+# TOAA 开发审计日志（dev_audit_log）
 
 > 本文件用于沉淀 **TOAA 自身**的开发过程：每一次与用户的交互、达成的决策、产出的文件与验证结果。
 > 与 `workspace/docs/process_log.md`（由 `AuditLogger` 自动生成的"被开发产品"过程文档）相互独立：
@@ -6,12 +6,21 @@
 > - **本文件**：记录"我们如何一步步建造 TOAA"，是 TOAA 项目自身交付物之一。
 > - **process_log.md**：记录"用户用 TOAA 开发某个 Python 项目"时的全部交互。
 >
+> **结构**：
+>
+> 1. **第一部分 · 人工撰写的开发日志**：按里程碑组织的决策—产物—验证三段式叙事。
+> 2. **第二部分 · Copilot 会话原始审计**（附录）：从 VS Code Copilot Chat 提取的完整对话时间线，与原始 JSONL 一并归档于 [audit/](audit/)。
+>
 > 维护约定：每收到一次具体的需求/反馈、或完成一个里程碑节点，追加一个 `## YYYY-MM-DD - 标题` 段落，包含：
 >
 > 1. **用户请求（原文摘录）**
 > 2. **决策与方案**
 > 3. **变更产物（文件链接）**
 > 4. **验证结果**
+
+---
+
+# 第一部分 · 人工撰写的开发日志
 
 ---
 
@@ -581,3 +590,112 @@ E2E 验证暴露三类真实痛点：
 
 - **审计断流（待修）**：S007 阶段在 `audit.jsonl` 没有任何 `phase.start / llm.request / tool.*` 事件，stdout 也没有 `▶ S007` 与 `✖ 执行中断于 S007` 行，但产物文件 mtime（`tests/test_store.py` 18:14:12.743）与 `session.end`（18:14:12.748）几乎同时。怀疑是单个长 LLM 调用（Tester 一次出 ~1.5KB 测试代码）期间事件在 Node 事件循环里被某个未 await 的副作用阻塞，进程退出时 `fs.appendFile` 队列被丢弃。**复现条件**：在非 TTY（nohup）下 + 单步 LLM 响应 > 60s。后续应在 `audit.appendJsonl` 改为同步 `appendFileSync`，或在 `process.exit` 前 await flush。
 - **gemma4:31b 输出特征**：相比 qwen3-coder，更倾向于把"运行测试"独立成一个无 outputs 的 verification 步，需保持 TEST 步骤 outputs 可空的容错。
+
+---
+
+## 2026-05-06 — 跨平台打包 + pkg-TTY 段错误根因
+
+**背景**
+
+- 新增 `scripts/package.sh` + `tsup.pkg.config.ts`，使用 `@yao-pkg/pkg` 把 ESM 源码先 tsup 打成 CJS 单文件，再生成 linux-x64 / linux-arm64 / win-x64 三平台原生二进制（macOS 暂不发布，详见 `doc/deploy.md` §1.7）。
+- 用户首次运行 `./toaa c` 报 "A dynamic import callback was not specified" → 把 `compile.ts` 中 `await import('node:fs')` / `await import('node:readline')` 改成顶层静态 import 解决。
+- 紧接报段错误（SIGSEGV）。先后尝试：`--no-bytecode` / `--public-packages "*"` / 升级到 node24-base / 移除 readline 改裸读 stdin / `process.stdin.pause()` —— **均无效**。
+
+**复现与定位**
+
+- 关键发现：管道 / `script` 喂入 stdin 时不复现；用 Python `pty.fork()` 模拟真正的 PTY 才复现 `signal: 11`。说明崩溃点只在 **TTY + pkg snapshot 上下文** 下出现。
+- 在 `compile.ts` 关键 await 点之间插入 `TOAA_TRACE=1` 面包屑（`process.stderr.write`），逐步把崩溃区间收敛到一行：
+  ```
+  [toaa-trace] ora.clarify.start
+  --- status: 11 signal: 11
+  ```
+  即 `ora('Planner 正在澄清需求…').start()` 的同步调用直接 SIGSEGV。
+- 根因推断：ora 8.x 依赖 `cli-cursor` → `restore-cursor` → `signal-exit` + `sisteransi`，在 pkg 生成的 V8 snapshot context 中向真实 TTY 写入光标控制 ANSI 序列时，本机句柄与 snapshot heap 绑定不一致，触发 native crash。
+
+**修复**
+
+- 新增 `src/util/spinner.ts`：检测 `process.pkg` 或非 TTY 时回退到 `PlainSpinner`（仅向 stderr 输出 `… …` / `✔` / `✖` 文本行），其它情况仍走真 ora。
+- `src/cli/compile.ts` 与 `src/core/engine.ts` 改 `import { spinner as ora } from '../util/spinner.js'`，调用点零改动。
+- 保留 `TOAA_TRACE=1` 面包屑作为后续 pkg 二进制故障定位的标准手段。
+
+**验证**
+
+- `vitest run`：83/83 通过，`Duration 1.89s`。
+- PTY 复现脚本 `python3 /tmp/run-final.py`：交互输入需求 + 空行 → 走到 `… Planner 正在澄清需求…` → 因测试环境无 OPENAI_API_KEY 自然退出，`signal: none, exitcode: 0`，**段错误彻底消除**。
+- 重新发布三平台二进制：`toaa-linux-x64.tar.gz` 21M / `toaa-linux-arm64.tar.gz` 20M / `toaa-win-x64.zip` 16M。
+
+**经验**
+
+- pkg 打包后的 Node 单文件二进制对 TTY 原生句柄敏感：任何依赖 raw mode、光标控制、`signal-exit` 链路的库（ora / cli-cursor / inquirer 的部分实现）都需要在运行时探测 `process.pkg` 并提供降级路径。
+- 调试 pkg 段错误的有效手段是 PTY + 环境变量 stderr 面包屑；普通 pipe / `script` 不能复现这类崩溃。
+
+---
+
+# 第二部分 · Copilot 会话原始审计（附录）
+
+> 本附录为机器可追溯证据。原始 JSONL 与抽取脚本结果归档于 [audit/](audit/)。
+>
+> - **原始 JSONL**：[audit/copilot-session-ab5315cf.jsonl](audit/copilot-session-ab5315cf.jsonl) — VS Code Copilot Chat 直接导出的全量事件流（≈ 1.6 MB，2103 行）。包含 `session.start` / `user.message` / `assistant.message` / `assistant.turn_start` / `assistant.turn_end` / `tool.execution_start` / `tool.execution_complete` 七类事件。
+> - **可读时间线**：[audit/copilot-session-ab5315cf.timeline.md](audit/copilot-session-ab5315cf.timeline.md) — 按用户回合切分、含助手回复节选与每回合工具调用统计。
+>
+> **会话元信息**
+>
+> | 字段 | 值 |
+> |---|---|
+> | session id | `ab5315cf-00cf-44d2-abde-9b5a585d9634` |
+> | 起始时间 | `2026-04-29T15:34:14.635Z` |
+> | 结束时间 | `2026-05-06T15:38:55Z`（最后一次 user.message）|
+> | 用户回合 | 28 |
+> | 助手回合 | 422（含工具循环）|
+> | 工具调用 | 411 次 |
+> | Copilot 版本 | `0.45.1` / VS Code `1.117.0` |
+
+## 用户回合速查表
+
+| # | 时间 (UTC) | 工具调用 | 用户请求摘要 |
+|---|------------|----------|--------------|
+| 1 | 2026-04-29 15:41:20 | 3 | 完善TOAA功能的设计，抽象toaa_c功能，toaa_c用于接收用户的需求输入并按照V模型拆分成具体的行动步骤；再抽象toaa_run功能，toaa_run用于顺序执行相应的步骤操作，生成最终的目标程序代码；目前只支持生成python程序 |
+| 2 | 2026-04-29 15:47:08 | 2 | 用户交互的界面参考ollama，使用nodejs或者ts来实现，在需求输入阶段需要用户最终确认 |
+| 3 | 2026-04-29 15:52:29 | 2 | 在架构设计阶段需要给出功能开发所需要的python 库并写入到requires.txt供后续debug阶段 沙盒使用，在debug 和 运行测试阶段 需要 支持沙盒运行，debug需要支持自动修改程序代码，类似copilot和code agent等的操作，需要加入相关的skill |
+| 4 | 2026-04-29 15:56:45 | 4 | 再次整理下全部设计，移除不必要的说明和冗余的内容，并给出实施的计划步骤写入到新文件 |
+| 5 | 2026-04-29 16:03:55 | 48 | 使用ts和nodejs开始开发任务 |
+| 6 | 2026-04-29 16:30:49 | 4 | [Terminal 6680c579-b876-406a-9a0c-8fce95300b31 notification: command completed with exit code 0. Use send_to_terminal to send another comman… |
+| 7 | 2026-04-29 16:43:18 | 25 | 1、本地ollama服务器地址是10.80.105.160:11434，gemma4:31b用于需求和架构设计，qwen3-coder:30b用于编码和其他，将当前模型设计写入到配置文件中，2、开发过程中的所有交互和执行动作都写入文档中用于后续交付时的文档汇总 |
+| 8 | 2026-04-29 16:48:41 | 3 | TOAA的开发中所有交互和沟通的内容也保存到相应文档中，用于TOAA的交付文档 |
+| 9 | 2026-04-29 16:51:00 | 29 | 继续开发和测试任务 |
+| 10 | 2026-04-29 17:01:51 | 19 | 先使用本地LLM验证当前功能，再继续M3的开发 |
+| 11 | 2026-04-29 17:22:20 | 38 | 先继续开发任务， |
+| 12 | 2026-04-30 17:49:18 | 12 | 1、输出项目目录可以通过参数指定，默认/tmp，2、使用gemma4作为架构模型，做一个复杂项目再验证功能 |
+| 13 | 2026-04-30 17:54:30 | 2 | [Terminal 82b92333-77d8-409e-9f20-d9d0f075030d notification: command is waiting for input. Call the vscode_askQuestions tool to ask the user… |
+| 14 | 2026-04-30 17:54:58 | 1 | [Terminal 82b92333-77d8-409e-9f20-d9d0f075030d notification: command completed with exit code 0. Use send_to_terminal to send another comman… |
+| 15 | 2026-04-30 17:55:17 | 2 | [Terminal 1ecd5b46-46ad-4b2a-b9dc-11e9d4d59447 notification: command is waiting for input. Call the vscode_askQuestions tool to ask the user… |
+| 16 | 2026-04-30 17:55:35 | 50 | [Terminal 1ecd5b46-46ad-4b2a-b9dc-11e9d4d59447 notification: command completed with exit code 130. Use send_to_terminal to send another comm… |
+| 17 | 2026-04-30 18:19:50 | 10 | Continue: "Continue to iterate?" |
+| 18 | 2026-04-30 18:32:15 | 11 | 继续 |
+| 19 | 2026-05-05 07:41:05 | 14 | [Terminal 53f6ca39-e9db-471d-959d-c2846c7c1427 notification: command is waiting for input. Call the vscode_askQuestions tool to ask the user… |
+| 20 | 2026-05-05 07:45:04 | 17 | 更新下TOAA的部署操作，并生成部署文档，提供docker和本地部署两种方式 |
+| 21 | 2026-05-05 07:51:04 | 13 | 增加约束，以容器方式部署不支持docker的沙盒模式，增加相关运行时判断 |
+| 22 | 2026-05-05 07:56:45 | 1 | 优化toaa的命令参数，增加output选项支持设置工程输出目录 |
+| 23 | 2026-05-05 07:57:04 | 13 | 优化toaa的命令参数，增加output选项支持设置工程/workspace输出目录 |
+| 24 | 2026-05-05 08:10:04 | 50 | 检查下操作日志和对应输出log，分析为什么工程被aborted并修复 |
+| 25 | 2026-05-06 15:13:35 | 4 | 目前软件限定只生成python工程，为什么在QA阶段还会有语言指定的选项 |
+| 26 | 2026-05-06 15:24:33 | 11 | 需求澄清阶段用户可以追加自定义需求，在plan.json中给出预留位置 |
+| 27 | 2026-05-06 15:27:46 | 15 | LLM的输出回复追加LLM标签标识内容源自哪个LLM用于追溯 |
+| 28 | 2026-05-06 15:38:55 | 4 | 保存下TOAA的开发审计日志，并将dev_journal合并进来 |
+
+> 备注：表中"工具调用"统计指本回合内助手发起的 `tool.execution_start` 次数（read/grep/edit/run_in_terminal 等总和）。空请求或 Continue/通知类回合往往伴随大量后台工具操作。
+
+## 如何重放 / 复用
+
+```bash
+# 1. 浏览人类可读时间线
+less doc/audit/copilot-session-ab5315cf.timeline.md
+
+# 2. 用 jq 过滤特定事件
+jq -c 'select(.type == "user.message") | {ts: .timestamp, text: .data.content}' \
+  doc/audit/copilot-session-ab5315cf.jsonl
+
+# 3. 重新生成时间线（如未来追加更多回合）
+python3 scripts/extract_turns.py > /tmp/turns.md   # 见仓库脚本
+```
+

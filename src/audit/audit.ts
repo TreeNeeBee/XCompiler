@@ -193,20 +193,23 @@ export class AuditLogger {
     stepId: string,
     role: string,
     round: number,
-    payload: { thoughts?: string; actions?: unknown[]; done?: boolean; raw?: string },
+    payload: { thoughts?: string; actions?: unknown[]; done?: boolean; raw?: string; provider?: string },
   ): Promise<void> {
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'executor.turn',
-      message: `${stepId} round=${round} role=${role}`,
+      message: `${stepId} round=${round} role=${role}${payload.provider ? ` via ${payload.provider}` : ''}`,
       data: payload,
     });
     const summary = (payload.thoughts ?? '').trim().slice(0, 200) || '(no thoughts)';
     const actCount = Array.isArray(payload.actions) ? payload.actions.length : 0;
+    const providerTag = payload.provider
+      ? ` · via <code>${escapeMd(payload.provider)}</code>`
+      : '';
     await this.appendMd(
       [
         '',
-        `<details><summary>🧠 Executor turn — <code>${escapeMd(stepId)}</code> round ${round} / role <code>${escapeMd(role)}</code> (actions=${actCount}, done=${payload.done === true})</summary>`,
+        `<details><summary>🧠 Executor turn — <code>${escapeMd(stepId)}</code> round ${round} / role <code>${escapeMd(role)}</code>${providerTag} (actions=${actCount}, done=${payload.done === true})</summary>`,
         '',
         '**thoughts:**',
         '',
@@ -222,17 +225,23 @@ export class AuditLogger {
   }
 
   /** 记录 Planner 的思考阶段，比如 clarify / decompose 原始输出。 */
-  async plannerThought(stage: string, content: string, meta?: Record<string, unknown>): Promise<void> {
+  async plannerThought(
+    stage: string,
+    content: string,
+    meta?: Record<string, unknown> & { provider?: string },
+  ): Promise<void> {
+    const provider = meta?.provider;
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'planner.thought',
-      message: `Planner ${stage}`,
+      message: `Planner ${stage}${provider ? ` via ${provider}` : ''}`,
       data: { stage, content, ...meta },
     });
+    const tag = provider ? ` · via <code>${escapeMd(provider)}</code>` : '';
     await this.appendMd(
       [
         '',
-        `<details><summary>🧩 Planner thought — ${escapeMd(stage)}</summary>`,
+        `<details><summary>🧩 Planner thought — ${escapeMd(stage)}${tag}</summary>`,
         '',
         '```text',
         content,

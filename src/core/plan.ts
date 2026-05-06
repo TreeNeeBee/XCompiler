@@ -71,8 +71,12 @@ export const PlanSchema = z.object({
   /** 全局开发约束（项目背景、语言与依赖策略），会拼接到每个 Step 的 system prompt 中。 */
   globalPrompt: z.string().default(''),
   /** ARCH 阶段决定的 pip 依赖初始集（会褉照到 requirements.txt）。 */
-  pythonRequirements: z.array(z.string()).default([]),
-  createdAt: z.string().min(1),
+  pythonRequirements: z.array(z.string()).default([]),  /**
+   * 需求澄清阶段用户补充的自定义需求（预留位）。
+   * 不在 Planner 问题列表中的额外约束 / 补充说明 都会在这里原样保留，
+   * 并拼接到 Planner.decompose 与每个 Step 的 system prompt。为空字符串代表“无补充需求”。
+   */
+  userAddenda: z.string().default(''),  createdAt: z.string().min(1),
   steps: z.array(StepSchema).min(1),
 });
 

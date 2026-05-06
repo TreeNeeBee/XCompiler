@@ -81,22 +81,30 @@ export interface StreamWatchdog {
 /**
  * 在 NDJSON 流上检测真正的 token-loop（模型陷入死循环输出同一短串）。
  *
- * 启发式：仅在 aggregate 已超 MIN_LEN 且末尾出现连续 REPEATS 个完全相同的 N 字符窗口
- * 才判定为 loop。阈值取得足够宽松，避免误杀 LLM 生成的含大量重复模式的合法代码
- * （如 Python 正则 / DBC parser 里重复的 re.match）；maxOutputChars 是兄弟兑底。
+ * 启发式：扫描周期 p∈[2,256]，如果 aggregate 末尾连续 REPEATS 个长度为 p 的子串完全相同，
+ * 则判定为 loop。阈值 LOOP_REPEATS=12 足够过滤合法的列表/表格/正则模式重复。
+ * 阅例：模型输出 `\s+(\d+)` 循环拼接，周期 ≈8，重复几十次即可被捕获。
  */
+const LOOP_REPEATS = 12;
+const LOOP_MIN_LEN = 1_500;
+const LOOP_MAX_PERIOD = 256;
 function detectLoop(agg: string): boolean {
-  const N = 200;
-  const REPEATS = 8;
-  const MIN_LEN = 20_000;
-  if (agg.length < MIN_LEN) return false;
-  if (agg.length < N * REPEATS) return false;
-  const tail = agg.slice(-N * REPEATS);
-  const ref = tail.slice(0, N);
-  for (let i = 1; i < REPEATS; i++) {
-    if (tail.slice(i * N, (i + 1) * N) !== ref) return false;
+  if (agg.length < LOOP_MIN_LEN) return false;
+  const maxP = Math.min(LOOP_MAX_PERIOD, Math.floor(agg.length / LOOP_REPEATS));
+  for (let p = 2; p <= maxP; p++) {
+    const need = p * LOOP_REPEATS;
+    const tail = agg.slice(-need);
+    const ref = tail.slice(0, p);
+    let ok = true;
+    for (let i = 1; i < LOOP_REPEATS; i++) {
+      if (tail.slice(i * p, (i + 1) * p) !== ref) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return true;
   }
-  return true;
+  return false;
 }
 
 /**
@@ -205,6 +213,14 @@ export function streamPostNdjson(
                   cleanup();
                   req.destroy(
                     new Error('detected token loop in stream (repeated identical token); aborting'),
+                  );
+                  return;
+                }
+                if (detectLoop(aggregate)) {
+                  aborted = true;
+                  cleanup();
+                  req.destroy(
+                    new Error('detected cyclic token loop in stream (periodic tail); aborting'),
                   );
                   return;
                 }

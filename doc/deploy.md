@@ -101,6 +101,100 @@ rm -rf <repo>/node_modules <repo>/dist
 
 ---
 
+## 1.7 单文件可执行程序（无 Node 依赖）
+
+> 适合分发到**没有 Node 环境**的目标机器。打出来的可执行程序内嵌了 Node 20 + 全部 JS 依赖，
+> 终端用户只需要把单文件 `toaa` / `toaa.exe` 解压后直接运行即可。
+>
+> ⚠️ **注意**：单文件可执行程序仍然需要目标机器自带 **Python 3.11+ / git** —— 它们用于沙盒（pip / pytest）和 snapshot/revert。这是 TOAA 自身的运行期依赖，不在打包范围内。
+
+### 1.7.1 一次性打全部目标
+
+```bash
+# 三目标全打：linux-x64 / linux-arm64 / win-x64
+npm run package
+```
+
+产物布局：
+
+```
+dist/pkg/
+├── toaa-linux-x64/
+│   ├── toaa                      # ELF 64-bit, x86_64
+│   ├── README.md  LICENSE  NOTICE
+│   ├── config.example.yaml  .env.example
+├── toaa-linux-x64.tar.gz         # 打包发布用
+├── toaa-linux-arm64/
+│   ├── toaa                      # ELF 64-bit, aarch64
+│   └── ...（同上）
+├── toaa-linux-arm64.tar.gz
+├── toaa-win-x64/
+│   ├── toaa.exe                  # PE32+, x86_64
+│   └── ...
+└── toaa-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
+```
+
+> **macOS 目标暂不发布**：`@yao-pkg/pkg` 在 Linux 上交叉编译出的 macOS arm64 二进制，
+> 在运行期进入 readline 或 NDJSON HTTP 流时会 SIGSEGV（V8 bytecode snapshot 在 macOS arm64
+> 上的已知问题）。临时从默认发布目标中移除，macOS 用户请使用本地 `npm install -g .`
+> 或 Docker 部署。待定位稳定重复方案后再重新开启 macOS 打包。
+
+### 1.7.2 单目标打包
+
+```bash
+npm run package:linux-x64
+npm run package:linux-arm64
+npm run package:win-x64
+
+# 或直接调脚本
+./scripts/package.sh linux-x64 win-x64
+TARGETS="linux-arm64" ./scripts/package.sh
+```
+
+### 1.7.3 终端用户的使用流程
+
+**Linux**:
+
+```bash
+tar -xzf toaa-linux-x64.tar.gz
+cd toaa-linux-x64
+cp config.example.yaml ~/.toaa/config.yaml      # 按需编辑
+./toaa --help
+./toaa c -i intake.md -o ~/myproj --yes
+./toaa run ~/myproj/plan.json
+```
+
+**Windows**（PowerShell）：
+
+```powershell
+Expand-Archive toaa-win-x64.zip
+cd toaa-win-x64
+copy config.example.yaml $env:USERPROFILE\.toaa\config.yaml
+.\toaa.exe --help
+.\toaa.exe c -i intake.md -o C:\myproj --yes
+.\toaa.exe run C:\myproj\plan.json
+```
+
+### 1.7.4 实现细节（如何打的包）
+
+| 阶段 | 工具 | 输入 → 输出 |
+|---|---|---|
+| 1. 构建 CJS 单包 | [tsup.pkg.config.ts](../tsup.pkg.config.ts) | `src/cli/toaa.ts` → `dist/pkg-build/toaa.cjs`（约 1.7 MB，已 inline 全部依赖）|
+| 2. 跨平台编译 | `@yao-pkg/pkg` (vercel/pkg 维护活跃 fork) | `toaa.cjs` + 内置 Node20 → 各目标平台 native binary（约 55 MB）|
+| 3. 压缩发布 | `tar` / `zip` | `toaa-<target>/` → `toaa-<target>.tar.gz` / `.zip`（约 21 MB）|
+
+脚本主入口：[scripts/package.sh](../scripts/package.sh)。配置都集中在 `tsup.pkg.config.ts` 与 `package.json -> scripts`。
+
+> **为什么不打 `toaa_c` / `toaa_run` 单独的 exe？**
+> `toaa` 是统一入口，`toaa c` ≡ `toaa_c`，`toaa run` ≡ `toaa_run`。一个 60 MB 的可执行文件
+> 可以承担全部子命令；如果想要 `toaa_c.exe` 这种命名，复制重命名即可，行为不变。
+
+> **Windows .zip 需要 zip 命令**：脚本检测不到 `zip` 时会跳过压缩步骤、只保留目录，
+> 提示用户自行用 7-Zip / PowerShell `Compress-Archive` 打包。Linux / WSL 上 `apt install zip` 即可。
+
+
+---
+
 ## 2. Docker 部署
 
 ### 2.1 镜像结构

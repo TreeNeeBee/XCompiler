@@ -122,11 +122,13 @@ export class StepExecutor {
       // 上限 256KB，略大于 ollama 默认 maxOutputChars，只作为内存保护。
       const RAW_CAP = 256 * 1024;
       let rawAggregate = '';
+      let provider: string | undefined;
       let text: string;
       try {
         text = await this.opts.llm.chat(messages, {
           responseFormat: 'json',
           temperature: 0.1,
+          onProvider: (name) => { provider = name; },
           onToken: (chunk) => {
             if (rawAggregate.length < RAW_CAP) {
               rawAggregate = (rawAggregate + chunk).slice(0, RAW_CAP);
@@ -155,6 +157,7 @@ export class StepExecutor {
           actions: [],
           done: false,
           raw: rawAggregate,
+          provider,
         });
         await inp.ctx.audit?.event(
           'llm.error',
@@ -173,6 +176,7 @@ export class StepExecutor {
         actions,
         done: turn.done === true,
         raw: text,
+        provider,
       });
       const turnResults: Array<ToolResult & { tool: string }> = [];
       for (const a of actions) {

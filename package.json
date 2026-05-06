@@ -24,7 +24,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:ollama": "tsx scripts/smoke_ollama.ts",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\"",
+    "build:pkg": "tsup --config tsup.pkg.config.ts",
+    "package": "bash scripts/package.sh",
+    "package:linux-x64": "bash scripts/package.sh linux-x64",
+    "package:linux-arm64": "bash scripts/package.sh linux-arm64",
+    "package:win-x64": "bash scripts/package.sh win-x64"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.2.1",
@@ -38,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@yao-pkg/pkg": "^6.19.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

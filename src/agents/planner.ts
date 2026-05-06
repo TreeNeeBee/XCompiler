@@ -80,6 +80,8 @@ export interface ClarifyQuestion {
 export interface PlannerInput {
   rawRequirement: string;
   clarifications: Array<{ question: string; answer: string }>;
+  /** 用户在澄清问答后补充的自定义需求（可为空）。 */
+  userAddenda?: string;
 }
 
 export interface DraftPlan {
@@ -102,8 +104,16 @@ export class Planner {
 ${rawRequirement}
 """
 
-请基于该需求，提出 3-5 个最关键的澄清问题。仅返回 JSON 数组，每项形如 {"id":"Q1","question":"..."}。如果需求非常清晰可以返回 []。`;
+请基于该需求，提出 3-5 个最关键的澄清问题。仅返回 JSON 数组，每项形如 {"id":"Q1","question":"..."}。如果需求非常清晰可以返回 []。
+
+【硬约束】TOAA 当前版本只支持生成 Python 工程，目标语言、运行时、测试框架（pytest）已固定。
+**严禁**提出以下类型的问题：
+  - "希望用什么编程语言 / 框架 / 运行时实现？"
+  - "需要哪种测试框架 / 构建工具 / 包管理器？"
+  - "目标平台是哪种操作系统？"
+请把澄清聚焦在**业务语义、输入/输出格式、边界情况、性能与正确性指标**上。`;
     const rep = makeStreamReporter('Planner.clarify');
+    let provider: string | undefined;
     const text = await this.llm.chat(
       [
         { role: 'system', content: 'You generate clarifying questions as strict JSON.' },
@@ -113,6 +123,7 @@ ${rawRequirement}
         responseFormat: 'json',
         temperature: 0.2,
         onToken: rep.onToken,
+        onProvider: (n) => { provider = n; },
         // 允许三种合法形式：数组 / 包装 {questions:[...]} / 单个问题对象。
         // 返回其中任何一种都不会触发 fallback。
         validate: (t) => {
@@ -127,7 +138,7 @@ ${rawRequirement}
       },
     );
     rep.done();
-    await this.audit?.plannerThought('clarify', text, { rawRequirement });
+    await this.audit?.plannerThought('clarify', text, { rawRequirement, provider });
     return parseClarifyJson(text);
   }
 
@@ -135,6 +146,7 @@ ${rawRequirement}
     const qa = input.clarifications
       .map((c, i) => `Q${i + 1}: ${c.question}\nA${i + 1}: ${c.answer}`)
       .join('\n\n');
+    const addenda = (input.userAddenda ?? '').trim();
     const prompt = `原始需求：
 """
 ${input.rawRequirement}
@@ -143,8 +155,9 @@ ${input.rawRequirement}
 澄清问答：
 ${qa || '（无）'}
 
-请按系统规则输出严格 JSON 计划。`;
+${addenda ? `用户补充需求（需严格遵守，优先级高于原始描述中模糊的部分）：\n"""\n${addenda}\n"""\n\n` : ''}请按系统规则输出严格 JSON 计划。`;
     const rep = makeStreamReporter('Planner.decompose');
+    let provider: string | undefined;
     const text = await this.llm.chat(
       [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -154,18 +167,19 @@ ${qa || '（无）'}
         responseFormat: 'json',
         temperature: 0.1,
         onToken: rep.onToken,
+        onProvider: (n) => { provider = n; },
         // 在 chain 层验证：如果 LLM 输出不能解析为含 steps 的 JSON（
         // 例如 token loop / 截断），FallbackClient 会自动切换到下一个 provider。
         validate: (t) => parseDraftPlanJson(t),
       },
     );
     rep.done();
-    await this.audit?.plannerThought('decompose', text, { qaCount: input.clarifications.length });
+    await this.audit?.plannerThought('decompose', text, { qaCount: input.clarifications.length, provider });
     return parseDraftPlanJson(text);
   }
 }
 
-export function buildPlan(draft: DraftPlan): Plan {
+export function buildPlan(draft: DraftPlan, opts: { userAddenda?: string } = {}): Plan {
   const steps = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)));
   return {
     version: '1',
@@ -173,6 +187,7 @@ export function buildPlan(draft: DraftPlan): Plan {
     requirementDigest: draft.requirementDigest,
     globalPrompt: draft.globalPrompt,
     pythonRequirements: calibratePythonRequirements(draft.pythonRequirements),
+    userAddenda: (opts.userAddenda ?? '').trim(),
     createdAt: new Date().toISOString(),
     steps,
   };
