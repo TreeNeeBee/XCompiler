@@ -102,18 +102,40 @@ export class SubprocessSandbox implements Sandbox {
 
     const py = await this.resolvePython();
     if (!venvExists) {
-      const r = await execRaw(py, ['-m', 'venv', this.venvAbs], { timeoutMs: 60_000 });
+      // 优先尝试带 pip 的 venv；某些发行版（如 Debian/Ubuntu 默认 python3 不含 ensurepip）
+      // 会失败，再退回 --without-pip + 手动 ensurepip。
+      let r = await execRaw(py, ['-m', 'venv', this.venvAbs], { timeoutMs: 60_000 });
       if (r.exitCode !== 0) {
-        throw new Error(`venv creation failed: ${r.stderr || r.stdout}`);
+        const r2 = await execRaw(py, ['-m', 'venv', '--without-pip', this.venvAbs], { timeoutMs: 60_000 });
+        if (r2.exitCode !== 0) {
+          throw new Error(`venv creation failed: ${r.stderr || r.stdout}\n\n--without-pip retry: ${r2.stderr || r2.stdout}`);
+        }
+      }
+    }
+    // 确保 venv 内有可用 pip：bin/pip 文件可能根本不存在（python3-venv 缺包 / --without-pip）。
+    // 统一通过 python -m pip 调用，并在缺失时自动 ensurepip。
+    const pyVenv = this.pythonInVenv;
+    const pyVenvExists = await fs.stat(pyVenv).then(() => true).catch(() => false);
+    if (!pyVenvExists) {
+      throw new Error(`venv python missing after creation: ${pyVenv}（请安装系统包 python3-venv / python3-virtualenv）`);
+    }
+    const pipCheck = await execRaw(pyVenv, ['-m', 'pip', '--version'], { timeoutMs: 30_000 });
+    if (pipCheck.exitCode !== 0) {
+      const ep = await execRaw(pyVenv, ['-m', 'ensurepip', '--upgrade', '--default-pip'], { timeoutMs: 60_000 });
+      if (ep.exitCode !== 0) {
+        throw new Error(
+          `venv pip 不可用，且 ensurepip 失败 (venv=${this.venvAbs}):\n${ep.stderr || ep.stdout}\n\n` +
+            '请在宿主机安装：apt-get install python3-venv python3-pip   或   yum install python3-pip',
+        );
       }
     }
     if (reqContent.trim().length > 0) {
-      const r = await execRaw(this.pipInVenv, ['install', '-r', reqAbs, '--quiet'], {
+      const r = await execRaw(pyVenv, ['-m', 'pip', 'install', '-r', reqAbs, '--quiet', '--disable-pip-version-check'], {
         timeoutMs: this.opts.limits.wall_seconds * 1000 * 5,
       });
       if (r.exitCode !== 0) {
         throw new Error(
-          `pip install failed (venv=${this.venvAbs}, pip=${this.pipInVenv}, requirements=${reqAbs}):\n${
+          `pip install failed (venv=${this.venvAbs}, requirements=${reqAbs}):\n${
             r.stderr || r.stdout
           }`,
         );
@@ -158,7 +180,7 @@ export class SubprocessSandbox implements Sandbox {
 
   /** 安装额外依赖（不会写入 requirements.txt，需要由调用方自行回写）。 */
   async pipInstall(packages: string[]): Promise<ExecResult> {
-    return this.exec(this.pipInVenv, ['install', ...packages, '--quiet']);
+    return this.exec(this.pythonInVenv, ['-m', 'pip', 'install', ...packages, '--quiet', '--disable-pip-version-check']);
   }
 }
 
