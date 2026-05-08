@@ -16,18 +16,29 @@ llm:
       base_url: ${OPENAI_BASE_URL}
       model: gpt-4o-mini
 
-  # 角色 → provider 路由
+  # 角色 → provider 数组（兼容单字符串）。
+  # 数组里的 provider 按 ScoreStore 评分降序使用，评分=0 自动跳过。
+  # 启动期 preflight 会探活 ollama /api/tags：模型不在服务器上 → 评分置 0；
+  # 若某角色全部候选都被置 0 → 自动从可达 ollama 服务器扫描 tags 并注入合成 provider。
   roles:
-    Planner: ollama_design     # 需求澄清/计划生成
-    Architect: ollama_design   # 架构与 requirements.txt
-    Coder: ollama_code         # 代码生成
-    Tester: ollama_code        # 测试用例
-    Debugger: ollama_code      # 调试与修复
+    Planner:   [ollama_design]
+    Architect: [ollama_design]
+    Coder:     [ollama_code]
+    Tester:    [ollama_code]
+    Debugger:  [ollama_code]
+
+  # 评分快照（preflight 与运行时自动维护，落盘到同目录的 llm_scores.yaml）。
+  # 这里可以手工写初值；空 = 全部默认 1.0。
+  scores: {}
 
 agent:
   language: python
   max_steps: 50
   max_debug_retries: 3
+  # Debugger 滑动窗口的硬上限：LLM 持续健康输出时窗口可扩到该值；
+  # 出现解析失败/重复 actions/无进展时窗口快速收缩，连续 2 次低质量直接放弃。
+  # 默认 = max(max_debug_retries * 4, 10)
+  # max_debug_retries_cap: 12
   # subprocess | docker
   # subprocess (默认)：在嬿主机 venv 内直接 spawn，快但无隔离
   # docker: 使用系统 docker daemon，bind-mount 工程目录到容器；debug 时直接修改工程代码即生效

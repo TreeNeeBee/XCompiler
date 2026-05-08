@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { LLMRouter } from '../src/llm/router.js';
+import { ScoreStore } from '../src/llm/scores.js';
 import type { ToaaConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
 
@@ -12,9 +13,10 @@ function mkCfg(partial: Partial<ToaaConfig['llm']>): ToaaConfig {
         ollama_design: { api_key: '', base_url: 'http://x', model: 'gemma' },
         openai: { api_key: 'k', base_url: 'http://y', model: 'gpt' },
       },
-      roles: { Coder: 'ollama_code', Planner: 'ollama_design' },
+      roles: { Coder: ['ollama_code'], Planner: ['ollama_design'] },
       fallbacks: [],
       role_fallbacks: {},
+      scores: {},
       ...partial,
     },
     agent: {
@@ -89,5 +91,64 @@ describe('LLMRouter fallback chain', () => {
     expect(out).toBe('ok');
     expect(firstCalls).toBe(1);
     expect(secondCalls).toBe(1);
+  });
+});
+
+describe('LLMRouter score-sorted chain', () => {
+  it('orders candidates by score descending', () => {
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('ollama_code', 0.5, 'flaky');
+    scores.set('openai', 2, 'rocking');
+    const router = new LLMRouter(cfg, undefined, scores);
+    const client = router.for('Coder');
+    expect(client.name).toBe('chain[openai:gpt>ollama:qwen]');
+  });
+
+  it('skips providers with score=0', () => {
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('ollama_code', 0, 'disabled');
+    const router = new LLMRouter(cfg, undefined, scores);
+    const client = router.for('Coder');
+    expect(client.name).toBe('openai:gpt');
+  });
+
+  it('throws when all candidates have score=0', () => {
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code'] } });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('ollama_code', 0, 'disabled');
+    scores.set('ollama_design', 0, 'disabled');
+    scores.set('openai', 0, 'disabled');
+    const router = new LLMRouter(cfg, undefined, scores);
+    expect(() => router.for('Coder')).toThrow(/score=0|No usable LLM provider/);
+  });
+
+  it('decays score on chat error and boosts on success', async () => {
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    const router = new LLMRouter(cfg, undefined, scores);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const map: Map<string, LLMClient> = (router as any).clients;
+    map.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => { throw new Error('down'); },
+    });
+    map.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => 'ok',
+    });
+    const client = router.for('Coder');
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(scores.get('ollama_code')).toBeCloseTo(ScoreStore.DEFAULT - ScoreStore.DECAY, 5);
+    expect(scores.get('openai')).toBeCloseTo(ScoreStore.DEFAULT + ScoreStore.BOOST, 5);
+  });
+
+  it('accepts string roles[role] (backward-compat) and treats as single-element array', () => {
+    // Schema would normalize this at load time; we simulate a legacy-ish cfg.
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code'] } });
+    const router = new LLMRouter(cfg);
+    const client = router.for('Coder');
+    expect(client.name).toBe('ollama:qwen');
   });
 });

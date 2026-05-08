@@ -75,7 +75,16 @@ export function buildDefaultSkills(): SkillRegistry {
   });
   reg.register({
     name: 'tester',
-    prompt: '编写并运行 pytest 测试，验证函数行为；失败时通过 analyze_error 解析。',
+    prompt:
+      '编写并运行 pytest 测试，验证函数行为；失败时通过 analyze_error 解析。' +
+      '【fixture 自包含】测试**严禁**直接 open() 磁盘上不存在的样例文件（如 "test.dbc"）；' +
+      '若被测函数需要文件输入，请用 pytest 的 tmp_path fixture 在测试里临时构造内容，' +
+      '或用 write_file 直接写到 tests/fixtures/<name>——TEST/DEBUG 阶段该目录已默认放开写权限，' +
+      '子目录自动 mkdir -p，**无需**提前把 fixture 路径登记到 outputs。' +
+      '生成测试时务必同时输出全部依赖资源，避免后续 Debugger 因 FileNotFoundError 反复重试。' +
+      '【fixture 迭代】若测试运行中被测函数报"Invalid syntax / Parse error / Malformed"等解析错误，' +
+      '说明你写出的 fixture 内容不合该格式 spec：read_file 看清，write_file 整文件重写为合法样例，再 run_tests，' +
+      '严禁去改被测模块或断言。',
     tools: ['read_file', 'list_dir', 'write_file', 'run_tests', 'analyze_error'],
   });
   reg.register({
@@ -86,7 +95,7 @@ export function buildDefaultSkills(): SkillRegistry {
   reg.register({
     name: 'debugger',
     prompt:
-      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file 修复 → 再次 run_tests。每次只做最小修改。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即改用 read_file + write_file 整文件重写（≤ 6000 字节可直接覆盖），不要反复猜测 find 字符串。',
+      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file 修复 → 再次 run_tests。每次只做最小修改。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即改用 read_file + write_file 整文件重写（≤ 6000 字节可直接覆盖），不要反复猜测 find 字符串。【禁止 no-op】replace_in_file 的 find 与 replace 必须不同——若你只是想"确认"某段代码，请用 read_file，不要提交相同字符串的替换。',
     tools: [
       'read_file',
       'code_search',

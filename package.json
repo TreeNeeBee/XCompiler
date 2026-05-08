@@ -29,6 +29,8 @@
     "package": "bash scripts/package.sh",
     "package:linux-x64": "bash scripts/package.sh linux-x64",
     "package:linux-arm64": "bash scripts/package.sh linux-arm64",
+    "package:macos-arm64": "bash scripts/package.sh macos-arm64",
+    "package:macos-x64": "bash scripts/package.sh macos-x64",
     "package:win-x64": "bash scripts/package.sh win-x64"
   },
   "dependencies": {

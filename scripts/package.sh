@@ -2,28 +2,36 @@
 # -----------------------------------------------------------------------------
 # TOAA 跨平台打包脚本
 # -----------------------------------------------------------------------------
-# 产出三个目标的单文件可执行程序：
+# 产出多目标的单文件可执行程序：
 #   - dist/pkg/toaa-linux-x64/toaa            (Linux x86_64)
 #   - dist/pkg/toaa-linux-arm64/toaa          (Linux aarch64)
+#   - dist/pkg/toaa-macos-arm64/toaa          (macOS Apple Silicon, ad-hoc 签名)
 #   - dist/pkg/toaa-win-x64/toaa.exe          (Windows x86_64)
 #
 # 每个目录另外携带：README.md / LICENSE / NOTICE / config.example.yaml /
 #                  .env.example  以便用户开箱即用。
-# 最后将每个目录压缩成 tar.gz（linux）或 zip（windows），放在 dist/pkg/。
+# 最后将每个目录压缩成 tar.gz（linux/macos）或 zip（windows），放在 dist/pkg/。
 #
-# 注：macOS 目标（macos-arm64 / macos-x64）在当前 Linux 打包机 + V8 bytecode snapshot
-# 下会出现 segfault（已知 pkg 问题），暂从默认目标中移除。如需手动走：
-#   ./scripts/package.sh macos-arm64       # 会走 build_one，但产出运行未验证。
+# macOS 目标说明：
+#   - macos-arm64（Apple M1/M2/M3）已纳入默认目标。
+#     pkg 必须搭配 --no-bytecode（snapshot 在 Node20 readline+NDJSON 流场景会 SIGSEGV）。
+#     Apple Silicon 强制代码签名：本脚本会按以下顺序尝试 ad-hoc 签名：
+#       1. 系统已安装的 `ldid`（Linux 上由 ProcursusTeam 提供静态二进制）；
+#       2. 自动从 GitHub Releases 下载与本机架构匹配的 `ldid` 到 ./.tools/ldid；
+#       3. 都失败则保留未签名二进制 + 给终端用户打印 `codesign --sign - toaa` 提示。
+#   - macos-x64（Intel Mac）作为可选目标，需手动指定：./scripts/package.sh macos-x64
 #
 # 依赖：
 #   - Node 20+
 #   - @yao-pkg/pkg（devDep；本脚本会按需 npx 唤起）
 #   - 可选：zip（Windows 包用），未装则跳过 zip，仅产生目录
+#   - 可选：ldid（macOS 包签名用）；缺失时本脚本会自动从 GitHub 拉取静态二进制
 #
 # 用法：
-#   ./scripts/package.sh                   # 三目标全打
-#   ./scripts/package.sh linux-x64         # 只打指定目标
-#   TARGETS="linux-x64 win-x64" ./scripts/package.sh
+#   ./scripts/package.sh                                 # 默认四目标全打
+#   ./scripts/package.sh linux-x64                       # 只打指定目标
+#   ./scripts/package.sh macos-arm64 macos-x64           # 只打 macOS
+#   TARGETS="linux-x64 macos-arm64" ./scripts/package.sh
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -32,7 +40,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # ---------------- 解析目标列表 ----------------
-DEFAULT_TARGETS="linux-x64 linux-arm64 win-x64"
+DEFAULT_TARGETS="linux-x64 linux-arm64 macos-arm64 win-x64"
 if [[ $# -gt 0 ]]; then
   TARGETS="$*"
 elif [[ -n "${TARGETS:-}" ]]; then
@@ -51,6 +59,48 @@ echo "    入口:    $ENTRY"
 echo "    输出根:  $OUT_ROOT"
 echo "    目标:    $TARGETS"
 echo
+
+# ---------------- 工具：定位或自动获取 ldid（macOS 包 ad-hoc 签名用） ----------------
+# 调用约定：成功则把可用的 ldid 路径打到 stdout 并 return 0；失败 return 1（不输出）。
+# 决策顺序：
+#   1. PATH 上已有 ldid → 直接用；
+#   2. 项目级 .tools/ldid 已下载 → 直接用；
+#   3. 探测 OSTYPE：
+#      - Linux：从 ProcursusTeam/ldid releases 拉取与 `uname -m` 匹配的静态二进制；
+#      - macOS：理论上系统自带 codesign 即可，但若用户偏好 ldid 则尝试通过 brew 提示；
+#      - 其他：放弃。
+ensure_ldid() {
+  if command -v ldid >/dev/null 2>&1; then
+    command -v ldid
+    return 0
+  fi
+  local local_bin="$ROOT/.tools/ldid"
+  if [[ -x "$local_bin" ]]; then
+    echo "$local_bin"
+    return 0
+  fi
+  # 仅在 Linux 上自动下载（避免在 macOS 上覆盖系统签名工具链）
+  case "$(uname -s)" in
+    Linux)
+      local arch
+      arch="$(uname -m)"
+      local url="https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_${arch}"
+      mkdir -p "$ROOT/.tools"
+      if curl -fsSL "$url" -o "${local_bin}.tmp" 2>/dev/null; then
+        chmod +x "${local_bin}.tmp"
+        mv "${local_bin}.tmp" "$local_bin"
+        echo "$local_bin"
+        return 0
+      fi
+      rm -f "${local_bin}.tmp"
+      ;;
+    Darwin)
+      # 在 Mac 上 pkg 自身能调系统 codesign，正常不会走到这里；提示一下即可。
+      echo "    NOTE: macOS 上未检测到 ldid；pkg 通常会自动调用系统 codesign。" >&2
+      ;;
+  esac
+  return 1
+}
 
 # ---------------- 1. 生成 CJS 单文件包 ----------------
 echo "==> [1/3] tsup 打 CJS 单文件 -> $ENTRY"
@@ -100,13 +150,15 @@ build_one() {
   # 给 Linux / macOS 目标加可执行位
   [[ "$short" == linux-* || "$short" == macos-* ]] && chmod +x "$outdir/$exe_name"
 
-  # macOS 二进制必须有签名才能在 Apple Silicon 上启动；如本机有 ldid 就做 ad-hoc 签名
+  # macOS 二进制必须有签名才能在 Apple Silicon 上启动；按 (1) 系统 ldid → (2) 自动拉取 → (3) 提示
   if [[ "$short" == macos-* ]]; then
-    if command -v ldid >/dev/null 2>&1; then
-      ldid -S "$outdir/$exe_name" && echo "    (ad-hoc signed by ldid)"
+    local signer
+    signer="$(ensure_ldid || true)"
+    if [[ -n "$signer" ]]; then
+      "$signer" -S "$outdir/$exe_name" && echo "    (ad-hoc signed by $signer)"
     else
-      echo "    NOTE: ldid 未安装，macOS 二进制未签名。终端用户首次运行前需在 Mac 上执行：" >&2
-      echo "          codesign --sign - $exe_name" >&2
+      echo "    NOTE: ldid 不可用且自动下载失败，macOS 二进制未签名。" >&2
+      echo "          终端用户首次运行前需在 Mac 上执行：codesign --sign - $exe_name" >&2
     fi
   fi
 }

@@ -92,10 +92,16 @@ export function lintPlan(plan: Plan): LintIssue[] {
       (t) => t.phase === 'TEST' && transitivelyDependsOn(t, c.id, stepById),
     );
     if (!covered) {
+      const suggestedId = nextStepId(plan.steps);
+      const testFile = suggestTestFileFor(c);
       issues.push({
         level: 'error',
         stepId: c.id,
-        message: 'CODE step has no corresponding TEST step',
+        message:
+          `CODE step ${c.id} has no corresponding TEST step. ` +
+          `Add a TEST step (e.g. id="${suggestedId}", phase="TEST", role="Tester", dependsOn=["${c.id}"], ` +
+          `outputs=["${testFile}"]) so plan lint rule S004/S005 passes; ` +
+          `or have an existing TEST step include "${c.id}" in its dependsOn (chain-style coverage is allowed).`,
       });
     }
   }
@@ -119,9 +125,11 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 7. phase purity — REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY 阶段不得产出实现/测试源码
+  // 7. phase purity — REQUIREMENT / ARCH / TASK / DELIVERY 阶段不得产出实现/测试源码
+  //    REFACTOR 不在此名单：重构的语义就是修改 src/tests 源码（已由规则 #3 允许复用 outputs、规则 #9 强制 dependsOn TEST + 产出 04-refactor.md 把守）
+  //    CODE/TEST/DEBUG 本就负责实现/测试代码，自然不在此名单
   const SRC_RE = /^(?:src|tests)\//;
-  const DOC_ONLY_PHASES = new Set(['REQUIREMENT', 'ARCH', 'TASK', 'REFACTOR', 'DELIVERY']);
+  const DOC_ONLY_PHASES = new Set(['REQUIREMENT', 'ARCH', 'TASK', 'DELIVERY']);
   for (const s of plan.steps) {
     if (!DOC_ONLY_PHASES.has(s.phase)) continue;
     for (const out of s.outputs) {
@@ -261,6 +269,25 @@ function transitivelyDependsOn(
     if (s) stack.push(...s.dependsOn);
   }
   return false;
+}
+
+/** 给 lint S004/S005 错误提示用：算出下一个未被占用的 S### id。 */
+function nextStepId(steps: Step[]): string {
+  const max = steps.reduce((m, s) => {
+    const mm = String(s.id).match(/^S(\d{3,})$/);
+    return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
+  }, 0);
+  return 'S' + String(max + 1).padStart(3, '0');
+}
+
+/** 根据 CODE Step 的首个 src/ 输出推导一个建议的 tests/test_*.py 路径。 */
+function suggestTestFileFor(code: Step): string {
+  const src = code.outputs.find((o) => o.startsWith('src/') && o.endsWith('.py'));
+  if (src) {
+    const base = src.replace(/^src\//, '').replace(/\.py$/, '').replace(/\//g, '_');
+    return `tests/test_${base}.py`;
+  }
+  return `tests/test_${code.id.toLowerCase()}.py`;
 }
 
 export function topoSort(steps: Step[]): Step[] {

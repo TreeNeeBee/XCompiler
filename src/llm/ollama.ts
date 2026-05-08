@@ -177,14 +177,43 @@ export function streamPostNdjson(
           timers.push(idleTimer);
         };
         armIdle();
-        if (watchdog.timeoutMs > 0) {
-          timers.push(
-            setTimeout(() => {
-              aborted = true;
-              req.destroy(new Error(`stream wall-clock ${watchdog.timeoutMs}ms exceeded; aborting`));
-            }, watchdog.timeoutMs),
-          );
-        }
+        // Wall-clock 采用"滑动 deadline"语义：初始 deadline = now + timeoutMs；
+        // 每次有 chunk 到达就把 deadline 顺延到 max(deadline, now + timeoutMs)，
+        // 直到达到硬上限 hardCap = timeoutMs * 4。这样：
+        //   - 健康但慢的流（用户报例：S007 round1 已 2780 chars）不会被误杀；
+        //   - 真卡死由 idleTimeout 兜底（已存在）；
+        //   - 真出现 token-loop 由 maxOutputChars / detectLoop 兜底；
+        //   - 极端长跑也不会无限拖：硬上限 = 4× 配置值。
+        let wallTimer: NodeJS.Timeout | null = null;
+        const wallStart = Date.now();
+        const hardDeadline = watchdog.timeoutMs > 0 ? wallStart + watchdog.timeoutMs * 4 : 0;
+        let currentDeadline = watchdog.timeoutMs > 0 ? wallStart + watchdog.timeoutMs : 0;
+        const armWall = () => {
+          if (watchdog.timeoutMs <= 0) return;
+          if (wallTimer) clearTimeout(wallTimer);
+          const fireAt = Math.min(currentDeadline, hardDeadline);
+          const delay = Math.max(0, fireAt - Date.now());
+          wallTimer = setTimeout(() => {
+            aborted = true;
+            const elapsed = Date.now() - wallStart;
+            const reason =
+              currentDeadline >= hardDeadline
+                ? `stream wall-clock hard cap ${watchdog.timeoutMs * 4}ms reached after ${elapsed}ms (extended ${Math.floor((elapsed - watchdog.timeoutMs) / watchdog.timeoutMs)}× by data); aborting`
+                : `stream wall-clock ${watchdog.timeoutMs}ms exceeded; aborting`;
+            req.destroy(new Error(reason));
+          }, delay);
+          timers.push(wallTimer);
+        };
+        const bumpWall = () => {
+          if (watchdog.timeoutMs <= 0) return;
+          // 收到数据则把 deadline 滑到至少 now + timeoutMs（受 hardDeadline 钳制）
+          const next = Date.now() + watchdog.timeoutMs;
+          if (next > currentDeadline) {
+            currentDeadline = Math.min(next, hardDeadline);
+            armWall();
+          }
+        };
+        armWall();
         const cleanup = () => {
           for (const t of timers) clearTimeout(t);
           timers.length = 0;
@@ -197,6 +226,7 @@ export function streamPostNdjson(
             return;
           }
           armIdle();
+          bumpWall();
           buf += chunk;
           let idx;
           while ((idx = buf.indexOf('\n')) >= 0) {
@@ -315,6 +345,44 @@ export function postJson(url: URL, body: unknown, timeoutMs: number): Promise<st
       req.on('close', () => clearTimeout(t));
     }
     req.write(payload);
+    req.end();
+  });
+}
+
+/** 通用 GET JSON helper（preflight 探活 ollama /api/tags 用）。失败抛 Error。 */
+export function getJson(url: URL, timeoutMs: number): Promise<string> {
+  const lib = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      {
+        method: 'GET',
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        headers: { accept: 'application/json' },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if (!res.statusCode || res.statusCode >= 400) {
+            reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 500)}`));
+          } else {
+            resolve(text);
+          }
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    if (timeoutMs > 0) {
+      const t = setTimeout(() => {
+        req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      req.on('close', () => clearTimeout(t));
+    }
     req.end();
   });
 }

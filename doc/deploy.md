@@ -128,26 +128,34 @@ dist/pkg/
 │   ├── toaa                      # ELF 64-bit, aarch64
 │   └── ...（同上）
 ├── toaa-linux-arm64.tar.gz
+├── toaa-macos-arm64/
+│   ├── toaa                      # Mach-O 64-bit, arm64（已 ad-hoc 签名）
+│   └── ...
+├── toaa-macos-arm64.tar.gz
 ├── toaa-win-x64/
-│   ├── toaa.exe                  # PE32+, x86_64
+│   ├── toaa.exe                  # PE32+, x86_64 — ⚠️ v0.1.0 未在 Windows 实机验证
 │   └── ...
 └── toaa-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
 ```
 
-> **macOS 目标暂不发布**：`@yao-pkg/pkg` 在 Linux 上交叉编译出的 macOS arm64 二进制，
-> 在运行期进入 readline 或 NDJSON HTTP 流时会 SIGSEGV（V8 bytecode snapshot 在 macOS arm64
-> 上的已知问题）。临时从默认发布目标中移除，macOS 用户请使用本地 `npm install -g .`
-> 或 Docker 部署。待定位稳定重复方案后再重新开启 macOS 打包。
+> **macOS Apple Silicon 已纳入默认目标**（macos-arm64）。
+> 关键点：
+>
+> - `--no-bytecode` 已默认开启 — 解决 V8 bytecode snapshot 在 Node 20 readline / NDJSON HTTP 流场景下的 SIGSEGV。
+> - 强制代码签名 — 脚本会按 (1) 系统已装的 `ldid` → (2) 自动从 ProcursusTeam/ldid releases 拉取与本机架构匹配的静态二进制到 `.tools/ldid` → (3) 都失败时打印 `codesign --sign -` 提示。
+> - macos-x64（Intel Mac）作为可选目标，需手动指定：`./scripts/package.sh macos-x64`。
 
 ### 1.7.2 单目标打包
 
 ```bash
 npm run package:linux-x64
 npm run package:linux-arm64
+npm run package:macos-arm64
 npm run package:win-x64
 
 # 或直接调脚本
 ./scripts/package.sh linux-x64 win-x64
+./scripts/package.sh macos-arm64 macos-x64
 TARGETS="linux-arm64" ./scripts/package.sh
 ```
 
@@ -165,6 +173,8 @@ cp config.example.yaml ~/.toaa/config.yaml      # 按需编辑
 ```
 
 **Windows**（PowerShell）：
+
+> ⚠️ **v0.1.0 状态**：`toaa-win-x64.exe` 已能成功打包，但**尚未在 Windows 实机上端到端验证**（沙盒 / git snapshot / pytest 流程）。建议作为预览版试用，遇到问题请提 issue。Linux / macOS Apple Silicon 已通过完整回归。
 
 ```powershell
 Expand-Archive toaa-win-x64.zip

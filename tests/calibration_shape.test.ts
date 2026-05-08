@@ -41,4 +41,33 @@ describe('calibrateStepShape', () => {
     ] as unknown as Step[];
     expect(calibrateStepShape(raw)[0]!.role).toBe('Architect');
   });
+
+  it('infers phase from outputs path when LLM writes a junk phase like "---"', () => {
+    // 真实回放：用户报错 S008 phase="---" 但 outputs=["docs/05-delivery.md"]
+    const raw = [
+      { id: 'S008', phase: '---', title: '项目交付物清单', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: ['docs/05-delivery.md'] },
+    ] as unknown as Step[];
+    expect(calibrateStepShape(raw)[0]!.phase).toBe('DELIVERY');
+  });
+
+  it('maps phase aliases (design->ARCH, implement->CODE, packaging->DELIVERY, testing->TEST)', () => {
+    const raw = [
+      { id: 'S001', phase: 'design', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Architect', outputs: [] },
+      { id: 'S002', phase: 'implement', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: [] },
+      { id: 'S003', phase: 'packaging', title: 'c', description: 'c', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: [] },
+      { id: 'S004', phase: 'testing', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: [] },
+    ] as unknown as Step[];
+    const out = calibrateStepShape(raw);
+    expect(out.map((s) => s.phase)).toEqual(['ARCH', 'CODE', 'DELIVERY', 'TEST']);
+  });
+
+  it('infers phase from src/ vs tests/ outputs when phase is missing entirely', () => {
+    const raw = [
+      { id: 'S001', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['src/foo.py'] },
+      { id: 'S002', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['tests/test_foo.py'] },
+    ] as unknown as Step[];
+    const out = calibrateStepShape(raw);
+    expect(out[0]!.phase).toBe('CODE');
+    expect(out[1]!.phase).toBe('TEST');
+  });
 });

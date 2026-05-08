@@ -143,4 +143,80 @@ describe('OllamaClient streaming', () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+
+  it('sliding wall-clock: healthy slow stream beyond timeoutMs survives (extended by data)', async () => {
+    // requestTimeoutMs = 200ms；服务器每 80ms 推一段。total ≈ 720ms（=9*80），
+    // 应当**不**触发 wall-clock：每个 chunk 把 deadline 顺延 +200ms（受 hardCap=4*200=800ms 钳制）。
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      let n = 0;
+      const tick = () => {
+        if (res.writableEnded) return;
+        n++;
+        res.write(JSON.stringify({ message: { role: 'assistant', content: `c${n} ` } }) + '\n');
+        if (n >= 9) {
+          res.write(JSON.stringify({ message: { role: 'assistant', content: 'end' }, done: true }) + '\n');
+          res.end();
+          return;
+        }
+        setTimeout(tick, 80);
+      };
+      setTimeout(tick, 80);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 200, // 远小于总耗时 ~720ms
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      const out = await client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} });
+      expect(out).toContain('c1');
+      expect(out).toContain('c9');
+      expect(out).toContain('end');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('sliding wall-clock: hard cap (4× timeoutMs) still kicks in on runaway healthy streams', async () => {
+    // 服务器每 50ms 推一段且永不停。requestTimeoutMs=120ms → hardCap=480ms。
+    // 即使 chunk 持续到达，也必须在 ~480-500ms 左右被 hard cap 中止。
+    let stop = false;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      let n = 0;
+      const tick = () => {
+        if (stop || res.writableEnded) return;
+        n++;
+        res.write(JSON.stringify({ message: { role: 'assistant', content: `tok${n} ` } }) + '\n');
+        setTimeout(tick, 50);
+      };
+      setTimeout(tick, 50);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 120,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/hard cap/);
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeGreaterThanOrEqual(400); // 没有提前误杀
+      expect(elapsed).toBeLessThan(1500); // 也没有放任无限
+    } finally {
+      stop = true;
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });

@@ -3,8 +3,10 @@ import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
 import { spinner as ora } from '../util/spinner.js';
 import { confirm, editor, input, select } from '@inquirer/prompts';
-import { loadConfig } from '../config/config.js';
+import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
+import { ScoreStore } from '../llm/scores.js';
+import { preflightProviders } from '../llm/preflight.js';
 import { Workspace } from '../workspace/workspace.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { Planner, buildPlan } from '../agents/planner.js';
@@ -43,8 +45,9 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     console.log(chalk.yellow('!'), '--force：强制重新生成 plan，已占用锁会被覆写。');
   }
 
+  let scoreStore: ScoreStore | undefined;
   try {
-  const cfg = await loadConfig(opts.configPath);
+  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
   const audit = new AuditLogger({ root: ws.root, command: 'toaa_c' });
   await audit.start({
     workspace: ws.root,
@@ -54,7 +57,23 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     roles: cfg.llm.roles,
     default_provider: cfg.llm.default,
   });
-  const router = new LLMRouter(cfg, audit);
+  scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
+  await scoreStore.load();
+  try {
+    const pf = await preflightProviders(cfg, scoreStore, audit);
+    if (pf.zeroed.length > 0) {
+      console.log(chalk.yellow('!'), `LLM preflight: 模型缺失，已禁用 [${pf.zeroed.join(', ')}]`);
+    }
+    if (Object.keys(pf.autoAdded).length > 0) {
+      console.log(chalk.yellow('!'), `LLM preflight: 自动注入 ${Object.keys(pf.autoAdded).length} 个 provider（来自 ollama /api/tags）`);
+    }
+  } catch (err) {
+    console.error(chalk.red('✖'), (err as Error).message);
+    await audit.end({ status: 'error', message: (err as Error).message, stage: 'llm-preflight' });
+    await scoreStore.flush();
+    process.exit(7);
+  }
+  const router = new LLMRouter(cfg, audit, scoreStore);
   const planner = new Planner(router.for('Planner'), audit);
 
   const trace = (msg: string) => {
@@ -244,6 +263,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   console.log('  下一步：', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
   } finally {
+    try { await scoreStore?.flush(); } catch { /* never block release */ }
     await lock.release();
   }
 }

@@ -31,9 +31,25 @@ describe('isAllowedWrite', () => {
     expect(isAllowedWrite('docs/x.md', ['src/'])).toBe(false);
     expect(isAllowedWrite('./src/x.py', ['src/'])).toBe(true);
   });
+
+  it('allows tests/fixtures/<f> when tests/fixtures is in whitelist (engine TEST/DEBUG augmentation)', () => {
+    expect(isAllowedWrite('tests/fixtures/sample.dbc', ['tests/fixtures'])).toBe(true);
+    expect(isAllowedWrite('tests/fixtures/nested/x.csv', ['tests/fixtures'])).toBe(true);
+    // 不能影响 tests/ 同级其它文件
+    expect(isAllowedWrite('tests/test_foo.py', ['tests/fixtures'])).toBe(false);
+  });
 });
 
 describe('write_file tool', () => {
+  it('auto-creates nested subdirectories (mkdir -p)', async () => {
+    ctx.allowedWrites = ['tests/fixtures'];
+    const r = await writeFileTool.run(
+      { path: 'tests/fixtures/sub/dir/sample.dbc', content: 'BO_ 1 X: 8 Vector__XXX\n' },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    expect(await ws.exists('tests/fixtures/sub/dir/sample.dbc')).toBe(true);
+  });
   it('writes within whitelist and rejects outside', async () => {
     const ok = await writeFileTool.run({ path: 'src/app.py', content: 'print(1)\n' }, ctx);
     expect(ok.ok).toBe(true);
@@ -102,5 +118,55 @@ describe('apply_patch tool', () => {
     const r = await applyPatchTool.run({ patch }, ctx);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/mismatch/);
+  });
+});
+
+describe('runTestsTool / runPythonTool summary', () => {
+  it('embeds stderr/stdout tail in summary on failure (so LLM can see the real error)', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runPytest() {
+          return {
+            exitCode: 1,
+            stdout:
+              'collected 1 item\n\n' +
+              'tests/test_foo.py::test_x FAILED\n\n' +
+              '=================================== FAILURES ===================================\n' +
+              "________________________________ test_x _________________________________________\n" +
+              "    def test_x():\n" +
+              ">       assert add(1, 2) == 4\n" +
+              "E       assert 3 == 4\n",
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S001',
+    };
+    const r = await runTestsTool.run({ args: ['-v', 'tests/'] }, fakeCtx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).toMatch(/pytest exit=1/);
+    expect(r.summary).toMatch(/assert 3 == 4/); // 真实失败行必须出现在 LLM 可见的 summary 里
+    expect(r.summary).toMatch(/stdout/);
+  });
+
+  it('keeps summary terse on success (no stdout flood)', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runPytest() {
+          return { exitCode: 0, stdout: 'x'.repeat(50_000), stderr: '', timedOut: false };
+        },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S001',
+    };
+    const r = await runTestsTool.run({}, fakeCtx);
+    expect(r.ok).toBe(true);
+    expect(r.summary).toBe('pytest exit=0');
   });
 });

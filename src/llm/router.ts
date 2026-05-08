@@ -3,6 +3,7 @@ import type { Role } from '../core/plan.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
+import type { ScoreStore } from './scores.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 
 export class LLMRouter {
@@ -11,6 +12,7 @@ export class LLMRouter {
   constructor(
     private readonly cfg: ToaaConfig,
     private readonly audit?: AuditLogger,
+    private readonly scores?: ScoreStore,
   ) {
     for (const [name, p] of Object.entries(cfg.llm.providers)) {
       const client = createClient(name, p);
@@ -19,28 +21,36 @@ export class LLMRouter {
   }
 
   /**
-   * 返回某角色的 LLM 客户端：自动包含 fallback 链。
+   * 返回某角色的 LLM 客户端：自动包含按评分排序的候选链。
    *
-   * 优先级：role_fallbacks[role] > [roles[role]] + fallbacks > [default] + fallbacks。
-   * 链中重复 provider 自动去重；audit 自动包裹。
+   * 候选集合：roles[role] (数组) ∪ role_fallbacks[role] ∪ default ∪ fallbacks，去重。
+   * 排序：按 ScoreStore 的评分降序；评分 = 0 的 provider 直接剔除。
+   * 链中第一个调用成功即返回；失败 → 自动降评分并尝试下一个。
    */
   for(role: Role | 'default' = 'default'): LLMClient {
-    const chain = this.resolveChain(role);
-    if (chain.length === 0) throw new Error(`LLM provider not configured for role: ${role}`);
-    const clients = chain
+    const candidates = this.resolveChain(role);
+    if (candidates.length === 0) {
+      throw new Error(`LLM provider not configured for role: ${role}`);
+    }
+    const ranked = this.rankByScore(candidates);
+    if (ranked.length === 0) {
+      throw new Error(
+        `No usable LLM provider for role ${role}: all candidates [${candidates.join(', ')}] have score=0. ` +
+          `Run preflight or restore at least one provider in config.`,
+      );
+    }
+    const clients = ranked
       .map((name) => ({ name, client: this.clients.get(name) }))
       .filter((x): x is { name: string; client: LLMClient } => !!x.client);
     if (clients.length === 0) {
-      throw new Error(`No usable LLM provider in chain for role ${role}: [${chain.join(', ')}]`);
+      throw new Error(`No usable LLM provider in chain for role ${role}: [${ranked.join(', ')}]`);
     }
-    const composite =
-      clients.length === 1
-        ? clients[0]!.client
-        : new FallbackClient(
-            clients.map((c) => c.client),
-            this.audit,
-            String(role),
-          );
+    const composite = new FallbackClient(
+      clients.map((c) => ({ name: c.name, client: c.client })),
+      this.audit,
+      String(role),
+      this.scores,
+    );
     if (!this.audit) return composite;
     return wrapWithAudit(composite, String(role), this.audit);
   }
@@ -56,11 +66,22 @@ export class LLMRouter {
         for (const n of explicit) push(n);
         return out;
       }
-      push(this.cfg.llm.roles?.[role]);
+      // roles[role] 现已是数组形式（schema transform 强制）
+      for (const n of this.cfg.llm.roles?.[role] ?? []) push(n);
     }
     push(this.cfg.llm.default);
     for (const f of this.cfg.llm.fallbacks ?? []) push(f);
     return out;
+  }
+
+  /** 按评分降序排序；评分 = 0 的剔除；并列保持声明顺序（稳定排序）。 */
+  private rankByScore(names: string[]): string[] {
+    if (!this.scores) return [...names];
+    const scored = names.map((n, i) => ({ n, i, s: this.scores!.get(n) }));
+    return scored
+      .filter((x) => x.s > 0)
+      .sort((a, b) => (b.s - a.s) || (a.i - b.i))
+      .map((x) => x.n);
   }
 }
 
@@ -68,11 +89,14 @@ export class LLMRouter {
 class FallbackClient implements LLMClient {
   readonly name: string;
   constructor(
-    private readonly chain: LLMClient[],
+    private readonly chain: { name: string; client: LLMClient }[],
     private readonly audit: AuditLogger | undefined,
     private readonly role: string,
+    private readonly scores?: ScoreStore,
   ) {
-    this.name = `chain[${chain.map((c) => c.name).join('>')}]`;
+    this.name = chain.length === 1
+      ? chain[0]!.client.name
+      : `chain[${chain.map((c) => c.client.name).join('>')}]`;
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
@@ -80,14 +104,14 @@ class FallbackClient implements LLMClient {
     for (let i = 0; i < this.chain.length; i++) {
       const c = this.chain[i]!;
       try {
-        const out = await c.chat(messages, options);
+        const out = await c.client.chat(messages, options);
         if (options?.validate) {
           try {
             options.validate(out);
           } catch (vErr) {
             await this.audit?.event(
               'llm.error',
-              `[${this.role}] provider ${c.name} 输出验证失败，切换到下一个`,
+              `[${this.role}] provider ${c.client.name} 输出验证失败，切换到下一个`,
               {
                 provider: c.name,
                 attempt: i + 1,
@@ -96,16 +120,19 @@ class FallbackClient implements LLMClient {
                 output_preview: out.slice(0, 400),
               },
             );
+            this.scores?.decay(c.name, `validate failed in role ${this.role}`);
             lastErr = vErr;
             continue;
           }
         }
+        this.scores?.boost(c.name, `success in role ${this.role}`);
         return out;
       } catch (err) {
         lastErr = err;
+        this.scores?.decay(c.name, `chat threw in role ${this.role}: ${(err as Error).message.slice(0, 120)}`);
         await this.audit?.event(
           'llm.error',
-          `[${this.role}] provider ${c.name} failed, trying next`,
+          `[${this.role}] provider ${c.client.name} failed, trying next`,
           {
             provider: c.name,
             attempt: i + 1,

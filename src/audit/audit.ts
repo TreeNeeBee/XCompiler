@@ -20,6 +20,7 @@ export type AuditKind =
   | 'llm.request'
   | 'llm.response'
   | 'llm.error'
+  | 'llm.score'
   | 'fs.write'
   | 'plan.persist'
   | 'phase.start'
@@ -29,6 +30,7 @@ export type AuditKind =
   | 'sandbox.exec'
   | 'executor.turn'
   | 'planner.thought'
+  | 'conftest.autogen'
   | 'note';
 
 export interface AuditEvent {

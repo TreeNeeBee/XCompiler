@@ -5,8 +5,10 @@ import { topoSort } from '../core/lint.js';
 import { AuditLogger } from '../audit/audit.js';
 import { Workspace } from '../workspace/workspace.js';
 import { GitService } from '../workspace/git.js';
-import { loadConfig } from '../config/config.js';
+import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
+import { ScoreStore } from '../llm/scores.js';
+import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
 import { PhaseEngine } from '../core/engine.js';
 import { acquireLock, LockError } from '../core/lock.js';
@@ -114,8 +116,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     return;
   }
 
-  const cfg = await loadConfig(opts.configPath);
-  const router = new LLMRouter(cfg, audit);
+  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
+  await scoreStore.load();
+  try {
+    const pf = await preflightProviders(cfg, scoreStore, audit);
+    if (pf.zeroed.length > 0) {
+      console.log(chalk.yellow('!'), `LLM preflight: 模型缺失，已禁用 [${pf.zeroed.join(', ')}]`);
+    }
+    if (Object.keys(pf.autoAdded).length > 0) {
+      console.log(chalk.yellow('!'), `LLM preflight: 自动注入 ${Object.keys(pf.autoAdded).length} 个 provider（来自 ollama /api/tags）`);
+    }
+  } catch (err) {
+    console.error(chalk.red('✖'), (err as Error).message);
+    await audit.end({ status: 'error', message: (err as Error).message, stage: 'llm-preflight' });
+    await scoreStore.flush();
+    await lock.release();
+    process.exit(7);
+  }
+  const router = new LLMRouter(cfg, audit, scoreStore);
   const git = new GitService(ws);
   const sandbox = createSandbox(cfg, ws, audit);
 
@@ -131,6 +150,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     maxRoundsPerStep: cfg.agent.max_rounds_per_step,
     maxDebugRoundsPerStep: cfg.agent.max_debug_rounds_per_step,
     maxDebugRetries: cfg.agent.max_debug_retries,
+    maxDebugRetriesCap: cfg.agent.max_debug_retries_cap,
     maxEditLinesPerStep: cfg.agent.max_edit_lines_per_step,
   });
 
@@ -141,11 +161,20 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
         chalk.red('✖'),
         `执行中断于 ${r.failedStepId}（已执行 ${r.executedSteps}/${r.totalSteps}）`,
       );
+      if (r.failureReason) {
+        console.log(chalk.red('  原因: ') + r.failureReason);
+      }
+      if (r.failureLog) {
+        const tail = r.failureLog.split('\n').slice(-40).join('\n');
+        console.log(chalk.gray('  --- 详细失败日志（tail 40 行） ---'));
+        console.log(tail);
+      }
       await audit.end({
         status: 'failed',
         executedSteps: r.executedSteps,
         totalSteps: r.totalSteps,
         failedStepId: r.failedStepId,
+        failureReason: r.failureReason,
       });
       process.exitCode = 4;
       return;
@@ -154,10 +183,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     await audit.end({ status: 'ok', executedSteps: r.executedSteps, totalSteps: r.totalSteps });
   } catch (err) {
     const msg = (err as Error).message;
+    const stack = (err as Error).stack;
     console.error(chalk.red('✖'), msg);
-    await audit.end({ status: 'error', message: msg });
+    if (stack && stack !== msg) {
+      console.error(chalk.gray(stack));
+    }
+    await audit.end({ status: 'error', message: msg, stack });
     process.exitCode = 5;
   } finally {
+    await scoreStore.flush();
     await lock.release();
   }
 }

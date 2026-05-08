@@ -8,3 +8,4 @@ workspace/.draft/
 workspace/logs/
 .toaa/
 coverage/
+.tools/

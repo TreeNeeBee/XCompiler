@@ -19,6 +19,13 @@ export const replaceInFileTool: Tool<
       return { ok: false, error: `write denied: ${args.path}` };
     }
     if (!args.find) return { ok: false, error: 'find must be non-empty' };
+    if (args.find === args.replace) {
+      return {
+        ok: false,
+        error:
+          'no-op edit refused: find === replace（替换前后字符串完全相同）。请确认你真正要修改的差异；如只想读取文件请改用 read_file，如要整文件重写请用 write_file。',
+      };
+    }
     const abs = ctx.ws.abs(args.path);
     let original: string;
     try {

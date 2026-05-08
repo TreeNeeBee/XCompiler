@@ -16,24 +16,24 @@ llm:
       base_url: ${OPENAI_BASE_URL}
       model: gpt-4o-mini
 
-  # 角色 → provider 路由
+  # 角色 → provider 数组（兼容单字符串）。按 ScoreStore 评分降序使用，评分=0 自动跳过。
+  # 启动期 preflight 会探活 ollama /api/tags 并把缺失模型置 0，必要时自动从可达服务器拉模型。
   roles:
-    Planner: ollama_design     # 需求澄清/计划生成
-    Architect: ollama_design   # 架构与 requirements.txt
-    Coder: ollama_code         # 代码生成
-    Tester: ollama_code        # 测试用例
-    Debugger: ollama_code      # 调试与修复
+    Planner:   [ollama_design]
+    Architect: [ollama_design]
+    Coder:     [ollama_code, ollama_design]
+    Tester:    [ollama_code, ollama_design]
+    Debugger:  [ollama_code, ollama_design]
+
+  # 评分快照（preflight + 运行时自动维护到同目录的 llm_scores.yaml）。
+  scores: {}
 
   # 全局 fallback 链：当主 provider 报错时依次尝试。
   # 默认为空 — 如需在 ollama 不可用时退到 OpenAI，可设为 [openai]。
   fallbacks: []
-  # 按角色定制 fallback 链（覆盖全局）。
-  # 默认让 Coder/Tester/Debugger 在 token-loop / 超时时交叉退到另一个本地模型，
-  # 避免“同一模型同一 prompt 重复陷入同一 loop”。
-  role_fallbacks:
-    Coder:    [ollama_design]
-    Tester:   [ollama_design]
-    Debugger: [ollama_design]
+  # （旧字段，保留兼容）按角色定制 fallback 链：若设置则覆盖 roles[role]。
+  # 推荐改为直接在 roles[role] 写多元素数组并依赖 ScoreStore 排序。
+  role_fallbacks: {}
 
 agent:
   language: python
