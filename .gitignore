@@ -9,3 +9,7 @@ workspace/logs/
 .toaa/
 coverage/
 .tools/
+
+# release artifacts (binaries are too large for git; track only release notes + checksums)
+release/**/*.tar.gz
+release/**/*.zip
