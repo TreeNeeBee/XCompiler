@@ -53,37 +53,57 @@ jobs:
           sha256sum *.tar.gz *.zip > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Extract release notes from tag annotation / commit message
+      - name: Extract release notes (commits between prev tag → this tag, or README excerpt for first release)
         id: notes
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # 优先用 annotated tag 的 message（git tag -a 创建的）
-          NOTES="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)')"
-          if [ -z "${NOTES}" ]; then
-            # 回退到 tag 指向 commit 的完整 message
-            NOTES="$(git log -1 --format=%B "${TAG}")"
-          fi
-          # 写到文件供 action-gh-release 读取（多行内容用文件比 env 安全）
+          # 取上一个 v 开头的 tag（按 creatordate 倒序，跳过当前 tag）
+          PREV_TAG="$(git tag --list 'v*' --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)"
+
           {
             echo "# TOAA ${TAG}"
             echo
-            echo "${NOTES}"
+            if [ -n "${PREV_TAG}" ]; then
+              echo "## Changes since ${PREV_TAG}"
+              echo
+              # 仅取 commit subject（首行），过滤合并提交，按时间正序展示
+              git log --no-merges --reverse --pretty=format:'- %s (%h)' "${PREV_TAG}..${TAG}"
+              echo
+            else
+              echo "## About"
+              echo
+              # 首次发版：从 README.md 摘录项目说明（取首个 H1 之后到下一个 H2 之前的内容）。
+              # 若 README 不存在则给出空 about。
+              if [ -f README.md ]; then
+                awk '
+                  /^# / { if (++h1 == 1) { skip_first_h1 = 1; next } }
+                  skip_first_h1 && /^## / { exit }
+                  skip_first_h1 { print }
+                ' README.md
+              else
+                echo "_(no README.md found; see repo for details)_"
+              fi
+              echo
+            fi
             echo
             echo "## Artifacts"
             echo
             echo "| File | Size | Target |"
             echo "|---|---|---|"
-            cd dist/pkg
-            for f in toaa-*.tar.gz toaa-*.zip; do
-              size=$(du -h "$f" | cut -f1)
-              target="${f#toaa-}"; target="${target%.tar.gz}"; target="${target%.zip}"
-              echo "| \`$f\` | $size | $target |"
-            done
-            cd - >/dev/null
+            (
+              cd dist/pkg
+              for f in toaa-*.tar.gz toaa-*.zip; do
+                size=$(du -h "$f" | cut -f1)
+                target="${f#toaa-}"; target="${target%.tar.gz}"; target="${target%.zip}"
+                echo "| \`$f\` | $size | $target |"
+              done
+            )
             echo
             echo "校验和见同 release 的 \`SHA256SUMS\` asset。"
           } > RELEASE_BODY.md
           echo "notes_file=$PWD/RELEASE_BODY.md" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
           echo '--- preview ---'
           cat RELEASE_BODY.md
 
