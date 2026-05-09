@@ -49,6 +49,10 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
 15. **TASK 阶段**：必须包含至少 1 个 TASK Step，outputs 含 \`docs/03-tasks.md\`，把 ARCH 的接口/模块切分为可单独执行的 CODE 任务清单（每条带 id / 描述 / 验收）。
 16. **REFACTOR 阶段**：必须包含至少 1 个 REFACTOR Step，dependsOn 至少含 1 个 TEST Step；要求"行为不变 — 必须先跑全量回归再写 docs/04-refactor.md"，outputs 含 \`docs/04-refactor.md\`。
 17. **DELIVERY 阶段**：DELIVERY Step outputs 必须含 \`docs/05-delivery.md\`，内容覆盖：README 摘要 / 入口命令 / 依赖列表 / 测试报告链接 / 已知边界。DELIVERY 不得引入新功能。
+18. **必须输出可独立运行的 Python 应用工程（不是仅函数库）**：CODE 阶段必须产出一个**可直接执行**的入口，二选一：
+    - (a) \`src/main.py\`，文件末尾带 \`if __name__ == "__main__": main()\`，且 \`main()\` 至少能打印帮助/版本/示例输出，不依赖额外参数也能跑；或
+    - (b) 一个包含 \`__main__.py\` 的 Python 包目录（如 \`src/<pkg>/__main__.py\`），可通过 \`python -m <pkg>\` 启动。
+    入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。如果用户需求隐含 CLI / 服务 / 应用，应优先选 \`src/main.py\` + 用 \`argparse\` 暴露子命令。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的运行命令**（如 \`python src/main.py --help\` 或 \`python -m <pkg> --help\`）。**仅暴露库 API 而无入口的工程会被视为不达交付标准**。
 
 输出 JSON 形如：
 {

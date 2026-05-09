@@ -1,0 +1,184 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+
+/**
+ * 单步 debug 尝试历史条目。所有字段都做了截断，避免缓存文件无限膨胀。
+ */
+export interface DebugAttemptEntry {
+  /** 第几次 retry（1-based）。0 表示初始尝试。 */
+  attempt: number;
+  /** ISO8601 时间戳。 */
+  ts: string;
+  /** 失败原因（一行摘要）。 */
+  reason: string;
+  /** 失败日志尾部（已按 maxFailureLogLines 截断）。 */
+  failureLogTail: string;
+  /** Calibrator 给出的修复建议（一行一条）。 */
+  suggestions?: string[];
+  /** 该次尝试前 git snapshot SHA，便于人工 checkout 复盘。 */
+  snapshotSha?: string;
+  /** ExecutorRunMetrics 关键字段；保留 healthScore / parseFailures / repeatedTurns / progressRatio。 */
+  metrics?: {
+    healthScore: number;
+    parseFailures: number;
+    repeatedTurns: number;
+    progressRatio: number;
+    rounds: number;
+  };
+}
+
+interface StepEntry {
+  lastUpdated: string;
+  lastStatus: 'RUNNING' | 'FAILED' | 'DONE';
+  lastReason?: string;
+  attempts: DebugAttemptEntry[];
+}
+
+interface CacheShape {
+  version: 1;
+  steps: Record<string, StepEntry>;
+}
+
+const EMPTY: CacheShape = { version: 1, steps: {} };
+
+/**
+ * 跨 `toaa run` 的 debug 历史持久化。
+ *
+ * 落盘位置：`<workspace>/.toaa/debug_cache.json`。
+ *
+ * 设计原则：
+ * 1. 只在 workspace 内，**不污染 plan.json**——plan.json 是用户/Planner 的契约，不应混入运行期日志。
+ * 2. 一次 `toaa run` 内的多次 retry → append；单步 DONE → clear；单步 FAILED → 保留，下一次 `toaa run`
+ *    可读到这些尝试，作为 Debugger 的 prior context，让模型不要再走死路。
+ * 3. 单步保留 attempts 数量上限 `maxAttemptsPerStep`（默认 12），超出按 FIFO 丢弃；每条 failureLog 按
+ *    `maxFailureLogLines`（默认 80）截断尾部。
+ */
+export class DebugCache {
+  private data: CacheShape = { version: 1, steps: {} };
+  private loaded = false;
+
+  constructor(
+    private readonly file: string,
+    private readonly opts: { maxAttemptsPerStep?: number; maxFailureLogLines?: number } = {},
+  ) {}
+
+  private get maxAttempts(): number {
+    return this.opts.maxAttemptsPerStep ?? 12;
+  }
+  private get maxLogLines(): number {
+    return this.opts.maxFailureLogLines ?? 80;
+  }
+
+  async load(): Promise<void> {
+    if (this.loaded) return;
+    this.loaded = true;
+    try {
+      const raw = await fs.readFile(this.file, 'utf8');
+      const parsed = JSON.parse(raw) as Partial<CacheShape>;
+      if (parsed && parsed.version === 1 && parsed.steps && typeof parsed.steps === 'object') {
+        this.data = { version: 1, steps: parsed.steps };
+        return;
+      }
+    } catch {
+      /* 文件不存在 / 损坏 → 空缓存 */
+    }
+    this.data = { ...EMPTY, steps: {} };
+  }
+
+  /** 取某 step 的历史尝试（可能为空数组）。 */
+  attempts(stepId: string): DebugAttemptEntry[] {
+    return this.data.steps[stepId]?.attempts ?? [];
+  }
+
+  /** 该 step 在上一次会话中是否以 FAILED 结束。 */
+  hasUnresolvedFailure(stepId: string): boolean {
+    const e = this.data.steps[stepId];
+    return !!e && e.lastStatus === 'FAILED' && e.attempts.length > 0;
+  }
+
+  /** 追加一次尝试记录（在每次 retry 末尾调用）。failureLog 会自动截断到尾部 N 行。 */
+  async recordAttempt(stepId: string, entry: Omit<DebugAttemptEntry, 'ts'> & { ts?: string }): Promise<void> {
+    const tail = (s: string): string => {
+      const lines = (s ?? '').split('\n');
+      return lines.length <= this.maxLogLines ? s : lines.slice(-this.maxLogLines).join('\n');
+    };
+    const e: DebugAttemptEntry = {
+      attempt: entry.attempt,
+      ts: entry.ts ?? new Date().toISOString(),
+      reason: (entry.reason ?? '').slice(0, 500),
+      failureLogTail: tail(entry.failureLogTail ?? ''),
+      suggestions: entry.suggestions,
+      snapshotSha: entry.snapshotSha,
+      metrics: entry.metrics,
+    };
+    const cur: StepEntry = this.data.steps[stepId] ?? {
+      lastUpdated: e.ts,
+      lastStatus: 'RUNNING',
+      attempts: [],
+    };
+    cur.attempts.push(e);
+    if (cur.attempts.length > this.maxAttempts) {
+      cur.attempts.splice(0, cur.attempts.length - this.maxAttempts);
+    }
+    cur.lastUpdated = e.ts;
+    cur.lastStatus = 'RUNNING';
+    cur.lastReason = e.reason;
+    this.data.steps[stepId] = cur;
+    await this.save();
+  }
+
+  /** 该 step 修复成功 → 清理它的历史，避免下次 run 误以为还有未解决的失败。 */
+  async markDone(stepId: string): Promise<void> {
+    if (this.data.steps[stepId]) {
+      delete this.data.steps[stepId];
+      await this.save();
+    }
+  }
+
+  /** 该 step 终态失败 → 保留 attempts，更新 lastStatus，便于下一次 run 直接用 Debugger 模式复用上下文。 */
+  async markFailed(stepId: string, reason: string): Promise<void> {
+    const cur = this.data.steps[stepId];
+    if (!cur) {
+      this.data.steps[stepId] = {
+        lastUpdated: new Date().toISOString(),
+        lastStatus: 'FAILED',
+        lastReason: reason.slice(0, 500),
+        attempts: [],
+      };
+    } else {
+      cur.lastStatus = 'FAILED';
+      cur.lastReason = reason.slice(0, 500);
+      cur.lastUpdated = new Date().toISOString();
+    }
+    await this.save();
+  }
+
+  /**
+   * 把历史 attempts 渲染成一段供 Debugger system prompt 使用的中文摘要，
+   * 强调"上一次会话已经试过的修复方向，请勿重复"。
+   */
+  renderPriorAttemptsForPrompt(stepId: string, maxItems = 6): string {
+    const list = this.attempts(stepId);
+    if (list.length === 0) return '';
+    const tail = list.slice(-maxItems);
+    const lines = tail.map((e) => {
+      const m = e.metrics
+        ? ` [health=${e.metrics.healthScore.toFixed(2)} parseFail=${e.metrics.parseFailures} repeat=${e.metrics.repeatedTurns}]`
+        : '';
+      const sugg = e.suggestions && e.suggestions.length > 0
+        ? `\n    suggestions: ${e.suggestions.join(' | ')}`
+        : '';
+      return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${sugg}`;
+    });
+    return [
+      '## 历史 DEBUG 尝试（来自上一次/本次 toaa run，请勿重复同样的修复思路）',
+      ...lines,
+      '请基于以上历史，提出**新的诊断假设**与**新的修改方向**；优先 read_file 看真实代码，再做最小修改。',
+    ].join('\n');
+  }
+
+  private async save(): Promise<void> {
+    await fs.mkdir(path.dirname(this.file), { recursive: true });
+    await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8');
+  }
+}

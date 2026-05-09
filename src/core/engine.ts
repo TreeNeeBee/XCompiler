@@ -15,6 +15,7 @@ import type { ExecutorRunMetrics } from '../agents/executor.js';
 import { calibrateDebugSuggestions, renderDebugSuggestions } from '../agents/calibration.js';
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
+import { DebugCache } from './debug_cache.js';
 
 export interface EngineOptions {
   ws: Workspace;
@@ -56,12 +57,15 @@ export interface EngineResult {
 export class PhaseEngine {
   private readonly registry: ToolRegistry;
   private readonly skills: SkillRegistry;
+  /** 跨 toaa run 持久化的 debug 历史（`<workspace>/.toaa/debug_cache.json`）。 */
+  private readonly debugCache: DebugCache;
   /** 最近一次 Step 终态失败时的详细日志（供 run() 汇总到 EngineResult）。 */
   private lastFailure?: { reason: string; failureLog: string };
 
   constructor(private readonly opts: EngineOptions) {
     this.registry = opts.registry ?? buildDefaultRegistry();
     this.skills = opts.skills ?? buildDefaultSkills();
+    this.debugCache = new DebugCache(opts.ws.abs('.toaa/debug_cache.json'));
   }
 
   async run(plan: Plan): Promise<EngineResult> {
@@ -126,8 +130,11 @@ export class PhaseEngine {
     return { totalSteps: order.length, executedSteps: executed };
   }
 
-  /** 主入口：先正常执行；若失败则进入 Debugger 重试循环（滑动窗口式自适应）。 */
+  /** 主入口：先正常执行；若失败则进入 Debugger 重试循环（滑动窗口式自适应）。
+   *  跨 toaa run 记忆：若 .toaa/debug_cache.json 里该 step 上次以 FAILED 结束，本次
+   *  首轮直接进入 Debugger 模式并把历史 attempts 挑明告诉 LLM，避免重走弯路。 */
   private async executeStepWithDebug(plan: Plan, step: Step): Promise<boolean> {
+    await this.debugCache.load();
     // 阶段产物归档：在首次尝试前，将本 Step outputs 中已存在的 docs/* 文件移至 docs/history/
     for (const out of step.outputs) {
       await archiveIfExists(this.opts.ws, out, this.opts.audit);
@@ -137,11 +144,52 @@ export class PhaseEngine {
     if (step.phase === 'TEST' || step.phase === 'DEBUG') {
       await this.ensureTestsConftest();
     }
-    // 每轮新 toaa run 都重置本 Step 的 retries 计数，避免历史失败累计后
-    // 显示成 "retry 31/3" 这种误导。
+    // 每轮新 toaa run 都重置本 Step 的 retries 计数，避免历史失败累计后显示成 "retry 31/3" 这种误导。
     step.retries = 0;
-    const initial = await this.runOneAttempt(plan, step);
-    if (initial.ok) return true;
+
+    // 跨会话记忆：上次以 FAILED 结束 → 首轮直接用 Debugger 模式，告诉它历史尝试
+    const hadUnresolved = this.debugCache.hasUnresolvedFailure(step.id);
+    let priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
+    let initial: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
+    if (hadUnresolved) {
+      const last = this.debugCache.attempts(step.id).slice(-1)[0]!;
+      console.log(
+        chalk.yellow(
+          `  ↻ ${step.id} 检测到上次会话以 FAILED 结束（已累积 ${this.debugCache.attempts(step.id).length} 次尝试），本次首轮直接进入 Debugger 模式。`,
+        ),
+      );
+      initial = await this.runOneAttempt(plan, step, {
+        asDebugger: true,
+        failureLog: last.failureLogTail,
+        reason: last.reason,
+        priorAttemptsPrompt: priorPrompt,
+      });
+    } else {
+      initial = await this.runOneAttempt(plan, step);
+    }
+    if (initial.ok) {
+      await this.debugCache.markDone(step.id);
+      return true;
+    }
+    // 记录首轮失败
+    await this.debugCache.recordAttempt(step.id, {
+      attempt: 0,
+      reason: initial.reason ?? 'failed',
+      failureLogTail: initial.failureLog,
+      suggestions: calibrateDebugSuggestions(initial.failureLog, initial.reason ?? '').map(
+        (s) => `[${s.code}] ${s.hint}`,
+      ),
+      metrics: initial.metrics
+        ? {
+            healthScore: initial.metrics.healthScore,
+            parseFailures: initial.metrics.parseFailures,
+            repeatedTurns: initial.metrics.repeatedTurns,
+            progressRatio: initial.metrics.progressRatio,
+            rounds: initial.metrics.rounds,
+          }
+        : undefined,
+    });
+    priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
 
     const baseMax = this.opts.maxDebugRetries ?? step.maxRetries ?? 3;
     const absoluteCap = Math.max(this.opts.maxDebugRetriesCap ?? Math.max(baseMax * 4, 10), baseMax);
@@ -169,6 +217,7 @@ export class PhaseEngine {
           asDebugger: true,
           failureLog: lastFailureLog,
           reason: lastReason,
+          priorAttemptsPrompt: priorPrompt,
         });
       } catch (err) {
         const msg = (err as Error).message;
@@ -187,6 +236,7 @@ export class PhaseEngine {
       }
       if (r.ok) {
         spin.succeed(`${step.id} 修复成功 (retry=${attempt})`);
+        await this.debugCache.markDone(step.id);
         return true;
       }
       const m = r.metrics;
@@ -232,12 +282,32 @@ export class PhaseEngine {
       lastReason = r.reason ?? lastReason;
       lastFailureLog = r.failureLog;
       lastResult = { reason: r.reason, failureLog: r.failureLog, metrics: m };
+      // 记录本轮 retry 到跨会话缓存，并刷新 priorPrompt 以供下一轮 LLM 看到
+      await this.debugCache.recordAttempt(step.id, {
+        attempt,
+        reason: r.reason ?? lastReason,
+        failureLogTail: r.failureLog,
+        suggestions: calibrateDebugSuggestions(r.failureLog, r.reason ?? '').map(
+          (s) => `[${s.code}] ${s.hint}`,
+        ),
+        metrics: m
+          ? {
+              healthScore: m.healthScore,
+              parseFailures: m.parseFailures,
+              repeatedTurns: m.repeatedTurns,
+              progressRatio: m.progressRatio,
+              rounds: m.rounds,
+            }
+          : undefined,
+      });
+      priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
     }
     step.status = 'FAILED';
     this.lastFailure = {
       reason: lastResult.reason ?? lastReason,
       failureLog: lastResult.failureLog ?? lastFailureLog,
     };
+    await this.debugCache.markFailed(step.id, this.lastFailure.reason);
     this.printStepFailure(step, {
       attempts: attempt,
       budget,
@@ -307,7 +377,7 @@ export class PhaseEngine {
   private async runOneAttempt(
     plan: Plan,
     step: Step,
-    debug?: { asDebugger: true; failureLog: string; reason: string },
+    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
   ): Promise<{ ok: boolean; failureLog: string; reason?: string; metrics?: ExecutorRunMetrics }> {
     const role = debug ? 'Debugger' : step.role;
     // 解析 step.tools 中的 skill: 引用为底层工具名
@@ -394,9 +464,11 @@ export class PhaseEngine {
           ? {
               reason: debug.reason,
               failureLog: debug.failureLog,
-              suggestions: renderDebugSuggestions(
-                calibrateDebugSuggestions(debug.failureLog, debug.reason),
-              ),
+              suggestions:
+                renderDebugSuggestions(
+                  calibrateDebugSuggestions(debug.failureLog, debug.reason),
+                ) +
+                (debug.priorAttemptsPrompt ? `\n\n${debug.priorAttemptsPrompt}` : ''),
             }
           : undefined,
         globalPrompt: plan.globalPrompt,
@@ -431,6 +503,7 @@ export class PhaseEngine {
         await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug done' : 'done');
         spin?.succeed(`${step.id} DONE (rounds=${r.rounds})`);
         await this.opts.audit.event('phase.end', `${step.id} DONE`, { rounds: r.rounds, retry: step.retries });
+        // 不在这里调 markDone：executeStepWithDebug 中统一处理（避免 retry-loop 里双写）。
         return { ok: true, failureLog: '' };
       }
       const reason = r.error ?? `outputs missing: ${verify.missing.join(', ')}`;
