@@ -54,7 +54,17 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
     - (b) 一个包含 \`__main__.py\` 的 Python 包目录（如 \`src/<pkg>/__main__.py\`），可通过 \`python -m <pkg>\` 启动。
     入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。如果用户需求隐含 CLI / 服务 / 应用，应优先选 \`src/main.py\` + 用 \`argparse\` 暴露子命令。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的运行命令**（如 \`python src/main.py --help\` 或 \`python -m <pkg> --help\`）。**仅暴露库 API 而无入口的工程会被视为不达交付标准**。
 
-输出 JSON 形如：
+19. **入口的 import 写法（防 \`ModuleNotFoundError: No module named 'src'\`）**：当采用方案 (a) \`src/main.py\` 时，**禁止**写 \`from src.xxx import ...\` —— 直接 \`python src/main.py\` 时 Python 把 \`src/\` 加进 \`sys.path[0]\`，根目录不在 path 上，\`from src.xxx\` 会立刻 ModuleNotFoundError。允许且只允许以下两种写法之一：
+    - **首选**：\`src/main.py\` 内只写 \`from <module> import ...\`（如 \`from dbc_parser import parse_dbc_file\`，注意**不带 src. 前缀**）。同目录下的兄弟模块对应 \`src/<module>.py\` 即可被解析到。
+    - **备选**：\`src/main.py\` 文件**最顶部**插入两行 \`sys.path\` 自举，再使用 \`from src.xxx import ...\`：
+      \`\`\`
+      import sys, pathlib
+      sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+      \`\`\`
+      （把项目根目录注入 sys.path，从而能 \`from src.xxx import ...\`。）
+    采用方案 (b) \`python -m <pkg>\` 时，包内统一使用相对 import \`from .submod import ...\`，不要再写 \`from src.xxx\`。**\`docs/05-delivery.md\` 给出的运行命令必须能在干净 shell 中（项目根目录、激活 venv、\`pip install -r requirements.txt\` 之后）一次成功，不允许出现需要先 \`export PYTHONPATH=...\` 才能跑的入口。**
+
+输出 JSON 形如：                
 {
   "requirementDigest": "string",
   "globalPrompt": "string (全局背景与约定)",

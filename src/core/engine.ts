@@ -16,6 +16,7 @@ import { calibrateDebugSuggestions, renderDebugSuggestions } from '../agents/cal
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { DebugCache } from './debug_cache.js';
+import { autoFixSrcImports, probeEntrypoint } from './entry_gate.js';
 
 export interface EngineOptions {
   ws: Workspace;
@@ -143,6 +144,16 @@ export class PhaseEngine {
     // 解决 LLM 反复生成 `from <module> import ...`（不带 src. 前缀）但 pytest 找不到模块的问题。
     if (step.phase === 'TEST' || step.phase === 'DEBUG') {
       await this.ensureTestsConftest();
+    }
+    // 在 TEST / DELIVERY 阶段进入前，顺手修复 “`from src.xxx import ...` 但脚本式启动找不到顶层 src ”
+    // 这类通用低级错误，避免反复进 DEBUG 同一个 sys.path 问题。
+    if (step.phase === 'TEST' || step.phase === 'DELIVERY' || step.phase === 'DEBUG') {
+      const fixed = await autoFixSrcImports(this.opts.ws, this.opts.audit);
+      if (fixed.length > 0) {
+        console.log(
+          chalk.yellow(`  ⚠ auto-fixed sys.path bootstrap in ${fixed.length} 个入口文件：${fixed.join(', ')}`),
+        );
+      }
     }
     // 每轮新 toaa run 都重置本 Step 的 retries 计数，避免历史失败累计后显示成 "retry 31/3" 这种误导。
     step.retries = 0;
@@ -488,6 +499,40 @@ export class PhaseEngine {
               tail(pt.stdout),
               '--- pytest stderr (tail) ---',
               tail(pt.stderr),
+            ].join('\n');
+            spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
+            await this.opts.audit.event('phase.end', `${step.id} FAILED`, {
+              rounds: r.rounds,
+              reason,
+              retry: step.retries,
+            });
+            await this.opts.git.revertTo(sha);
+            return { ok: false, failureLog, reason, metrics: r.metrics };
+          }
+        }
+        // DELIVERY 阶段强制验收门：必须能 `python src/main.py --help` 或 `python -m src.<pkg> --help`
+        // 退出码 0。配合 autoFixSrcImports 已经把常见 sys.path 错误自动修掉，这里只兜底真实业务错误。
+        if (step.phase === 'DELIVERY') {
+          // gate 前再跑一次 auto-fix（DELIVERY Step 自身可能新建/改写了入口）
+          await autoFixSrcImports(this.opts.ws, this.opts.audit);
+          const probe = await probeEntrypoint(this.opts.ws, this.opts.sandbox);
+          if (probe && !probe.ok) {
+            const reason = `DELIVERY gate: \`${probe.command}\` exit=${probe.exitCode}${probe.timedOut ? ' (timeout)' : ''}`;
+            const failureLog = [
+              `reason: ${reason}`,
+              `rounds: ${r.rounds}`,
+              `command: ${probe.command}`,
+              '--- stdout (tail) ---',
+              probe.stdoutTail,
+              '--- stderr (tail) ---',
+              probe.stderrTail,
+              '',
+              '修复方向（按优先级）：',
+              '  1. 若 stderr 含 ModuleNotFoundError: No module named \'src\' →',
+              '     在 src/main.py 顶部插入 sys.path 自举（见 planner 规则 #19），',
+              '     或把 `from src.xxx` 改成 `from xxx`（不带 src. 前缀）。',
+              '  2. 若 stderr 含 argparse 报错 → main() 必须支持 --help 不需要其他参数即可退出 0。',
+              '  3. 若 stderr 含业务异常 → 修对应实现；入口本身只做参数解析与调用。',
             ].join('\n');
             spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
             await this.opts.audit.event('phase.end', `${step.id} FAILED`, {

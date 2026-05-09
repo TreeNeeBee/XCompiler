@@ -1,0 +1,162 @@
+import path from 'node:path';
+import type { Workspace } from '../workspace/workspace.js';
+import type { Sandbox, ExecResult } from '../sandbox/types.js';
+import type { AuditLogger } from '../audit/audit.js';
+
+const BOOTSTRAP_MARKER = '# >>> toaa: sys.path bootstrap (auto) >>>';
+const BOOTSTRAP_BLOCK = [
+  BOOTSTRAP_MARKER,
+  '# 为了让 `python src/main.py`（脚本式启动）也能 import 到顶层包 `src.xxx`，',
+  '# 把项目根目录注入 sys.path[0]。pytest / `python -m` 启动方式不受影响。',
+  'import sys as _toaa_sys, pathlib as _toaa_pl',
+  '_toaa_sys.path.insert(0, str(_toaa_pl.Path(__file__).resolve().parent.parent))',
+  '# <<< toaa: sys.path bootstrap (auto) <<<',
+  '',
+].join('\n');
+
+const FROM_SRC_RE = /^\s*from\s+src(\.|\s+import\s)/m;
+const IMPORT_SRC_RE = /^\s*import\s+src(\.|\s|$)/m;
+
+/**
+ * 检测一个 Python 文件是否引用了顶层包 `src.*` 但缺少 sys.path 自举。
+ * 返回 true 表示需要在文件顶部插入 BOOTSTRAP_BLOCK。
+ */
+export function needsSrcBootstrap(content: string): boolean {
+  if (content.includes(BOOTSTRAP_MARKER)) return false;
+  return FROM_SRC_RE.test(content) || IMPORT_SRC_RE.test(content);
+}
+
+/**
+ * 给 Python 源码顶部插入 sys.path 自举块。
+ *
+ * 规则：
+ *   - 如果文件首行是 shebang（`#!`）→ 在 shebang 之后插入；
+ *   - 如果紧接其后还有 future/encoding/docstring → 简化处理：依然紧跟 shebang 后插，
+ *     Python 允许 future-import 在 docstring 之前出现，整段顺序对运行无害。
+ */
+export function injectSrcBootstrap(content: string): string {
+  if (!needsSrcBootstrap(content)) return content;
+  const lines = content.split('\n');
+  let insertAt = 0;
+  if (lines[0]?.startsWith('#!')) insertAt = 1;
+  const before = lines.slice(0, insertAt).join('\n');
+  const after = lines.slice(insertAt).join('\n');
+  return (before ? before + '\n' : '') + BOOTSTRAP_BLOCK + after;
+}
+
+/**
+ * 扫描工作区中所有可能是"入口"的 Python 文件，自动修复 `from src.xxx` 的
+ * ModuleNotFoundError 陷阱。被检查的文件：
+ *   - src/main.py
+ *   - src/<任意子包>/__main__.py
+ *
+ * 这是个"通用兜底"：LLM 写错了路径，TOAA 在每次进入 DELIVERY 之前/DELIVERY gate 之前
+ * 自动给它加 sys.path 自举，避免反复 DEBUG 同一个低层错误。
+ */
+export async function autoFixSrcImports(
+  ws: Workspace,
+  audit: AuditLogger,
+): Promise<string[]> {
+  const fixed: string[] = [];
+  const candidates: string[] = [];
+  if (await ws.exists('src/main.py')) candidates.push('src/main.py');
+  // 列举 src 一级子目录的 __main__.py（不递归，避免命中 site-packages 之类）
+  try {
+    const fs = await import('node:fs/promises');
+    const entries = await fs.readdir(ws.abs('src'), { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const rel = `src/${e.name}/__main__.py`;
+      if (await ws.exists(rel)) candidates.push(rel);
+    }
+  } catch {
+    /* src/ 不存在 → 跳过 */
+  }
+  for (const rel of candidates) {
+    const orig = await ws.readFile(rel);
+    if (!needsSrcBootstrap(orig)) continue;
+    const next = injectSrcBootstrap(orig);
+    if (next === orig) continue;
+    await ws.writeFile(rel, next);
+    fixed.push(rel);
+    await audit.event('fs.write', `auto-fixed src import in ${rel}`, {
+      path: rel,
+      reason: 'inject sys.path bootstrap',
+    });
+  }
+  return fixed;
+}
+
+export interface EntrypointProbe {
+  ok: boolean;
+  command: string;
+  exitCode: number;
+  timedOut: boolean;
+  stdoutTail: string;
+  stderrTail: string;
+}
+
+/**
+ * DELIVERY gate：尝试运行入口的 \`--help\`，确保工程"开箱即用"。
+ *
+ * 优先级：
+ *   1. \`python src/main.py --help\`
+ *   2. \`python -m <pkg> --help\`（取 src/ 下第一个含 \`__main__.py\` 的子包）
+ *   3. 若都不存在 → 返回 ok=true 跳过（Planner 已要求至少一个入口；缺失会被
+ *      verifyOutputs / docs lint 在更早阶段拦下）。
+ *
+ * exit !=0 / timeout / 包含典型的 ModuleNotFoundError 文本 → ok=false，
+ * 调用方据此构造 failureLog 并触发 DEBUG 重试。
+ */
+export async function probeEntrypoint(
+  ws: Workspace,
+  sandbox: Sandbox,
+): Promise<EntrypointProbe | null> {
+  const tail = (s: string): string => s.split('\n').slice(-30).join('\n');
+  let cmd: string | null = null;
+  let argv: string[] = [];
+  if (await ws.exists('src/main.py')) {
+    cmd = 'python src/main.py --help';
+    argv = ['src/main.py', '--help'];
+  } else {
+    try {
+      const fs = await import('node:fs/promises');
+      const entries = await fs.readdir(ws.abs('src'), { withFileTypes: true });
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        if (await ws.exists(`src/${e.name}/__main__.py`)) {
+          cmd = `python -m src.${e.name} --help`;
+          argv = ['-m', `src.${e.name}`, '--help'];
+          break;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!cmd) return null;
+  let r: ExecResult;
+  try {
+    r = await sandbox.runPython(argv, { timeoutMs: 30_000 });
+  } catch (err) {
+    return {
+      ok: false,
+      command: cmd,
+      exitCode: -1,
+      timedOut: false,
+      stdoutTail: '',
+      stderrTail: (err as Error).message,
+    };
+  }
+  const ok = r.exitCode === 0 && !r.timedOut;
+  return {
+    ok,
+    command: cmd,
+    exitCode: r.exitCode,
+    timedOut: r.timedOut ?? false,
+    stdoutTail: tail(r.stdout),
+    stderrTail: tail(r.stderr),
+  };
+}
+
+void path; // 避免 path 被 tree-shake 警告
