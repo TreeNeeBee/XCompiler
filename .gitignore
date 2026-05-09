@@ -10,6 +10,6 @@ workspace/logs/
 coverage/
 .tools/
 
-# # release artifacts (binaries are too large for git; track only release notes + checksums)
-# release/**/*.tar.gz
-# release/**/*.zip
+# release/ 目录由 .github/workflows/release.yml 在 tag 推送时通过 GitHub Releases 发布，
+# 不再纳入版本库（历史中曾短暂入库，已通过 git rm 移除，commit 历史保留）。
+release/

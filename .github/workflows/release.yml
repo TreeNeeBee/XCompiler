@@ -1,0 +1,103 @@
+name: Release
+
+# 触发条件：推送形如 v0.1.0 / v1.2.3-beta1 的 tag。
+# 流水线职责：
+#   1. checkout 该 tag
+#   2. 装 Node 20 + pnpm/npm 依赖
+#   3. 跑 vitest + tsc 作为发版门
+#   4. 跨平台打 4 个 pkg 产物（linux-x64 / linux-arm64 / macos-arm64 / win-x64）
+#   5. 算 SHA256SUMS
+#   6. 从 git tag annotation（优先）/ commit message（回退）抽取 RELEASE_NOTES
+#   7. 调 softprops/action-gh-release 创建 GitHub Release，上传全部产物
+#
+# 注：二进制产物**不入版本库**，分发完全走 GitHub Releases；本地 release/ 目录
+# 已在 .gitignore 中忽略，仅作为打包脚本的本地输出位置。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # 创建 release / 上传 asset 必需
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史以便 git tag -l --format / git log 抽 notes
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Test (vitest)
+        run: npx vitest run
+
+      - name: Package all targets (linux-x64 / linux-arm64 / macos-arm64 / win-x64)
+        run: ./scripts/package.sh
+
+      - name: Compute SHA256SUMS
+        working-directory: dist/pkg
+        run: |
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Extract release notes from tag annotation / commit message
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # 优先用 annotated tag 的 message（git tag -a 创建的）
+          NOTES="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)')"
+          if [ -z "${NOTES}" ]; then
+            # 回退到 tag 指向 commit 的完整 message
+            NOTES="$(git log -1 --format=%B "${TAG}")"
+          fi
+          # 写到文件供 action-gh-release 读取（多行内容用文件比 env 安全）
+          {
+            echo "# TOAA ${TAG}"
+            echo
+            echo "${NOTES}"
+            echo
+            echo "## Artifacts"
+            echo
+            echo "| File | Size | Target |"
+            echo "|---|---|---|"
+            cd dist/pkg
+            for f in toaa-*.tar.gz toaa-*.zip; do
+              size=$(du -h "$f" | cut -f1)
+              target="${f#toaa-}"; target="${target%.tar.gz}"; target="${target%.zip}"
+              echo "| \`$f\` | $size | $target |"
+            done
+            cd - >/dev/null
+            echo
+            echo "校验和见同 release 的 \`SHA256SUMS\` asset。"
+          } > RELEASE_BODY.md
+          echo "notes_file=$PWD/RELEASE_BODY.md" >> "$GITHUB_OUTPUT"
+          echo '--- preview ---'
+          cat RELEASE_BODY.md
+
+      - name: Create GitHub Release & upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TOAA ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.notes_file }}
+          # 含 - 视为 prerelease（v0.1.0-rc1 / v1.0.0-beta 等）；正式版去掉 -
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/pkg/toaa-linux-x64.tar.gz
+            dist/pkg/toaa-linux-arm64.tar.gz
+            dist/pkg/toaa-macos-arm64.tar.gz
+            dist/pkg/toaa-win-x64.zip
+            dist/pkg/SHA256SUMS
