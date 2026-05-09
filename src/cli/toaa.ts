@@ -47,6 +47,7 @@ program
   .option('--name <name>', '项目名（默认 toaa-<时间戳>）')
   .option('-c, --config <file>', 'config.yaml 路径')
   .option('-i, --input <file>', '从需求文件读取（非交互）')
+  .option('-t, --topic <file>', '直接使用已澄清的 topic.md 作为输入：跳过 intake / clarify / Addenda / Gate 1，直接进入 decompose')
   .option('--plan-out <file>', '指定 plan.json 输出文件（默认 <workspace>/plan.json）')
   .option('--yes', '跳过人工确认（仅在 -i 提供时有意义）', false)
   .option('--force', '强制重新生成：覆写 workspace 锁、忽略旧 plan.json', false)
@@ -61,8 +62,9 @@ program
       workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
+      topicFile: opts.topic,
       outputFile: opts.planOut,
-      yes: !!opts.yes && !!opts.input,
+      yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
     });
   });

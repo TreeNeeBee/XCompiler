@@ -23,6 +23,7 @@ export type AuditKind =
   | 'llm.score'
   | 'fs.write'
   | 'plan.persist'
+  | 'topic.persist'
   | 'phase.start'
   | 'phase.end'
   | 'tool.call'

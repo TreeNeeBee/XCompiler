@@ -22,6 +22,14 @@ export interface CompileOptions {
   workspace: string;
   configPath?: string;
   inputFile?: string;
+  /**
+   * 已澄清的 topic.md 直接输入：跳过 intake / clarify / Addenda / Gate 1，把该文件
+   * 内容当作冻结后的项目选题书，直接进入 decompose。常用于：
+   *   - 用户上次已澄清并保留了 topic.md，重新跑 decompose 不想再问一遍
+   *   - 离线编辑了 topic.md 想直接拿来出 plan.json
+   * 与 --input 互斥；同时给则 --topic 优先并打印警告。
+   */
+  topicFile?: string;
   outputFile?: string;
   yes?: boolean;
   force?: boolean;
@@ -57,6 +65,10 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     roles: cfg.llm.roles,
     default_provider: cfg.llm.default,
   });
+  if (opts.topicFile && opts.inputFile) {
+    console.log(chalk.yellow('!'), '同时指定了 --topic 与 --input，--topic 优先；--input 将被忽略。');
+  }
+  const topicMode = !!opts.topicFile;
   scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
   try {
@@ -80,24 +92,37 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     if (process.env.TOAA_TRACE === '1') process.stderr.write(`[toaa-trace] ${msg}\n`);
   };
 
-  // 1. Intake
-  trace('intake.start');
-  const rawRequirement = await intake(opts.inputFile);
-  trace(`intake.done len=${rawRequirement.length}`);
-  if (!rawRequirement.trim()) {
-    console.error(chalk.red('需求为空，已退出。'));
-    await audit.end({ status: 'aborted', reason: 'empty requirement' });
-    process.exit(1);
+  // 1. Intake — topic 模式下读取已有 topic.md 直接当作 raw
+  let rawRequirement: string;
+  if (topicMode) {
+    trace('topic.read');
+    rawRequirement = await fs.readFile(path.resolve(opts.topicFile!), 'utf8');
+    if (!rawRequirement.trim()) {
+      console.error(chalk.red('--topic 文件为空，已退出。'));
+      await audit.end({ status: 'aborted', reason: 'empty topic file' });
+      process.exit(1);
+    }
+    await audit.userInput('topic.md (来自 --topic)', rawRequirement);
+    console.log(chalk.green('✔'), `已加载 topic：${path.resolve(opts.topicFile!)}（跳过 intake / clarify / Gate 1）`);
+  } else {
+    trace('intake.start');
+    rawRequirement = await intake(opts.inputFile);
+    trace(`intake.done len=${rawRequirement.length}`);
+    if (!rawRequirement.trim()) {
+      console.error(chalk.red('需求为空，已退出。'));
+      await audit.end({ status: 'aborted', reason: 'empty requirement' });
+      process.exit(1);
+    }
+    trace('audit.userInput.intake');
+    await audit.userInput('原始需求 (Intake)', rawRequirement);
+    trace('audit.userInput.intake.done');
   }
-  trace('audit.userInput.intake');
-  await audit.userInput('原始需求 (Intake)', rawRequirement);
-  trace('audit.userInput.intake.done');
 
-  // 2. Clarify
+  // 2. Clarify — topic 模式跳过（topic.md 已经是冻结后的选题书）
   trace('clarify.section.enter');
   const clarifications: Array<{ question: string; answer: string }> = [];
-  trace(`clarify.section.flag yes=${opts.yes}`);
-  if (!opts.yes) {
+  trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
+  if (!opts.yes && !topicMode) {
     trace('ora.clarify.start');
     const spin = ora('Planner 正在澄清需求…').start();
     trace('ora.clarify.started');
@@ -118,9 +143,9 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     }
   }
 
-  // 2.5 用户自定义补充需求（预留位，可为空）
+  // 2.5 用户自定义补充需求（预留位，可为空）— topic 模式下也跳过（topic.md 应已自含全部上下文）
   let userAddenda = '';
-  if (!opts.yes) {
+  if (!opts.yes && !topicMode) {
     const want = await confirm({
       message: '是否有补充需求要追加？（会连同澄清一起发给 Planner，并保留在 plan.userAddenda 字段）',
       default: false,
@@ -141,45 +166,63 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
 
   // 3. Draft topic.md + 确认门 1
   //   topic.md 是“需求澄清后的项目选题书”，作为后续 V 模型拆解的唯一输入。
+  //   topic 模式下：rawRequirement 就是用户传入的 topic.md 全文，直接落盘，不再 render/Gate 1。
   const draftDir = 'docs/.draft';
   const draftTopic = `${draftDir}/topic.md`;
   trace('ws.ensure.draftDir');
   await ws.ensure(draftDir);
-  trace('renderTopicDraft');
-  const topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
-  trace('ws.writeFile.draftTopic');
-  await ws.writeFile(draftTopic, topicMd);
-  trace('ws.writeFile.draftTopic.done');
+  let topicMd: string;
+  if (topicMode) {
+    topicMd = rawRequirement;
+    await ws.writeFile(draftTopic, topicMd);
+  } else {
+    trace('renderTopicDraft');
+    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
+    trace('ws.writeFile.draftTopic');
+    await ws.writeFile(draftTopic, topicMd);
+    trace('ws.writeFile.draftTopic.done');
 
-  if (!opts.yes) {
-    console.log('\n' + chalk.cyan('─── topic.md (preview) ───'));
-    console.log(topicMd);
-    console.log(chalk.cyan('──────────────────────────────'));
-    const decision = await select({
-      message: '需求是否符合预期?',
-      choices: [
-        { name: '✅ confirm — 进入计划生成', value: 'confirm' },
-        { name: '✏️  edit    — 打开编辑器修改', value: 'edit' },
-        { name: '❌ cancel  — 放弃本次会话', value: 'cancel' },
-      ],
-    });
-    await audit.userDecision('需求确认门 (Gate 1)', decision);
-    if (decision === 'cancel') {
-      await ws.remove(draftDir);
-      console.log(chalk.yellow('已取消，未写入任何文件。'));
-      await audit.end({ status: 'cancelled', gate: 1 });
-      return;
-    }
-    if (decision === 'edit') {
-      const edited = await editor({ message: '编辑 topic.md', default: topicMd, postfix: '.md' });
-      await ws.writeFile(draftTopic, edited);
-      await audit.userInput('编辑后的 topic.md', edited);
+    if (!opts.yes) {
+      console.log('\n' + chalk.cyan('─── topic.md (preview) ───'));
+      console.log(topicMd);
+      console.log(chalk.cyan('──────────────────────────────'));
+      const decision = await select({
+        message: '需求是否符合预期?',
+        choices: [
+          { name: '✅ confirm — 进入计划生成', value: 'confirm' },
+          { name: '✏️  edit    — 打开编辑器修改', value: 'edit' },
+          { name: '❌ cancel  — 放弃本次会话', value: 'cancel' },
+        ],
+      });
+      await audit.userDecision('需求确认门 (Gate 1)', decision);
+      if (decision === 'cancel') {
+        await ws.remove(draftDir);
+        console.log(chalk.yellow('已取消，未写入任何文件。'));
+        await audit.end({ status: 'cancelled', gate: 1 });
+        return;
+      }
+      if (decision === 'edit') {
+        const edited = await editor({ message: '编辑 topic.md', default: topicMd, postfix: '.md' });
+        await ws.writeFile(draftTopic, edited);
+        await audit.userInput('编辑后的 topic.md', edited);
+      }
     }
   }
 
-  // 4. Decompose — 以 topic.md 作为 V 模型输入
+  // 3.5 立即把 topic.md 写到最终位置（docs/topic.md），不再等到第 7 步。
+  //   这样即使后续 decompose / lint 失败，已澄清的 topic 仍然落盘，
+  //   下次可用 `toaa c --topic docs/topic.md` 直接重跑而不必再澄清一次。
   trace('ws.readFile.finalTopic');
   const finalTopicMd = await ws.readFile(draftTopic);
+  await archiveIfExists(ws, DOC_NAMES.topic, audit);
+  await ws.writeFile(DOC_NAMES.topic, finalTopicMd);
+  await audit.event('topic.persist', `topic.md written: ${ws.abs(DOC_NAMES.topic)}`, {
+    topicPath: ws.abs(DOC_NAMES.topic),
+    mode: topicMode ? 'topic-input' : 'clarified',
+  });
+  console.log(chalk.green('✔'), '已写入', ws.abs(DOC_NAMES.topic));
+
+  // 4. Decompose — 以 topic.md 作为 V 模型输入
   trace('ora.spin2.start');
   const spin2 = ora('Planner 正在按 V 模型拆解…').start();
   trace('ora.spin2.started');
@@ -248,11 +291,9 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     ? path.resolve(opts.outputFile)
     : ws.abs('plan.json');
   await savePlan(planPath, parsed.data);
-  // 归档上一版本（如有），再写入新版本
+  // 归档上一版本（如有），再写入新版本。topic.md 已在第 3.5 步落盘，这里只处理 plan.
   await archiveIfExists(ws, DOC_NAMES.plan, audit);
-  await archiveIfExists(ws, DOC_NAMES.topic, audit);
   await ws.writeFile(DOC_NAMES.plan, planMd);
-  await ws.writeFile(DOC_NAMES.topic, finalTopicMd);
   await ws.remove(draftDir);
   await audit.event('plan.persist', `plan.json written: ${planPath}`, {
     planPath,
