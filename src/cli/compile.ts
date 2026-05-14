@@ -17,6 +17,7 @@ import { renderPlanMarkdown } from '../core/render.js';
 import { savePlan } from '../core/storage.js';
 import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
+import { setLocale, t } from '../i18n/index.js';
 
 export interface CompileOptions {
   workspace: string;
@@ -50,12 +51,16 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     throw err;
   }
   if (opts.force) {
-    console.log(chalk.yellow('!'), '--force：强制重新生成 plan，已占用锁会被覆写。');
+    console.log(chalk.yellow('!'), '--force: overriding workspace lock and regenerating plan.');
   }
 
   let scoreStore: ScoreStore | undefined;
   try {
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  // Honour config-side ui_language unless an explicit --lang was already set
+  // (CLI flag is applied by the parent Commander preAction before runCompile is called).
+  if (!process.env.TOAA_LANG) setLocale(cfg.ui_language);
+  const M = t();
   const audit = new AuditLogger({ root: ws.root, command: 'toaa_c' });
   await audit.start({
     workspace: ws.root,
@@ -66,7 +71,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     default_provider: cfg.llm.default,
   });
   if (opts.topicFile && opts.inputFile) {
-    console.log(chalk.yellow('!'), '同时指定了 --topic 与 --input，--topic 优先；--input 将被忽略。');
+    console.log(chalk.yellow('!'), '--topic and --input were both supplied; --topic wins, --input is ignored.');
   }
   const topicMode = !!opts.topicFile;
   scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
@@ -74,10 +79,10 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   try {
     const pf = await preflightProviders(cfg, scoreStore, audit);
     if (pf.zeroed.length > 0) {
-      console.log(chalk.yellow('!'), `LLM preflight: 模型缺失，已禁用 [${pf.zeroed.join(', ')}]`);
+      console.log(chalk.yellow('!'), t().execute.preflightModelMissing(pf.zeroed.join(', ')));
     }
     if (Object.keys(pf.autoAdded).length > 0) {
-      console.log(chalk.yellow('!'), `LLM preflight: 自动注入 ${Object.keys(pf.autoAdded).length} 个 provider（来自 ollama /api/tags）`);
+      console.log(chalk.yellow('!'), t().execute.preflightAutoAdded(Object.keys(pf.autoAdded).length));
     }
   } catch (err) {
     console.error(chalk.red('✖'), (err as Error).message);
@@ -98,23 +103,23 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     trace('topic.read');
     rawRequirement = await fs.readFile(path.resolve(opts.topicFile!), 'utf8');
     if (!rawRequirement.trim()) {
-      console.error(chalk.red('--topic 文件为空，已退出。'));
+      console.error(chalk.red(M.compile.topicEmptyExit));
       await audit.end({ status: 'aborted', reason: 'empty topic file' });
       process.exit(1);
     }
-    await audit.userInput('topic.md (来自 --topic)', rawRequirement);
-    console.log(chalk.green('✔'), `已加载 topic：${path.resolve(opts.topicFile!)}（跳过 intake / clarify / Gate 1）`);
+    await audit.userInput('topic.md (--topic)', rawRequirement);
+    console.log(chalk.green('✔'), M.compile.topicLoaded(path.resolve(opts.topicFile!)));
   } else {
     trace('intake.start');
     rawRequirement = await intake(opts.inputFile);
     trace(`intake.done len=${rawRequirement.length}`);
     if (!rawRequirement.trim()) {
-      console.error(chalk.red('需求为空，已退出。'));
+      console.error(chalk.red(M.compile.requirementEmptyExit));
       await audit.end({ status: 'aborted', reason: 'empty requirement' });
       process.exit(1);
     }
     trace('audit.userInput.intake');
-    await audit.userInput('原始需求 (Intake)', rawRequirement);
+    await audit.userInput('Original requirement (Intake)', rawRequirement);
     trace('audit.userInput.intake.done');
   }
 
@@ -124,22 +129,22 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
   if (!opts.yes && !topicMode) {
     trace('ora.clarify.start');
-    const spin = ora('Planner 正在澄清需求…').start();
+    const spin = ora(M.compile.spinClarify).start();
     trace('ora.clarify.started');
     let questions: Awaited<ReturnType<Planner['clarify']>> = [];
     try {
       trace('planner.clarify.call');
       questions = await planner.clarify(rawRequirement);
       trace(`planner.clarify.return n=${questions.length}`);
-      spin.succeed(`澄清问题：${questions.length} 条`);
+      spin.succeed(M.compile.clarifySucceed(questions.length));
     } catch (err) {
-      spin.fail('澄清失败');
+      spin.fail(M.compile.clarifyFail);
       throw err;
     }
     for (const q of questions) {
       const ans = await input({ message: `${q.id} ${q.question}` });
       clarifications.push({ question: q.question, answer: ans });
-      await audit.userInput(`澄清回答 ${q.id}: ${q.question}`, ans);
+      await audit.userInput(M.compile.auditClarifyAnswer(q.id, q.question), ans);
     }
   }
 
@@ -147,19 +152,19 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   let userAddenda = '';
   if (!opts.yes && !topicMode) {
     const want = await confirm({
-      message: '是否有补充需求要追加？（会连同澄清一起发给 Planner，并保留在 plan.userAddenda 字段）',
+      message: M.compile.addendaConfirm,
       default: false,
     });
     if (want) {
       userAddenda = (
         await editor({
-          message: '输入自定义补充需求（多行、Markdown 可）',
+          message: M.compile.addendaEditorMsg,
           default: '',
           postfix: '.md',
         })
       ).trim();
       if (userAddenda) {
-        await audit.userInput('用户补充需求 (Addenda)', userAddenda);
+        await audit.userInput('User addenda', userAddenda);
       }
     }
   }
@@ -194,17 +199,17 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
           { name: '❌ cancel  — 放弃本次会话', value: 'cancel' },
         ],
       });
-      await audit.userDecision('需求确认门 (Gate 1)', decision);
+      await audit.userDecision(M.compile.gate1AuditLabel, decision);
       if (decision === 'cancel') {
         await ws.remove(draftDir);
-        console.log(chalk.yellow('已取消，未写入任何文件。'));
+        console.log(chalk.yellow(M.compile.gate1Cancelled));
         await audit.end({ status: 'cancelled', gate: 1 });
         return;
       }
       if (decision === 'edit') {
-        const edited = await editor({ message: '编辑 topic.md', default: topicMd, postfix: '.md' });
+        const edited = await editor({ message: M.compile.editTopicMsg, default: topicMd, postfix: '.md' });
         await ws.writeFile(draftTopic, edited);
-        await audit.userInput('编辑后的 topic.md', edited);
+        await audit.userInput('Edited topic.md', edited);
       }
     }
   }
@@ -220,11 +225,11 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     topicPath: ws.abs(DOC_NAMES.topic),
     mode: topicMode ? 'topic-input' : 'clarified',
   });
-  console.log(chalk.green('✔'), '已写入', ws.abs(DOC_NAMES.topic));
+  console.log(chalk.green('✔'), M.compile.topicWritten(ws.abs(DOC_NAMES.topic)));
 
-  // 4. Decompose — 以 topic.md 作为 V 模型输入
+  // 4. Decompose — with topic.md as the V-model input
   trace('ora.spin2.start');
-  const spin2 = ora('Planner 正在按 V 模型拆解…').start();
+  const spin2 = ora(M.compile.spinDecompose).start();
   trace('ora.spin2.started');
   let draft;
   try {
@@ -234,30 +239,30 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
       userAddenda,
     });
   } catch (err) {
-    spin2.fail('Planner 拆解失败');
+    spin2.fail(M.compile.decomposeFail);
     const msg = (err as Error).message ?? String(err);
-    console.error(chalk.red('Planner 无法生成有效 plan：'), msg);
-    console.error(chalk.gray('  常见原因：所有 LLM provider 都返回了非法/截断 JSON（如 token loop）。'));
-    console.error(chalk.gray('  排查：检查 .toaa/audit.jsonl 中的 llm.error / planner.thought 原文。'));
+    console.error(chalk.red(M.compile.plannerInvalidPlan), msg);
+    console.error(chalk.gray(M.compile.plannerInvalidPlanHint1));
+    console.error(chalk.gray(M.compile.plannerInvalidPlanHint2));
     await audit.event('llm.error', 'planner.decompose failed', { stage: 'decompose', error: msg });
     await audit.end({ status: 'error', stage: 'decompose', error: msg });
     process.exit(4);
   }
-  spin2.succeed(`已生成 ${draft.steps.length} 个 Step`);
+  spin2.succeed(M.compile.decomposeSucceed(draft.steps.length));
 
   // 5. 构建并校验 plan
   const plan = buildPlan(draft, { userAddenda });
   const parsed = PlanSchema.safeParse(plan);
   if (!parsed.success) {
-    console.error(chalk.red('Plan schema 校验失败：'));
+    console.error(chalk.red(M.compile.schemaFail));
     console.error(parsed.error.format());
     await ws.writeFile(`${draftDir}/plan.invalid.json`, JSON.stringify(plan, null, 2));
-    console.error(chalk.gray(`  完整 plan 已落盘：${ws.abs(`${draftDir}/plan.invalid.json`)}`));
+    console.error(chalk.gray(M.compile.schemaInvalidSavedAt(ws.abs(`${draftDir}/plan.invalid.json`))));
     process.exit(2);
   }
   const issues = lintPlan(parsed.data).filter((i) => i.level === 'error');
   if (issues.length > 0) {
-    console.error(chalk.red(`Plan lint 失败（${issues.length}）：`));
+    console.error(chalk.red(M.compile.lintFail(issues.length)));
     for (const i of issues) console.error(` - [${i.stepId ?? '*'}] ${i.message}`);
     // 落到 draft 便于排查
     await ws.writeFile(`${draftDir}/plan.invalid.json`, JSON.stringify(plan, null, 2));
@@ -269,18 +274,18 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
 
   // 6. 确认门 2
   if (!opts.yes) {
-    console.log('\n' + chalk.cyan('─── plan.md (preview) ───'));
+    console.log('\n' + chalk.cyan(M.compile.planPreviewHeader));
     console.log(planMd.split('\n').slice(0, 60).join('\n'));
-    if (planMd.split('\n').length > 60) console.log(chalk.gray('… (截断，详见 docs/plan.md)'));
-    console.log(chalk.cyan('─────────────────────────'));
+    if (planMd.split('\n').length > 60) console.log(chalk.gray('… (truncated; see docs/plan.md)'));
+    console.log(chalk.cyan(M.compile.planPreviewFooter));
     const ok = await confirm({
-      message: '是否确认该计划? (此为最终确认，确认后将写入 plan.json)',
+      message: M.compile.gate2Confirm,
       default: false,
     });
-    await audit.userDecision('计划确认门 (Gate 2)', ok ? 'confirm' : 'reject');
+    await audit.userDecision(M.compile.gate2AuditLabel, ok ? 'confirm' : 'reject');
     if (!ok) {
       await ws.remove(draftDir);
-      console.log(chalk.yellow('未确认，已放弃。plan.json 未写入。'));
+      console.log(chalk.yellow(M.compile.gate2Rejected));
       await audit.end({ status: 'rejected', gate: 2 });
       return;
     }
@@ -300,8 +305,8 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     steps: parsed.data.steps.length,
   });
 
-  console.log(chalk.green('✔'), '已写入', planPath);
-  console.log('  下一步：', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
+  console.log(chalk.green('✔'), M.compile.topicWritten(planPath));
+  console.log('  Next:', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
   } finally {
     try { await scoreStore?.flush(); } catch { /* never block release */ }
@@ -313,7 +318,7 @@ async function intake(inputFile?: string): Promise<string> {
   if (inputFile) {
     return fs.readFile(path.resolve(inputFile), 'utf8');
   }
-  console.log(chalk.gray('请描述你的需求（多行，输入空行结束）:'));
+  console.log(chalk.gray(t().compile.requirementInputHint));
   return readMultiline();
 }
 
@@ -356,17 +361,18 @@ function renderTopicDraft(
   qa: Array<{ question: string; answer: string }>,
   addenda: string = '',
 ): string {
+  const M = t().compile;
   const lines: string[] = [];
-  lines.push('# Project Topic (项目选题)');
+  lines.push(M.topicTitle);
   lines.push('');
-  lines.push('> 本文件是需求澄清后冻结的项目选题，后续 V 模型拆解与所有阶段产出皆以本文件为唯一需求输入。');
+  lines.push(M.topicPreamble);
   lines.push('');
-  lines.push('## 原始需求');
+  lines.push(M.topicSecRequirement);
   lines.push('');
   lines.push(raw.trim());
   lines.push('');
   if (qa.length > 0) {
-    lines.push('## 澄清记录');
+    lines.push(M.topicSecClarify);
     lines.push('');
     for (const [i, c] of qa.entries()) {
       lines.push(`- **Q${i + 1}** ${c.question}`);
@@ -376,7 +382,7 @@ function renderTopicDraft(
   }
   const trimmed = addenda.trim();
   if (trimmed) {
-    lines.push('## 用户补充需求 (Addenda)');
+    lines.push(M.topicSecAddenda);
     lines.push('');
     lines.push(trimmed);
     lines.push('');

@@ -47,7 +47,14 @@ agent:
     cpu: 1
     memory_mb: 1024
     wall_seconds: 60
-    network: pypi-only
+    # off | download-only (default) | pypi-only (alias) | full
+    #   download-only — outbound HTTP/HTTPS allowed, no inbound port publishing
+    #   full          — also publishes `expose_ports` to 127.0.0.1 for testing
+    #                   python network apps from the host side
+    network: download-only
+    # When network=full, container ports listed here are published on
+    # 127.0.0.1:<port> so host-side tests can reach the running app.
+    # expose_ports: [8000]
   sandbox_docker:
     image: python:3.11-slim
     workdir: /workspace

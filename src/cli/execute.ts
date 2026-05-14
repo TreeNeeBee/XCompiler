@@ -13,6 +13,7 @@ import { createSandbox } from '../sandbox/factory.js';
 import { PhaseEngine } from '../core/engine.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { normalizePythonRequirements } from '../agents/planner.js';
+import { setLocale, t } from '../i18n/index.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -117,15 +118,17 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
   }
 
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  // Honour ui_language unless TOAA_LANG / --lang already overrode it earlier.
+  if (!process.env.TOAA_LANG) setLocale(cfg.ui_language);
   const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
   try {
     const pf = await preflightProviders(cfg, scoreStore, audit);
     if (pf.zeroed.length > 0) {
-      console.log(chalk.yellow('!'), `LLM preflight: 模型缺失，已禁用 [${pf.zeroed.join(', ')}]`);
+      console.log(chalk.yellow('!'), t().execute.preflightModelMissing(pf.zeroed.join(', ')));
     }
     if (Object.keys(pf.autoAdded).length > 0) {
-      console.log(chalk.yellow('!'), `LLM preflight: 自动注入 ${Object.keys(pf.autoAdded).length} 个 provider（来自 ollama /api/tags）`);
+      console.log(chalk.yellow('!'), t().execute.preflightAutoAdded(Object.keys(pf.autoAdded).length));
     }
   } catch (err) {
     console.error(chalk.red('✖'), (err as Error).message);
@@ -159,14 +162,14 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     if (r.failedStepId) {
       console.log(
         chalk.red('✖'),
-        `执行中断于 ${r.failedStepId}（已执行 ${r.executedSteps}/${r.totalSteps}）`,
+        t().execute.runInterrupted(r.failedStepId, r.executedSteps, r.totalSteps),
       );
       if (r.failureReason) {
-        console.log(chalk.red('  原因: ') + r.failureReason);
+        console.log(chalk.red(t().execute.runReasonLabel) + r.failureReason);
       }
       if (r.failureLog) {
         const tail = r.failureLog.split('\n').slice(-40).join('\n');
-        console.log(chalk.gray('  --- 详细失败日志（tail 40 行） ---'));
+        console.log(chalk.gray(t().execute.runFailureLogHeader));
         console.log(tail);
       }
       await audit.end({
@@ -179,7 +182,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       process.exitCode = 4;
       return;
     }
-    console.log(chalk.green('✔'), `Plan 全部完成（${r.executedSteps}/${r.totalSteps}）`);
+    console.log(chalk.green('✔'), t().execute.runAllDone(r.executedSteps, r.totalSteps));
     await audit.end({ status: 'ok', executedSteps: r.executedSteps, totalSteps: r.totalSteps });
   } catch (err) {
     const msg = (err as Error).message;

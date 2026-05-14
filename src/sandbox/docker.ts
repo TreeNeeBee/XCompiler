@@ -186,6 +186,12 @@ export class DockerSandbox implements Sandbox {
       dockerArgs.push('-e', `${k}=${v}`);
     }
     if (this.opts.limits.network === 'off') dockerArgs.push('--network', 'none');
+    // bidirectional: publish requested ports on 127.0.0.1 so host-side tests can reach the app.
+    if (this.opts.limits.network === 'full' && this.opts.limits.expose_ports?.length) {
+      for (const port of this.opts.limits.expose_ports) {
+        dockerArgs.push('-p', `127.0.0.1:${port}:${port}`);
+      }
+    }
     dockerArgs.push(...this.extraRunArgs, this.image, cmd, ...argv);
 
     await this.opts.audit?.event('sandbox.exec', `docker ${cmd} ${argv.join(' ')}`, {

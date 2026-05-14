@@ -2,6 +2,9 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { Command } from 'commander';
 import { runCompile } from './compile.js';
+import { setLocale, t } from '../i18n/index.js';
+
+setLocale(process.env.TOAA_LANG ?? 'en');
 
 function defaultProjectName(): string {
   const d = new Date();
@@ -13,15 +16,18 @@ const program = new Command();
 program
   .name('toaa_c')
   .description('TOAA — Compile a natural language requirement into plan.json')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（优先级最高，等价于 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output；显式指定后会忽略 --base-dir/--name）')
-  .option('--base-dir <dir>', '项目输出根目录', '/tmp')
-  .option('--name <name>', '项目名（默认 toaa-<时间戳>）')
-  .option('-c, --config <file>', 'config.yaml 路径')
-  .option('-i, --input <file>', '从需求文件读取（非交互）')
-  .option('--plan-out <file>', '输出 plan.json 文件路径（默认 <workspace>/plan.json）')
-  .option('--yes', '跳过人工确认（仅在 -i 提供时有意义）', false)
-  .option('--force', '强制重新生成：覆写 workspace 锁、忽略旧 plan.json', false)
+  .option('--lang <code>', t().cli.optLang)
+  .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace)
+  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--name <name>', t().cli.optName)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('-i, --input <file>', t().cli.optInput)
+  .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--yes', t().cli.optYes, false)
+  .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
     let ws: string;
     const explicit = opts.output ?? opts.workspace;
@@ -36,8 +42,9 @@ program
       workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
+      topicFile: opts.topic,
       outputFile: opts.planOut,
-      yes: !!opts.yes && !!opts.input,
+      yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
     });
   });

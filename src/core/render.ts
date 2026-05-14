@@ -1,4 +1,5 @@
 import type { Plan } from './plan.js';
+import { t } from '../i18n/index.js';
 
 export function renderPlanMarkdown(plan: Plan): string {
   const lines: string[] = [];
@@ -12,7 +13,7 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push(plan.requirementDigest);
   lines.push('');
   if (plan.globalPrompt && plan.globalPrompt.trim()) {
-    lines.push('## Global prompt (注入每个 Step 的 system prompt)');
+    lines.push(t().render.sectionGlobalPrompt);
     lines.push('');
     lines.push('```text');
     lines.push(plan.globalPrompt.trim());
@@ -20,7 +21,7 @@ export function renderPlanMarkdown(plan: Plan): string {
     lines.push('');
   }
   if (plan.pythonRequirements && plan.pythonRequirements.length > 0) {
-    lines.push('## Python requirements (将写入 requirements.txt)');
+    lines.push(t().render.sectionPythonRequirements);
     lines.push('');
     for (const r of plan.pythonRequirements) lines.push(`- ${r}`);
     lines.push('');
@@ -49,7 +50,7 @@ export function renderPlanMarkdown(plan: Plan): string {
     lines.push(`- Tools: ${s.tools.join(', ') || '—'}`);
     lines.push(`- Acceptance: ${s.acceptance}`);
     lines.push('');
-    lines.push('**System prompt (唯一使命):**');
+    lines.push(t().render.labelSystemPrompt);
     lines.push('');
     lines.push('```text');
     lines.push(s.systemPrompt.trim());

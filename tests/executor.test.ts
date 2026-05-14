@@ -61,9 +61,9 @@ describe('StepExecutor system prompt assembly', () => {
       globalPrompt: '项目背景：CLI 工具，全局禁止网络访问。',
     });
     expect(r.success).toBe(true);
-    expect(llm.lastSystem).toContain('## 项目全局约束');
+    expect(llm.lastSystem).toContain('## Project-wide constraints');
     expect(llm.lastSystem).toContain('CLI 工具');
-    expect(llm.lastSystem).toContain('## 当前 Step 专属提示');
+    expect(llm.lastSystem).toContain('## Current Step prompt');
     expect(llm.lastSystem).toContain('禁止触碰其它文件');
   });
 

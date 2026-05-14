@@ -4,12 +4,23 @@ import { Command } from 'commander';
 import { runCompile } from './compile.js';
 import { runExecute } from './execute.js';
 import { runLs, runShow } from './inspect.js';
+import { runDoctorCli } from './doctor.js';
+import { setLocale, t } from '../i18n/index.js';
+
+// Resolve UI locale early — env var TOAA_LANG and the global --lang flag both work.
+// CLI flag wins (parsed below by Commander preAction).
+setLocale(process.env.TOAA_LANG ?? 'en');
 
 const program = new Command();
 program
   .name('toaa')
-  .description('TOAA — AI Software Factory CLI')
-  .version('0.1.0');
+  .description(t().cli.rootDescription)
+  .option('--lang <code>', t().cli.optLang)
+  .hook('preAction', (thisCmd) => {
+    const lang = thisCmd.opts().lang as string | undefined;
+    if (lang) setLocale(lang);
+  })
+  .version('0.1.1');
 
 function defaultProjectName(): string {
   const d = new Date();
@@ -40,17 +51,17 @@ async function resolveWorkspace(opts: {
 program
   .command('c')
   .alias('compile')
-  .description('交互式编译需求为 plan.json（含强制人工确认）')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（优先级最高，等价于 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output；显式指定后会忽略 --base-dir/--name）')
-  .option('--base-dir <dir>', '项目输出根目录（在其下创建 <name> 子目录）', '/tmp')
-  .option('--name <name>', '项目名（默认 toaa-<时间戳>）')
-  .option('-c, --config <file>', 'config.yaml 路径')
-  .option('-i, --input <file>', '从需求文件读取（非交互）')
-  .option('-t, --topic <file>', '直接使用已澄清的 topic.md 作为输入：跳过 intake / clarify / Addenda / Gate 1，直接进入 decompose')
-  .option('--plan-out <file>', '指定 plan.json 输出文件（默认 <workspace>/plan.json）')
-  .option('--yes', '跳过人工确认（仅在 -i 提供时有意义）', false)
-  .option('--force', '强制重新生成：覆写 workspace 锁、忽略旧 plan.json', false)
+  .description(t().cli.compileDescription)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace)
+  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--name <name>', t().cli.optName)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('-i, --input <file>', t().cli.optInput)
+  .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--yes', t().cli.optYes, false)
+  .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
     const ws = await resolveWorkspace({
       output: opts.output,
@@ -71,16 +82,16 @@ program
 
 program
   .command('run')
-  .description('执行已确认的 plan.json（支持分阶段运行：--phase / --from）')
-  .argument('[plan]', 'plan.json 路径（默认 = <workspace>/plan.json）')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（同 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output，默认为当前目录）')
-  .option('-c, --config <file>', 'config.yaml 路径')
-  .option('--dry-run', '仅打印拓扑顺序，不执行', false)
-  .option('--from <stepId>', '从指定 Step 开始（之前的跳过）')
-  .option('--phase <phase>', '仅执行指定 phase（REQUIREMENT/ARCH/CODE/TEST/REFACTOR/DELIVERY等）')
-  .option('--reset', '重置所有 Step 状态为 PENDING', false)
-  .option('--force', '强制重新执行：含 --reset 且覆写 workspace 锁', false)
+  .description(t().cli.runDescription)
+  .argument('[plan]', t().cli.argPlan)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('--dry-run', t().cli.optDryRun, false)
+  .option('--from <stepId>', t().cli.optFrom)
+  .option('--phase <phase>', t().cli.optPhase)
+  .option('--reset', t().cli.optReset, false)
+  .option('--force', t().cli.optForce, false)
   .action(async (planArg, opts) => {
     const explicit = opts.output ?? opts.workspace;
     // workspace 推断优先级：
@@ -107,10 +118,10 @@ program
 
 program
   .command('ls')
-  .description('扫描 workspace 列出所有 plan.json 状态摘要')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（同 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output）', process.cwd())
-  .option('-d, --max-depth <n>', '递归最大深度', '4')
+  .description(t().cli.lsDescription)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace, process.cwd())
+  .option('-d, --max-depth <n>', t().cli.optMaxDepth, '4')
   .action(async (opts) => {
     const ws = opts.output ?? opts.workspace;
     await runLs({ workspace: ws, maxDepth: parseInt(opts.maxDepth, 10) });
@@ -118,12 +129,12 @@ program
 
 program
   .command('show')
-  .description('打印 Step 定义 / 状态 / 产物 / 最近审计')
-  .argument('<stepId>', 'Step ID，如 S001')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（同 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output）', process.cwd())
-  .option('-p, --plan <file>', 'plan.json 路径，默认 <workspace>/plan.json')
-  .option('-n, --tail <n>', '最近审计条数', '10')
+  .description(t().cli.showDescription)
+  .argument('<stepId>', t().cli.argStepId)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace, process.cwd())
+  .option('-p, --plan <file>', t().cli.optPlan)
+  .option('-n, --tail <n>', t().cli.optTail, '10')
   .action(async (stepId, opts) => {
     await runShow({
       workspace: opts.output ?? opts.workspace,
@@ -131,6 +142,15 @@ program
       planPath: opts.plan,
       auditTail: parseInt(opts.tail, 10),
     });
+  });
+
+program
+  .command('doctor')
+  .description(t().doctor.cliDescription)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('--strict', t().doctor.optStrict, false)
+  .action(async (opts) => {
+    await runDoctorCli({ configPath: opts.config, strict: !!opts.strict });
   });
 
 program.parseAsync(process.argv).catch((err) => {

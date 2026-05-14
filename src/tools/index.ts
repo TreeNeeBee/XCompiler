@@ -4,6 +4,7 @@ import { applyPatchTool } from './patch.js';
 import { runPythonTool, runTestsTool, pipInstallTool } from './sandbox.js';
 import { replaceInFileTool, codeSearchTool, analyzeErrorTool } from './edit.js';
 import { addDependencyTool } from './deps.js';
+import { httpFetchTool } from './net.js';
 
 export { ToolRegistry, isAllowedWrite } from './types.js';
 export type { Tool, ToolContext, ToolResult } from './types.js';
@@ -26,6 +27,8 @@ export function buildDefaultRegistry(): ToolRegistry {
   reg.register(runPythonTool);
   reg.register(runTestsTool);
   reg.register(pipInstallTool);
+  // 网络
+  reg.register(httpFetchTool);
   // 分析
   reg.register(analyzeErrorTool);
   return reg;

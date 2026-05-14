@@ -213,7 +213,7 @@ export function normalizeBaseUrl(raw: string | undefined, fallback: string): str
     return withScheme;
   } catch {
     // eslint-disable-next-line no-console
-    console.warn(`[toaa] base_url 不合法 (${JSON.stringify(raw)})，回退到 ${fallback}`);
+    console.warn(`[toaa] invalid base_url (${JSON.stringify(raw)}); falling back to ${fallback}`);
     return fallback;
   }
 }

@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
 import { loadPlan } from '../core/storage.js';
 import type { Plan, Step } from '../core/plan.js';
+import { t } from '../i18n/index.js';
 
 export interface LsOptions {
   workspace: string;
@@ -15,7 +16,7 @@ export async function runLs(opts: LsOptions): Promise<void> {
   const root = path.resolve(opts.workspace);
   const found = await findPlans(root, opts.maxDepth ?? 4);
   if (found.length === 0) {
-    console.log(chalk.yellow('未找到任何 plan.json'));
+    console.log(chalk.yellow(t().inspect.noPlanFound));
     return;
   }
   for (const f of found) {
@@ -36,7 +37,7 @@ export async function runLs(opts: LsOptions): Promise<void> {
       );
       if (plan.requirementDigest) {
         const oneLine = plan.requirementDigest.split('\n')[0]?.slice(0, 100) ?? '';
-        if (oneLine) console.log(`   ${chalk.gray('digest:')} ${oneLine}`);
+        if (oneLine) console.log(`   ${chalk.gray(t().inspect.digestLabel)} ${oneLine}`);
       }
     } catch (err) {
       console.log(
@@ -61,7 +62,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   const plan = await loadPlan(planPath);
   const step = plan.steps.find((s) => s.id === opts.stepId);
   if (!step) {
-    console.error(chalk.red(`Step ${opts.stepId} 未找到`));
+    console.error(chalk.red(t().inspect.stepNotFound(opts.stepId)));
     process.exitCode = 1;
     return;
   }
@@ -73,17 +74,17 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log(`role=${step.role}  tools=[${step.tools.join(', ')}]`);
   if (step.dependsOn.length > 0) console.log(`dependsOn: ${step.dependsOn.join(', ')}`);
   console.log('');
-  console.log(chalk.gray('— description —'));
+  console.log(chalk.gray(t().inspect.secDescription));
   console.log(step.description);
   console.log('');
-  console.log(chalk.gray('— acceptance —'));
+  console.log(chalk.gray(t().inspect.secAcceptance));
   console.log(step.acceptance);
   console.log('');
-  console.log(chalk.gray('— systemPrompt —'));
+  console.log(chalk.gray(t().inspect.secSystemPrompt));
   console.log(step.systemPrompt);
   console.log('');
 
-  console.log(chalk.gray('— outputs —'));
+  console.log(chalk.gray(t().inspect.secOutputs));
   for (const out of step.outputs) {
     const exists = await fileExists(path.join(root, out));
     console.log(`  ${exists ? chalk.green('✓') : chalk.red('✗')} ${out}`);
@@ -94,7 +95,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   const auditFile = path.join(root, '.toaa', 'audit.jsonl');
   const tail = opts.auditTail ?? 10;
   const events = await readAuditFor(auditFile, opts.stepId, tail);
-  console.log(chalk.gray(`— recent audit (${events.length}) —`));
+  console.log(chalk.gray(t().inspect.secRecentAudit(events.length)));
   for (const ev of events) {
     console.log(`  ${ev.ts}  ${chalk.cyan(ev.kind)}  ${ev.msg ?? ''}`);
   }

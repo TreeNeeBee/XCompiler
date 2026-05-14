@@ -84,4 +84,30 @@ describe('DockerSandbox', () => {
     expect(calls).toContain('--network none');
     expect(calls).toContain('echo hello');
   });
+
+  it('publishes expose_ports to 127.0.0.1 when network=full', async () => {
+    const sb = new DockerSandbox({
+      ws,
+      limits: { cpu: 1, memory_mb: 256, wall_seconds: 10, network: 'full', expose_ports: [8000, 5173] },
+      dockerBin: fakeDocker,
+    });
+    await sb.exec('echo', ['serving']);
+    const calls = await fs.readFile(`${fakeDocker}.calls`, 'utf8');
+    expect(calls).toContain('-p 127.0.0.1:8000:8000');
+    expect(calls).toContain('-p 127.0.0.1:5173:5173');
+    // sanity: --network none must NOT be set in full mode
+    expect(calls).not.toMatch(/--network none/);
+  });
+
+  it('does not publish ports when network=download-only (default)', async () => {
+    const sb = new DockerSandbox({
+      ws,
+      limits: { cpu: 1, memory_mb: 256, wall_seconds: 10, network: 'download-only', expose_ports: [9000] },
+      dockerBin: fakeDocker,
+    });
+    await sb.exec('echo', ['hi']);
+    const calls = await fs.readFile(`${fakeDocker}.calls`, 'utf8');
+    expect(calls).not.toContain('-p 127.0.0.1:9000:9000');
+    expect(calls).not.toMatch(/--network none/);
+  });
 });

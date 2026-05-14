@@ -12,7 +12,15 @@ export interface SandboxLimits {
   cpu: number;
   memory_mb: number;
   wall_seconds: number;
-  network: 'off' | 'pypi-only' | 'full';
+  /**
+   * - `off`            disable network completely (`docker --network none`).
+   * - `download-only`  outbound only (default), no inbound port publishing.
+   * - `pypi-only`      alias of `download-only` (kept for backward compatibility).
+   * - `full`           outbound + publish `expose_ports` to 127.0.0.1.
+   */
+  network: 'off' | 'pypi-only' | 'download-only' | 'full';
+  /** Container ports to publish on 127.0.0.1 when `network=full`. */
+  expose_ports?: number[];
 }
 
 export interface ExecResult {

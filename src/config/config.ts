@@ -17,6 +17,8 @@ const ProviderSchema = z.object({
 });
 
 const ConfigSchema = z.object({
+  /** UI / prompt language. Accepts 'en' (default) or 'zh'. */
+  ui_language: z.enum(['en', 'zh']).default('en'),
   llm: z.object({
     default: z.string(),
     providers: z.record(z.string(), ProviderSchema),
@@ -62,13 +64,27 @@ const ConfigSchema = z.object({
         cpu: z.number().positive().default(1),
         memory_mb: z.number().int().positive().default(1024),
         wall_seconds: z.number().int().positive().default(60),
-        network: z.enum(['off', 'pypi-only', 'full']).default('pypi-only'),
+        /**
+         * Sandbox network policy.
+         *  - `off`            — no network at all (`docker --network none`).
+         *  - `download-only`  — outbound traffic allowed, no inbound port publishing
+         *                       (default; lets python pip-install / fetch web pages).
+         *  - `pypi-only`      — alias of `download-only` (kept for backward compatibility).
+         *  - `full`           — outbound + every port in `expose_ports` is published
+         *                       to `127.0.0.1` so host-side tests can reach the app.
+         */
+        network: z
+          .enum(['off', 'pypi-only', 'download-only', 'full'])
+          .default('download-only'),
+        /** Container ports to publish to 127.0.0.1 when `network=full`. */
+        expose_ports: z.array(z.number().int().min(1).max(65535)).default([]),
       })
       .default({
         cpu: 1,
         memory_mb: 1024,
         wall_seconds: 60,
-        network: 'pypi-only',
+        network: 'download-only',
+        expose_ports: [],
       }),
     sandbox_docker: z
       .object({

@@ -64,7 +64,7 @@ export function createSandbox(
     });
   }
   if (kind === 'firejail') {
-    throw new Error('sandbox=firejail 暂未实现，请使用 subprocess 或 docker');
+    throw new Error('sandbox=firejail is not implemented yet; use subprocess or docker.');
   }
   // 在容器内默认提示（但不抦截）：subprocess 是唯一推荐选项
   return new SubprocessSandbox({ ws, limits: cfg.agent.sandbox_limits, audit });

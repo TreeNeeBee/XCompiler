@@ -13,6 +13,7 @@ import { buildDefaultRegistry, EditGuard, type ToolRegistry, type ToolContext, t
 import { StepExecutor, verifyOutputs } from '../agents/executor.js';
 import type { ExecutorRunMetrics } from '../agents/executor.js';
 import { calibrateDebugSuggestions, renderDebugSuggestions } from '../agents/calibration.js';
+import { t } from '../i18n/index.js';
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { DebugCache } from './debug_cache.js';
@@ -80,10 +81,10 @@ export class PhaseEngine {
 
     await this.opts.git.ensureRepo();
     if (await this.opts.ws.exists('requirements.txt')) {
-      const spin = ora('构建沙盒（pip install -r requirements.txt）…').start();
+      const spin = ora(t().engine.spinSandboxBuild).start();
       try {
         const r = await this.opts.sandbox.build('requirements.txt');
-        spin.succeed(`沙盒就绪：${r.reason}`);
+        spin.succeed(t().engine.sandboxReady(r.reason));
       } catch (err) {
         spin.fail((err as Error).message);
         throw err;
@@ -100,7 +101,7 @@ export class PhaseEngine {
       started = true;
       if (this.opts.onlyPhase && step.phase !== this.opts.onlyPhase) continue;
       if (step.status === 'DONE') {
-        console.log(chalk.gray(`  ↪ ${step.id} ${step.phase} 已完成，跳过`));
+        console.log(chalk.gray(t().engine.stepSkipDone(step.id, step.phase)));
         continue;
       }
 
@@ -118,10 +119,10 @@ export class PhaseEngine {
       }
 
       if (step.phase === 'ARCH' && step.outputs.includes('requirements.txt')) {
-        const spin = ora(`Step ${step.id} 写入 requirements.txt，重建沙盒…`).start();
+        const spin = ora(t().engine.spinSandboxRebuild(step.id)).start();
         try {
           const r = await this.opts.sandbox.build('requirements.txt');
-          spin.succeed(`沙盒：${r.reason}`);
+          spin.succeed(t().engine.sandboxStatus(r.reason));
         } catch (err) {
           spin.fail((err as Error).message);
           throw err;
@@ -151,7 +152,7 @@ export class PhaseEngine {
       const fixed = await autoFixSrcImports(this.opts.ws, this.opts.audit);
       if (fixed.length > 0) {
         console.log(
-          chalk.yellow(`  ⚠ auto-fixed sys.path bootstrap in ${fixed.length} 个入口文件：${fixed.join(', ')}`),
+          chalk.yellow(t().engine.autoFixedSrcImports(fixed.length, fixed.join(', '))),
         );
       }
     }
@@ -166,7 +167,7 @@ export class PhaseEngine {
       const last = this.debugCache.attempts(step.id).slice(-1)[0]!;
       console.log(
         chalk.yellow(
-          `  ↻ ${step.id} 检测到上次会话以 FAILED 结束（已累积 ${this.debugCache.attempts(step.id).length} 次尝试），本次首轮直接进入 Debugger 模式。`,
+          t().engine.debugResumeNotice(step.id, this.debugCache.attempts(step.id).length),
         ),
       );
       initial = await this.runOneAttempt(plan, step, {
@@ -220,7 +221,7 @@ export class PhaseEngine {
       step.retries = attempt;
       await savePlan(this.opts.planPath, plan);
       const spin = ora(
-        `🛠  ${step.id} DEBUG retry ${attempt}/${budget} (cap=${absoluteCap}) — ${lastReason}`,
+        t().engine.spinDebugRetry(step.id, attempt, budget, absoluteCap, lastReason),
       ).start();
       let r: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
       try {
@@ -232,7 +233,7 @@ export class PhaseEngine {
         });
       } catch (err) {
         const msg = (err as Error).message;
-        spin.fail(`retry ${attempt}/${budget} 抛出异常：${msg}`);
+        spin.fail(t().engine.retryException(attempt, budget, msg));
         consecutiveBad++;
         // 异常视为最严重的不健康信号：立即半窗，连续 2 次直接终止。
         budget = Math.max(attempt + 1, Math.ceil(budget / 2));
@@ -246,7 +247,7 @@ export class PhaseEngine {
         continue;
       }
       if (r.ok) {
-        spin.succeed(`${step.id} 修复成功 (retry=${attempt})`);
+        spin.succeed(t().engine.fixSucceeded(step.id, attempt));
         await this.debugCache.markDone(step.id);
         return true;
       }
@@ -265,19 +266,19 @@ export class PhaseEngine {
         budget = Math.min(absoluteCap, budget + 2);
         consecutiveBad = 0;
         spin.fail(
-          `retry ${attempt}/${before}→${budget} 仍失败但健康（扩窗） · ${tag} · ${r.reason ?? ''}`,
+          t().engine.retryHealthyButFailed(attempt, before, budget, tag, r.reason ?? ''),
         );
       } else if (bad) {
         consecutiveBad++;
         const before = budget;
         budget = Math.max(attempt + 1, Math.ceil(budget / 2));
         spin.fail(
-          `retry ${attempt}/${before}→${budget} 低质量输出（缩窗） · ${tag} · ${r.reason ?? ''}`,
+          t().engine.retryLowQuality(attempt, before, budget, tag, r.reason ?? ''),
         );
         if (consecutiveBad >= 2) {
           console.log(
             chalk.yellow(
-              `  ⚡ ${step.id} 检测到连续 ${consecutiveBad} 次低质量 LLM 输出（解析失败/重复 actions/无进展），快速终止 DEBUG 重试`,
+              t().engine.earlyAbortLowQuality(step.id, consecutiveBad),
             ),
           );
           lastReason = r.reason ?? lastReason;
@@ -288,7 +289,7 @@ export class PhaseEngine {
         }
       } else {
         consecutiveBad = 0;
-        spin.fail(`retry ${attempt}/${budget} 仍失败 · ${tag} · ${r.reason ?? ''}`);
+        spin.fail(t().engine.retryStillFailed(attempt, budget, tag, r.reason ?? ''));
       }
       lastReason = r.reason ?? lastReason;
       lastFailureLog = r.failureLog;
@@ -347,40 +348,41 @@ export class PhaseEngine {
     const bar = chalk.red('─'.repeat(60));
     console.log(bar);
     console.log(
-      chalk.red.bold(`✖ Step ${step.id} (${step.phase} / ${step.role}) 最终失败`),
+      chalk.red.bold(t().engine.stepFinalFailed(step.id, step.phase, step.role)),
     );
     console.log(
       chalk.gray(
-        `  attempts=${info.attempts}  final_budget=${info.budget}  cap=${info.cap}` +
-          (info.earlyAbort ? '  (early-abort: low-quality)' : ''),
+        t().engine.finalAttemptsLine(info.attempts, info.budget, info.cap, info.earlyAbort),
       ),
     );
     if (info.metrics) {
       const m = info.metrics;
       console.log(
         chalk.gray(
-          `  health=${m.healthScore.toFixed(2)}  parseFail=${m.parseFailures}  repeat=${m.repeatedTurns}  toolFail=${m.toolFailRatio.toFixed(2)}  progress=${m.progressRatio.toFixed(2)}`,
+          t().engine.finalMetricsLine(
+            m.healthScore.toFixed(2),
+            m.parseFailures,
+            m.repeatedTurns,
+            m.toolFailRatio.toFixed(2),
+            m.progressRatio.toFixed(2),
+          ),
         ),
       );
     }
-    console.log(chalk.red('reason: ') + info.reason);
+    console.log(chalk.red(t().engine.reasonLabel) + info.reason);
     const tail = info.failureLog
       ? info.failureLog.split('\n').slice(-80).join('\n')
       : '(no log captured)';
-    console.log(chalk.gray('--- failure log (tail, max 80 lines) ---'));
+    console.log(chalk.gray(t().engine.failureLogHeader));
     console.log(tail);
     const sugs = calibrateDebugSuggestions(info.failureLog, info.reason);
     if (sugs.length > 0) {
-      console.log(chalk.yellow('--- 修复建议（calibration） ---'));
+      console.log(chalk.yellow(t().engine.fixSuggestionsHeader));
       sugs.forEach((s, i) => {
         console.log(chalk.yellow(`  ${i + 1}. [${s.code}] `) + s.hint);
       });
     }
-    console.log(
-      chalk.gray(
-        `  审计: 查看 .toaa/audit.jsonl 与 .toaa/llm-stream/${step.id}-*.txt 获取完整原始流`,
-      ),
-    );
+    console.log(chalk.gray(t().engine.auditHint(step.id)));
     console.log(bar);
   }
 
@@ -463,7 +465,7 @@ export class PhaseEngine {
 
     const spin = debug
       ? null
-      : ora(`▶ ${step.id} ${step.phase} ${chalk.bold(step.title)}`).start();
+      : ora(t().engine.spinStepRunning(step.id, step.phase, chalk.bold(step.title))).start();
     try {
       const r = await executor.run({
         step,

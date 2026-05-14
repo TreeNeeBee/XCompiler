@@ -4,6 +4,7 @@ import type { LLMClient } from '../llm/types.js';
 import type { Step } from '../core/plan.js';
 import type { Tool, ToolContext, ToolResult } from '../tools/types.js';
 import { makeStreamReporter } from '../llm/stream.js';
+import { t } from '../i18n/index.js';
 
 /**
  * Executor 把一个 Step 交给对应角色的 LLM，要求其用一组 tool calls 完成产出。
@@ -129,18 +130,17 @@ export class StepExecutor {
         ? '\n\n可用 Skill 提示:\n' + inp.skillHints.map((h) => '- ' + h).join('\n')
         : '';
     const debugBlock = inp.debugContext
-      ? `\n\n正处于 DEBUG 重试模式。上一轮失败原因: ${inp.debugContext.reason}\n请包含 read_file/code_search 先定位问题，再以 apply_patch / replace_in_file / add_dependency 作最小修改，最后 run_tests 验证。` +
-        (inp.debugContext.suggestions ? `\n\n${inp.debugContext.suggestions}` : '')
+      ? t().prompts.executorDebugBlock(inp.debugContext.reason, inp.debugContext.suggestions)
       : '';
     const globalBlock =
       inp.globalPrompt && inp.globalPrompt.trim()
-        ? `\n\n## 项目全局约束\n${inp.globalPrompt.trim()}`
+        ? t().prompts.executorGlobalBlock(inp.globalPrompt.trim())
         : '';
-    const stepBlock = `\n\n## 当前 Step 专属提示 (唯一使命，禁止跨 Step 发散)\n${inp.step.systemPrompt.trim()}`;
+    const stepBlock = t().prompts.executorStepBlock(inp.step.systemPrompt.trim());
     const userPrompt = renderUserPrompt(inp, toolDocs);
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: SYSTEM + globalBlock + stepBlock + skillBlock + debugBlock },
+      { role: 'system', content: t().prompts.executorSystem + globalBlock + stepBlock + skillBlock + debugBlock },
       { role: 'user', content: userPrompt },
     ];
     const calls: ExecutorRunResult['toolCalls'] = [];
@@ -374,7 +374,7 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
       : '',
     ctxBlock ? `## context\n${ctxBlock}\n` : '',
     dbg,
-    '现在按协议返回第一轮 JSON。',
+    t().prompts.executorUserPromptOutro,
   ]
     .filter(Boolean)
     .join('\n');
@@ -384,14 +384,15 @@ function renderFeedback(
   results: Array<ToolResult & { tool: string }>,
   verify: { ok: boolean; missing: string[] },
 ): string {
-  const lines: string[] = ['本轮工具结果：'];
+  const M = t().prompts;
+  const lines: string[] = [M.executorFeedbackHeader];
   for (const r of results) {
     lines.push(`- ${r.tool}: ${r.ok ? 'OK' : 'FAIL'} — ${r.summary ?? r.error ?? ''}`);
   }
   if (verify.ok) {
-    lines.push('outputs 校验通过。如已完成，请把 done 设为 true 且 actions=[]。');
+    lines.push(M.executorFeedbackVerifyOk);
   } else {
-    lines.push(`outputs 仍缺失：${verify.missing.join(', ')}。请继续。`);
+    lines.push(M.executorFeedbackVerifyMissing(verify.missing.join(', ')));
   }
   return lines.join('\n');
 }

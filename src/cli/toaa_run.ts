@@ -1,20 +1,25 @@
 import path from 'node:path';
 import { Command } from 'commander';
 import { runExecute } from './execute.js';
+import { setLocale, t } from '../i18n/index.js';
+
+setLocale(process.env.TOAA_LANG ?? 'en');
 
 const program = new Command();
 program
   .name('toaa_run')
   .description('TOAA — Execute a confirmed plan.json')
-  .argument('[plan]', 'plan.json 路径（默认 = <workspace>/plan.json）')
-  .option('-o, --output <dir>', '工程/workspace 输出目录（同 -w）')
-  .option('-w, --workspace <dir>', 'workspace 目录（同 --output，默认为当前目录）')
-  .option('-c, --config <file>', 'config.yaml 路径')
-  .option('--dry-run', '仅打印拓扑顺序，不执行', false)
-  .option('--from <stepId>', '从指定 Step 开始（之前的跳过）')
-  .option('--phase <phase>', '仅执行指定 phase')
-  .option('--reset', '重置所有 Step 状态为 PENDING', false)
-  .option('--force', '强制重新执行：含 --reset 且覆写 workspace 锁', false)
+  .option('--lang <code>', t().cli.optLang)
+  .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
+  .argument('[plan]', t().cli.argPlan)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('--dry-run', t().cli.optDryRun, false)
+  .option('--from <stepId>', t().cli.optFrom)
+  .option('--phase <phase>', t().cli.optPhase)
+  .option('--reset', t().cli.optReset, false)
+  .option('--force', t().cli.optForce, false)
   .action(async (planArg, opts) => {
     const explicit = opts.output ?? opts.workspace;
     // workspace 推断优先级：

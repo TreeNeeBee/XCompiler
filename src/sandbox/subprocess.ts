@@ -117,15 +117,15 @@ export class SubprocessSandbox implements Sandbox {
     const pyVenv = this.pythonInVenv;
     const pyVenvExists = await fs.stat(pyVenv).then(() => true).catch(() => false);
     if (!pyVenvExists) {
-      throw new Error(`venv python missing after creation: ${pyVenv}（请安装系统包 python3-venv / python3-virtualenv）`);
+      throw new Error(`venv python missing after creation: ${pyVenv} (install system package python3-venv / python3-virtualenv)`);
     }
     const pipCheck = await execRaw(pyVenv, ['-m', 'pip', '--version'], { timeoutMs: 30_000 });
     if (pipCheck.exitCode !== 0) {
       const ep = await execRaw(pyVenv, ['-m', 'ensurepip', '--upgrade', '--default-pip'], { timeoutMs: 60_000 });
       if (ep.exitCode !== 0) {
         throw new Error(
-          `venv pip 不可用，且 ensurepip 失败 (venv=${this.venvAbs}):\n${ep.stderr || ep.stdout}\n\n` +
-            '请在宿主机安装：apt-get install python3-venv python3-pip   或   yum install python3-pip',
+          `venv pip unavailable and ensurepip failed (venv=${this.venvAbs}):\n${ep.stderr || ep.stdout}\n\n` +
+            'Install on the host: apt-get install python3-venv python3-pip   or   yum install python3-pip',
         );
       }
     }
