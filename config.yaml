@@ -1,3 +1,5 @@
+locale: zh  # CLI / prompt 语言：en 或 zh
+
 llm:
   # 默认使用本地 ollama 上的 coder 模型
   default: ollama_code

@@ -118,8 +118,8 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
   }
 
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
-  // Honour ui_language unless TOAA_LANG / --lang already overrode it earlier.
-  if (!process.env.TOAA_LANG) setLocale(cfg.ui_language);
+  // Honour config-side locale unless TOAA_LANG / --lang already overrode it earlier.
+  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
   const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
   try {

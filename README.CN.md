@@ -169,6 +169,7 @@ npm run dev -- run path/to/plan.json
 
 - **LLM**：本地 ollama（`gemma4:31b` Planner/Architect，`qwen3-coder:30b` Coder/Tester/Debugger）。
   在 `config.yaml` 中 `fallbacks: [openai]` 让主链失败时自动回落 OpenAI 兼容 endpoint。
+- **i18n**：在 `config.yaml` 顶层设置 `locale: en` 或 `locale: zh`，控制 CLI 与 prompt 语言。
 - **Sandbox**：默认 `subprocess`（在 `<workspace>/.sandbox/<project>/` 建独立 venv）；可切到 `docker` 走 bind-mount + 网络/资源限制。
 - **Audit**：每次运行生成 `<workspace>/.toaa/audit.jsonl` 与 `docs/process_log.md`，记录全部 LLM 输入输出、工具调用、Step 状态变更。
 

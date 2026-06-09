@@ -1,3 +1,5 @@
+locale: zh  # CLI / prompt 语言：en 或 zh
+
 llm:
   # 默认使用本地 ollama 上的 coder 模型
   default: ollama_code
@@ -15,6 +17,11 @@ llm:
       api_key: ${OPENAI_API_KEY}
       base_url: ${OPENAI_BASE_URL}
       model: gpt-4o-mini
+    # 本地 OpenAI-compatible 端点（例如 mlx-server /v1/chat/completions）
+    # mlx_server:
+    #   api_key: ""
+    #   base_url: http://127.0.0.1:8080/v1
+    #   model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
 
   # 角色 → provider 数组（兼容单字符串）。
   # 数组里的 provider 按 ScoreStore 评分降序使用，评分=0 自动跳过。

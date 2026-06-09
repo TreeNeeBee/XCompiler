@@ -314,7 +314,7 @@ ${addenda ? `User addenda (must be strictly followed; takes priority over any va
     summaryFail: (n) => `${n} failure(s) detected.`,
     configLoadOk: (path) => `config loaded: ${path}`,
     configLoadFail: (msg) => `failed to load config: ${msg}`,
-    configUiLanguage: (lang) => `ui_language=${lang}`,
+    configLocale: (locale) => `locale=${locale}`,
     llmNoProviders: 'no LLM providers defined in config.llm.providers',
     llmProviderListed: (n) => `${n} provider(s) declared`,
     ollamaUnreachable: (baseUrl, msg) => `ollama unreachable @ ${baseUrl} — ${msg}`,

@@ -16,9 +16,13 @@ const ProviderSchema = z.object({
   max_output_chars: z.number().int().nonnegative().optional(),
 });
 
+const LocaleSchema = z.enum(['en', 'zh']);
+
 const ConfigSchema = z.object({
-  /** UI / prompt language. Accepts 'en' (default) or 'zh'. */
-  ui_language: z.enum(['en', 'zh']).default('en'),
+  /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
+  locale: LocaleSchema.optional(),
+  /** @deprecated use `locale` instead. Kept as a backwards-compatible alias. */
+  ui_language: LocaleSchema.optional(),
   llm: z.object({
     default: z.string(),
     providers: z.record(z.string(), ProviderSchema),
@@ -102,7 +106,10 @@ const ConfigSchema = z.object({
         extra_run_args: [],
       }),
   }),
-});
+}).transform(({ locale, ui_language, ...rest }) => ({
+  locale: locale ?? ui_language ?? 'en',
+  ...rest,
+}));
 
 export type ToaaConfig = z.infer<typeof ConfigSchema>;
 

@@ -11,7 +11,7 @@
  *            is registered in the default tool registry.
  */
 import { loadConfigWithPath, type ToaaConfig } from '../config/config.js';
-import { normalizeBaseUrl } from '../llm/router.js';
+import { isOllamaProvider, isOpenAICompatibleProvider, normalizeBaseUrl } from '../llm/router.js';
 import { getJson } from '../llm/ollama.js';
 import { execRaw } from '../sandbox/subprocess.js';
 import { isRunningInContainer } from '../sandbox/factory.js';
@@ -66,7 +66,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
     cfg = loaded.config;
     cfgPath = loaded.path;
     cfgSection.items.push({ level: 'ok', message: M.configLoadOk(loaded.path) });
-    cfgSection.items.push({ level: 'ok', message: M.configUiLanguage(cfg.ui_language) });
+    cfgSection.items.push({ level: 'ok', message: M.configLocale(cfg.locale) });
   } catch (err) {
     cfgSection.items.push({ level: 'fail', message: M.configLoadFail((err as Error).message) });
     sections.push(cfgSection);
@@ -118,19 +118,21 @@ async function checkLlm(
 
   // Group ollama providers by base_url so we only probe each server once.
   const ollamaByUrl = new Map<string, Array<{ name: string; model: string }>>();
-  const openaiList: Array<{ name: string; baseUrl: string; apiKey: string; model: string }> = [];
+  const openaiList: Array<{ name: string; baseUrl: string; apiKey: string; model: string; requiresApiKey: boolean }> = [];
   for (const [name, p] of providers) {
-    if (name === 'ollama' || name.startsWith('ollama_')) {
+    if (isOllamaProvider(name)) {
       const url = normalizeBaseUrl(p.base_url, 'http://localhost:11434');
       const arr = ollamaByUrl.get(url) ?? [];
       arr.push({ name, model: p.model });
       ollamaByUrl.set(url, arr);
-    } else if (name === 'openai' || name.startsWith('openai_')) {
+    } else if (isOpenAICompatibleProvider(name)) {
+      const baseUrl = normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1');
       openaiList.push({
         name,
-        baseUrl: normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1'),
+        baseUrl,
         apiKey: p.api_key ?? '',
         model: p.model,
+        requiresApiKey: isOpenAICloudEndpoint(baseUrl),
       });
     }
   }
@@ -163,7 +165,7 @@ async function checkLlm(
 
   // 2b) openai: api_key + connection (+ model membership warn)
   for (const p of openaiList) {
-    if (!p.apiKey) {
+    if (p.requiresApiKey && !p.apiKey) {
       sec.items.push({ level: 'fail', message: M.openaiKeyMissing(p.name) });
       continue;
     }
@@ -202,14 +204,15 @@ async function checkLlm(
       if (scores.get(n) === 0) return false;
       const prov = cfg.llm.providers[n];
       if (!prov) return false;
-      if (n === 'ollama' || n.startsWith('ollama_')) {
+      if (isOllamaProvider(n)) {
         const url = normalizeBaseUrl(prov.base_url, 'http://localhost:11434');
         const tags = ollamaTags.get(url);
         if (!tags) return false;
         return tags.includes(prov.model);
       }
-      if (n === 'openai' || n.startsWith('openai_')) {
-        return (prov.api_key ?? '').length > 0;
+      if (isOpenAICompatibleProvider(n)) {
+        const baseUrl = normalizeBaseUrl(prov.base_url, 'https://api.openai.com/v1');
+        return !isOpenAICloudEndpoint(baseUrl) || (prov.api_key ?? '').length > 0;
       }
       return false;
     });
@@ -247,7 +250,7 @@ async function fetchOpenAIModels(baseUrl: string, apiKey: string, timeoutMs: num
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { authorization: `Bearer ${apiKey}` },
+      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
       signal: ctrl.signal,
     });
     if (!res.ok) {
@@ -258,6 +261,14 @@ async function fetchOpenAIModels(baseUrl: string, apiKey: string, timeoutMs: num
     return (json.data ?? []).map((d) => d.id).filter((s): s is string => !!s);
   } finally {
     if (t) clearTimeout(t);
+  }
+}
+
+function isOpenAICloudEndpoint(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname === 'api.openai.com';
+  } catch {
+    return false;
   }
 }
 

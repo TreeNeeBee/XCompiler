@@ -12,7 +12,7 @@ async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-doctor-'));
   const cfgPath = path.join(dir, 'config.yaml');
   const base = {
-    ui_language: 'en',
+    locale: 'en',
     llm: {
       default: 'ollama_code',
       providers: {
