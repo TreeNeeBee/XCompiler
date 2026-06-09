@@ -175,7 +175,7 @@ export interface Messages {
     summaryFail: (n: number) => string;
     configLoadOk: (path: string) => string;
     configLoadFail: (msg: string) => string;
-    configUiLanguage: (lang: string) => string;
+    configLocale: (locale: string) => string;
     llmNoProviders: string;
     llmProviderListed: (n: number) => string;
     ollamaUnreachable: (baseUrl: string, msg: string) => string;

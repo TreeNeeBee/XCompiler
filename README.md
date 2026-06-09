@@ -171,6 +171,7 @@ npm run dev -- run path/to/plan.json
 
 - **LLM**: local ollama (`gemma4:31b` for Planner / Architect, `qwen3-coder:30b` for Coder / Tester / Debugger).
   Set `fallbacks: [openai]` in `config.yaml` to fall back to an OpenAI-compatible endpoint when the primary chain fails.
+- **i18n**: set top-level `locale: en` or `locale: zh` in `config.yaml` to control CLI and prompt language.
 - **Sandbox**: `subprocess` by default (creates an isolated venv at `<workspace>/.sandbox/<project>/`); switch to `docker` for bind-mount + network / resource limits.
 - **Audit**: every run writes `<workspace>/.toaa/audit.jsonl` and `docs/process_log.md`, recording all LLM I/O, tool calls and Step state transitions.
 - **Cross-run debug memory**: `<workspace>/.toaa/debug_cache.json` persists DEBUG attempts; subsequent `toaa run` calls enter Debugger mode with prior failures fed back to the LLM.

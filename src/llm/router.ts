@@ -176,8 +176,7 @@ function createClient(
     max_output_chars?: number;
   },
 ): LLMClient | null {
-  // 允许 `ollama` / `ollama_design` / `ollama_code` 等同名前缀
-  if (name === 'ollama' || name.startsWith('ollama_')) {
+  if (isOllamaProvider(name)) {
     return new OllamaClient({
       baseUrl: normalizeBaseUrl(p.base_url, 'http://localhost:11434'),
       model: p.model,
@@ -186,14 +185,34 @@ function createClient(
       maxOutputChars: p.max_output_chars,
     });
   }
-  if (name === 'openai' || name.startsWith('openai_')) {
+  if (isOpenAICompatibleProvider(name)) {
     return new OpenAIClient({
       apiKey: p.api_key ?? '',
       baseUrl: normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1'),
       model: p.model,
+      requestTimeoutMs: p.request_timeout_ms,
+      streamIdleTimeoutMs: p.stream_idle_timeout_ms,
+      maxOutputChars: p.max_output_chars,
     });
   }
   return null;
+}
+
+/** Provider names backed by Ollama's native /api/chat protocol. */
+export function isOllamaProvider(name: string): boolean {
+  return name === 'ollama' || name.startsWith('ollama_');
+}
+
+/** Provider names backed by OpenAI-compatible /v1/chat/completions APIs. */
+export function isOpenAICompatibleProvider(name: string): boolean {
+  return (
+    name === 'openai' ||
+    name.startsWith('openai_') ||
+    name === 'openapi' ||
+    name.startsWith('openapi_') ||
+    name === 'mlx' ||
+    name.startsWith('mlx_')
+  );
 }
 
 /**

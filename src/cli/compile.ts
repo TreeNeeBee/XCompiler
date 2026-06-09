@@ -57,9 +57,9 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   let scoreStore: ScoreStore | undefined;
   try {
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
-  // Honour config-side ui_language unless an explicit --lang was already set
+  // Honour config-side locale unless an explicit --lang was already set
   // (CLI flag is applied by the parent Commander preAction before runCompile is called).
-  if (!process.env.TOAA_LANG) setLocale(cfg.ui_language);
+  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
   const M = t();
   const audit = new AuditLogger({ root: ws.root, command: 'toaa_c' });
   await audit.start({

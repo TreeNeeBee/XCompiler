@@ -54,6 +54,18 @@ describe('LLMRouter fallback chain', () => {
     expect(client.name).toBe('ollama:qwen');
   });
 
+  it('recognizes openapi and mlx provider names as OpenAI-compatible', () => {
+    const cfg = mkCfg({
+      default: 'openapi_local',
+      providers: {
+        openapi_local: { api_key: '', base_url: 'http://127.0.0.1:8080/v1', model: 'local' },
+        mlx_server: { api_key: '', base_url: 'http://127.0.0.1:8081/v1', model: 'mlx' },
+      },
+    });
+    const router = new LLMRouter(cfg);
+    expect(router.for('default').name).toBe('openai:local');
+  });
+
   it('role_fallbacks overrides global', async () => {
     const cfg = mkCfg({
       fallbacks: ['openai'],
