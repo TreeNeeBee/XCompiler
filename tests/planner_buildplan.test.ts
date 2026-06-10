@@ -25,7 +25,7 @@ describe('buildPlan — Step id 规整', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: 'g',
-      pythonRequirements: ['pytest==8.*'],
+      dependencies: ['pytest==8.*'],
       steps: [
         baseStep({ id: 'S001' }),
         baseStep({ id: 'id_S009', phase: 'TEST', outputs: ['tests/x.py'], dependsOn: ['S001'] }),
@@ -44,7 +44,7 @@ describe('buildPlan — Step id 规整', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: 'g',
-      pythonRequirements: ['pytest==8.*'],
+      dependencies: ['pytest==8.*'],
       steps: [baseStep({ id: 'S9' }), baseStep({ id: 'step-12', dependsOn: ['S9'] })],
     };
     const plan = buildPlan(draft);
@@ -56,7 +56,7 @@ describe('buildPlan — Step id 规整', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: 'g',
-      pythonRequirements: ['pytest==8.*'],
+      dependencies: ['pytest==8.*'],
       steps: [baseStep({ id: 'id_S009' })],
     };
     const plan = buildPlan(draft);

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { LLMClient } from '../llm/types.js';
 import type { Step } from '../core/plan.js';
+import { getLanguageProfile, type LanguageProfile } from '../core/language.js';
 import type { Tool, ToolContext, ToolResult } from '../tools/types.js';
 import { makeStreamReporter } from '../llm/stream.js';
 import { t } from '../i18n/index.js';
@@ -79,6 +80,8 @@ export interface ExecutorRunInput {
   debugContext?: { reason: string; failureLog: string; suggestions?: string };
   /** Plan 级别的全局 system prompt（toaa_c 沉淀）。 */
   globalPrompt?: string;
+  /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
+  languageProfile?: LanguageProfile;
 }
 
 export interface ExecutorRunResult {
@@ -138,9 +141,10 @@ export class StepExecutor {
         : '';
     const stepBlock = t().prompts.executorStepBlock(inp.step.systemPrompt.trim());
     const userPrompt = renderUserPrompt(inp, toolDocs);
+    const profile = inp.languageProfile ?? getLanguageProfile('python');
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: t().prompts.executorSystem + globalBlock + stepBlock + skillBlock + debugBlock },
+      { role: 'system', content: t().prompts.executorSystem(profile) + globalBlock + stepBlock + skillBlock + debugBlock },
       { role: 'user', content: userPrompt },
     ];
     const calls: ExecutorRunResult['toolCalls'] = [];

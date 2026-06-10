@@ -1,4 +1,5 @@
-import type { Plan, Step } from '../core/plan.js';
+import type { Plan, Step, Language, PlanIntent } from '../core/plan.js';
+import { getLanguageProfile } from '../core/language.js';
 import type { LLMClient } from '../llm/types.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { makeStreamReporter } from '../llm/stream.js';
@@ -30,12 +31,16 @@ export interface PlannerInput {
   clarifications: Array<{ question: string; answer: string }>;
   /** 用户在澄清问答后补充的自定义需求（可为空）。 */
   userAddenda?: string;
+  /** 增量开发时，现有工程基线摘要（文档 / 计划 / 源码树）。 */
+  baselineContext?: string;
+  /** 计划意图：greenfield / feature / refactor。 */
+  intent?: PlanIntent;
 }
 
 export interface DraftPlan {
   requirementDigest: string;
   globalPrompt: string;
-  pythonRequirements: string[];
+  dependencies: string[];
   steps: Step[];
 }
 
@@ -43,10 +48,17 @@ export class Planner {
   constructor(
     private readonly llm: LLMClient,
     private readonly audit?: AuditLogger,
+    private readonly language: Language = 'python',
   ) {}
 
-  async clarify(rawRequirement: string): Promise<ClarifyQuestion[]> {
-    const prompt = t().prompts.plannerClarify(rawRequirement);
+  async clarify(
+    rawRequirement: string,
+    opts: { intent?: PlanIntent; hasBaseline?: boolean } = {},
+  ): Promise<ClarifyQuestion[]> {
+    const prompt = t().prompts.plannerClarify(rawRequirement, {
+      intent: opts.intent ?? 'greenfield',
+      hasBaseline: !!opts.hasBaseline,
+    });
     const rep = makeStreamReporter('Planner.clarify');
     let provider: string | undefined;
     const text = await this.llm.chat(
@@ -82,12 +94,15 @@ export class Planner {
       .map((c, i) => `Q${i + 1}: ${c.question}\nA${i + 1}: ${c.answer}`)
       .join('\n\n');
     const addenda = (input.userAddenda ?? '').trim();
-    const prompt = t().prompts.plannerDecompose(input.rawRequirement, qa, addenda);
+    const prompt = t().prompts.plannerDecompose(input.rawRequirement, qa, addenda, {
+      intent: input.intent ?? 'greenfield',
+      baseline: input.baselineContext ?? '',
+    });
     const rep = makeStreamReporter('Planner.decompose');
     let provider: string | undefined;
     const text = await this.llm.chat(
       [
-        { role: 'system', content: t().prompts.plannerSystem },
+        { role: 'system', content: t().prompts.plannerSystem(getLanguageProfile(this.language)) },
         { role: 'user', content: prompt },
       ],
       {
@@ -106,16 +121,27 @@ export class Planner {
   }
 }
 
-export function buildPlan(draft: DraftPlan, opts: { userAddenda?: string } = {}): Plan {
+export function buildPlan(
+  draft: DraftPlan,
+  opts: { userAddenda?: string; language?: Language; intent?: PlanIntent; baselineSummary?: string } = {},
+): Plan {
   const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)));
   // 兜底：若 LLM 漏写了 TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
   const steps = calibratePlanCoverage(shaped);
+  const language = opts.language ?? 'python';
+  // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
+  const dependencies =
+    language === 'python'
+      ? calibratePythonRequirements(draft.dependencies)
+      : [...new Set((draft.dependencies ?? []).map((d) => d.trim()).filter(Boolean))];
   return {
     version: '1',
-    language: 'python',
+    language,
+    intent: opts.intent ?? 'greenfield',
     requirementDigest: draft.requirementDigest,
     globalPrompt: draft.globalPrompt,
-    pythonRequirements: calibratePythonRequirements(draft.pythonRequirements),
+    baselineSummary: opts.baselineSummary ?? '',
+    dependencies,
     userAddenda: (opts.userAddenda ?? '').trim(),
     createdAt: new Date().toISOString(),
     steps,
@@ -163,9 +189,12 @@ function parseDraftPlanJson(text: string): DraftPlan {
     throw new Error('Planner JSON missing requirementDigest or steps.');
   }
   const globalPrompt = typeof obj.globalPrompt === 'string' ? obj.globalPrompt : '';
-  const pyReqs = Array.isArray(obj.pythonRequirements)
-    ? (obj.pythonRequirements as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
+  const rawDeps = Array.isArray(obj.dependencies)
+    ? obj.dependencies
+    : Array.isArray(obj.pythonRequirements)
+      ? obj.pythonRequirements
+      : [];
+  const dependencies = (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string');
   // 强制 V 模型骨架完整性：必须同时存在 REQUIREMENT / ARCH / CODE / DELIVERY 阶段，
   // 至少 4 个 Step。LLM 在 token loop / 截断时常见症状是只输出前 1-2 个 Step（如
   // 用户回放：仅 REQUIREMENT+ARCH 两步），这种残缺 plan 后续重试也救不回，应在
@@ -185,7 +214,7 @@ function parseDraftPlanJson(text: string): DraftPlan {
     );
   }
   // Step shape will be validated by zod / lint downstream.
-  return { requirementDigest: digest, globalPrompt, pythonRequirements: pyReqs, steps: steps as Step[] };
+  return { requirementDigest: digest, globalPrompt, dependencies, steps: steps as Step[] };
 }
 
 function safeJson(text: string): unknown {

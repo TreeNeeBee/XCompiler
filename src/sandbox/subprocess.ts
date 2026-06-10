@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
+import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 
 export type { SandboxLimits, ExecResult } from './types.js';
@@ -12,6 +13,8 @@ export interface SubprocessSandboxOptions {
   ws: Workspace;
   limits: SandboxLimits;
   audit?: AuditLogger;
+  /** 目标语言，决定运行时（venv/pip/pytest vs node_modules/npm/vitest）。默认 python。 */
+  language?: Language;
   /** 沙盒根目录相对 workspace，默认 `.sandbox` */
   sandboxDir?: string;
   /** Python 解释器。默认从 PATH 找 python3 / python。 */
@@ -29,19 +32,24 @@ export interface SubprocessSandboxOptions {
  */
 export class SubprocessSandbox implements Sandbox {
   readonly kind = 'subprocess' as const;
+  private readonly language: Language;
   private readonly sandboxAbs: string;
   private readonly venvAbs: string;
   private readonly cacheFile: string;
   private pyBin: string | null = null;
 
   constructor(private readonly opts: SubprocessSandboxOptions) {
+    this.language = opts.language ?? 'python';
     const dir = opts.sandboxDir ?? '.sandbox';
     this.sandboxAbs = opts.ws.abs(dir);
     // venv 目录名 = 项目名（workspace 目录的 basename，做安全清洗），方便 `source` 后
     // shell prompt 显示 `(<projectName>)`，多项目时一眼可辨。
     const projectName = sanitizeVenvName(path.basename(opts.ws.root));
     this.venvAbs = path.join(this.sandboxAbs, projectName);
-    this.cacheFile = path.join(this.sandboxAbs, 'requirements.sha256');
+    this.cacheFile = path.join(
+      this.sandboxAbs,
+      this.language === 'typescript' ? 'package.sha256' : 'requirements.sha256',
+    );
   }
 
   get root(): string {
@@ -78,10 +86,18 @@ export class SubprocessSandbox implements Sandbox {
   }
 
   /**
-   * 构建/复用沙盒。requirementsTxt 为 `requirements.txt` 在 workspace 内的相对路径；不存在则跳过 pip install。
+   * 构建/复用沙盒。manifestFile 为依赖清单在 workspace 内的相对路径；不存在则跳过安装。
+   * Python → requirements.txt (venv + pip)；TypeScript → package.json (npm install)。
    */
-  async build(requirementsTxt = 'requirements.txt'): Promise<{ rebuilt: boolean; reason: string }> {
+  async build(manifestFile?: string): Promise<{ rebuilt: boolean; reason: string }> {
     await fs.mkdir(this.sandboxAbs, { recursive: true });
+    if (this.language === 'typescript') {
+      return this.buildNode(manifestFile ?? 'package.json');
+    }
+    return this.buildPython(manifestFile ?? 'requirements.txt');
+  }
+
+  private async buildPython(requirementsTxt: string): Promise<{ rebuilt: boolean; reason: string }> {
     const reqAbs = this.opts.ws.abs(requirementsTxt);
     let reqContent = '';
     try {
@@ -146,6 +162,39 @@ export class SubprocessSandbox implements Sandbox {
     return { rebuilt: true, reason: venvExists ? 'requirements changed' : 'venv created' };
   }
 
+  private async buildNode(manifestFile: string): Promise<{ rebuilt: boolean; reason: string }> {
+    const pkgAbs = this.opts.ws.abs(manifestFile);
+    let pkgContent = '';
+    try {
+      pkgContent = await fs.readFile(pkgAbs, 'utf8');
+    } catch {
+      // package.json 尚未生成（ARCH 之前）→ 跳过 npm install。
+      return { rebuilt: false, reason: 'no package.json yet' };
+    }
+    const lockAbs = this.opts.ws.abs('package-lock.json');
+    const lockContent = await fs.readFile(lockAbs, 'utf8').catch(() => '');
+    const sig = crypto.createHash('sha256').update(pkgContent + '\n' + lockContent).digest('hex');
+    const cached = await fs.readFile(this.cacheFile, 'utf8').catch(() => '');
+    const modulesExist = await fs
+      .stat(this.opts.ws.abs('node_modules'))
+      .then(() => true)
+      .catch(() => false);
+    if (modulesExist && cached === sig) {
+      return { rebuilt: false, reason: 'cache hit' };
+    }
+    const r = await execRaw('npm', ['install', '--no-audit', '--no-fund'], {
+      cwd: this.opts.ws.root,
+      env: { ...process.env },
+      timeoutMs: this.opts.limits.wall_seconds * 1000 * 10,
+    });
+    if (r.exitCode !== 0) {
+      throw new Error(`npm install failed (cwd=${this.opts.ws.root}):\n${r.stderr || r.stdout}`);
+    }
+    await fs.writeFile(this.cacheFile, sig, 'utf8');
+    await this.opts.audit?.event('sandbox.exec', 'node sandbox built (npm install)');
+    return { rebuilt: true, reason: modulesExist ? 'package.json changed' : 'node_modules created' };
+  }
+
   /** 执行任意命令（默认 cwd = workspace.root）。 */
   async exec(
     cmd: string,
@@ -154,12 +203,19 @@ export class SubprocessSandbox implements Sandbox {
   ): Promise<ExecResult> {
     const cwd = extra?.cwd ?? this.opts.ws.root;
     const timeoutMs = extra?.timeoutMs ?? this.opts.limits.wall_seconds * 1000;
-    const env = {
-      ...process.env,
-      PATH: `${path.join(this.venvAbs, 'bin')}:${process.env.PATH ?? ''}`,
-      VIRTUAL_ENV: this.venvAbs,
-      ...(extra?.env ?? {}),
-    };
+    const env =
+      this.language === 'typescript'
+        ? {
+            ...process.env,
+            PATH: `${this.opts.ws.abs('node_modules/.bin')}:${process.env.PATH ?? ''}`,
+            ...(extra?.env ?? {}),
+          }
+        : {
+            ...process.env,
+            PATH: `${path.join(this.venvAbs, 'bin')}:${process.env.PATH ?? ''}`,
+            VIRTUAL_ENV: this.venvAbs,
+            ...(extra?.env ?? {}),
+          };
     await this.opts.audit?.event('sandbox.exec', `${cmd} ${argv.join(' ')}`, {
       cwd,
       timeoutMs,
@@ -168,18 +224,28 @@ export class SubprocessSandbox implements Sandbox {
     return r;
   }
 
-  /** 在沙盒 venv 内运行 python。 */
-  async runPython(args: string[], extra?: ExecExtra): Promise<ExecResult> {
+  /** 运行工程入口程序。Python → venv python；TypeScript → npx tsx。 */
+  async runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      return this.exec('npx', ['tsx', ...args], extra);
+    }
     return this.exec(this.pythonInVenv, args, extra);
   }
 
-  /** 运行 pytest。 */
-  async runPytest(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+  /** 运行测试。Python → pytest；TypeScript → npm test（Vitest）。 */
+  async runTests(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      const argv = args.length > 0 ? ['test', '--silent', '--', ...args] : ['test', '--silent'];
+      return this.exec('npm', argv, extra);
+    }
     return this.exec(this.pythonInVenv, ['-m', 'pytest', ...args], extra);
   }
 
-  /** 安装额外依赖（不会写入 requirements.txt，需要由调用方自行回写）。 */
-  async pipInstall(packages: string[]): Promise<ExecResult> {
+  /** 安装额外依赖（不会写入依赖清单，需要由调用方自行回写）。 */
+  async installDeps(packages: string[]): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages]);
+    }
     return this.exec(this.pythonInVenv, ['-m', 'pip', 'install', ...packages, '--quiet', '--disable-pip-version-check']);
   }
 }

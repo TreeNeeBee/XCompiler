@@ -1,7 +1,7 @@
 # TOAA — The One Above All
 
 > Multi-LLM, V-model-driven AI Software Factory CLI
-> Turn one paragraph of natural-language requirements into a runnable, tested, deliverable Python project
+> Turn one paragraph of natural-language requirements into a runnable, tested, deliverable Python or TypeScript project
 > Apache License 2.0
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -18,7 +18,7 @@ TOAA splits "writing code" into two phases — **compile** and **execute** — m
 | Command | Role | Input | Output |
 |---|---|---|---|
 | **`toaa c`** | **AI Compiler** — translates natural-language requirements into executable phase-steps (a plan) | A requirement text (`-i req.md`, `-t topic.md`, or interactive) | `plan.json` (topologically ordered Step DAG) + `topic.md` + `plan.md` |
-| **`toaa run`** | **AI Executor** — runs the compiled phase-steps in topological order | `plan.json` | Runnable Python project + green `pytest` + `docs/delivery.md` |
+| **`toaa run`** | **AI Executor** — runs the compiled phase-steps in topological order | `plan.json` | Runnable Python/TypeScript project + green tests + `docs/delivery.md` |
 
 > Analogy: `toaa c` ≈ a compiler turning C source into machine instructions; `toaa run` ≈ the CPU executing those instructions.
 > Difference: TOAA's "instructions" are V-model phases (REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY), and each "execution unit" is a sandbox-constrained multi-Agent loop.
@@ -57,9 +57,9 @@ TOAA encodes the **V-model** of software engineering directly as the decompositi
 | Phase | Lead Agent / Skill | Mandatory Artefact | Quality Gate |
 |---|---|---|---|
 | REQUIREMENT | Planner | `topic.md` | Gate 1 human confirmation |
-| ARCH | Architect | `architecture.md` + `requirements.txt` | plan lint |
-| CODE | Coder (`patcher` / `author`) | `src/**.py` | EditGuard line cap |
-| TEST | Tester (`tester`) | `tests/**.py` | **`pytest` exit=0** |
+| ARCH | Architect | `architecture.md` + language manifest (`requirements.txt` / `package.json`) | plan lint |
+| CODE | Coder (`patcher` / `author`) | `src/**.{py,ts}` | EditGuard line cap |
+| TEST | Tester (`tester`) | `tests/**.{py,ts}` | **tests exit=0** |
 | DEBUG | Debugger (`debugger`) | fix patch | ≤ `max_debug_retries` |
 | REFACTOR | Refactorer | optimised `src/` | tests do not regress |
 | DELIVERY | Author | `docs/delivery.md` | All Steps DONE + entry `--help` =0 |
@@ -97,7 +97,7 @@ TOAA encodes the **V-model** of software engineering directly as the decompositi
         ┌─────────────────────────────────────────────────────┐
         │             Tool layer (whitelist + EditGuard)       │
         │  read_file · write_file · append_file ·             │
-        │  replace_in_file · run_shell · run_pytest · git_*   │
+        │  replace_in_file · run_program · run_tests · git_*  │
         └──────────────────┬──────────────────────────────────┘
                            │
             ┌──────────────┼──────────────────┐
@@ -118,7 +118,7 @@ Layer responsibilities:
 - **Agent / Skill**: each Skill is a `(role + system prompt + tool whitelist)` bundle bound to one V-model phase.
 - **Tool**: atomic operations, all guarded by EditGuard / whitelist; writes are restricted to a Step's declared `outputs`.
 - **LLM Router**: multi-provider chain + fallbacks with full audit trail.
-- **Sandbox**: venv or docker, physically isolating pip / pytest side effects.
+- **Sandbox**: Python uses venv/pip/pytest; TypeScript uses npm/tsx/vitest, via subprocess or docker.
 - **Workspace**: git snapshots + `.toaa/audit.jsonl` + `.toaa/.lock`, fully resumable.
 
 ---
@@ -151,13 +151,26 @@ npm run dev -- c
 npm run dev -- run path/to/plan.json
 ```
 
+Incremental evolution on top of an existing workspace:
+
+```bash
+# add a feature against the current project baseline
+toaa c -w path/to/workspace -i feature_req.md --intent feature --yes
+
+# or compile + execute in one go
+toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
+```
+
 ### Common options
 
 | Command | Option | Purpose |
 |---|---|---|
 | `toaa c` | `-i <file>` | Use a requirements file (non-interactive) |
 | `toaa c` | `-t <file>` | Reuse a previously clarified `topic.md` and skip Gate 1 |
+| `toaa c` | `--intent <greenfield\|feature\|refactor>` | Choose between new-project planning and incremental evolution |
+| `toaa c` | `--baseline-plan <file>` | Point incremental planning at an explicit existing `plan.json` |
 | `toaa c` | `--force` | Override the workspace lock and regenerate the plan |
+| `toaa evolve` | `...` | Compile an incremental plan, then immediately execute it in the same workspace |
 | `toaa run` | `--reset` | Reset all Steps to PENDING |
 | `toaa run` | `--force` | Equivalent to `--reset` + override lock |
 | `toaa run` | `--from <stepId>` / `--phase <phase>` | Resume / run only one phase |

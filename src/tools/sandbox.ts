@@ -29,17 +29,19 @@ function buildRunSummary(
   return s;
 }
 
-export const runPythonTool: Tool<
+export const runProgramTool: Tool<
   { args: string[]; cwd?: string; timeoutMs?: number },
   { exitCode: number; stdout: string; stderr: string; timedOut: boolean }
 > = {
-  name: 'run_python',
-  description: '在沙盒 venv 内运行 python，args 传给 python 解释器。',
+  name: 'run_program',
+  description:
+    '在沙盒内运行工程入口程序，args 传给运行时（Python: python <args>；TypeScript: npx tsx <args>）。',
   argsSchema: { args: 'string[]', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
-    const r = await ctx.sandbox.runPython(args.args, { cwd: args.cwd, timeoutMs: args.timeoutMs });
+    const r = await ctx.sandbox.runProgram(args.args, { cwd: args.cwd, timeoutMs: args.timeoutMs });
     const ok = r.exitCode === 0 && !r.timedOut;
-    const base = `python ${args.args.join(' ')} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
+    const cmd = ctx.language === 'typescript' ? 'npx tsx' : 'python';
+    const base = `${cmd} ${args.args.join(' ')} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
     return {
       ok,
       data: { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut },
@@ -48,19 +50,26 @@ export const runPythonTool: Tool<
   },
 };
 
+/** @deprecated 旧工具名 run_python；等价于 run_program，保留以兼容历史 plan。 */
+export const runPythonTool: Tool<
+  { args: string[]; cwd?: string; timeoutMs?: number },
+  { exitCode: number; stdout: string; stderr: string; timedOut: boolean }
+> = { ...runProgramTool, name: 'run_python' };
+
 export const runTestsTool: Tool<
   { args?: string[]; cwd?: string; timeoutMs?: number },
   { exitCode: number; stdout: string; stderr: string; timedOut: boolean; passed: boolean }
 > = {
   name: 'run_tests',
   description:
-    '在沙盒内运行 pytest，可指定额外参数。失败时 summary 自动附带 stderr/stdout 末尾若干行，' +
-    '调用方可直接据此修复，无需再手动加 -v 或调用 analyze_error。',
+    '在沙盒内运行测试套件（Python: pytest；TypeScript: npm test / Vitest），可指定额外参数。' +
+    '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
   argsSchema: { args: 'string[]?', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
-    const r = await ctx.sandbox.runPytest(args.args ?? [], { cwd: args.cwd, timeoutMs: args.timeoutMs });
+    const r = await ctx.sandbox.runTests(args.args ?? [], { cwd: args.cwd, timeoutMs: args.timeoutMs });
     const passed = r.exitCode === 0 && !r.timedOut;
-    const base = `pytest exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
+    const cmd = ctx.language === 'typescript' ? 'npm test' : 'pytest';
+    const base = `${cmd} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
     return {
       ok: passed,
       data: {
@@ -75,18 +84,26 @@ export const runTestsTool: Tool<
   },
 };
 
-export const pipInstallTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {
-  name: 'pip_install',
-  description: '在沙盒内 pip install 一组额外依赖（不会自动写回 requirements.txt）。',
+export const installDepsTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {
+  name: 'install_deps',
+  description:
+    '在沙盒内安装一组额外依赖（Python: pip install；TypeScript: npm install）。不会自动写回依赖清单。',
   argsSchema: { packages: 'string[]' },
   async run(args, ctx) {
-    const r = await ctx.sandbox.pipInstall(args.packages);
+    const r = await ctx.sandbox.installDeps(args.packages);
     const ok = r.exitCode === 0;
-    const base = `pip install ${args.packages.join(' ')} exit=${r.exitCode}`;
+    const cmd = ctx.language === 'typescript' ? 'npm install' : 'pip install';
+    const base = `${cmd} ${args.packages.join(' ')} exit=${r.exitCode}`;
     return {
       ok,
       data: { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr },
       summary: ok ? base : buildRunSummary(base, r),
     };
   },
+};
+
+/** @deprecated 旧工具名 pip_install；等价于 install_deps，保留以兼容历史 plan。 */
+export const pipInstallTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {
+  ...installDepsTool,
+  name: 'pip_install',
 };

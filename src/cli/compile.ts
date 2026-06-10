@@ -12,12 +12,14 @@ import { archiveIfExists } from '../workspace/doc_archive.js';
 import { Planner, buildPlan } from '../agents/planner.js';
 import { PlanSchema } from '../core/plan.js';
 import { DOC_NAMES } from '../core/docs.js';
+import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incremental.js';
 import { lintPlan } from '../core/lint.js';
 import { renderPlanMarkdown } from '../core/render.js';
 import { savePlan } from '../core/storage.js';
 import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { setLocale, t } from '../i18n/index.js';
+import type { PlanIntent } from '../core/plan.js';
 
 export interface CompileOptions {
   workspace: string;
@@ -32,11 +34,13 @@ export interface CompileOptions {
    */
   topicFile?: string;
   outputFile?: string;
+  intent?: PlanIntent;
+  baselinePlanFile?: string;
   yes?: boolean;
   force?: boolean;
 }
 
-export async function runCompile(opts: CompileOptions): Promise<void> {
+export async function runCompile(opts: CompileOptions): Promise<{ planPath?: string }> {
   const ws = new Workspace(path.resolve(opts.workspace));
   console.log(chalk.green('✔'), 'Workspace:', ws.root);
 
@@ -66,6 +70,8 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     workspace: ws.root,
     config: opts.configPath ?? '(default)',
     inputFile: opts.inputFile ?? '(stdin)',
+    intent: opts.intent ?? 'greenfield',
+    baselinePlanFile: opts.baselinePlanFile ?? '',
     yes: !!opts.yes,
     roles: cfg.llm.roles,
     default_provider: cfg.llm.default,
@@ -74,6 +80,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     console.log(chalk.yellow('!'), '--topic and --input were both supplied; --topic wins, --input is ignored.');
   }
   const topicMode = !!opts.topicFile;
+  const intent = opts.intent ?? 'greenfield';
   scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
   try {
@@ -91,7 +98,20 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     process.exit(7);
   }
   const router = new LLMRouter(cfg, audit, scoreStore);
-  const planner = new Planner(router.for('Planner'), audit);
+  const planner = new Planner(router.for('Planner'), audit, cfg.agent.language);
+  const baseline =
+    isIncrementalIntent(intent)
+      ? await loadIncrementalBaseline(ws, { planPath: opts.baselinePlanFile })
+      : { summary: '', sources: [] };
+  if (isIncrementalIntent(intent) && !baseline.summary) {
+    const msg = M.compile.baselineMissing(ws.root);
+    console.error(chalk.red('✖'), msg);
+    await audit.end({ status: 'aborted', reason: 'incremental baseline missing', workspace: ws.root });
+    process.exit(8);
+  }
+  if (baseline.summary) {
+    console.log(chalk.green('✔'), M.compile.baselineLoaded(intent, baseline.sources.join(', ')));
+  }
 
   const trace = (msg: string) => {
     if (process.env.TOAA_TRACE === '1') process.stderr.write(`[toaa-trace] ${msg}\n`);
@@ -134,7 +154,10 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     let questions: Awaited<ReturnType<Planner['clarify']>> = [];
     try {
       trace('planner.clarify.call');
-      questions = await planner.clarify(rawRequirement);
+      questions = await planner.clarify(rawRequirement, {
+        intent,
+        hasBaseline: !!baseline.summary,
+      });
       trace(`planner.clarify.return n=${questions.length}`);
       spin.succeed(M.compile.clarifySucceed(questions.length));
     } catch (err) {
@@ -182,7 +205,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
     await ws.writeFile(draftTopic, topicMd);
   } else {
     trace('renderTopicDraft');
-    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
+    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda, baseline.summary);
     trace('ws.writeFile.draftTopic');
     await ws.writeFile(draftTopic, topicMd);
     trace('ws.writeFile.draftTopic.done');
@@ -204,7 +227,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
         await ws.remove(draftDir);
         console.log(chalk.yellow(M.compile.gate1Cancelled));
         await audit.end({ status: 'cancelled', gate: 1 });
-        return;
+        return {};
       }
       if (decision === 'edit') {
         const edited = await editor({ message: M.compile.editTopicMsg, default: topicMd, postfix: '.md' });
@@ -237,6 +260,8 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
       rawRequirement: finalTopicMd,
       clarifications,
       userAddenda,
+      baselineContext: baseline.summary,
+      intent,
     });
   } catch (err) {
     spin2.fail(M.compile.decomposeFail);
@@ -251,7 +276,12 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   spin2.succeed(M.compile.decomposeSucceed(draft.steps.length));
 
   // 5. 构建并校验 plan
-  const plan = buildPlan(draft, { userAddenda });
+  const plan = buildPlan(draft, {
+    userAddenda,
+    language: cfg.agent.language,
+    intent,
+    baselineSummary: baseline.summary,
+  });
   const parsed = PlanSchema.safeParse(plan);
   if (!parsed.success) {
     console.error(chalk.red(M.compile.schemaFail));
@@ -287,7 +317,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
       await ws.remove(draftDir);
       console.log(chalk.yellow(M.compile.gate2Rejected));
       await audit.end({ status: 'rejected', gate: 2 });
-      return;
+      return {};
     }
   }
 
@@ -308,6 +338,7 @@ export async function runCompile(opts: CompileOptions): Promise<void> {
   console.log(chalk.green('✔'), M.compile.topicWritten(planPath));
   console.log('  Next:', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
+  return { planPath };
   } finally {
     try { await scoreStore?.flush(); } catch { /* never block release */ }
     await lock.release();
@@ -360,6 +391,7 @@ function renderTopicDraft(
   raw: string,
   qa: Array<{ question: string; answer: string }>,
   addenda: string = '',
+  baselineSummary: string = '',
 ): string {
   const M = t().compile;
   const lines: string[] = [];
@@ -385,6 +417,12 @@ function renderTopicDraft(
     lines.push(M.topicSecAddenda);
     lines.push('');
     lines.push(trimmed);
+    lines.push('');
+  }
+  if (baselineSummary.trim()) {
+    lines.push(M.topicSecBaseline);
+    lines.push('');
+    lines.push(baselineSummary.trim());
     lines.push('');
   }
   return lines.join('\n');

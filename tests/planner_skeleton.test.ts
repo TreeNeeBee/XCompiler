@@ -33,7 +33,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const draft = {
       requirementDigest: '批量 DBC → Excel',
       globalPrompt: '',
-      pythonRequirements: ['pytest'],
+      dependencies: ['pytest'],
       steps: [minimalStep('S001', 'REQUIREMENT', ['docs/01-requirement.md']), minimalStep('S002', 'ARCH', ['docs/02-architecture.md'])],
     };
     const p = new Planner(fakeLLM(JSON.stringify(draft)));
@@ -46,7 +46,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: '',
-      pythonRequirements: ['pytest'],
+      dependencies: ['pytest'],
       steps: [
         minimalStep('S001', 'REQUIREMENT', ['docs/01-requirement.md']),
         minimalStep('S002', 'ARCH', ['docs/02-architecture.md']),
@@ -65,7 +65,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: '',
-      pythonRequirements: ['pytest'],
+      dependencies: ['pytest'],
       steps: [
         minimalStep('S001', 'REQUIREMENT', ['docs/01-requirement.md']),
         minimalStep('S002', 'ARCH', ['docs/02-architecture.md']),
@@ -83,7 +83,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: '',
-      pythonRequirements: ['pytest'],
+      dependencies: ['pytest'],
       steps: [
         minimalStep('S001', 'REQUIREMENT', ['docs/01-requirement.md']),
         minimalStep('S002', 'ARCH', ['docs/02-architecture.md']),

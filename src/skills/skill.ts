@@ -83,7 +83,7 @@ export function buildDefaultSkills(): SkillRegistry {
   reg.register({
     name: 'dep_resolver',
     prompt: SK.dep_resolver,
-    tools: ['analyze_error', 'add_dependency', 'pip_install'],
+    tools: ['analyze_error', 'add_dependency', 'install_deps'],
   });
   reg.register({
     name: 'debugger',
@@ -92,7 +92,7 @@ export function buildDefaultSkills(): SkillRegistry {
       'read_file',
       'code_search',
       'run_tests',
-      'run_python',
+      'run_program',
       'analyze_error',
       'apply_patch',
       'replace_in_file',

@@ -7,7 +7,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
     version: '1',
     language: 'python',
     requirementDigest: 'todo CLI app',
-    pythonRequirements: ['pytest==8.*'],
+    dependencies: ['pytest==8.*'],
     createdAt: '2026-01-01T00:00:00.000Z',
     steps: [
       {
@@ -106,11 +106,11 @@ describe('lintPlan', () => {
     expect(lintPlan(makePlan()).filter((i) => i.level === 'error')).toEqual([]);
   });
 
-  it('detects missing pythonRequirements for python', () => {
+  it('detects missing dependencies for python', () => {
     const plan = makePlan();
-    plan.pythonRequirements = [];
+    plan.dependencies = [];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
-    expect(errs.some((e) => e.message.includes('pythonRequirements'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('plan.dependencies'))).toBe(true);
   });
 
   it('rejects requirements.txt as a Step output', () => {

@@ -59,6 +59,8 @@ program
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
   .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--intent <kind>', t().cli.optIntent, 'greenfield')
+  .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
@@ -69,13 +71,58 @@ program
       baseDir: opts.baseDir,
       name: opts.name,
     });
-    await runCompile({
+    const compiled = await runCompile({
       workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
+      intent: opts.intent,
+      baselinePlanFile: opts.baselinePlan,
       outputFile: opts.planOut,
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
+      force: !!opts.force,
+    });
+  });
+
+program
+  .command('evolve')
+  .description(t().cli.evolveDescription)
+  .option('-o, --output <dir>', t().cli.optOutput)
+  .option('-w, --workspace <dir>', t().cli.optWorkspace)
+  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--name <name>', t().cli.optName)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('-i, --input <file>', t().cli.optInput)
+  .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--intent <kind>', t().cli.optIntent, 'feature')
+  .option('--baseline-plan <file>', t().cli.optBaselinePlan)
+  .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--yes', t().cli.optYes, false)
+  .option('--force', t().cli.optForce, false)
+  .action(async (opts) => {
+    const ws = await resolveWorkspace({
+      output: opts.output,
+      workspace: opts.workspace,
+      baseDir: opts.baseDir,
+      name: opts.name,
+    });
+    const resolvedPlanPath = opts.planOut ? path.resolve(opts.planOut) : path.join(ws, 'plan.json');
+    const compiled = await runCompile({
+      workspace: ws,
+      configPath: opts.config,
+      inputFile: opts.input,
+      topicFile: opts.topic,
+      intent: opts.intent,
+      baselinePlanFile: opts.baselinePlan,
+      outputFile: resolvedPlanPath,
+      yes: !!opts.yes && (!!opts.input || !!opts.topic),
+      force: !!opts.force,
+    });
+    if (!compiled.planPath) return;
+    await runExecute({
+      planPath: compiled.planPath,
+      workspace: ws,
+      configPath: opts.config,
       force: !!opts.force,
     });
   });

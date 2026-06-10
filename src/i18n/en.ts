@@ -21,7 +21,7 @@ V-model phases: REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFACT
 Mandatory rules:
 1. Return pure JSON that matches the given schema. No explanatory text and no Markdown code fences.
 2. **You must emit a complete V-model skeleton with at least 7 Steps**: 1 REQUIREMENT, 1 ARCH, 1 TASK, 1+ CODE, 1+ TEST, 1 REFACTOR, 1 DELIVERY. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
-3. ARCH must produce \`docs/02-architecture.md\` (interfaces / modules / dependency notes). **Do NOT list \`requirements.txt\` in any Step's outputs**: that file is seeded from \`pythonRequirements\` when toaa_run starts; later additions must go through the \`add_dependency\` tool in CODE/DEBUG phases.
+3. ARCH must produce \`docs/02-architecture.md\` (interfaces / modules / dependency notes). **Do NOT list \`requirements.txt\` in any Step's outputs**: that file is seeded from \`dependencies\` when toaa_run starts; later additions must go through the \`add_dependency\` tool in CODE/DEBUG phases.
 4. **Every CODE Step must have at least one TEST Step (directly or transitively) depending on it.** Either give each CODE Step its own TEST Step (whose dependsOn includes that CODE Step), or use one aggregate TEST Step whose dependsOn lists all CODE Steps. "CODE without TEST" or partial TEST coverage is rejected by plan-lint S004/S005.
 5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY.
 6. The same outputs path is globally unique. Sole exception: REFACTOR / DEBUG steps may re-declare a file already produced by their dependency chain (treated as a "modify").
@@ -32,7 +32,7 @@ Mandatory rules:
 11. **Phase purity**: REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY outputs must NOT contain src/**/*.py or tests/**/*.py — only docs/**/*.md. All implementation code lives in CODE. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list existing test files (e.g. \`tests/test_xxx.py\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs pytest automatically).**
 12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. toaa_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
 13. **Global prompt**: globalPrompt is one paragraph of project background / cross-cutting conventions; it is concatenated into every Step.
-14. **pythonRequirements**: a string array with one pip dependency per line; written **verbatim** to \`requirements.txt\` for \`pip install -r requirements.txt\`. Therefore: pip-parseable plain text only — one package per line, no Markdown list \`-\` prefix, no comments other than \`# ...\`, no nested blanks. **Must include \`pytest\`.** **Use bare package names — no version constraints** (no \`pkg==1.2.*\` / \`pkg>=2\` / any PEP 440 form), because LLM-suggested versions are often invalid; the user pins versions later by editing \`requirements.txt\`. toaa_run seeds this into \`requirements.txt\` before sandbox start; ARCH/CODE Steps must not overwrite that file directly. **Never invent non-existent PyPI packages** — common traps such as \`pydbc\`/\`python-dbc\`/\`pydbcparser\` do not exist; for CAN \`.dbc\` parsing use \`cantools\`; for CAN bus IO use \`python-can\`. When in doubt, omit rather than fabricate.
+14. **dependencies**: a string array with one pip dependency per line; written **verbatim** to \`requirements.txt\` for \`pip install -r requirements.txt\`. Therefore: pip-parseable plain text only — one package per line, no Markdown list \`-\` prefix, no comments other than \`# ...\`, no nested blanks. **Must include \`pytest\`.** **Use bare package names — no version constraints** (no \`pkg==1.2.*\` / \`pkg>=2\` / any PEP 440 form), because LLM-suggested versions are often invalid; the user pins versions later by editing \`requirements.txt\`. toaa_run seeds this into \`requirements.txt\` before sandbox start; ARCH/CODE Steps must not overwrite that file directly. **Never invent non-existent PyPI packages** — common traps such as \`pydbc\`/\`python-dbc\`/\`pydbcparser\` do not exist; for CAN \`.dbc\` parsing use \`cantools\`; for CAN bus IO use \`python-can\`. When in doubt, omit rather than fabricate.
 15. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into a list of independently-executable CODE tasks (each with id / description / acceptance).
 16. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — must run the full regression before writing docs/04-refactor.md". outputs must include \`docs/04-refactor.md\`.
 17. **DELIVERY phase**: the DELIVERY Step's outputs must include \`docs/05-delivery.md\`, covering: README summary / entry command / dependency list / link to test report / known limitations. DELIVERY must not introduce new functionality.
@@ -55,7 +55,7 @@ Output JSON shape:
 {
   "requirementDigest": "string",
   "globalPrompt": "string (global background and conventions)",
-  "pythonRequirements": ["pytest", "..."],
+  "dependencies": ["pytest", "..."],
   "steps": [
     {
       "id": "S001",
@@ -86,7 +86,7 @@ Every round you must return strict JSON:
 Rules:
 1. Only call tools in the Step's authorised whitelist.
 2. File writes must land within the Step's outputs whitelist (other paths are rejected).
-3. Generated code must follow Python best practice; modules importable, functions type-annotated.
+3. Generated code must follow the target language's best practice; modules importable, functions typed appropriately.
    - [Import convention] When modules under src/ import each other, use "from <module> import …" (sibling name).
      **Never write "from src.<module> import …".** If main.py needs to run from the project root, prepend
      "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" before any import,
@@ -109,7 +109,7 @@ Rules:
      Never edit the implementation, the assertion, or mock out the parser to "fix" a parse error — fix the fixture first.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
-6. [Large-file chunked writes] write_file / append_file content must not exceed 6000 bytes per call (~150 lines of Python).
+6. [Large-file chunked writes] write_file / append_file content must not exceed 6000 bytes per call (~150 lines of code).
    - For larger files: in the same actions array, first write_file the head (imports + top-level constants + first function/class),
      then several append_file calls each adding one function/class block (preserving trailing newlines).
    - The concatenated result must be valid Python; never split inside a function body.
@@ -142,8 +142,11 @@ const messages: Messages = {
     optTail: 'number of recent audit entries',
     optPlan: 'plan.json path, default <workspace>/plan.json',
     optLang: 'UI / prompt language: EN | CN (ISO 3166-1 Alpha-2)',
+    optIntent: 'plan intent: greenfield | feature | refactor',
+    optBaselinePlan: 'existing baseline plan.json path (default <workspace>/plan.json)',
     argPlan: 'plan.json path (default = <workspace>/plan.json)',
     argStepId: 'Step ID, e.g. S001',
+    evolveDescription: 'Generate and execute an incremental feature/refactor plan on top of an existing workspace',
   },
   compile: {
     topicEmptyExit: '--topic file is empty, aborting.',
@@ -180,11 +183,14 @@ const messages: Messages = {
     gate2Confirm: 'Confirm this plan? (Final confirmation — confirms write to plan.json)',
     gate2AuditLabel: 'Plan Confirmation Gate (Gate 2)',
     gate2Rejected: 'Not confirmed, abandoned. plan.json was not written.',
+    baselineLoaded: (kind, sources) => `loaded ${kind} baseline from: ${sources}`,
+    baselineMissing: (workspace) => `incremental mode requires an existing project baseline in ${workspace} (topic / docs / plan / src).`,
     topicTitle: '# Project Topic',
     topicPreamble: '> This file is the project topic frozen after requirement clarification. All subsequent V-model decomposition and every phase output use this file as the sole requirement input.',
     topicSecRequirement: '## Original requirement',
     topicSecClarify: '## Clarification record',
     topicSecAddenda: '## User addenda',
+    topicSecBaseline: '## Existing project baseline',
   },
   inspect: {
     noPlanFound: 'No plan.json found',
@@ -235,13 +241,14 @@ const messages: Messages = {
   },
   render: {
     sectionGlobalPrompt: '## Global prompt (injected into every Step\'s system prompt)',
-    sectionPythonRequirements: '## Python requirements (written to requirements.txt)',
+    sectionDependencies: (manifestFile) => `## Dependencies (written to ${manifestFile})`,
+    sectionBaselineSummary: '## Existing project baseline',
     labelSystemPrompt: '**System prompt (sole mandate):**',
   },
   prompts: {
-    plannerSystem: PLANNER_SYSTEM,
+    plannerSystem: (p) => PLANNER_SYSTEM + p.plannerPromptOverride,
     plannerClarifySystem: PLANNER_CLARIFY_SYSTEM,
-    plannerClarify: (raw) =>
+    plannerClarify: (raw, opts = {}) =>
       `The user's original requirement is:
 
 """
@@ -250,13 +257,15 @@ ${raw}
 
 Based on this requirement, propose 3-5 of the most critical clarifying questions. Return ONLY a JSON array, each item shaped like {"id":"Q1","question":"..."}. If the requirement is already very clear, return [].
 
-[Hard constraint] The current TOAA version only supports generating Python projects; target language, runtime and test framework (pytest) are fixed.
+[Hard constraint] The implementation stack is already fixed by TOAA config / the existing project baseline. Do not reopen language/runtime/package-manager decisions.
 **Do NOT** ask questions of these forms:
   - "Which programming language / framework / runtime should this use?"
   - "Which test framework / build tool / package manager?"
   - "Which OS is the target platform?"
-Focus clarification on **business semantics, input/output formats, edge cases, performance & correctness criteria**.`,
-    plannerDecompose: (raw, qa, addenda) =>
+${opts.intent && opts.intent !== 'greenfield'
+  ? `This is an incremental ${opts.intent} request against an existing project${opts.hasBaseline ? ' with a separate baseline summary that will be provided during decomposition' : ''}. Ask ONLY delta questions; do not ask to rebuild the project from scratch.`
+  : ''}Focus clarification on **business semantics, input/output formats, edge cases, performance & correctness criteria**.`,
+    plannerDecompose: (raw, qa, addenda, opts = {}) =>
       `Original requirement:
 """
 ${raw}
@@ -265,8 +274,19 @@ ${raw}
 Clarification Q&A:
 ${qa || '(none)'}
 
-${addenda ? `User addenda (must be strictly followed; takes priority over any vague parts of the original):\n"""\n${addenda}\n"""\n\n` : ''}Output a strict JSON plan per the system rules.`,
-    executorSystem: EXECUTOR_SYSTEM,
+${addenda ? `User addenda (must be strictly followed; takes priority over any vague parts of the original):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+  ? `Incremental intent: ${opts.intent}
+
+Generate an incremental ${opts.intent} plan on top of the existing project. Reuse the current architecture, files, tests and dependencies where possible instead of rebootstrapping the whole project. Outside the requested change, preserve existing behaviour.
+
+Existing project baseline:
+"""
+${opts.baseline || '(missing baseline)'}
+"""
+
+`
+  : ''}Output a strict JSON plan per the system rules.`,
+    executorSystem: (p) => EXECUTOR_SYSTEM + p.executorPromptOverride,
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
       'Begin with read_file / code_search to localise the issue, then make the smallest possible fix via apply_patch / replace_in_file / add_dependency, and finally run_tests to verify.' +

@@ -1,7 +1,7 @@
 # TOAA — The One Above All
 
 > 多 LLM 协同 + V 模型驱动的 AI 软件工厂 / Software Factory CLI
-> 输入一段自然语言需求 → 自动产出可运行、可测试、可交付的 Python 工程
+> 输入一段自然语言需求 → 自动产出可运行、可测试、可交付的 Python 或 TypeScript 工程
 > Apache License 2.0
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -18,7 +18,7 @@ TOAA 把"写代码"这件事按"编译 → 执行"两阶段拆分，对标传统
 | 命令 | 定位 | 输入 | 输出 |
 |---|---|---|---|
 | **`toaa c`** | **AI 编译器** —— 把自然语言需求"翻译"成可执行的阶段步骤（plan） | 一段需求文本（`-i req.md` 或交互输入） | `plan.json`（拓扑有序的 Step DAG）+ `topic.md` + `plan.md` |
-| **`toaa run`** | **AI 执行器** —— 按拓扑顺序依次执行编译输出的阶段步骤 | `plan.json` | 可运行 Python 工程 + `pytest` 全绿 + `docs/delivery.md` |
+| **`toaa run`** | **AI 执行器** —— 按拓扑顺序依次执行编译输出的阶段步骤 | `plan.json` | 可运行 Python/TypeScript 工程 + 绿色测试 + `docs/delivery.md` |
 
 > 类比：`toaa c` ≈ 编译器把 C 源码翻译成机器指令；`toaa run` ≈ CPU 顺次执行这些指令。
 > 区别：TOAA 的"指令"是 V 模型阶段（REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY），"执行单元"是受沙盒约束的多 Agent 循环。
@@ -57,9 +57,9 @@ TOAA 把软件工程的 **V 模型** 直接编码为 `toaa c` 的拆解骨架与
 | 阶段 | 主导 Agent / Skill | 强制产物 | 质量门 |
 |---|---|---|---|
 | REQUIREMENT | Planner | `topic.md` | Gate 1 人工确认 |
-| ARCH | Architect | `architecture.md` + `requirements.txt` | plan lint |
-| CODE | Coder (`patcher` / `author`) | `src/**.py` | EditGuard 行数上限 |
-| TEST | Tester (`tester`) | `tests/**.py` | **`pytest` exit=0** |
+| ARCH | Architect | `architecture.md` + 语言清单（`requirements.txt` / `package.json`） | plan lint |
+| CODE | Coder (`patcher` / `author`) | `src/**.{py,ts}` | EditGuard 行数上限 |
+| TEST | Tester (`tester`) | `tests/**.{py,ts}` | **测试 exit=0** |
 | DEBUG | Debugger (`debugger`) | 修复 patch | ≤ `max_debug_retries` |
 | REFACTOR | Refactorer | 优化后的 `src/` | 测试不退化 |
 | DELIVERY | Author | `docs/delivery.md` | 全 Step DONE |
@@ -97,7 +97,7 @@ TOAA 把软件工程的 **V 模型** 直接编码为 `toaa c` 的拆解骨架与
         ┌─────────────────────────────────────────────────────┐
         │                Tool 层（白名单 + EditGuard）         │
         │  read_file · write_file · append_file ·             │
-        │  replace_in_file · run_shell · run_pytest · git_*   │
+        │  replace_in_file · run_program · run_tests · git_*  │
         └──────────────────┬──────────────────────────────────┘
                            │
             ┌──────────────┼──────────────────┐
@@ -118,7 +118,7 @@ TOAA 把软件工程的 **V 模型** 直接编码为 `toaa c` 的拆解骨架与
 - **Agent / Skill**：每个 Skill 是一组「角色 + System Prompt + 工具白名单」，绑定到 V 模型的某个阶段。
 - **Tool**：原子操作，全部经 EditGuard / 白名单审查；写入只允许落在 Step 声明的 outputs 内。
 - **LLM Router**：多 provider 链式回退（chain + fallbacks）+ 全量审计。
-- **Sandbox**：venv 或 docker，物理隔离 pip/pytest 副作用。
+- **Sandbox**：Python 走 venv/pip/pytest；TypeScript 走 npm/tsx/vitest，可选 subprocess 或 docker。
 - **Workspace**：git 快照 + `.toaa/audit.jsonl` + `.toaa/.lock`，可断点续跑。
 
 ---
@@ -151,11 +151,26 @@ npm run dev -- c
 npm run dev -- run path/to/plan.json
 ```
 
+基于已有工程做增量开发：
+
+```bash
+# 在当前 workspace 基线之上新增 feature
+toaa c -w path/to/workspace -i feature_req.md --intent feature --yes
+
+# 或一条命令完成 compile + run
+toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
+```
+
 ### 常用选项
 
 | 命令 | 选项 | 用途 |
 |---|---|---|
+| `toaa c` | `-i <file>` | 使用需求文件，跳过交互输入 |
+| `toaa c` | `-t <file>` | 复用已有 `topic.md`，跳过 Gate 1 |
+| `toaa c` | `--intent <greenfield\|feature\|refactor>` | 选择新建工程或基于现有工程做增量规划 |
+| `toaa c` | `--baseline-plan <file>` | 为增量规划显式指定已有 `plan.json` |
 | `toaa c` | `--force` | 覆写 workspace 锁，强制重新生成 plan |
+| `toaa evolve` | `...` | 先编译增量 plan，再在同一 workspace 内立即执行 |
 | `toaa run` | `--reset` | 重置所有 Step 为 PENDING |
 | `toaa run` | `--force` | 等价于 `--reset` + 覆写锁 |
 | `toaa run` | `--from <stepId>` / `--phase <phase>` | 断点续跑 / 仅跑某阶段 |

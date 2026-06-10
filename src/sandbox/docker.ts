@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
+import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 import { execRaw, sanitizeVenvName } from './subprocess.js';
 
@@ -10,7 +11,9 @@ export interface DockerSandboxOptions {
   ws: Workspace;
   limits: SandboxLimits;
   audit?: AuditLogger;
-  /** 镜像名，默认 python:3.11-slim */
+  /** 目标语言，决定运行时与默认镜像。默认 python。 */
+  language?: Language;
+  /** 镜像名，默认按语言推导（python:3.11-slim / node:20-slim） */
   image?: string;
   /** 容器内挂载点，默认 /workspace */
   workdir?: string;
@@ -44,6 +47,7 @@ export interface DockerSandboxOptions {
 export class DockerSandbox implements Sandbox {
   readonly kind = 'docker' as const;
 
+  private readonly language: Language;
   private readonly image: string;
   private readonly workdir: string;
   private readonly sandboxRel: string;
@@ -54,10 +58,11 @@ export class DockerSandbox implements Sandbox {
   private readonly venvName: string;
 
   constructor(private readonly opts: DockerSandboxOptions) {
-    this.image = opts.image ?? 'python:3.11-slim';
+    this.language = opts.language ?? 'python';
+    this.image = opts.image ?? (this.language === 'typescript' ? 'node:20-slim' : 'python:3.11-slim');
     this.workdir = opts.workdir ?? '/workspace';
     this.sandboxRel = (opts.sandboxDir ?? '.sandbox').replaceAll('\\', '/');
-    this.cacheRel = `${this.sandboxRel}/requirements.sha256`;
+    this.cacheRel = `${this.sandboxRel}/${this.language === 'typescript' ? 'package.sha256' : 'requirements.sha256'}`;
     this.dockerBin = opts.dockerBin ?? 'docker';
     this.extraRunArgs = opts.extraRunArgs ?? [];
     this.pull = !!opts.pull;
@@ -92,14 +97,21 @@ export class DockerSandbox implements Sandbox {
 
   /**
    * 构建/复用环境：
-   * 1. 哈希 requirements.txt → 命中缓存（venv 存在 + sha 一致）则直接返回；
-   * 2. 否则起一次性容器，在 bind-mount 的 .sandbox/ 内创建 venv + pip install。
+   * 1. 哈希依赖清单 → 命中缓存（venv/node_modules 存在 + sha 一致）则直接返回；
+   * 2. 否则起一次性容器，在 bind-mount 的工程目录内安装依赖。
    */
-  async build(requirementsTxt = 'requirements.txt'): Promise<{ rebuilt: boolean; reason: string }> {
+  async build(manifestFile?: string): Promise<{ rebuilt: boolean; reason: string }> {
     await this.assertDocker();
     const sandboxAbs = this.opts.ws.abs(this.sandboxRel);
     await fs.mkdir(sandboxAbs, { recursive: true });
+    if (this.language === 'typescript') {
+      return this.buildNode(manifestFile ?? 'package.json');
+    }
+    return this.buildPython(manifestFile ?? 'requirements.txt');
+  }
 
+  private async buildPython(requirementsTxt: string): Promise<{ rebuilt: boolean; reason: string }> {
+    const sandboxAbs = this.opts.ws.abs(this.sandboxRel);
     const reqAbs = this.opts.ws.abs(requirementsTxt);
     let reqContent = '';
     try {
@@ -161,6 +173,58 @@ export class DockerSandbox implements Sandbox {
     return { rebuilt: true, reason: venvExists ? 'requirements changed' : 'venv created' };
   }
 
+  private async buildNode(manifestFile: string): Promise<{ rebuilt: boolean; reason: string }> {
+    const pkgAbs = this.opts.ws.abs(manifestFile);
+    let pkgContent = '';
+    try {
+      pkgContent = await fs.readFile(pkgAbs, 'utf8');
+    } catch {
+      return { rebuilt: false, reason: 'no package.json yet' };
+    }
+    const lockContent = await fs.readFile(this.opts.ws.abs('package-lock.json'), 'utf8').catch(() => '');
+    const sig = crypto.createHash('sha256').update(this.image + '\n' + pkgContent + '\n' + lockContent).digest('hex');
+    const cacheAbs = this.opts.ws.abs(this.cacheRel);
+    const cached = await fs.readFile(cacheAbs, 'utf8').catch(() => '');
+    const modulesExist = await fs
+      .stat(this.opts.ws.abs('node_modules'))
+      .then(() => true)
+      .catch(() => false);
+    if (modulesExist && cached === sig) {
+      return { rebuilt: false, reason: 'cache hit' };
+    }
+
+    if (this.pull) {
+      const r = await execRaw(this.dockerBin, ['pull', this.image], { timeoutMs: 300_000 });
+      if (r.exitCode !== 0) {
+        throw new Error(`docker pull ${this.image} failed: ${r.stderr || r.stdout}`);
+      }
+    }
+
+    const r = await execRaw(
+      this.dockerBin,
+      [
+        'run',
+        '--rm',
+        '-v',
+        `${this.opts.ws.root}:${this.workdir}`,
+        '-w',
+        this.workdir,
+        ...this.extraRunArgs,
+        this.image,
+        'bash',
+        '-lc',
+        'npm install --no-audit --no-fund',
+      ],
+      { timeoutMs: this.opts.limits.wall_seconds * 1000 * 10 },
+    );
+    if (r.exitCode !== 0) {
+      throw new Error(`docker sandbox build failed (exit=${r.exitCode}):\n${r.stderr || r.stdout}`);
+    }
+    await fs.writeFile(cacheAbs, sig, 'utf8');
+    await this.opts.audit?.event('sandbox.exec', 'docker node sandbox built (npm install)', { image: this.image });
+    return { rebuilt: true, reason: modulesExist ? 'package.json changed' : 'node_modules created' };
+  }
+
   /** 在容器内执行任意命令。cwd 视为 workspace 内相对路径或绝对宿主路径（后者会被映射回容器）。 */
   async exec(cmd: string, argv: string[], extra?: ExecExtra): Promise<ExecResult> {
     const containerCwd = this.toContainerPath(extra?.cwd) ?? this.workdir;
@@ -177,11 +241,20 @@ export class DockerSandbox implements Sandbox {
       `--memory=${this.opts.limits.memory_mb}m`,
       '--pids-limit',
       '256',
-      '-e',
-      `VIRTUAL_ENV=${this.venvInContainer}`,
-      '-e',
-      `PATH=${this.venvInContainer}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
     ];
+    if (this.language === 'typescript') {
+      dockerArgs.push(
+        '-e',
+        `PATH=${this.workdir}/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      );
+    } else {
+      dockerArgs.push(
+        '-e',
+        `VIRTUAL_ENV=${this.venvInContainer}`,
+        '-e',
+        `PATH=${this.venvInContainer}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+      );
+    }
     for (const [k, v] of Object.entries(extra?.env ?? {})) {
       dockerArgs.push('-e', `${k}=${v}`);
     }
@@ -203,15 +276,25 @@ export class DockerSandbox implements Sandbox {
     return execRaw(this.dockerBin, dockerArgs, { timeoutMs });
   }
 
-  async runPython(args: string[], extra?: ExecExtra): Promise<ExecResult> {
+  async runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      return this.exec('npx', ['tsx', ...args], extra);
+    }
     return this.exec(this.pythonInContainer, args, extra);
   }
 
-  async runPytest(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+  async runTests(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      const argv = args.length > 0 ? ['test', '--silent', '--', ...args] : ['test', '--silent'];
+      return this.exec('npm', argv, extra);
+    }
     return this.exec(this.pythonInContainer, ['-m', 'pytest', ...args], extra);
   }
 
-  async pipInstall(packages: string[]): Promise<ExecResult> {
+  async installDeps(packages: string[]): Promise<ExecResult> {
+    if (this.language === 'typescript') {
+      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages]);
+    }
     return this.exec(this.pipInContainer, ['install', '--quiet', ...packages]);
   }
 

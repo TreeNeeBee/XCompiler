@@ -1,5 +1,6 @@
 import { PHASE_ORDER, type Plan, type Step } from './plan.js';
 import { DOC_NAMES, PHASE_DOC } from './docs.js';
+import { getLanguageProfile } from './language.js';
 
 export interface LintIssue {
   level: 'error' | 'warn';
@@ -20,6 +21,7 @@ export class PlanLintError extends Error {
 export function lintPlan(plan: Plan): LintIssue[] {
   const issues: LintIssue[] = [];
   const ids = new Set<string>();
+  const profile = getLanguageProfile(plan.language);
 
   // 1. unique ids + dependsOn closure
   for (const s of plan.steps) {
@@ -93,7 +95,10 @@ export function lintPlan(plan: Plan): LintIssue[] {
     );
     if (!covered) {
       const suggestedId = nextStepId(plan.steps);
-      const testFile = suggestTestFileFor(c);
+      const srcOut = c.outputs.find(
+        (o) => o.startsWith('src/') && profile.codeExtensions.some((e) => o.endsWith(e)),
+      );
+      const testFile = profile.testFileFor(srcOut, c.id);
       issues.push({
         level: 'error',
         stepId: c.id,
@@ -106,22 +111,32 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 6. python projects require pythonRequirements (renderer seeds requirements.txt; ARCH must NOT output it)
-  if (plan.language === 'python') {
-    if (!plan.pythonRequirements || plan.pythonRequirements.length === 0) {
+  // 6. 依赖清单规则（按语言 profile 分流）。
+  if (profile.seedManifestFromDeps) {
+    // Python：runtime 依据 plan.dependencies 渲染 requirements.txt；ARCH 不得直接产出该文件。
+    if (!plan.dependencies || plan.dependencies.length === 0) {
       issues.push({
         level: 'error',
-        message: 'For python plans, plan.pythonRequirements must be non-empty (will seed requirements.txt at runtime).',
+        message: `For ${profile.displayName} plans, plan.dependencies must be non-empty (will seed ${profile.manifestFile} at runtime).`,
       });
     }
     for (const s of plan.steps) {
-      if (s.outputs.some((o) => o === 'requirements.txt' || o.endsWith('/requirements.txt'))) {
+      if (s.outputs.some((o) => o === profile.manifestFile || o.endsWith(`/${profile.manifestFile}`))) {
         issues.push({
           level: 'error',
           stepId: s.id,
-          message: 'requirements.txt is renderer-owned; do not list it as a Step output. Use add_dependency tool instead.',
+          message: `${profile.manifestFile} is renderer-owned; do not list it as a Step output. Use add_dependency tool instead.`,
         });
       }
+    }
+  } else {
+    // TypeScript 等：依赖清单（package.json）由某个 ARCH Step 撰写，必须有人产出它。
+    const authored = plan.steps.some((s) => s.outputs.includes(profile.manifestFile));
+    if (!authored) {
+      issues.push({
+        level: 'error',
+        message: `For ${profile.displayName} plans, exactly one ARCH step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`,
+      });
     }
   }
 
@@ -133,7 +148,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
   for (const s of plan.steps) {
     if (!DOC_ONLY_PHASES.has(s.phase)) continue;
     for (const out of s.outputs) {
-      if (SRC_RE.test(out) && (out.endsWith('.py') || out.endsWith('/'))) {
+      if (SRC_RE.test(out) && (profile.codeExtensions.some((e) => out.endsWith(e)) || out.endsWith('/'))) {
         issues.push({
           level: 'error',
           stepId: s.id,
@@ -278,16 +293,6 @@ function nextStepId(steps: Step[]): string {
     return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
   }, 0);
   return 'S' + String(max + 1).padStart(3, '0');
-}
-
-/** 根据 CODE Step 的首个 src/ 输出推导一个建议的 tests/test_*.py 路径。 */
-function suggestTestFileFor(code: Step): string {
-  const src = code.outputs.find((o) => o.startsWith('src/') && o.endsWith('.py'));
-  if (src) {
-    const base = src.replace(/^src\//, '').replace(/\.py$/, '').replace(/\//g, '_');
-    return `tests/test_${base}.py`;
-  }
-  return `tests/test_${code.id.toLowerCase()}.py`;
 }
 
 export function topoSort(steps: Step[]): Step[] {

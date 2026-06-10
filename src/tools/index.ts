@@ -1,7 +1,13 @@
 import { ToolRegistry } from './types.js';
 import { readFileTool, writeFileTool, appendFileTool, listDirTool } from './fs.js';
 import { applyPatchTool } from './patch.js';
-import { runPythonTool, runTestsTool, pipInstallTool } from './sandbox.js';
+import {
+  runProgramTool,
+  runPythonTool,
+  runTestsTool,
+  installDepsTool,
+  pipInstallTool,
+} from './sandbox.js';
 import { replaceInFileTool, codeSearchTool, analyzeErrorTool } from './edit.js';
 import { addDependencyTool } from './deps.js';
 import { httpFetchTool } from './net.js';
@@ -23,9 +29,11 @@ export function buildDefaultRegistry(): ToolRegistry {
   reg.register(applyPatchTool);
   reg.register(replaceInFileTool);
   reg.register(addDependencyTool);
-  // 运行
+  // 运行（语言中立名 + 兼容旧名）
+  reg.register(runProgramTool);
   reg.register(runPythonTool);
   reg.register(runTestsTool);
+  reg.register(installDepsTool);
   reg.register(pipInstallTool);
   // 网络
   reg.register(httpFetchTool);

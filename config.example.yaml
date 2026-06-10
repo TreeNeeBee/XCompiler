@@ -39,6 +39,7 @@ llm:
   scores: {}
 
 agent:
+  # python | typescript
   language: python
   max_steps: 50
   max_debug_retries: 3
@@ -57,12 +58,15 @@ agent:
     # off | download-only (default) | pypi-only (alias) | full
     #   download-only — outbound HTTP/HTTPS allowed, no inbound port publishing
     #   full          — also publishes `expose_ports` to 127.0.0.1 for testing
-    #                   python network apps from the host side
+    #                   Python / Node network apps from the host side
     network: download-only
     # When network=full, container ports listed here are published on
     # 127.0.0.1:<port> so host-side tests can reach the running app.
     # expose_ports: [8000]
   sandbox_docker:
+    # Default image is chosen from agent.language:
+    #   python     -> python:3.11-slim
+    #   typescript -> node:20-slim
     image: python:3.11-slim
     workdir: /workspace
     pull: false
