@@ -85,7 +85,7 @@ describe('calibratePlanCoverage', () => {
       version: '1',
       language: 'python',
       requirementDigest: 'd',
-      pythonRequirements: ['pytest'],
+      dependencies: ['pytest'],
       createdAt: '2026-01-01T00:00:00.000Z',
       steps: calibrated,
     };

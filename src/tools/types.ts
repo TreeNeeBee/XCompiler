@@ -1,6 +1,7 @@
 import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox } from '../sandbox/types.js';
 import type { AuditLogger } from '../audit/audit.js';
+import type { Language } from '../core/plan.js';
 
 /** 工具调用的统一上下文。 */
 export interface ToolContext {
@@ -11,6 +12,8 @@ export interface ToolContext {
   allowedWrites: string[];
   /** 当前 Step 的 id（仅用于审计）。 */
   stepId: string;
+  /** 目标语言（决定依赖清单文件等）。默认 python。 */
+  language?: Language;
 }
 
 /** 单次工具调用的结果统一结构。 */

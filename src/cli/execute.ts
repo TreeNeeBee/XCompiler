@@ -13,6 +13,7 @@ import { createSandbox } from '../sandbox/factory.js';
 import { PhaseEngine } from '../core/engine.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { normalizePythonRequirements } from '../agents/planner.js';
+import { getLanguageProfile } from '../core/language.js';
 import { setLocale, t } from '../i18n/index.js';
 
 export interface ExecuteOptions {
@@ -73,14 +74,16 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     await savePlan(planAbs, plan);
   }
 
-  // 将 toaa_c 沉淀的 pythonRequirements 预写入 requirements.txt。
-  // 需要 calibration（剥离版本锁 / 重写幻觉包名）后再与现有内容对比：
+  // 将 toaa_c 沉淀的依赖预写入依赖清单（仅当语言 profile 要求 runtime seeding 时，如 Python）。
+  // Python 需要 calibration（剥离版本锁 / 重写幻觉包名）后再与现有内容对比：
   //  - 不存在 → 写入。
   //  - 已存在但内容与校准后不一致（例如 老运行遗留了 `cantools==4.3.*`）→ 重写为校准后版本。
   // 这能防止升级 toaa 后旧 sandbox 仍卡在幻觉依赖上。
-  if (plan.pythonRequirements && plan.pythonRequirements.length > 0) {
-    const reqRel = 'requirements.txt';
-    const desired = [...normalizePythonRequirements(plan.pythonRequirements)].sort().join('\n') + '\n';
+  // TypeScript 等语言的 package.json 由 ARCH 步骤撰写，不在此 seeding。
+  const profile = getLanguageProfile(plan.language);
+  if (profile.seedManifestFromDeps && plan.dependencies && plan.dependencies.length > 0) {
+    const reqRel = profile.manifestFile;
+    const desired = [...normalizePythonRequirements(plan.dependencies)].sort().join('\n') + '\n';
     let existing = '';
     if (await ws.exists(reqRel)) {
       existing = await ws.readFile(reqRel);
@@ -90,8 +93,8 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       await audit.event(
         'plan.persist',
         existing
-          ? 'recalibrated requirements.txt (stripped version pins / hallucinated names)'
-          : 'seeded requirements.txt from plan.pythonRequirements',
+          ? `recalibrated ${reqRel} (stripped version pins / hallucinated names)`
+          : `seeded ${reqRel} from plan.dependencies`,
         { previousLines: existing.split('\n').length - 1, newLines: desired.split('\n').length - 1 },
       );
     }
@@ -139,7 +142,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
   }
   const router = new LLMRouter(cfg, audit, scoreStore);
   const git = new GitService(ws);
-  const sandbox = createSandbox(cfg, ws, audit);
+  const sandbox = createSandbox(cfg, ws, audit, plan.language);
 
   const engine = new PhaseEngine({
     ws,

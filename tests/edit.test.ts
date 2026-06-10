@@ -117,9 +117,10 @@ describe('add_dependency', () => {
     expect(await ws.readFile('requirements.txt')).toBe('numpy\npytest\nrequests\n');
   });
 
-  it('refuses if requirements.txt not in whitelist', async () => {
+  it('manages the manifest even if it is not in step outputs whitelist', async () => {
     ctx.allowedWrites = ['src/'];
     const r = await addDependencyTool.run({ packages: ['x'] }, ctx);
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(await ws.readFile('requirements.txt')).toBe('x\n');
   });
 });

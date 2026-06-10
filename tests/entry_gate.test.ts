@@ -25,11 +25,11 @@ class FakeSandbox implements Sandbox {
   constructor(private readonly impl: (argv: string[]) => ExecResult) {}
   async build() { return { rebuilt: false, reason: 'stub' }; }
   async exec(): Promise<ExecResult> { throw new Error('not used'); }
-  async runPython(args: string[], _extra?: ExecExtra): Promise<ExecResult> {
+  async runProgram(args: string[], _extra?: ExecExtra): Promise<ExecResult> {
     return this.impl(args);
   }
-  async runPytest(): Promise<ExecResult> { throw new Error('not used'); }
-  async pipInstall(): Promise<ExecResult> {
+  async runTests(): Promise<ExecResult> { throw new Error('not used'); }
+  async installDeps(): Promise<ExecResult> {
     return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 };
   }
 }

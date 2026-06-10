@@ -32,14 +32,14 @@ export const MAX_WRITE_CHUNK_BYTES = 6000;
 export const writeFileTool: Tool<{ path: string; content: string }, { bytes: number }> = {
   name: 'write_file',
   description:
-    '在 outputs 白名单内创建或覆盖文件（单次最多 6000 字节，超出请改用 write_file 写首段 + 多次 append_file 续写）。注意：requirements.txt 受写保护，必须用 add_dependency 工具维护。',
+    '在 outputs 白名单内创建或覆盖文件（单次最多 6000 字节，超出请改用 write_file 写首段 + 多次 append_file 续写）。注意：runtime 管理的依赖清单请用 add_dependency 维护。',
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return {
         ok: false,
         error:
-          'write denied: requirements.txt 由 plan.pythonRequirements 在 toaa_run 启动时种入并由 add_dependency 工具维护；请改用 add_dependency 工具新增依赖（一行一包，不要再 write_file 直接覆盖）。',
+          'write denied: requirements.txt 由 plan.dependencies 在 toaa_run 启动时种入并由 add_dependency 工具维护；请改用 add_dependency 工具新增依赖（一行一包，不要再 write_file 直接覆盖）。',
       };
     }
     if (!isAllowedWrite(args.path, ctx.allowedWrites)) {

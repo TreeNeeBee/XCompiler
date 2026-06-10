@@ -127,7 +127,7 @@ describe('runTestsTool / runPythonTool summary', () => {
     const fakeCtx: ToolContext = {
       ws,
       sandbox: {
-        async runPytest() {
+        async runTests() {
           return {
             exitCode: 1,
             stdout:
@@ -142,9 +142,12 @@ describe('runTestsTool / runPythonTool summary', () => {
             timedOut: false,
           };
         },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
       } as never,
       allowedWrites: [],
       stepId: 'S001',
+      language: 'python',
     };
     const r = await runTestsTool.run({ args: ['-v', 'tests/'] }, fakeCtx);
     expect(r.ok).toBe(false);
@@ -158,12 +161,15 @@ describe('runTestsTool / runPythonTool summary', () => {
     const fakeCtx: ToolContext = {
       ws,
       sandbox: {
-        async runPytest() {
+        async runTests() {
           return { exitCode: 0, stdout: 'x'.repeat(50_000), stderr: '', timedOut: false };
         },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
       } as never,
       allowedWrites: [],
       stepId: 'S001',
+      language: 'python',
     };
     const r = await runTestsTool.run({}, fakeCtx);
     expect(r.ok).toBe(true);

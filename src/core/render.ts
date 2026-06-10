@@ -1,10 +1,12 @@
 import type { Plan } from './plan.js';
+import { getLanguageProfile } from './language.js';
 import { t } from '../i18n/index.js';
 
 export function renderPlanMarkdown(plan: Plan): string {
   const lines: string[] = [];
   lines.push(`# Plan (language: ${plan.language})`);
   lines.push('');
+  lines.push(`- Intent: ${plan.intent}`);
   lines.push(`- Created: ${plan.createdAt}`);
   lines.push(`- Steps: ${plan.steps.length}`);
   lines.push('');
@@ -20,10 +22,18 @@ export function renderPlanMarkdown(plan: Plan): string {
     lines.push('```');
     lines.push('');
   }
-  if (plan.pythonRequirements && plan.pythonRequirements.length > 0) {
-    lines.push(t().render.sectionPythonRequirements);
+  if (plan.dependencies && plan.dependencies.length > 0) {
+    lines.push(t().render.sectionDependencies(getLanguageProfile(plan.language).manifestFile));
     lines.push('');
-    for (const r of plan.pythonRequirements) lines.push(`- ${r}`);
+    for (const r of plan.dependencies) lines.push(`- ${r}`);
+    lines.push('');
+  }
+  if (plan.baselineSummary && plan.baselineSummary.trim()) {
+    lines.push(t().render.sectionBaselineSummary);
+    lines.push('');
+    lines.push('```text');
+    lines.push(plan.baselineSummary.trim());
+    lines.push('```');
     lines.push('');
   }
   lines.push('## Steps');

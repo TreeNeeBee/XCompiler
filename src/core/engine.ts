@@ -17,7 +17,7 @@ import { t } from '../i18n/index.js';
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { DebugCache } from './debug_cache.js';
-import { autoFixSrcImports, probeEntrypoint } from './entry_gate.js';
+import { getLanguageProfile, type LanguageProfile } from './language.js';
 
 export interface EngineOptions {
   ws: Workspace;
@@ -61,6 +61,8 @@ export class PhaseEngine {
   private readonly skills: SkillRegistry;
   /** 跨 toaa run 持久化的 debug 历史（`<workspace>/.toaa/debug_cache.json`）。 */
   private readonly debugCache: DebugCache;
+  /** 当前 Plan 的语言 profile（在 run() 起始处按 plan.language 解析）。 */
+  private profile: LanguageProfile = getLanguageProfile('python');
   /** 最近一次 Step 终态失败时的详细日志（供 run() 汇总到 EngineResult）。 */
   private lastFailure?: { reason: string; failureLog: string };
 
@@ -71,6 +73,7 @@ export class PhaseEngine {
   }
 
   async run(plan: Plan): Promise<EngineResult> {
+    this.profile = getLanguageProfile(plan.language);
     const order = topoSort(plan.steps);
     if (this.opts.dryRun) {
       for (const s of order) {
@@ -80,10 +83,10 @@ export class PhaseEngine {
     }
 
     await this.opts.git.ensureRepo();
-    if (await this.opts.ws.exists('requirements.txt')) {
+    if (await this.opts.ws.exists(this.profile.manifestFile)) {
       const spin = ora(t().engine.spinSandboxBuild).start();
       try {
-        const r = await this.opts.sandbox.build('requirements.txt');
+        const r = await this.opts.sandbox.build(this.profile.manifestFile);
         spin.succeed(t().engine.sandboxReady(r.reason));
       } catch (err) {
         spin.fail((err as Error).message);
@@ -118,10 +121,10 @@ export class PhaseEngine {
         };
       }
 
-      if (step.phase === 'ARCH' && step.outputs.includes('requirements.txt')) {
+      if (step.phase === 'ARCH' && step.outputs.includes(this.profile.manifestFile)) {
         const spin = ora(t().engine.spinSandboxRebuild(step.id)).start();
         try {
-          const r = await this.opts.sandbox.build('requirements.txt');
+          const r = await this.opts.sandbox.build(this.profile.manifestFile);
           spin.succeed(t().engine.sandboxStatus(r.reason));
         } catch (err) {
           spin.fail((err as Error).message);
@@ -141,15 +144,15 @@ export class PhaseEngine {
     for (const out of step.outputs) {
       await archiveIfExists(this.opts.ws, out, this.opts.audit);
     }
-    // TEST / DEBUG 阶段：自动写入 tests/conftest.py（若不存在），把 src/ 加入 sys.path。
-    // 解决 LLM 反复生成 `from <module> import ...`（不带 src. 前缀）但 pytest 找不到模块的问题。
+    // TEST / DEBUG 阶段：语言相关的测试前置（Python 写 tests/conftest.py 注入 sys.path；
+    // TypeScript 无需）。解决 LLM 反复生成无法被测试框架解析的 import 问题。
     if (step.phase === 'TEST' || step.phase === 'DEBUG') {
-      await this.ensureTestsConftest();
+      await this.profile.ensureTestBootstrap?.(this.opts.ws, this.opts.audit);
     }
-    // 在 TEST / DELIVERY 阶段进入前，顺手修复 “`from src.xxx import ...` 但脚本式启动找不到顶层 src ”
-    // 这类通用低级错误，避免反复进 DEBUG 同一个 sys.path 问题。
+    // 在 TEST / DELIVERY 阶段进入前，顺手修复入口 import 路径这类通用低级错误
+    // （Python 的 `from src.xxx` sys.path 问题；其他语言可为 no-op），避免反复进 DEBUG。
     if (step.phase === 'TEST' || step.phase === 'DELIVERY' || step.phase === 'DEBUG') {
-      const fixed = await autoFixSrcImports(this.opts.ws, this.opts.audit);
+      const fixed = (await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit)) ?? [];
       if (fixed.length > 0) {
         console.log(
           chalk.yellow(t().engine.autoFixedSrcImports(fixed.length, fixed.join(', '))),
@@ -429,6 +432,7 @@ export class PhaseEngine {
       audit: this.opts.audit,
       allowedWrites: augmentedWrites,
       stepId: step.id,
+      language: plan.language,
     };
 
     const llm = this.opts.router.for(role);
@@ -485,21 +489,22 @@ export class PhaseEngine {
             }
           : undefined,
         globalPrompt: plan.globalPrompt,
+        languageProfile: this.profile,
       });
       const verify = await verifyOutputs({ step, tools: guardedTools, ctx });
       if (r.success && verify.ok) {
-        // TEST 阶段强制验收门：必须 pytest 退出码 0，否则视为失败进入 DEBUG。
+        // TEST 阶段强制验收门：必须测试退出码 0，否则视为失败进入 DEBUG。
         if (step.phase === 'TEST') {
-          const pt = await this.opts.sandbox.runPytest([], {});
+          const pt = await this.opts.sandbox.runTests([], {});
           if (pt.exitCode !== 0 || pt.timedOut) {
             const tail = (s: string) => s.split('\n').slice(-30).join('\n');
-            const reason = `TEST gate: pytest exit=${pt.exitCode}${pt.timedOut ? ' (timeout)' : ''}`;
+            const reason = `TEST gate: tests exit=${pt.exitCode}${pt.timedOut ? ' (timeout)' : ''}`;
             const failureLog = [
               `reason: ${reason}`,
               `rounds: ${r.rounds}`,
-              '--- pytest stdout (tail) ---',
+              '--- test stdout (tail) ---',
               tail(pt.stdout),
-              '--- pytest stderr (tail) ---',
+              '--- test stderr (tail) ---',
               tail(pt.stderr),
             ].join('\n');
             spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
@@ -512,14 +517,32 @@ export class PhaseEngine {
             return { ok: false, failureLog, reason, metrics: r.metrics };
           }
         }
-        // DELIVERY 阶段强制验收门：必须能 `python src/main.py --help` 或 `python -m src.<pkg> --help`
-        // 退出码 0。配合 autoFixSrcImports 已经把常见 sys.path 错误自动修掉，这里只兜底真实业务错误。
+        // DELIVERY 阶段强制验收门：必须能运行入口 `--help` 退出码 0。
+        // 配合 autoFixImports 已经把常见 import 错误自动修掉，这里只兜底真实业务错误。
         if (step.phase === 'DELIVERY') {
           // gate 前再跑一次 auto-fix（DELIVERY Step 自身可能新建/改写了入口）
-          await autoFixSrcImports(this.opts.ws, this.opts.audit);
-          const probe = await probeEntrypoint(this.opts.ws, this.opts.sandbox);
+          await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit);
+          const probe = this.profile.probeEntry
+            ? await this.profile.probeEntry(this.opts.ws, this.opts.sandbox)
+            : null;
           if (probe && !probe.ok) {
             const reason = `DELIVERY gate: \`${probe.command}\` exit=${probe.exitCode}${probe.timedOut ? ' (timeout)' : ''}`;
+            const fixHints = this.profile.id === 'typescript'
+              ? [
+                  'Fix directions (priority order):',
+                  '  1. If stderr mentions module resolution / Cannot find module / ERR_MODULE_NOT_FOUND ->',
+                  '     use relative ESM imports with explicit .js specifiers for local .ts modules.',
+                  '  2. If stderr mentions --help / unknown option -> main() must support --help and exit 0.',
+                  '  3. If stderr shows application exceptions -> fix the implementation; keep the entrypoint thin.',
+                ]
+              : [
+                  '修复方向（按优先级）：',
+                  '  1. 若 stderr 含 ModuleNotFoundError: No module named \'src\' →',
+                  '     在 src/main.py 顶部插入 sys.path 自举（见 planner 规则 #19），',
+                  '     或把 `from src.xxx` 改成 `from xxx`（不带 src. 前缀）。',
+                  '  2. 若 stderr 含 argparse 报错 → main() 必须支持 --help 不需要其他参数即可退出 0。',
+                  '  3. 若 stderr 含业务异常 → 修对应实现；入口本身只做参数解析与调用。',
+                ];
             const failureLog = [
               `reason: ${reason}`,
               `rounds: ${r.rounds}`,
@@ -529,12 +552,7 @@ export class PhaseEngine {
               '--- stderr (tail) ---',
               probe.stderrTail,
               '',
-              '修复方向（按优先级）：',
-              '  1. 若 stderr 含 ModuleNotFoundError: No module named \'src\' →',
-              '     在 src/main.py 顶部插入 sys.path 自举（见 planner 规则 #19），',
-              '     或把 `from src.xxx` 改成 `from xxx`（不带 src. 前缀）。',
-              '  2. 若 stderr 含 argparse 报错 → main() 必须支持 --help 不需要其他参数即可退出 0。',
-              '  3. 若 stderr 含业务异常 → 修对应实现；入口本身只做参数解析与调用。',
+              ...fixHints,
             ].join('\n');
             spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
             await this.opts.audit.event('phase.end', `${step.id} FAILED`, {
@@ -589,31 +607,10 @@ export class PhaseEngine {
   }
 
   /**
-   * 进入 TEST/DEBUG 阶段前确保 tests/conftest.py 存在并把 src/ 注入 sys.path。
-   * 这样 LLM 写 `from <module> import ...` 在 pytest 下能直接找到，避免反复
-   * 因 ModuleNotFoundError 进入 Debugger 死循环。仅在文件不存在时写入。
-   */
-  private async ensureTestsConftest(): Promise<void> {
-    const rel = 'tests/conftest.py';
-    if (await this.opts.ws.exists(rel)) return;
-    const content =
-      `# Auto-generated by TOAA PhaseEngine.\n` +
-      `# 把项目根与 src/ 加入 sys.path，使 'from <module> import ...' 在 pytest\n` +
-      `# 与 'python tests/test_*.py' 直接执行两种方式下都能解析到 src/ 内的模块。\n` +
-      `import os, sys\n` +
-      `_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n` +
-      `for _p in (_ROOT, os.path.join(_ROOT, 'src')):\n` +
-      `    if _p not in sys.path:\n` +
-      `        sys.path.insert(0, _p)\n`;
-    await this.opts.ws.writeFile(rel, content);
-    await this.opts.audit.event('conftest.autogen', `wrote ${rel}`, { path: rel });
-  }
-
-  /**
    * DEBUG 模式下扩展 allowedWrites：
    *   - 当前 Step 的 outputs（永远可写）
    *   - 依赖链（dependsOn 闭包）上 CODE / REFACTOR / DEBUG / TEST 步骤的 outputs
-   *   不放开 docs/* 与 requirements.txt（renderer 拥有）以外的非源码产物。
+   *   不放开依赖清单（renderer/ARCH 拥有）以外的非源码产物。
    */
   private computeDebugAllowedWrites(plan: Plan, step: Step): string[] {
     const byId = new Map(plan.steps.map((s) => [s.id, s]));
@@ -632,7 +629,7 @@ export class PhaseEngine {
       if (!s) continue;
       if (!['CODE', 'REFACTOR', 'DEBUG', 'TEST'].includes(s.phase)) continue;
       for (const o of s.outputs) {
-        if (o === 'requirements.txt') continue;
+        if (o === this.profile.manifestFile) continue;
         out.add(o);
       }
     }

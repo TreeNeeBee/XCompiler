@@ -42,18 +42,36 @@ export interface Sandbox {
   /** 实现标识，便于审计与日志区分。 */
   readonly kind: 'subprocess' | 'docker';
 
-  /** 构建/复用环境（pip install -r requirements.txt + venv）。返回是否真正重建。 */
-  build(requirementsTxt?: string): Promise<{ rebuilt: boolean; reason: string }>;
+  /**
+   * 构建/复用环境。
+   *  - Python：`pip install -r requirements.txt` + venv。
+   *  - TypeScript：`npm install`（依据 package.json）。
+   * manifestFile 为依赖清单在 workspace 内的相对路径；不存在则跳过安装。
+   * 返回是否真正重建。
+   */
+  build(manifestFile?: string): Promise<{ rebuilt: boolean; reason: string }>;
 
   /** 执行任意命令；cmd 视实现可能是宿主路径或容器内路径。 */
   exec(cmd: string, argv: string[], extra?: ExecExtra): Promise<ExecResult>;
 
-  /** 在沙盒内运行 python（自动选用 venv 内解释器）。 */
-  runPython(args: string[], extra?: ExecExtra): Promise<ExecResult>;
+  /**
+   * 运行工程入口程序。
+   *  - Python：`python <args>`（自动选用 venv 内解释器）。
+   *  - TypeScript：`npx tsx <args>`。
+   */
+  runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult>;
 
-  /** 运行 pytest。 */
-  runPytest(args?: string[], extra?: ExecExtra): Promise<ExecResult>;
+  /**
+   * 运行测试套件。
+   *  - Python：`python -m pytest <args>`。
+   *  - TypeScript：`npm test`（Vitest）。
+   */
+  runTests(args?: string[], extra?: ExecExtra): Promise<ExecResult>;
 
-  /** 安装额外依赖（不写入 requirements.txt）。 */
-  pipInstall(packages: string[]): Promise<ExecResult>;
+  /**
+   * 安装额外依赖（不写入依赖清单）。
+   *  - Python：`pip install <packages>`。
+   *  - TypeScript：`npm install <packages>`。
+   */
+  installDeps(packages: string[]): Promise<ExecResult>;
 }

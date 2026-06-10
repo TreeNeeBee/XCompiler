@@ -54,7 +54,7 @@ const ConfigSchema = z.object({
     scores: z.record(z.string(), z.number().min(0)).default({}),
   }),
   agent: z.object({
-    language: z.literal('python'),
+    language: z.enum(['python', 'typescript']).default('python'),
     max_steps: z.number().int().positive().default(50),
     max_debug_retries: z.number().int().positive().default(3),
     /** Debugger 滑动窗口的硬上限（默认 = max(max_debug_retries*4, 10)）。 */

@@ -57,6 +57,7 @@ function fakePlan(): Plan {
     language: 'python',
     createdAt: new Date().toISOString(),
     requirementDigest: 'demo',
+    dependencies: ['pytest'],
     steps: [
       {
         id: 'S001',
@@ -142,7 +143,7 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
         return { rebuilt: false, reason: 'stubbed' };
       };
     // TEST gate stub: pretend pytest passed.
-    (sandbox as unknown as { runPytest: () => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> }).runPytest =
+    (sandbox as unknown as { runTests: () => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> }).runTests =
       async () => ({ exitCode: 0, stdout: '1 passed', stderr: '', timedOut: false });
 
     const router = new FakeRouter({

@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import type { ToaaConfig } from '../config/config.js';
+import type { Language } from '../core/plan.js';
+import { getLanguageProfile } from '../core/language.js';
 import type { Sandbox } from './types.js';
 import { SubprocessSandbox } from './subprocess.js';
 import { DockerSandbox } from './docker.js';
@@ -40,7 +42,12 @@ export function createSandbox(
   cfg: ToaaConfig,
   ws: Workspace,
   audit?: AuditLogger,
+  language: Language = cfg.agent.language,
 ): Sandbox {
+  const profile = getLanguageProfile(language);
+  // 默认镜像按语言推导；用户在 config 中显式改过镜像（非 python 默认值）则尊重其设置。
+  const configuredImage = cfg.agent.sandbox_docker.image;
+  const image = configuredImage === 'python:3.11-slim' ? profile.defaultDockerImage : configuredImage;
   const kind = cfg.agent.sandbox;
   if (kind === 'docker') {
     if (isRunningInContainer()) {
@@ -56,7 +63,8 @@ export function createSandbox(
       ws,
       limits: cfg.agent.sandbox_limits,
       audit,
-      image: cfg.agent.sandbox_docker.image,
+      language,
+      image,
       workdir: cfg.agent.sandbox_docker.workdir,
       pull: cfg.agent.sandbox_docker.pull,
       dockerBin: cfg.agent.sandbox_docker.docker_bin,
@@ -67,5 +75,5 @@ export function createSandbox(
     throw new Error('sandbox=firejail is not implemented yet; use subprocess or docker.');
   }
   // 在容器内默认提示（但不抦截）：subprocess 是唯一推荐选项
-  return new SubprocessSandbox({ ws, limits: cfg.agent.sandbox_limits, audit });
+  return new SubprocessSandbox({ ws, limits: cfg.agent.sandbox_limits, audit, language });
 }

@@ -1,3 +1,5 @@
+import type { LanguageProfile } from '../core/language.js';
+
 /**
  * Locale code (ISO 639-1 lowercase). Currently only 'en' (default) and 'zh'.
  * The CLI flag uses ISO 3166-1 Alpha-2 country codes (EN / CN) but normalises
@@ -40,8 +42,11 @@ export interface Messages {
     optTail: string;
     optPlan: string;
     optLang: string;
+    optIntent: string;
+    optBaselinePlan: string;
     argPlan: string;
     argStepId: string;
+    evolveDescription: string;
   };
 
   // ───────── compile (toaa c) ─────────
@@ -80,11 +85,14 @@ export interface Messages {
     gate2Confirm: string;
     gate2AuditLabel: string;
     gate2Rejected: string;
+    baselineLoaded: (kind: string, sources: string) => string;
+    baselineMissing: (workspace: string) => string;
     topicTitle: string;
     topicPreamble: string;
     topicSecRequirement: string;
     topicSecClarify: string;
     topicSecAddenda: string;
+    topicSecBaseline: string;
   };
 
   // ───────── inspect (toaa ls / show) ─────────
@@ -138,17 +146,26 @@ export interface Messages {
   // ───────── render (plan.md / topic.md headers) ─────────
   render: {
     sectionGlobalPrompt: string;
-    sectionPythonRequirements: string;
+    sectionDependencies: (manifestFile: string) => string;
+    sectionBaselineSummary: string;
     labelSystemPrompt: string;
   };
 
   // ───────── Agent system prompts (large blocks) ─────────
   prompts: {
-    plannerSystem: string;
-    plannerClarify: (rawRequirement: string) => string;
-    plannerDecompose: (rawRequirement: string, qa: string, addenda: string) => string;
+    plannerSystem: (profile: LanguageProfile) => string;
+    plannerClarify: (
+      rawRequirement: string,
+      opts?: { intent?: 'greenfield' | 'feature' | 'refactor'; hasBaseline?: boolean },
+    ) => string;
+    plannerDecompose: (
+      rawRequirement: string,
+      qa: string,
+      addenda: string,
+      opts?: { intent?: 'greenfield' | 'feature' | 'refactor'; baseline?: string },
+    ) => string;
     plannerClarifySystem: string;
-    executorSystem: string;
+    executorSystem: (profile: LanguageProfile) => string;
     executorDebugBlock: (reason: string, suggestions?: string) => string;
     executorGlobalBlock: (globalPrompt: string) => string;
     executorStepBlock: (stepSystemPrompt: string) => string;

@@ -25,6 +25,8 @@ program
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
   .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--intent <kind>', t().cli.optIntent, 'greenfield')
+  .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
@@ -43,6 +45,8 @@ program
       configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
+      intent: opts.intent,
+      baselinePlanFile: opts.baselinePlan,
       outputFile: opts.planOut,
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
