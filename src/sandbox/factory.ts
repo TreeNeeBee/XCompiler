@@ -45,9 +45,13 @@ export function createSandbox(
   language: Language = cfg.agent.language,
 ): Sandbox {
   const profile = getLanguageProfile(language);
-  // 默认镜像按语言推导；用户在 config 中显式改过镜像（非 python 默认值）则尊重其设置。
+  // 默认镜像按实际执行语言推导。若当前 plan 语言与 config.agent.language 不同，
+  // 说明我们在执行/恢复另一种语言的历史 plan，此时不能沿用配置里为默认语言定制的镜像。
   const configuredImage = cfg.agent.sandbox_docker.image;
-  const image = configuredImage === 'python:3.11-slim' ? profile.defaultDockerImage : configuredImage;
+  const image =
+    language === cfg.agent.language
+      ? configuredImage
+      : profile.defaultDockerImage;
   const kind = cfg.agent.sandbox;
   if (kind === 'docker') {
     if (isRunningInContainer()) {

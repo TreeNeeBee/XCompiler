@@ -175,6 +175,7 @@ const messages: Messages = {
     gate1Cancelled: '已取消，未写入任何文件。',
     editTopicMsg: '编辑 topic.md',
     topicWritten: (p) => `已写入 ${p}`,
+    planWritten: (p) => `plan 已写入 ${p}`,
     planPreviewHeader: '─── plan.md (preview) ───',
     planPreviewFooter: '─────────────────────────',
     gate2Confirm: '是否确认该计划? (此为最终确认，确认后将写入 plan.json)',
@@ -182,6 +183,8 @@ const messages: Messages = {
     gate2Rejected: '未确认，已放弃。plan.json 未写入。',
     baselineLoaded: (kind, sources) => `已加载 ${kind} 基线：${sources}`,
     baselineMissing: (workspace) => `增量模式需要在 ${workspace} 中找到已有工程基线（topic / docs / plan / src）。`,
+    baselineLanguageOverride: (baseline, source, configured) =>
+      `增量模式将沿用基线语言 ${baseline}（来源：${source}），而不是配置中的 ${configured}。`,
     topicTitle: '# Project Topic (项目选题)',
     topicPreamble: '> 本文件是需求澄清后冻结的项目选题，后续 V 模型拆解与所有阶段产出皆以本文件为唯一需求输入。',
     topicSecRequirement: '## 原始需求',
@@ -348,6 +351,12 @@ ${opts.baseline || '（缺少基线摘要）'}
     sandboxFullNoPorts:
       'network=full 但未配置 expose_ports—宿主侧无法访问容器内服务。' +
       '请在 config.yaml 中设置 `agent.sandbox_limits.expose_ports: [<port>]`。',
+    sandboxNodeMissing: 'PATH 上找不到 node（TypeScript subprocess 沙盒必需）',
+    sandboxNodeOk: (version) => `node OK（${version}）`,
+    sandboxNpmMissing: 'PATH 上找不到 npm（TypeScript subprocess 沙盒必需）',
+    sandboxNpmOk: (version) => `npm OK（${version}）`,
+    sandboxNpxMissing: 'PATH 上找不到 npx（TypeScript subprocess 沙盒必需）',
+    sandboxNpxOk: (version) => `npx OK（${version}）`,
     sandboxPythonMissing: 'PATH 上找不到 python3（subprocess 沙盒必需）',
     sandboxPythonOk: (version) => `python3 OK（${version}）`,
     sandboxVenvMissing: 'python3 venv 模块不可用（请安装 python3-venv / python3-virtualenv）',

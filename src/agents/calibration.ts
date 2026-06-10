@@ -1,4 +1,4 @@
-import type { Step } from '../core/plan.js';
+import type { Language, Step } from '../core/plan.js';
 import { DOC_NAMES, PHASE_DOC } from '../core/docs.js';
 
 /**
@@ -362,7 +362,7 @@ export function calibrateStepShape(steps: Step[]): Step[] {
  * 这是一个**幂等的安全网**：对已有合规 plan（每个 CODE 都被覆盖）调用此函数等价于 no-op；
  * 真正的目标是让 LLM 输出残缺时 buildPlan 不会一开始就 lint 失败导致整盘重跑。
  */
-export function calibratePlanCoverage(steps: Step[]): Step[] {
+export function calibratePlanCoverage(steps: Step[], language: Language = 'python'): Step[] {
   const stepById = new Map(steps.map((s) => [s.id, s] as const));
   const isInitOnly = (s: Step): boolean =>
     s.outputs.length > 0 && s.outputs.every((o) => o === '__init__.py' || o.endsWith('/__init__.py'));
@@ -397,25 +397,36 @@ export function calibratePlanCoverage(steps: Step[]): Step[] {
   const newId = 'S' + String(maxNum + 1).padStart(3, '0');
 
   const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join('、');
+  const tsMode = language === 'typescript';
   const synthetic: Step = {
     id: newId,
     phase: 'TEST',
     title: `自动补齐：覆盖 ${uncovered.map((c) => c.id).join(' / ')}`,
     description:
       `Planner 未为 ${targetTitles} 显式生成 TEST Step，由 calibration 自动追加。` +
-      `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 pytest 测试文件，覆盖正常路径与典型错误路径。`,
+      (tsMode
+        ? `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 Vitest 测试文件（*.test.ts），覆盖正常路径与典型错误路径。`
+        : `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 pytest 测试文件，覆盖正常路径与典型错误路径。`),
     systemPrompt:
       `本 Step 是 calibration 自动追加的 TEST 兜底，覆盖以下 CODE Step：${targetTitles}。\n` +
-      `范围：仅写 / 调试 tests/ 下的 pytest 测试文件，不得修改 src/ 实现。\n` +
+      (tsMode
+        ? `范围：仅写 / 调试 tests/ 下的 Vitest 测试文件（tests/**/*.test.ts），不得修改 src/ 实现。\n`
+        : `范围：仅写 / 调试 tests/ 下的 pytest 测试文件，不得修改 src/ 实现。\n`) +
       `输入：上述 CODE Step 产出的 src/ 文件 + docs/。\n` +
-      `产出：tests/test_*.py（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 pytest 自动验证。\n` +
-      `验收：所有新增测试 pytest 通过；任一目标 CODE 的核心 API 至少有一条断言。`,
+      (tsMode
+        ? `产出：tests/**/*.test.ts（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 npm test / Vitest 自动验证。\n`
+        : `产出：tests/test_*.py（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 pytest 自动验证。\n`) +
+      (tsMode
+        ? `验收：所有新增测试在 npm test / Vitest 下通过；任一目标 CODE 的核心 API 至少有一条断言。`
+        : `验收：所有新增测试 pytest 通过；任一目标 CODE 的核心 API 至少有一条断言。`),
     role: 'Tester',
     tools: ['write_file', 'replace_in_file', 'read_file', 'list_dir', 'code_search', 'run_tests'],
     inputs: uncovered.flatMap((c) => c.outputs),
     outputs: [],
     dependsOn: uncovered.map((c) => c.id),
-    acceptance: `pytest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`,
+    acceptance: tsMode
+      ? `npm test / Vitest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`
+      : `pytest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`,
     status: 'PENDING',
     retries: 0,
     maxRetries: 3,
@@ -724,4 +735,3 @@ export function renderDebugSuggestions(sugs: DebugSuggestion[]): string {
   });
   return lines.join('\n');
 }
-

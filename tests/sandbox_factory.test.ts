@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { Workspace } from '../src/workspace/workspace.js';
 import { createSandbox, isRunningInContainer } from '../src/sandbox/factory.js';
 import { SubprocessSandbox } from '../src/sandbox/subprocess.js';
+import { DockerSandbox } from '../src/sandbox/docker.js';
 import type { ToaaConfig } from '../src/config/config.js';
 
 const baseCfg = (sandbox: 'subprocess' | 'docker'): ToaaConfig =>
@@ -58,5 +59,15 @@ describe('sandbox factory — container detection', () => {
     process.env.TOAA_IN_CONTAINER = '0';
     const ws = new Workspace('/tmp/toaa-factory-test');
     expect(() => createSandbox(baseCfg('docker'), ws)).not.toThrow();
+  });
+
+  it('跨语言执行时为 TypeScript plan 选择 node 默认镜像，而不是沿用 Python 自定义镜像', () => {
+    process.env.TOAA_IN_CONTAINER = '0';
+    const ws = new Workspace('/tmp/toaa-factory-test');
+    const cfg = baseCfg('docker');
+    cfg.agent.sandbox_docker.image = 'python:3.12-slim';
+    const sb = createSandbox(cfg, ws, undefined, 'typescript') as DockerSandbox & { image?: string };
+    expect(sb).toBeInstanceOf(DockerSandbox);
+    expect((sb as { image?: string }).image).toBe('node:20-slim');
   });
 });

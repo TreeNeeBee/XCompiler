@@ -201,7 +201,16 @@ async function probeTsEntrypoint(
       break;
     }
   }
-  if (!entry) return null;
+  if (!entry) {
+    return {
+      ok: false,
+      command: 'npx tsx src/main.ts --help',
+      exitCode: -1,
+      timedOut: false,
+      stdoutTail: '',
+      stderrTail: 'missing TypeScript entrypoint: expected one of src/main.ts, src/index.ts, src/main.tsx',
+    };
+  }
   const argv = [entry, '--help'];
   const command = `npx tsx ${argv.join(' ')}`;
   let r;

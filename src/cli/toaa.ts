@@ -1,10 +1,10 @@
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import { Command } from 'commander';
 import { runCompile } from './compile.js';
 import { runExecute } from './execute.js';
 import { runLs, runShow } from './inspect.js';
 import { runDoctorCli } from './doctor.js';
+import { resolveCompileWorkspace, resolveEvolveWorkspace } from './workspace.js';
 import { setLocale, t } from '../i18n/index.js';
 
 // Resolve UI locale early — env var TOAA_LANG and the global --lang flag both work.
@@ -21,32 +21,6 @@ program
     if (lang) setLocale(lang);
   })
   .version('0.1.1');
-
-function defaultProjectName(): string {
-  const d = new Date();
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `toaa-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-}
-
-async function resolveWorkspace(opts: {
-  output?: string;
-  workspace?: string;
-  baseDir?: string;
-  name?: string;
-}): Promise<string> {
-  // 优先级：--output > --workspace > <base-dir>/<name>
-  const explicit = opts.output ?? opts.workspace;
-  if (explicit) {
-    const ws = path.resolve(explicit);
-    await fs.mkdir(ws, { recursive: true });
-    return ws;
-  }
-  const base = opts.baseDir ? path.resolve(opts.baseDir) : '/tmp';
-  const name = opts.name ?? defaultProjectName();
-  const ws = path.join(base, name);
-  await fs.mkdir(ws, { recursive: true });
-  return ws;
-}
 
 program
   .command('c')
@@ -65,7 +39,7 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    const ws = await resolveWorkspace({
+    const ws = await resolveCompileWorkspace({
       output: opts.output,
       workspace: opts.workspace,
       baseDir: opts.baseDir,
@@ -100,7 +74,7 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    const ws = await resolveWorkspace({
+    const ws = await resolveEvolveWorkspace({
       output: opts.output,
       workspace: opts.workspace,
       baseDir: opts.baseDir,

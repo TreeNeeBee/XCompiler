@@ -3,11 +3,13 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
 import { DOC_NAMES } from './docs.js';
-import { PlanSchema, type PlanIntent } from './plan.js';
+import { PlanSchema, type Language, type PlanIntent } from './plan.js';
 
 export interface IncrementalBaseline {
   summary: string;
   sources: string[];
+  language?: Language;
+  languageSource?: string;
 }
 
 /**
@@ -21,14 +23,18 @@ export async function loadIncrementalBaseline(
   const sections: string[] = [];
   const sources: string[] = [];
   const maxChars = opts.maxChars ?? 14_000;
+  let language: Language | undefined;
+  let languageSource: string | undefined;
 
   const relPlan = relInsideWorkspace(ws.root, opts.planPath);
   const planSource = opts.planPath ? path.resolve(opts.planPath) : path.join(ws.root, 'plan.json');
   const planLabel = relPlan ?? path.relative(ws.root, planSource).replace(/\\/g, '/');
   const plan = await loadPlanSummary(ws, planSource, planLabel || 'plan.json');
   if (plan) {
-    sections.push(plan);
+    sections.push(plan.text);
     sources.push(planLabel || 'plan.json');
+    language = plan.language;
+    languageSource = plan.language ? planLabel || 'plan.json' : undefined;
   }
 
   for (const rel of [
@@ -49,6 +55,10 @@ export async function loadIncrementalBaseline(
   if (manifestSummary) {
     sections.push(manifestSummary.text);
     sources.push(...manifestSummary.sources);
+    if (!language && manifestSummary.language) {
+      language = manifestSummary.language;
+      languageSource = manifestSummary.sources[0];
+    }
   }
 
   const tree = await listProjectFiles(ws.root);
@@ -56,9 +66,13 @@ export async function loadIncrementalBaseline(
     sections.push(`## Current source/test tree\n${tree.map((p) => `- ${p}`).join('\n')}`);
     sources.push('src/**', 'tests/**');
   }
+  if (!language) {
+    language = inferLanguageFromTree(tree);
+    languageSource = language ? 'src/**, tests/**' : undefined;
+  }
 
   const summary = joinCappedSections(sections, maxChars);
-  return { summary, sources: dedup(sources) };
+  return { summary, sources: dedup(sources), language, languageSource };
 }
 
 function joinCappedSections(sections: string[], maxChars: number): string {
@@ -78,29 +92,40 @@ function joinCappedSections(sections: string[], maxChars: number): string {
   return out.trim();
 }
 
-async function loadPlanSummary(ws: Workspace, planPath: string, label: string): Promise<string> {
+async function loadPlanSummary(
+  _ws: Workspace,
+  planPath: string,
+  label: string,
+): Promise<{ text: string; language?: Language } | null> {
   try {
     const raw = await fs.readFile(planPath, 'utf8');
     const parsed = PlanSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return `## Existing plan summary\n- path: ${label}\n- status: unreadable by current schema`;
+    if (!parsed.success) {
+      return {
+        text: `## Existing plan summary\n- path: ${label}\n- status: unreadable by current schema`,
+      };
+    }
     const plan = parsed.data;
-    return [
-      '## Existing plan summary',
-      `- path: ${label}`,
-      `- language: ${plan.language}`,
-      `- intent: ${plan.intent}`,
-      `- steps: ${plan.steps.length}`,
-      `- requirementDigest: ${plan.requirementDigest}`,
-      `- generatedAt: ${plan.createdAt}`,
-    ].join('\n');
+    return {
+      text: [
+        '## Existing plan summary',
+        `- path: ${label}`,
+        `- language: ${plan.language}`,
+        `- intent: ${plan.intent}`,
+        `- steps: ${plan.steps.length}`,
+        `- requirementDigest: ${plan.requirementDigest}`,
+        `- generatedAt: ${plan.createdAt}`,
+      ].join('\n'),
+      language: plan.language,
+    };
   } catch {
-    return '';
+    return null;
   }
 }
 
 async function loadManifestSummary(
   ws: Workspace,
-): Promise<{ text: string; sources: string[] } | null> {
+): Promise<{ text: string; sources: string[]; language?: Language } | null> {
   if (await ws.exists('package.json')) {
     try {
       const pkg = JSON.parse(await ws.readFile('package.json')) as Record<string, unknown>;
@@ -124,6 +149,7 @@ async function loadManifestSummary(
           ...scripts,
         ].join('\n'),
         sources: ['package.json'],
+        language: 'typescript',
       };
     } catch {
       /* ignore */
@@ -135,6 +161,7 @@ async function loadManifestSummary(
       return {
         text: `## Existing manifest: requirements.txt\n${text}`,
         sources: ['requirements.txt'],
+        language: 'python',
       };
     }
   }
@@ -143,7 +170,8 @@ async function loadManifestSummary(
 
 async function readWorkspaceFile(ws: Workspace, rel: string, maxChars: number): Promise<string> {
   try {
-    const text = await ws.readFile(rel);
+    const raw = await ws.readFile(rel);
+    const text = rel === DOC_NAMES.topic ? stripGeneratedBaselineSection(raw) : raw;
     return text.length > maxChars ? `${text.slice(0, maxChars)}\n... [truncated]` : text;
   } catch {
     return '';
@@ -190,6 +218,24 @@ function relInsideWorkspace(root: string, maybeAbs?: string): string | null {
 
 function dedup(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function stripGeneratedBaselineSection(text: string): string {
+  const idx = text.search(/^##\s+(Existing project baseline|现有工程基线)\s*$/m);
+  if (idx < 0) return text;
+  return text.slice(0, idx).trimEnd();
+}
+
+function inferLanguageFromTree(tree: string[]): Language | undefined {
+  let python = 0;
+  let typescript = 0;
+  for (const entry of tree) {
+    if (entry.endsWith('.py')) python++;
+    if (entry.endsWith('.ts') || entry.endsWith('.tsx')) typescript++;
+  }
+  if (typescript > 0 && python === 0) return 'typescript';
+  if (python > 0 && typescript === 0) return 'python';
+  return undefined;
 }
 
 export function isIncrementalIntent(intent: PlanIntent): boolean {

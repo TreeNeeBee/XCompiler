@@ -125,10 +125,10 @@ export function buildPlan(
   draft: DraftPlan,
   opts: { userAddenda?: string; language?: Language; intent?: PlanIntent; baselineSummary?: string } = {},
 ): Plan {
+  const language = opts.language ?? 'python';
   const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)));
   // 兜底：若 LLM 漏写了 TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
-  const steps = calibratePlanCoverage(shaped);
-  const language = opts.language ?? 'python';
+  const steps = calibratePlanCoverage(shaped, language);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
     language === 'python'

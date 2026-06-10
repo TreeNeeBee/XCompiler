@@ -112,6 +112,8 @@ export function lintPlan(plan: Plan): LintIssue[] {
   }
 
   // 6. 依赖清单规则（按语言 profile 分流）。
+  const ownsManifest = (step: Step): boolean =>
+    step.outputs.some((o) => o === profile.manifestFile || o.endsWith(`/${profile.manifestFile}`));
   if (profile.seedManifestFromDeps) {
     // Python：runtime 依据 plan.dependencies 渲染 requirements.txt；ARCH 不得直接产出该文件。
     if (!plan.dependencies || plan.dependencies.length === 0) {
@@ -121,7 +123,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
       });
     }
     for (const s of plan.steps) {
-      if (s.outputs.some((o) => o === profile.manifestFile || o.endsWith(`/${profile.manifestFile}`))) {
+      if (ownsManifest(s)) {
         issues.push({
           level: 'error',
           stepId: s.id,
@@ -131,12 +133,22 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   } else {
     // TypeScript 等：依赖清单（package.json）由某个 ARCH Step 撰写，必须有人产出它。
-    const authored = plan.steps.some((s) => s.outputs.includes(profile.manifestFile));
-    if (!authored) {
+    const manifestSteps = plan.steps.filter((s) => ownsManifest(s));
+    const archManifestSteps = manifestSteps.filter((s) => s.phase === 'ARCH');
+    if (archManifestSteps.length !== 1) {
       issues.push({
         level: 'error',
         message: `For ${profile.displayName} plans, exactly one ARCH step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`,
       });
+    }
+    for (const s of manifestSteps) {
+      if (s.phase !== 'ARCH') {
+        issues.push({
+          level: 'error',
+          stepId: s.id,
+          message: `${profile.manifestFile} must be authored by an ARCH step, not ${s.phase}.`,
+        });
+      }
     }
   }
 
