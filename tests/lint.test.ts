@@ -95,6 +95,28 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
   return { ...base, ...overrides };
 }
 
+function makeTypeScriptPlan(): Plan {
+  const plan = makePlan({
+    language: 'typescript',
+    dependencies: ['vitest', 'zod'],
+  });
+  plan.steps[1] = {
+    ...plan.steps[1]!,
+    outputs: ['docs/02-architecture.md', 'package.json'],
+  };
+  plan.steps[2] = {
+    ...plan.steps[2]!,
+    outputs: ['src/main.ts'],
+  };
+  plan.steps[3] = {
+    ...plan.steps[3]!,
+    inputs: ['src/main.ts'],
+    outputs: ['tests/main.test.ts', 'docs/test_report.md'],
+    acceptance: 'npm test passes',
+  };
+  return plan;
+}
+
 describe('PlanSchema', () => {
   it('parses a valid plan', () => {
     expect(() => PlanSchema.parse(makePlan())).not.toThrow();
@@ -118,6 +140,20 @@ describe('lintPlan', () => {
     plan.steps[1]!.outputs = ['docs/02-architecture.md', 'requirements.txt'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('renderer-owned'))).toBe(true);
+  });
+
+  it('passes for a TypeScript plan whose ARCH step owns package.json', () => {
+    const errs = lintPlan(makeTypeScriptPlan()).filter((i) => i.level === 'error');
+    expect(errs).toEqual([]);
+  });
+
+  it('rejects TypeScript plans when package.json is not owned by exactly one ARCH step', () => {
+    const plan = makeTypeScriptPlan();
+    plan.steps[1]!.outputs = ['docs/02-architecture.md'];
+    plan.steps[2]!.outputs = ['src/main.ts', 'package.json'];
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('exactly one ARCH step must output package.json'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('package.json must be authored by an ARCH step'))).toBe(true);
   });
 
   it('detects CODE without TEST coverage', () => {

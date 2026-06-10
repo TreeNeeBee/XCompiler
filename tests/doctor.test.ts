@@ -91,4 +91,21 @@ describe('doctor', () => {
     const llm = r.sections.find((s) => s.title === '[LLM]')!;
     expect(llm.items.some((i) => i.level === 'fail' && /no live provider/i.test(i.message))).toBe(true);
   });
+
+  it('checks node/npm/npx prerequisites for TypeScript subprocess sandbox', async () => {
+    const cfgPath = await writeCfg({
+      agent: {
+        language: 'typescript',
+        max_steps: 1,
+        max_debug_retries: 1,
+        sandbox: 'subprocess',
+        sandbox_limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'off' },
+      },
+    });
+    const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
+    const sandbox = r.sections.find((s) => s.title === '[sandbox]')!;
+    expect(sandbox.items.some((i) => /node OK/i.test(i.message))).toBe(true);
+    expect(sandbox.items.some((i) => /npm OK/i.test(i.message))).toBe(true);
+    expect(sandbox.items.some((i) => /npx OK/i.test(i.message))).toBe(true);
+  });
 });

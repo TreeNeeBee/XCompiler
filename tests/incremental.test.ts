@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildPlan } from '../src/agents/planner.js';
+import { resolveCompileLanguage } from '../src/cli/compile.js';
 import { loadIncrementalBaseline } from '../src/core/incremental.js';
 import { renderPlanMarkdown } from '../src/core/render.js';
 import { PlanSchema, type Step } from '../src/core/plan.js';
@@ -67,6 +68,8 @@ describe('incremental development support', () => {
     expect(baseline.summary).toContain('## Existing manifest: package.json');
     expect(baseline.summary).toContain('src/main.ts');
     expect(baseline.summary).toContain('tests/main.test.ts');
+    expect(baseline.language).toBe('typescript');
+    expect(baseline.languageSource).toBe('plan.json');
     expect(baseline.sources).toEqual(
       expect.arrayContaining(['plan.json', 'docs/topic.md', 'package.json', 'src/**', 'tests/**']),
     );
@@ -97,7 +100,32 @@ describe('incremental development support', () => {
 
     expect(baseline.summary).toContain('## Existing plan summary');
     expect(baseline.summary).toContain('- intent: refactor');
+    expect(baseline.language).toBe('python');
     expect(baseline.sources.some((source) => source.endsWith('baseline-plan.json'))).toBe(true);
+  });
+
+  it('strips previously embedded baseline blocks from topic.md when reloading baseline context', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const ws = new Workspace(root);
+    await ws.writeFile(
+      'docs/topic.md',
+      [
+        '# Project Topic',
+        '',
+        '## Original requirement',
+        '',
+        'Add export support.',
+        '',
+        '## Existing project baseline',
+        '',
+        'Old generated baseline that must not recurse.',
+      ].join('\n'),
+    );
+
+    const baseline = await loadIncrementalBaseline(ws);
+
+    expect(baseline.summary).toContain('Add export support.');
+    expect(baseline.summary).not.toContain('Old generated baseline that must not recurse.');
   });
 
   it('stores incremental metadata in the plan and renders it', () => {
@@ -124,5 +152,10 @@ describe('incremental development support', () => {
     expect(markdown).toContain('- Intent: feature');
     expect(markdown).toContain(t().render.sectionBaselineSummary);
     expect(markdown).toContain('Existing CLI already exports JSON reports.');
+  });
+
+  it('prefers the baseline language during incremental compile resolution', () => {
+    expect(resolveCompileLanguage('python', 'feature', { language: 'typescript' })).toBe('typescript');
+    expect(resolveCompileLanguage('python', 'greenfield', { language: 'typescript' })).toBe('python');
   });
 });

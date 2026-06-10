@@ -178,6 +178,7 @@ const messages: Messages = {
     gate1Cancelled: 'Cancelled, no files written.',
     editTopicMsg: 'Edit topic.md',
     topicWritten: (p) => `topic written: ${p}`,
+    planWritten: (p) => `plan written: ${p}`,
     planPreviewHeader: '─── plan.md (preview) ───',
     planPreviewFooter: '─────────────────────────',
     gate2Confirm: 'Confirm this plan? (Final confirmation — confirms write to plan.json)',
@@ -185,6 +186,8 @@ const messages: Messages = {
     gate2Rejected: 'Not confirmed, abandoned. plan.json was not written.',
     baselineLoaded: (kind, sources) => `loaded ${kind} baseline from: ${sources}`,
     baselineMissing: (workspace) => `incremental mode requires an existing project baseline in ${workspace} (topic / docs / plan / src).`,
+    baselineLanguageOverride: (baseline, source, configured) =>
+      `incremental mode: using baseline language ${baseline} from ${source} instead of config language ${configured}.`,
     topicTitle: '# Project Topic',
     topicPreamble: '> This file is the project topic frozen after requirement clarification. All subsequent V-model decomposition and every phase output use this file as the sole requirement input.',
     topicSecRequirement: '## Original requirement',
@@ -356,6 +359,12 @@ ${opts.baseline || '(missing baseline)'}
     sandboxFullNoPorts:
       'network=full but no expose_ports configured — host-side cannot reach container services. ' +
       'Add `agent.sandbox_limits.expose_ports: [<port>]` in config.yaml.',
+    sandboxNodeMissing: 'node not found on PATH (required by TypeScript subprocess sandbox)',
+    sandboxNodeOk: (version) => `node OK (${version})`,
+    sandboxNpmMissing: 'npm not found on PATH (required by TypeScript subprocess sandbox)',
+    sandboxNpmOk: (version) => `npm OK (${version})`,
+    sandboxNpxMissing: 'npx not found on PATH (required by TypeScript subprocess sandbox)',
+    sandboxNpxOk: (version) => `npx OK (${version})`,
     sandboxPythonMissing: 'python3 not found on PATH (required by subprocess sandbox)',
     sandboxPythonOk: (version) => `python3 OK (${version})`,
     sandboxVenvMissing: 'python3 venv module unavailable (install python3-venv / python3-virtualenv)',

@@ -68,4 +68,20 @@ describe('buildPlan — Step id 规整', () => {
       expect(plan.steps[0]?.id).toMatch(/^S\d{3,}$/);
     }
   });
+
+  it('为 TypeScript plan 注入的 TEST 兜底保持 Vitest 语义', () => {
+    const draft = {
+      requirementDigest: 'r',
+      globalPrompt: 'g',
+      dependencies: ['vitest'],
+      steps: [
+        baseStep({ id: 'S001', phase: 'CODE', role: 'Coder', outputs: ['src/main.ts'] }),
+      ],
+    };
+    const plan = buildPlan(draft, { language: 'typescript' });
+    const synthetic = plan.steps[1];
+    expect(synthetic?.phase).toBe('TEST');
+    expect(synthetic?.description).toContain('Vitest');
+    expect(synthetic?.acceptance).toContain('npm test');
+  });
 });

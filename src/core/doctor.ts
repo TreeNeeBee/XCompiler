@@ -286,17 +286,38 @@ async function checkSandbox(cfg: ToaaConfig, skipNetwork: boolean): Promise<Chec
   }
 
   if (kind === 'subprocess') {
-    const v = await execRaw('python3', ['--version'], { timeoutMs: 5_000 });
-    if (v.exitCode !== 0) {
-      sec.items.push({ level: 'fail', message: M.sandboxPythonMissing });
-      return sec;
-    }
-    sec.items.push({ level: 'ok', message: M.sandboxPythonOk((v.stdout || v.stderr).trim()) });
-    const venv = await execRaw('python3', ['-m', 'venv', '--help'], { timeoutMs: 5_000 });
-    if (venv.exitCode !== 0) {
-      sec.items.push({ level: 'fail', message: M.sandboxVenvMissing });
+    if (cfg.agent.language === 'typescript') {
+      const node = await execRaw('node', ['--version'], { timeoutMs: 5_000 });
+      if (node.exitCode !== 0) {
+        sec.items.push({ level: 'fail', message: M.sandboxNodeMissing });
+        return sec;
+      }
+      sec.items.push({ level: 'ok', message: M.sandboxNodeOk((node.stdout || node.stderr).trim()) });
+      const npm = await execRaw('npm', ['--version'], { timeoutMs: 5_000 });
+      if (npm.exitCode !== 0) {
+        sec.items.push({ level: 'fail', message: M.sandboxNpmMissing });
+        return sec;
+      }
+      sec.items.push({ level: 'ok', message: M.sandboxNpmOk((npm.stdout || npm.stderr).trim()) });
+      const npx = await execRaw('npx', ['--version'], { timeoutMs: 5_000 });
+      if (npx.exitCode !== 0) {
+        sec.items.push({ level: 'fail', message: M.sandboxNpxMissing });
+        return sec;
+      }
+      sec.items.push({ level: 'ok', message: M.sandboxNpxOk((npx.stdout || npx.stderr).trim()) });
     } else {
-      sec.items.push({ level: 'ok', message: M.sandboxVenvOk });
+      const v = await execRaw('python3', ['--version'], { timeoutMs: 5_000 });
+      if (v.exitCode !== 0) {
+        sec.items.push({ level: 'fail', message: M.sandboxPythonMissing });
+        return sec;
+      }
+      sec.items.push({ level: 'ok', message: M.sandboxPythonOk((v.stdout || v.stderr).trim()) });
+      const venv = await execRaw('python3', ['-m', 'venv', '--help'], { timeoutMs: 5_000 });
+      if (venv.exitCode !== 0) {
+        sec.items.push({ level: 'fail', message: M.sandboxVenvMissing });
+      } else {
+        sec.items.push({ level: 'ok', message: M.sandboxVenvOk });
+      }
     }
     return sec;
   }

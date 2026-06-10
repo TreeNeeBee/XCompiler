@@ -8,6 +8,7 @@ import {
   autoFixSrcImports,
   probeEntrypoint,
 } from '../src/core/entry_gate.js';
+import { getLanguageProfile } from '../src/core/language.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Sandbox, ExecResult, ExecExtra } from '../src/sandbox/types.js';
@@ -121,5 +122,15 @@ describe('probeEntrypoint', () => {
     const probe = await probeEntrypoint(ws, sb);
     expect(probe?.ok).toBe(true);
     expect(probe?.command).toBe('python -m src.myapp --help');
+  });
+
+  it('fails TypeScript delivery probing when no standard entrypoint exists', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile('src/app.ts', 'export const app = 1;\n');
+    const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }));
+    const probe = await getLanguageProfile('typescript').probeEntry?.(ws, sb);
+    expect(probe?.ok).toBe(false);
+    expect(probe?.stderrTail).toContain('missing TypeScript entrypoint');
   });
 });

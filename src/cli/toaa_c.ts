@@ -1,16 +1,9 @@
-import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import { Command } from 'commander';
 import { runCompile } from './compile.js';
+import { resolveCompileWorkspace } from './workspace.js';
 import { setLocale, t } from '../i18n/index.js';
 
 setLocale(process.env.TOAA_LANG ?? 'en');
-
-function defaultProjectName(): string {
-  const d = new Date();
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `toaa-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-}
 
 const program = new Command();
 program
@@ -31,15 +24,12 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    let ws: string;
-    const explicit = opts.output ?? opts.workspace;
-    if (explicit) {
-      ws = path.resolve(explicit);
-      await fs.mkdir(ws, { recursive: true });
-    } else {
-      ws = path.join(path.resolve(opts.baseDir), opts.name ?? defaultProjectName());
-      await fs.mkdir(ws, { recursive: true });
-    }
+    const ws = await resolveCompileWorkspace({
+      output: opts.output,
+      workspace: opts.workspace,
+      baseDir: opts.baseDir,
+      name: opts.name,
+    });
     await runCompile({
       workspace: ws,
       configPath: opts.config,

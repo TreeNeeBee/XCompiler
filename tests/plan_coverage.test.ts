@@ -95,4 +95,17 @@ describe('calibratePlanCoverage', () => {
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('no corresponding TEST'))).toBe(false);
   });
+
+  it('injects a TypeScript-friendly synthetic TEST step for uncovered TS CODE steps', () => {
+    const steps: Step[] = [
+      mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/main.ts'] }),
+    ];
+    const out = calibratePlanCoverage(steps, 'typescript');
+    expect(out.length).toBe(2);
+    const test = out[1]!;
+    expect(test.phase).toBe('TEST');
+    expect(test.description).toContain('Vitest');
+    expect(test.systemPrompt).toContain('tests/**/*.test.ts');
+    expect(test.acceptance).toContain('npm test');
+  });
 });

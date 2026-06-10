@@ -80,6 +80,7 @@ export interface Messages {
     gate1Cancelled: string;
     editTopicMsg: string;
     topicWritten: (path: string) => string;
+    planWritten: (path: string) => string;
     planPreviewHeader: string;
     planPreviewFooter: string;
     gate2Confirm: string;
@@ -87,6 +88,7 @@ export interface Messages {
     gate2Rejected: string;
     baselineLoaded: (kind: string, sources: string) => string;
     baselineMissing: (workspace: string) => string;
+    baselineLanguageOverride: (baseline: string, source: string, configured: string) => string;
     topicTitle: string;
     topicPreamble: string;
     topicSecRequirement: string;
@@ -209,6 +211,12 @@ export interface Messages {
     sandboxKind: (kind: string) => string;
     sandboxNetworkPolicy: (policy: string, ports: number[]) => string;
     sandboxFullNoPorts: string;
+    sandboxNodeMissing: string;
+    sandboxNodeOk: (version: string) => string;
+    sandboxNpmMissing: string;
+    sandboxNpmOk: (version: string) => string;
+    sandboxNpxMissing: string;
+    sandboxNpxOk: (version: string) => string;
     sandboxPythonMissing: string;
     sandboxPythonOk: (version: string) => string;
     sandboxVenvMissing: string;

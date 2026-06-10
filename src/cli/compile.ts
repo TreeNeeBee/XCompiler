@@ -19,7 +19,7 @@ import { savePlan } from '../core/storage.js';
 import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { setLocale, t } from '../i18n/index.js';
-import type { PlanIntent } from '../core/plan.js';
+import type { Language, PlanIntent } from '../core/plan.js';
 
 export interface CompileOptions {
   workspace: string;
@@ -38,6 +38,14 @@ export interface CompileOptions {
   baselinePlanFile?: string;
   yes?: boolean;
   force?: boolean;
+}
+
+export function resolveCompileLanguage(
+  configuredLanguage: Language,
+  intent: PlanIntent,
+  baseline: { language?: Language },
+): Language {
+  return isIncrementalIntent(intent) ? baseline.language ?? configuredLanguage : configuredLanguage;
 }
 
 export async function runCompile(opts: CompileOptions): Promise<{ planPath?: string }> {
@@ -98,7 +106,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     process.exit(7);
   }
   const router = new LLMRouter(cfg, audit, scoreStore);
-  const planner = new Planner(router.for('Planner'), audit, cfg.agent.language);
   const baseline =
     isIncrementalIntent(intent)
       ? await loadIncrementalBaseline(ws, { planPath: opts.baselinePlanFile })
@@ -112,6 +119,18 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   if (baseline.summary) {
     console.log(chalk.green('✔'), M.compile.baselineLoaded(intent, baseline.sources.join(', ')));
   }
+  const language = resolveCompileLanguage(cfg.agent.language, intent, baseline);
+  if (
+    isIncrementalIntent(intent) &&
+    baseline.language &&
+    baseline.language !== cfg.agent.language
+  ) {
+    console.log(
+      chalk.yellow('!'),
+      M.compile.baselineLanguageOverride(baseline.language, baseline.languageSource ?? 'baseline', cfg.agent.language),
+    );
+  }
+  const planner = new Planner(router.for('Planner'), audit, language);
 
   const trace = (msg: string) => {
     if (process.env.TOAA_TRACE === '1') process.stderr.write(`[toaa-trace] ${msg}\n`);
@@ -205,7 +224,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     await ws.writeFile(draftTopic, topicMd);
   } else {
     trace('renderTopicDraft');
-    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda, baseline.summary);
+    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
     trace('ws.writeFile.draftTopic');
     await ws.writeFile(draftTopic, topicMd);
     trace('ws.writeFile.draftTopic.done');
@@ -278,7 +297,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   // 5. 构建并校验 plan
   const plan = buildPlan(draft, {
     userAddenda,
-    language: cfg.agent.language,
+    language,
     intent,
     baselineSummary: baseline.summary,
   });
@@ -335,7 +354,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     steps: parsed.data.steps.length,
   });
 
-  console.log(chalk.green('✔'), M.compile.topicWritten(planPath));
+  console.log(chalk.green('✔'), M.compile.planWritten(planPath));
   console.log('  Next:', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
   return { planPath };
@@ -391,7 +410,6 @@ function renderTopicDraft(
   raw: string,
   qa: Array<{ question: string; answer: string }>,
   addenda: string = '',
-  baselineSummary: string = '',
 ): string {
   const M = t().compile;
   const lines: string[] = [];
@@ -417,12 +435,6 @@ function renderTopicDraft(
     lines.push(M.topicSecAddenda);
     lines.push('');
     lines.push(trimmed);
-    lines.push('');
-  }
-  if (baselineSummary.trim()) {
-    lines.push(M.topicSecBaseline);
-    lines.push('');
-    lines.push(baselineSummary.trim());
     lines.push('');
   }
   return lines.join('\n');
