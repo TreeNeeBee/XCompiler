@@ -113,4 +113,49 @@ describe('StepExecutor system prompt assembly', () => {
     const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
     expect(written).toBe('x = 1\n');
   });
+
+  it('repairs common trailing-comma JSON mistakes so actions still run', async () => {
+    class TrailingCommaLLM implements LLMClient {
+      readonly name = 'trailing-comma';
+      async chat(): Promise<string> {
+        return `{
+  "thoughts": "create file",
+  "actions": [
+    { "tool": "write_file", "args": { "path": "src/x.py", "content": "x = 1\\n" } },
+  ],
+  "done": true
+}`;
+      }
+    }
+    const exec = new StepExecutor({ llm: new TrailingCommaLLM(), maxRounds: 1 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
+    const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
+    expect(written).toBe('x = 1\n');
+  });
+
+  it('repairs malformed code-string JSON with raw newlines and unescaped inner quotes', async () => {
+    class BrokenCodeJsonLLM implements LLMClient {
+      readonly name = 'broken-code-json';
+      async chat(): Promise<string> {
+        return `{
+  "thoughts": "create file",
+  "actions": [
+    { "tool": "write_file", "args": { "path": "src/x.py", "content": "def run():
+    print("x")
+    return None
+" } }
+  ],
+  "done": true
+}`;
+      }
+    }
+    const exec = new StepExecutor({ llm: new BrokenCodeJsonLLM(), maxRounds: 1 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
+    const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
+    expect(written).toBe('def run():\n    print("x")\n    return None\n');
+  });
 });

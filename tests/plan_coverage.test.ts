@@ -70,7 +70,7 @@ describe('calibratePlanCoverage', () => {
     expect(calibratePlanCoverage(steps)).toBe(steps);
   });
 
-  it('produces a plan that passes lint S004/S005 after auto-injection', () => {
+  it('rewires downstream REFACTOR to the synthetic TEST step so the calibrated plan fully passes lint', () => {
     const steps: Step[] = [
       mkStep({ id: 'S001', phase: 'REQUIREMENT', role: 'Planner', outputs: ['docs/01-requirement.md'] }),
       mkStep({ id: 'S002', phase: 'ARCH', role: 'Architect', outputs: ['docs/02-architecture.md'], dependsOn: ['S001'] }),
@@ -89,11 +89,10 @@ describe('calibratePlanCoverage', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       steps: calibrated,
     };
-    // REFACTOR rule wants dependsOn on a TEST step; the synthetic TEST is now S008,
-    // so the REFACTOR depending on S005 alone may still warn — but the S004/S005
-    // "no corresponding TEST" errors must be gone.
+    const refactor = calibrated.find((s) => s.phase === 'REFACTOR');
+    expect(refactor?.dependsOn).toContain('S008');
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
-    expect(errs.some((e) => e.message.includes('no corresponding TEST'))).toBe(false);
+    expect(errs).toEqual([]);
   });
 
   it('injects a TypeScript-friendly synthetic TEST step for uncovered TS CODE steps', () => {

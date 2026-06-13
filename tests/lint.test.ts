@@ -80,6 +80,22 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
       },
       {
         id: 'S005',
+        phase: 'REFACTOR',
+        title: 'cleanup',
+        description: 'd',
+        systemPrompt: '本 Step 专属提示词：明确范围、输入、产出、验收与禁令。',
+        role: 'Coder',
+        tools: ['apply_patch', 'run_tests'],
+        inputs: ['src/app.py', 'tests/test_app.py'],
+        outputs: ['docs/04-refactor.md', 'src/app.py', 'tests/test_app.py'],
+        dependsOn: ['S004'],
+        acceptance: 'tests still pass after cleanup',
+        status: 'PENDING',
+        retries: 0,
+        maxRetries: 3,
+      },
+      {
+        id: 'S006',
         phase: 'DELIVERY',
         title: 'package',
         description: 'd',
@@ -88,7 +104,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
         tools: [],
         inputs: ['src/app.py'],
         outputs: ['docs/05-delivery.md'],
-        dependsOn: ['S004'],
+        dependsOn: ['S005'],
         acceptance: 'delivery doc exists',
         status: 'PENDING',
         retries: 0,
@@ -164,7 +180,8 @@ describe('lintPlan', () => {
     const plan = makePlan();
     // remove S004 (TEST step)
     plan.steps = plan.steps.filter((s) => s.id !== 'S004');
-    plan.steps[plan.steps.length - 1]!.dependsOn = ['S003'];
+    plan.steps.find((s) => s.phase === 'REFACTOR')!.dependsOn = ['S003'];
+    plan.steps[plan.steps.length - 1]!.dependsOn = ['S005'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('no corresponding TEST'))).toBe(true);
   });
@@ -172,7 +189,8 @@ describe('lintPlan', () => {
   it('CODE-without-TEST error includes actionable remediation hint (suggested id + test file)', () => {
     const plan = makePlan();
     plan.steps = plan.steps.filter((s) => s.id !== 'S004');
-    plan.steps[plan.steps.length - 1]!.dependsOn = ['S003'];
+    plan.steps.find((s) => s.phase === 'REFACTOR')!.dependsOn = ['S003'];
+    plan.steps[plan.steps.length - 1]!.dependsOn = ['S005'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     const msg = errs.find((e) => e.message.includes('no corresponding TEST'))?.message ?? '';
     // 应当告诉 LLM 该建一个新 TEST step、给出建议 id（基于现有 max+1）和建议的 tests/ 路径，
@@ -215,33 +233,31 @@ describe('lintPlan', () => {
 
   it('allows REFACTOR step to output src/tests files (refactoring is by definition source modification)', () => {
     const plan = makePlan();
-    // 在 S004 (TEST) 之后插入一个 REFACTOR Step，依赖 TEST 并修改 src/app.py + tests/test_app.py
-    plan.steps.splice(4, 0, {
-      id: 'S006',
-      phase: 'REFACTOR',
+    plan.steps[4] = {
+      ...plan.steps[4]!,
       title: 'extract helpers',
-      description: 'd',
-      systemPrompt: '本 Step 专属提示词：明确范围、输入、产出、验收与禁令。',
-      role: 'Coder',
       tools: ['apply_patch'],
-      inputs: ['src/app.py', 'tests/test_app.py'],
       outputs: ['src/app.py', 'tests/test_app.py', 'docs/04-refactor.md'],
       dependsOn: ['S004'],
-      acceptance: 'tests still pass',
-      status: 'PENDING',
-      retries: 0,
-      maxRetries: 3,
-    });
-    plan.steps[plan.steps.length - 1]!.dependsOn = ['S006'];
+    };
+    plan.steps[plan.steps.length - 1]!.dependsOn = ['S005'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.filter((e) => e.message.includes('must not output implementation'))).toEqual([]);
   });
 
   it('still bans DELIVERY step from producing src/*.py (only docs/packaging artifacts allowed)', () => {
     const plan = makePlan();
-    plan.steps[4]!.outputs = ['docs/05-delivery.md', 'src/leak.py'];
+    plan.steps[5]!.outputs = ['docs/05-delivery.md', 'src/leak.py'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('DELIVERY step must not output implementation'))).toBe(true);
+  });
+
+  it('requires at least one REFACTOR step', () => {
+    const plan = makePlan();
+    plan.steps = plan.steps.filter((s) => s.phase !== 'REFACTOR');
+    plan.steps[plan.steps.length - 1]!.dependsOn = ['S004'];
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('at least one REFACTOR step'))).toBe(true);
   });
 
   it('rejects empty / too-short systemPrompt', () => {
@@ -300,7 +316,7 @@ describe('topoSort', () => {
   it('orders by dependencies', () => {
     const plan = makePlan();
     const order = topoSort(plan.steps).map((s) => s.id);
-    expect(order).toEqual(['S001', 'S002', 'S003', 'S004', 'S005']);
+    expect(order).toEqual(['S001', 'S002', 'S003', 'S004', 'S005', 'S006']);
   });
 
   it('throws on cycle', () => {

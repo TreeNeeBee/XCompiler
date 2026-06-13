@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { jsonrepair } from 'jsonrepair';
 import type { LLMClient } from '../llm/types.js';
 import type { Step } from '../core/plan.js';
 import { getLanguageProfile, type LanguageProfile } from '../core/language.js';
@@ -119,6 +120,11 @@ interface LLMTurn {
   done?: boolean;
 }
 
+interface TurnFeedbackContext {
+  declaredDone: boolean;
+  actionCount: number;
+}
+
 export class StepExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
 
@@ -172,6 +178,7 @@ export class StepExecutor {
           responseFormat: 'json',
           temperature: 0.1,
           onProvider: (name) => { provider = name; },
+          streamStopWhen: isCompleteTurnJson,
           onToken: (chunk) => {
             if (rawAggregate.length < RAW_CAP) {
               rawAggregate = (rawAggregate + chunk).slice(0, RAW_CAP);
@@ -278,7 +285,10 @@ export class StepExecutor {
       messages.push({ role: 'assistant', content: text });
       messages.push({
         role: 'user',
-        content: renderFeedback(turnResults, verify),
+        content: renderFeedback(turnResults, verify, {
+          declaredDone: turn.done === true,
+          actionCount: actions.length,
+        }),
       });
     }
 
@@ -387,6 +397,7 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
 function renderFeedback(
   results: Array<ToolResult & { tool: string }>,
   verify: { ok: boolean; missing: string[] },
+  turn: TurnFeedbackContext,
 ): string {
   const M = t().prompts;
   const lines: string[] = [M.executorFeedbackHeader];
@@ -397,6 +408,13 @@ function renderFeedback(
     lines.push(M.executorFeedbackVerifyOk);
   } else {
     lines.push(M.executorFeedbackVerifyMissing(verify.missing.join(', ')));
+    if (turn.declaredDone && turn.actionCount === 0) {
+      lines.push(
+        `Invalid completion: required outputs are still missing. ` +
+        `Next response must include concrete write actions that create: ${verify.missing.join(', ')}. ` +
+        `Do not return done=true with actions=[] until those files exist.`,
+      );
+    }
   }
   return lines.join('\n');
 }
@@ -404,33 +422,36 @@ function renderFeedback(
 function parseTurn(text: string): LLMTurn {
   const cleaned = stripFence(text).trim();
   // 1) 直接解析最常见的"单一 JSON 对象"输出
-  try {
-    const j = JSON.parse(cleaned) as LLMTurn;
-    if (j && typeof j === 'object') return j;
-  } catch {
-    /* fallthrough */
-  }
+  const direct = tryParseTurnCandidate(cleaned);
+  if (direct) return direct;
   // 2) 扫描首个完整的平衡花括号对象（兼容 LLM 返回多段 ```json``` 拼接、
   //    或 JSON 前后带散文 / 多个对象）。逐字符按 {/} 计数，跳过字符串与转义。
   const first = extractFirstJsonObject(cleaned);
   if (first) {
-    try {
-      return JSON.parse(first) as LLMTurn;
-    } catch {
-      /* ignore */
-    }
+    const parsed = tryParseTurnCandidate(first);
+    if (parsed) return parsed;
   }
   // 3) 终极兜底：原来的 first-{ to last-} 切片
   const a = cleaned.indexOf('{');
   const b = cleaned.lastIndexOf('}');
   if (a >= 0 && b > a) {
-    try {
-      return JSON.parse(cleaned.slice(a, b + 1)) as LLMTurn;
-    } catch {
-      /* ignore */
-    }
+    const parsed = tryParseTurnCandidate(cleaned.slice(a, b + 1));
+    if (parsed) return parsed;
   }
   return {};
+}
+
+function isCompleteTurnJson(text: string): boolean {
+  const cleaned = stripFence(text).trim();
+  if (!/"done"\s*:/.test(cleaned)) return false;
+  const last = cleaned.at(-1);
+  if (last !== '}' && last !== ']') return false;
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start < 0 || end <= start) return false;
+  const candidate = cleaned.slice(start, end + 1);
+  const turn = tryParseTurnCandidate(candidate);
+  return !!turn && typeof turn.done === 'boolean' && Array.isArray(turn.actions);
 }
 
 /** 返回 s 中第一个语法上完整的 `{...}` 子串（按字符串/转义正确计数花括号）。 */
@@ -466,4 +487,86 @@ function stripFence(s: string): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + `\n... [truncated ${s.length - n} chars]` : s;
+}
+
+function tryParseTurnCandidate(candidate: string): LLMTurn | null {
+  const exact = isTurnObject(tryParseJson(candidate));
+  if (exact) return exact;
+  const repaired = repairJsonCandidate(candidate);
+  if (repaired !== candidate) {
+    const parsed = isTurnObject(tryParseJson(repaired));
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function tryParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function repairJsonCandidate(text: string): string {
+  const normalized = normalizeJsonLikeStrings(text).trim();
+  try {
+    return jsonrepair(normalized).trim();
+  } catch {
+    return normalized;
+  }
+}
+
+function isTurnObject(value: unknown): LLMTurn | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as LLMTurn;
+}
+
+function normalizeJsonLikeStrings(text: string): string {
+  let out = '';
+  let inStr = false;
+  let escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (!inStr) {
+      out += ch;
+      if (ch === '"') inStr = true;
+      continue;
+    }
+    if (escape) {
+      out += ch;
+      escape = false;
+      continue;
+    }
+    if (ch === '\\') {
+      out += ch;
+      escape = true;
+      continue;
+    }
+    if (ch === '\r') continue;
+    if (ch === '\n') {
+      out += '\\n';
+      continue;
+    }
+    if (ch === '"') {
+      const next = nextNonWhitespaceChar(text, i + 1);
+      if (next === ':' || next === ',' || next === '}' || next === ']' || next === '') {
+        out += ch;
+        inStr = false;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function nextNonWhitespaceChar(text: string, start: number): string {
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (!/\s/.test(ch)) return ch;
+  }
+  return '';
 }

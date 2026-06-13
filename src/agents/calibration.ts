@@ -251,6 +251,38 @@ const PHASE_BY_ROLE: Record<string, string> = {
   Debugger: 'DEBUG',
 };
 
+const WRITE_CAPABLE_TOOL_REFS = new Set([
+  'write_file',
+  'append_file',
+  'apply_patch',
+  'replace_in_file',
+  'skill:author',
+  'skill:patcher',
+  'skill:tester',
+  'skill:debugger',
+  'skill:refactorer',
+]);
+
+const PHASE_DEFAULT_TOOLS: Record<string, string[]> = {
+  REQUIREMENT: ['skill:author'],
+  ARCH: ['skill:author'],
+  TASK: ['skill:author'],
+  CODE: ['skill:author'],
+  TEST: ['skill:tester'],
+  DEBUG: ['skill:debugger'],
+  REFACTOR: ['skill:refactorer'],
+  DELIVERY: ['skill:author'],
+};
+
+export function ensureEssentialToolRefs(step: Pick<Step, 'phase' | 'tools' | 'outputs'>): string[] {
+  const tools = Array.isArray(step.tools) ? [...step.tools] : [];
+  const outputs = Array.isArray(step.outputs) ? step.outputs : [];
+  const needsWritableOutputs = outputs.some((out) => typeof out === 'string' && !out.endsWith('/'));
+  const hasWriteCapability = tools.some((tool) => WRITE_CAPABLE_TOOL_REFS.has(tool));
+  if (!needsWritableOutputs || hasWriteCapability) return dedup(tools);
+  return dedup([...tools, ...(PHASE_DEFAULT_TOOLS[step.phase] ?? ['write_file'])]);
+}
+
 /**
  * 推断 Step 的阶段。优先级：
  *   1. 原值是合法阶段 → 原样返回
@@ -331,7 +363,11 @@ export function calibrateStepShape(steps: Step[]): Step[] {
       description,
       systemPrompt,
       role: role as Step['role'],
-      tools: Array.isArray(s.tools) ? (s.tools as string[]) : [],
+      tools: ensureEssentialToolRefs({
+        phase: phase as Step['phase'],
+        tools: Array.isArray(s.tools) ? (s.tools as string[]) : [],
+        outputs,
+      }),
       inputs: Array.isArray(s.inputs) ? (s.inputs as string[]) : [],
       outputs,
       dependsOn: Array.isArray(s.dependsOn) ? (s.dependsOn as string[]) : [],
@@ -344,6 +380,10 @@ export function calibrateStepShape(steps: Step[]): Step[] {
           : 3,
     } as Step;
   });
+}
+
+function dedup<T>(arr: T[]): T[] {
+  return [...new Set(arr)];
 }
 
 // =============================================================================
@@ -432,7 +472,20 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     maxRetries: 3,
   };
 
-  return [...steps, synthetic];
+  const uncoveredIds = new Set(uncovered.map((c) => c.id));
+  const rewired = steps.map((step) => {
+    if (step.phase !== 'REFACTOR') return step;
+    const alreadyDependsOnTest = step.dependsOn.some((depId) => stepById.get(depId)?.phase === 'TEST');
+    if (alreadyDependsOnTest) return step;
+    const touchesUncoveredCode = step.dependsOn.some((depId) => uncoveredIds.has(depId));
+    if (!touchesUncoveredCode) return step;
+    return {
+      ...step,
+      dependsOn: dedup([...step.dependsOn, newId]),
+    };
+  });
+
+  return [...rewired, synthetic];
 }
 
 // =============================================================================

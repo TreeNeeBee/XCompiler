@@ -83,6 +83,72 @@ describe('OllamaClient streaming', () => {
     }
   });
 
+  it('stops on done=true even when provider keeps the NDJSON connection open', async () => {
+    let open: import('node:http').ServerResponse | null = null;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.write(JSON.stringify({ message: { role: 'assistant', content: 'hello ' } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: 'world' }, done: true }) + '\n');
+      open = res; // no res.end()
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 0,
+        streamIdleTimeoutMs: 5_000,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).resolves.toBe('hello world');
+      expect(Date.now() - t0).toBeLessThan(1000);
+    } finally {
+      if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('stops early when streamed JSON is already complete but provider keeps streaming connection open', async () => {
+    let open: import('node:http').ServerResponse | null = null;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.write(JSON.stringify({ message: { role: 'assistant', content: '{"requirementDigest":"x",' } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: '"globalPrompt":"","dependencies":[],' } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: '"steps":[{"id":"S001","title":"R","description":"d","systemPrompt":"p","phase":"REQUIREMENT","role":"Planner","tools":[],"inputs":[],"outputs":["docs/01-requirement.md"],"dependsOn":[],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S002","title":"A","description":"d","systemPrompt":"p","phase":"ARCH","role":"Architect","tools":[],"inputs":["docs/01-requirement.md"],"outputs":["docs/02-architecture.md"],"dependsOn":["S001"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S003","title":"C","description":"d","systemPrompt":"p","phase":"CODE","role":"Coder","tools":[],"inputs":["docs/02-architecture.md"],"outputs":["src/main.py"],"dependsOn":["S002"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S004","title":"D","description":"d","systemPrompt":"p","phase":"DELIVERY","role":"Coder","tools":[],"inputs":["src/main.py"],"outputs":["docs/04-delivery.md"],"dependsOn":["S003"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3}]}' } }) + '\n');
+      open = res; // no done=true, no end
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 0,
+        streamIdleTimeoutMs: 5_000,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], {
+          onToken: () => {},
+          responseFormat: 'json',
+          validate: (text) => {
+            const parsed = JSON.parse(text) as { requirementDigest?: unknown; steps?: unknown[] };
+            if (typeof parsed.requirementDigest !== 'string' || !Array.isArray(parsed.steps) || parsed.steps.length < 4) {
+              throw new Error('incomplete planner json');
+            }
+          },
+        }),
+      ).resolves.toContain('"requirementDigest":"x"');
+      expect(Date.now() - t0).toBeLessThan(1000);
+    } finally {
+      if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('aborts streaming when output exceeds maxOutputChars', async () => {
     let stop = false;
     const server = createServer((_req, res) => {

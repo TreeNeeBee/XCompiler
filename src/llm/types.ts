@@ -16,6 +16,12 @@ export interface ChatOptions {
    */
   onToken?: (chunk: string) => void;
   /**
+   * 流式模式下的“可提前结束”判定。用于兼容一些 provider：
+   * 输出内容本身已经完整，但既不及时发送 [DONE]，也不主动断开连接。
+   * 返回 true 后 provider 应尽快结束本次流读取并返回当前 aggregate。
+   */
+  streamStopWhen?: (text: string) => boolean;
+  /**
    * 可选验证钩子：provider 返回后调用。抛异常会被 FallbackClient
    * 视为该 provider 失败，并切换到下一个。适用于：JSON 退化、
    * 空输出、model token loop 等“表面成功但语义不可用”场景。
