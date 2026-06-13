@@ -1,7 +1,7 @@
 import path from 'node:path';
 import chalk from 'chalk';
 import { spinner as ora } from '../util/spinner.js';
-import type { Plan, Step } from './plan.js';
+import { PHASE_ORDER, type Plan, type Step } from './plan.js';
 import { topoSort } from './lint.js';
 import { savePlan } from './storage.js';
 import type { LLMRouter } from '../llm/router.js';
@@ -18,6 +18,14 @@ import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { DebugCache } from './debug_cache.js';
 import { getLanguageProfile, type LanguageProfile } from './language.js';
+import {
+  loadProjectMemory,
+  PROJECT_MEMORY_PATH,
+  refreshProjectMemory,
+  selectMemoryContractsForStep,
+  selectMemorySnippetsForStep,
+  type ProjectMemory,
+} from './project_memory.js';
 
 export interface EngineOptions {
   ws: Workspace;
@@ -63,6 +71,8 @@ export class PhaseEngine {
   private readonly debugCache: DebugCache;
   /** 当前 Plan 的语言 profile（在 run() 起始处按 plan.language 解析）。 */
   private profile: LanguageProfile = getLanguageProfile('python');
+  /** 当前 workspace 的项目记忆，用于给执行阶段注入更稳定的跨轮上下文。 */
+  private projectMemory: ProjectMemory | null = null;
   /** 最近一次 Step 终态失败时的详细日志（供 run() 汇总到 EngineResult）。 */
   private lastFailure?: { reason: string; failureLog: string };
 
@@ -74,6 +84,7 @@ export class PhaseEngine {
 
   async run(plan: Plan): Promise<EngineResult> {
     this.profile = getLanguageProfile(plan.language);
+    await this.refreshCurrentProjectMemory(plan);
     const order = topoSort(plan.steps);
     if (this.opts.dryRun) {
       for (const s of order) {
@@ -446,16 +457,7 @@ export class PhaseEngine {
     const executor = new StepExecutor({ llm, maxRounds: rounds });
 
     // 加载 inputs + outputs 已存在文件 作为上下文（debug 时尤其重要）
-    const ctxSnippets: Array<{ path: string; content: string }> = [];
-    const interesting = debug ? [...step.inputs, ...step.outputs] : step.inputs;
-    for (const p of interesting) {
-      if (p.endsWith('/')) continue;
-      try {
-        ctxSnippets.push({ path: p, content: await this.opts.ws.readFile(p) });
-      } catch {
-        /* ignore */
-      }
-    }
+    const ctxSnippets = await this.buildContextSnippets(plan, step, debug);
 
     step.status = 'RUNNING';
     await savePlan(this.opts.planPath, plan);
@@ -517,6 +519,7 @@ export class PhaseEngine {
             return { ok: false, failureLog, reason, metrics: r.metrics };
           }
         }
+
         // DELIVERY 阶段强制验收门：必须能运行入口 `--help` 退出码 0。
         // 配合 autoFixImports 已经把常见 import 错误自动修掉，这里只兜底真实业务错误。
         if (step.phase === 'DELIVERY') {
@@ -565,6 +568,7 @@ export class PhaseEngine {
           }
         }
         step.status = 'DONE';
+        await this.refreshCurrentProjectMemory(plan);
         await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug done' : 'done');
         spin?.succeed(`${step.id} DONE (rounds=${r.rounds})`);
         await this.opts.audit.event('phase.end', `${step.id} DONE`, { rounds: r.rounds, retry: step.retries });
@@ -606,6 +610,102 @@ export class PhaseEngine {
     }
   }
 
+  private async buildContextSnippets(
+    plan: Plan,
+    step: Step,
+    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
+  ): Promise<Array<{ path: string; content: string }>> {
+    const out = new Map<string, string>();
+    const interesting = debug ? [...step.inputs, ...step.outputs] : step.inputs;
+    for (const p of interesting) {
+      await this.pushWorkspaceSnippet(out, p);
+    }
+
+    const sharedDocs = ['docs/topic.md', 'docs/01-requirement.md', 'docs/02-architecture.md', 'docs/03-tasks.md'];
+    for (const rel of sharedDocs) {
+      await this.pushWorkspaceSnippet(out, rel);
+    }
+
+    if (this.projectMemory?.summary) {
+      out.set(`${PROJECT_MEMORY_PATH}#summary`, this.projectMemory.summary);
+      for (const snippet of selectMemorySnippetsForStep(this.projectMemory, step, debug ? 6 : 4)) {
+        if (!out.has(snippet.path)) out.set(snippet.path, snippet.content);
+      }
+      const contracts = selectMemoryContractsForStep(this.projectMemory, step, debug ? 8 : 5);
+      if (contracts.length > 0) {
+        out.set(
+          `${PROJECT_MEMORY_PATH}#contracts`,
+          [
+            'Relevant project contracts:',
+            ...contracts.map((contract) =>
+              `- [${contract.kind}] ${contract.subject}${contract.path ? ` (${contract.path})` : ''}: ${contract.detail}`,
+            ),
+          ].join('\n'),
+        );
+      }
+    }
+
+    const downstream = this.buildDownstreamContextSnippet(plan, step);
+    if (downstream) {
+      out.set(`.toaa/downstream/${step.id}.md`, downstream);
+    }
+    return [...out.entries()].map(([path, content]) => ({ path, content }));
+  }
+
+  private async pushWorkspaceSnippet(target: Map<string, string>, rel: string): Promise<void> {
+    if (!rel || rel.endsWith('/') || target.has(rel)) return;
+    try {
+      target.set(rel, await this.opts.ws.readFile(rel));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private async refreshCurrentProjectMemory(plan: Plan): Promise<void> {
+    try {
+      this.projectMemory = await refreshProjectMemory(this.opts.ws, {
+        planPath: this.opts.planPath,
+        language: plan.language,
+        intent: plan.intent,
+      });
+    } catch (err) {
+      this.projectMemory = await loadProjectMemory(this.opts.ws);
+      await this.opts.audit.event('note', `project memory refresh failed: ${(err as Error).message}`, {
+        planPath: this.opts.planPath,
+      });
+    }
+  }
+
+  private buildDownstreamContextSnippet(plan: Plan, step: Step): string {
+    const byId = new Map(plan.steps.map((candidate) => [candidate.id, candidate]));
+    const consumers = plan.steps
+      .filter((candidate) => candidate.id !== step.id)
+      .filter(
+        (candidate) =>
+          stepTransitivelyDependsOn(candidate, step.id, byId) ||
+          candidate.inputs.some((input) => step.outputs.includes(input)),
+      )
+      .sort((a, b) => {
+        const phaseDelta = PHASE_ORDER[a.phase] - PHASE_ORDER[b.phase];
+        return phaseDelta !== 0 ? phaseDelta : a.id.localeCompare(b.id);
+      });
+    if (consumers.length === 0) return '';
+    return [
+      `# Downstream consumers of ${step.id}`,
+      'Design the current step so these later steps can consume its outputs directly.',
+      '',
+      ...consumers.slice(0, 8).flatMap((consumer) => [
+        `## ${consumer.id} ${consumer.phase} — ${consumer.title}`,
+        `- description: ${consumer.description}`,
+        `- acceptance: ${consumer.acceptance}`,
+        `- inputs: ${consumer.inputs.join(', ') || '—'}`,
+        `- outputs: ${consumer.outputs.join(', ') || '—'}`,
+        `- dependsOn: ${consumer.dependsOn.join(', ') || '—'}`,
+        '',
+      ]),
+    ].join('\n').trim();
+  }
+
   /**
    * DEBUG 模式下扩展 allowedWrites：
    *   - 当前 Step 的 outputs（永远可写）
@@ -639,4 +739,22 @@ export class PhaseEngine {
 
 function dedup<T>(arr: T[]): T[] {
   return [...new Set(arr)];
+}
+
+function stepTransitivelyDependsOn(
+  step: Step,
+  targetId: string,
+  byId: Map<string, Step>,
+): boolean {
+  const seen = new Set<string>();
+  const stack = [...step.dependsOn];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current === targetId) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const dep = byId.get(current);
+    if (dep) stack.push(...dep.dependsOn);
+  }
+  return false;
 }

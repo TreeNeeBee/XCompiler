@@ -133,4 +133,49 @@ describe('probeEntrypoint', () => {
     expect(probe?.ok).toBe(false);
     expect(probe?.stderrTail).toContain('missing TypeScript entrypoint');
   });
+
+  it('prefers package.json start script when probing TypeScript delivery', async () => {
+    const { ws } = await tmpWs();
+    await ws.writeFile('package.json', JSON.stringify({
+      type: 'module',
+      scripts: { start: 'tsx app/cli.ts' },
+    }, null, 2));
+    const sb: Sandbox = {
+      kind: 'subprocess',
+      async build() { return { rebuilt: false, reason: 'stub' }; },
+      async exec(cmd: string, argv: string[]) {
+        expect(cmd).toBe('npm');
+        expect(argv).toEqual(['run', '--silent', 'start', '--', '--help']);
+        return { exitCode: 0, stdout: 'usage', stderr: '', timedOut: false, durationMs: 1 };
+      },
+      async runProgram() { throw new Error('should not use runProgram'); },
+      async runTests() { throw new Error('not used'); },
+      async installDeps() { return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }; },
+    };
+    const probe = await getLanguageProfile('typescript').probeEntry?.(ws, sb);
+    expect(probe?.ok).toBe(true);
+    expect(probe?.command).toBe('npm run --silent start -- --help');
+  });
+
+  it('uses package.json bin when probing TypeScript delivery', async () => {
+    const { ws } = await tmpWs();
+    await ws.writeFile('package.json', JSON.stringify({
+      type: 'module',
+      bin: { app: 'bin/app.ts' },
+    }, null, 2));
+    const sb: Sandbox = {
+      kind: 'subprocess',
+      async build() { return { rebuilt: false, reason: 'stub' }; },
+      async exec() { throw new Error('not used'); },
+      async runProgram(args: string[]) {
+        expect(args).toEqual(['bin/app.ts', '--help']);
+        return { exitCode: 0, stdout: 'usage', stderr: '', timedOut: false, durationMs: 1 };
+      },
+      async runTests() { throw new Error('not used'); },
+      async installDeps() { return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }; },
+    };
+    const probe = await getLanguageProfile('typescript').probeEntry?.(ws, sb);
+    expect(probe?.ok).toBe(true);
+    expect(probe?.command).toBe('npx tsx bin/app.ts --help');
+  });
 });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { buildPlan } from '../src/agents/planner.js';
 import { resolveCompileLanguage } from '../src/cli/compile.js';
 import { loadIncrementalBaseline } from '../src/core/incremental.js';
+import { PROJECT_MEMORY_PATH, refreshProjectMemory } from '../src/core/project_memory.js';
 import { renderPlanMarkdown } from '../src/core/render.js';
 import { PlanSchema, type Step } from '../src/core/plan.js';
 import { setLocale, t } from '../src/i18n/index.js';
@@ -64,8 +65,11 @@ describe('incremental development support', () => {
     expect(baseline.summary).toContain('## Existing plan summary');
     expect(baseline.summary).toContain('- language: typescript');
     expect(baseline.summary).toContain('- intent: feature');
-    expect(baseline.summary).toContain('## Existing document: docs/topic.md');
-    expect(baseline.summary).toContain('## Existing manifest: package.json');
+    expect(baseline.summary).toContain('## Existing project memory');
+    expect(baseline.summary).toContain('## Module map');
+    expect(baseline.summary).toContain('## docs/topic.md');
+    expect(baseline.summary).toContain('## package.json');
+    expect(baseline.summary).toContain('export const main = () => "ok";');
     expect(baseline.summary).toContain('src/main.ts');
     expect(baseline.summary).toContain('tests/main.test.ts');
     expect(baseline.language).toBe('typescript');
@@ -102,6 +106,37 @@ describe('incremental development support', () => {
     expect(baseline.summary).toContain('- intent: refactor');
     expect(baseline.language).toBe('python');
     expect(baseline.sources.some((source) => source.endsWith('baseline-plan.json'))).toBe(true);
+  });
+
+  it('reuses stored project memory when present', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const ws = new Workspace(root);
+    await ws.writeFile('docs/topic.md', 'Existing project supports invoice exports.');
+    await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "csv"; }\n');
+    await refreshProjectMemory(ws, { language: 'typescript', intent: 'feature' });
+
+    const baseline = await loadIncrementalBaseline(ws);
+
+    expect(baseline.summary).toContain('## Existing project memory');
+    expect(baseline.summary).toContain('invoice exports');
+    expect(baseline.summary).toContain('exportInvoices');
+    expect(baseline.sources).toContain(PROJECT_MEMORY_PATH);
+  });
+
+  it('refreshes project memory before incremental planning so stale snapshots are not reused', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const ws = new Workspace(root);
+    await ws.writeFile('docs/topic.md', 'Old topic');
+    await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "old"; }\n');
+    await refreshProjectMemory(ws, { language: 'typescript', intent: 'feature' });
+    await ws.writeFile('docs/topic.md', 'Fresh topic after manual edits');
+    await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "fresh"; }\n');
+
+    const baseline = await loadIncrementalBaseline(ws);
+
+    expect(baseline.summary).toContain('Fresh topic after manual edits');
+    expect(baseline.summary).toContain('return "fresh";');
+    expect(baseline.summary).not.toContain('return "old";');
   });
 
   it('strips previously embedded baseline blocks from topic.md when reloading baseline context', async () => {

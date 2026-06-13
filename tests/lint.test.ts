@@ -6,7 +6,11 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
   const base: Plan = {
     version: '1',
     language: 'python',
+    intent: 'greenfield',
     requirementDigest: 'todo CLI app',
+    globalPrompt: '',
+    baselineSummary: '',
+    userAddenda: '',
     dependencies: ['pytest==8.*'],
     createdAt: '2026-01-01T00:00:00.000Z',
     steps: [
@@ -245,6 +249,50 @@ describe('lintPlan', () => {
     plan.steps[0]!.systemPrompt = 'too short';
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('systemPrompt too short'))).toBe(true);
+  });
+
+  it('rejects trivial single-module plans for clearly multi-surface requirements', () => {
+    const plan = makePlan({
+      requirementDigest: 'Build an OpenAPI server with CLI import/export commands and SQLite persistence.',
+    });
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('Non-trivial request detected'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('at least 3 CODE steps'))).toBe(true);
+  });
+
+  it('rejects incremental plans that ignore a large existing baseline', () => {
+    const plan = makePlan({
+      language: 'typescript',
+      intent: 'feature',
+      requirementDigest: 'Extend the existing API and auth workflow with reporting export support.',
+      baselineSummary: [
+        '## Existing project memory',
+        '## Module map',
+        '- src/api/server.ts: source module',
+        '- src/auth/service.ts: source module',
+        '- src/reporting/service.ts: source module',
+        '- src/persistence/store.ts: source module',
+      ].join('\n'),
+    });
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('Non-trivial request detected'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('at least 3 CODE steps'))).toBe(true);
+  });
+
+  it('allows a surgical incremental change on a small baseline', () => {
+    const plan = makePlan({
+      language: 'typescript',
+      intent: 'feature',
+      requirementDigest: 'Rename one reporting formatter helper.',
+      baselineSummary: [
+        '## Existing project memory',
+        '## Module map',
+        '- src/reporting/service.ts: source module',
+        '- src/reporting/format.ts: source module',
+      ].join('\n'),
+    });
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('Non-trivial request detected'))).toBe(false);
   });
 });
 

@@ -352,7 +352,7 @@ export async function verifyOutputs(inp: ExecutorRunInput): Promise<{ ok: boolea
 
 function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
   const ctxBlock = (inp.contextSnippets ?? [])
-    .map((s) => `### ${s.path}\n\`\`\`\n${truncate(s.content, 4000)}\n\`\`\``)
+    .map((s) => `### ${s.path}\n\`\`\`\n${truncate(s.content, 2200)}\n\`\`\``)
     .join('\n\n');
   const dbg = inp.debugContext
     ? `## debug failure log\n\`\`\`\n${truncate(inp.debugContext.failureLog, 4000)}\n\`\`\`\n` +
@@ -376,7 +376,7 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
     inp.step.inputs.length > 0
       ? `## inputs (already produced):\n${inp.step.inputs.map((i) => `- ${i}`).join('\n')}\n`
       : '',
-    ctxBlock ? `## context\n${ctxBlock}\n` : '',
+    ctxBlock ? `## context\nTreat these existing files as the current project truth. Extend or refactor them in place; do not replace the project with a tiny parallel implementation.\n\n${ctxBlock}\n` : '',
     dbg,
     t().prompts.executorUserPromptOutro,
   ]

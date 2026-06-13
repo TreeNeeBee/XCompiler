@@ -87,58 +87,6 @@ const pythonProfile: LanguageProfile = {
   },
 };
 
-const TS_PLANNER_OVERRIDE = `
-
-──────────────────────────────────────────────────────────────────────────
-## LANGUAGE OVERRIDE — THIS IS A TYPESCRIPT / NODE.JS PROJECT
-plan.language is "typescript". The Python-specific instructions above are
-SUPERSEDED by the rules in this block. Follow ONLY these for language specifics:
-
-T1. Target a standalone runnable Node.js (TypeScript) application. Source lives
-    under \`src/**/*.ts\`; tests under \`tests/**/*.test.ts\` (Vitest). The CODE phase
-    must produce a directly runnable entry \`src/main.ts\` whose bottom calls a
-    \`main()\` that prints help/usage and runs with no extra arguments.
-T2. **Dependency manifest is \`package.json\` (NOT requirements.txt).** Exactly one
-    ARCH Step must list \`package.json\` in its outputs and author it with:
-      - "type": "module",
-      - "scripts": { "test": "vitest run", "start": "tsx src/main.ts" },
-      - runtime deps in "dependencies",
-      - devDependencies MUST include: "vitest", "typescript", "tsx", "@types/node".
-    A \`tsconfig.json\` at the repo root may also be an ARCH output. Do NOT list
-    \`requirements.txt\` anywhere. Later runtime deps go through the \`add_dependency\`
-    tool (it appends to package.json and reinstalls).
-T3. The \`dependencies\` plan field: list runtime npm packages (bare names, no
-    version ranges). It is advisory context — the authoritative manifest is the
-    \`package.json\` written by ARCH. \`pytest\` is irrelevant; tests use Vitest.
-T4. **Import conventions**: use ESM relative imports between local modules with
-    explicit \`.js\` extensions (TS+NodeNext), e.g. \`import { parse } from './parser.js';\`
-    (the source file is \`parser.ts\` but the import specifier ends in \`.js\`). Never
-    use \`from src.x\`-style or bare local imports.
-T5. The DELIVERY \`docs/05-delivery.md\` run command must be copy-pasteable, e.g.
-    \`npx tsx src/main.ts --help\` (after \`npm install\`).
-T6. Phase purity still holds: REQUIREMENT/ARCH/TASK/DELIVERY must not output
-    \`src/**/*.ts\` or \`tests/**/*.ts\` (only docs/*.md, plus package.json/tsconfig.json
-    for ARCH). All implementation/tests live in CODE/TEST.
-──────────────────────────────────────────────────────────────────────────`;
-
-const TS_EXECUTOR_OVERRIDE = `
-
-──────────────────────────────────────────────────────────────────────────
-LANGUAGE OVERRIDE — TYPESCRIPT / NODE.JS PROJECT (supersedes Python rule 3 & 6):
-- Generated code is TypeScript (strict, typed). Local module imports use ESM
-  relative specifiers ending in ".js" (e.g. import { x } from "./util.js"; the
-  file on disk is util.ts). Never use Python-style imports or sys.path hacks.
-- Tests use Vitest: import { describe, it, expect } from "vitest". Run them with
-  the run_tests tool (it executes "npm test"). Self-contained tests only — create
-  any fixture files with write_file under tests/fixtures/ instead of reading files
-  that do not exist.
-- The dependency manifest is package.json. Use add_dependency to add npm packages
-  (it rewrites package.json + reinstalls); never hand-edit requirements.txt.
-- run_program runs "npx tsx <args>" (e.g. args ["src/main.ts","--help"]).
-- Chunked writes: keep each write_file/append_file under 6000 bytes; the
-  concatenated file must be valid TypeScript — never split inside a function body.
-──────────────────────────────────────────────────────────────────────────`;
-
 const typescriptProfile: LanguageProfile = {
   id: 'typescript',
   displayName: 'TypeScript',
@@ -172,8 +120,8 @@ const typescriptProfile: LanguageProfile = {
     }
     return `tests/${stepId.toLowerCase()}.test.ts`;
   },
-  plannerPromptOverride: TS_PLANNER_OVERRIDE,
-  executorPromptOverride: TS_EXECUTOR_OVERRIDE,
+  plannerPromptOverride: '',
+  executorPromptOverride: '',
   async probeEntry(ws, sandbox) {
     return probeTsEntrypoint(ws, sandbox);
   },
@@ -194,32 +142,24 @@ async function probeTsEntrypoint(
   sandbox: Sandbox,
 ): Promise<EntrypointProbe | null> {
   const tail = (s: string): string => s.split('\n').slice(-30).join('\n');
-  let entry: string | null = null;
-  for (const cand of ['src/main.ts', 'src/index.ts', 'src/main.tsx']) {
-    if (await ws.exists(cand)) {
-      entry = cand;
-      break;
-    }
-  }
+  const entry = await detectTsEntrypoint(ws);
   if (!entry) {
     return {
       ok: false,
-      command: 'npx tsx src/main.ts --help',
+      command: 'npm run start -- --help',
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
-      stderrTail: 'missing TypeScript entrypoint: expected one of src/main.ts, src/index.ts, src/main.tsx',
+      stderrTail: 'missing TypeScript entrypoint: expected package.json start/bin or one of src/main.ts, src/index.ts, src/main.tsx',
     };
   }
-  const argv = [entry, '--help'];
-  const command = `npx tsx ${argv.join(' ')}`;
   let r;
   try {
-    r = await sandbox.runProgram(argv, { timeoutMs: 60_000 });
+    r = await runTsEntryProbe(entry, sandbox);
   } catch (err) {
     return {
       ok: false,
-      command,
+      command: entry.command,
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
@@ -229,10 +169,89 @@ async function probeTsEntrypoint(
   const ok = r.exitCode === 0 && !r.timedOut;
   return {
     ok,
-    command,
+    command: entry.command,
     exitCode: r.exitCode,
     timedOut: r.timedOut ?? false,
     stdoutTail: tail(r.stdout),
     stderrTail: tail(r.stderr),
   };
+}
+
+async function detectTsEntrypoint(
+  ws: Workspace,
+): Promise<
+  | { type: 'start-script'; command: string }
+  | { type: 'run-program'; entry: string; command: string }
+  | { type: 'exec'; cmd: string; argv: string[]; command: string }
+  | null
+> {
+  const pkg = await readJsonFile<Record<string, unknown>>(ws, 'package.json');
+  const scripts =
+    pkg?.scripts && typeof pkg.scripts === 'object' && !Array.isArray(pkg.scripts)
+      ? (pkg.scripts as Record<string, unknown>)
+      : {};
+  if (typeof scripts.start === 'string' && scripts.start.trim()) {
+    return { type: 'start-script', command: 'npm run --silent start -- --help' };
+  }
+
+  const binValue = pkg?.bin;
+  if (typeof binValue === 'string' && binValue.trim()) {
+    return toTsBinProbe(binValue);
+  }
+  if (binValue && typeof binValue === 'object' && !Array.isArray(binValue)) {
+    const firstBin = Object.values(binValue as Record<string, unknown>).find(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
+    if (firstBin) return toTsBinProbe(firstBin);
+  }
+
+  const mainValue = typeof pkg?.main === 'string' ? pkg.main.trim() : '';
+  if (mainValue && (mainValue.endsWith('.ts') || mainValue.endsWith('.tsx') || mainValue.endsWith('.js'))) {
+    return mainValue.endsWith('.js')
+      ? { type: 'exec', cmd: 'node', argv: [mainValue, '--help'], command: `node ${mainValue} --help` }
+      : { type: 'run-program', entry: mainValue, command: `npx tsx ${mainValue} --help` };
+  }
+
+  for (const cand of ['src/main.ts', 'src/index.ts', 'src/main.tsx']) {
+    if (await ws.exists(cand)) {
+      return { type: 'run-program', entry: cand, command: `npx tsx ${cand} --help` };
+    }
+  }
+  return null;
+}
+
+async function runTsEntryProbe(
+  probe:
+    | { type: 'start-script'; command: string }
+    | { type: 'run-program'; entry: string; command: string }
+    | { type: 'exec'; cmd: string; argv: string[]; command: string },
+  sandbox: Sandbox,
+): Promise<Awaited<ReturnType<Sandbox['runProgram']>>> {
+  if (probe.type === 'start-script') {
+    return sandbox.exec('npm', ['run', '--silent', 'start', '--', '--help'], { timeoutMs: 60_000 });
+  }
+  if (probe.type === 'exec') {
+    return sandbox.exec(probe.cmd, probe.argv, { timeoutMs: 60_000 });
+  }
+  return sandbox.runProgram([probe.entry, '--help'], { timeoutMs: 60_000 });
+}
+
+function toTsBinProbe(
+  entry: string,
+): { type: 'run-program'; entry: string; command: string } | { type: 'exec'; cmd: string; argv: string[]; command: string } {
+  if (entry.endsWith('.js')) {
+    return { type: 'exec', cmd: 'node', argv: [entry, '--help'], command: `node ${entry} --help` };
+  }
+  return { type: 'run-program', entry, command: `npx tsx ${entry} --help` };
+}
+
+async function readJsonFile<T>(
+  ws: Workspace,
+  rel: string,
+): Promise<T | null> {
+  try {
+    return JSON.parse(await ws.readFile(rel)) as T;
+  } catch {
+    return null;
+  }
 }
