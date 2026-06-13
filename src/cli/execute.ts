@@ -14,6 +14,9 @@ import { PhaseEngine } from '../core/engine.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { normalizePythonRequirements } from '../agents/planner.js';
 import { getLanguageProfile } from '../core/language.js';
+import { runProjectAudit, shouldRunProjectAudit } from '../core/project_audit.js';
+import { refreshProjectMemory } from '../core/project_memory.js';
+import type { Language, PlanIntent } from '../core/plan.js';
 import { setLocale, t } from '../i18n/index.js';
 
 export interface ExecuteOptions {
@@ -162,6 +165,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
 
   try {
     const r = await engine.run(plan);
+    await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
     if (r.failedStepId) {
       console.log(
         chalk.red('✖'),
@@ -185,8 +189,33 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       process.exitCode = 4;
       return;
     }
+    let auditWarnings = 0;
+    if (shouldRunProjectAudit(plan, { onlyPhase: opts.onlyPhase })) {
+      const auditResult = await runProjectAudit({ ws, sandbox, plan, profile });
+      printProjectAudit(auditResult);
+      await audit.event('note', `project audit: ${auditResult.errors} error(s), ${auditResult.warnings} warning(s)`, {
+        checks: auditResult.checks,
+      });
+      if (!auditResult.ok) {
+        await audit.end({
+          status: 'failed',
+          executedSteps: r.executedSteps,
+          totalSteps: r.totalSteps,
+          qualityAuditErrors: auditResult.errors,
+          qualityAuditWarnings: auditResult.warnings,
+        });
+        process.exitCode = 4;
+        return;
+      }
+      auditWarnings = auditResult.warnings;
+    }
     console.log(chalk.green('✔'), t().execute.runAllDone(r.executedSteps, r.totalSteps));
-    await audit.end({ status: 'ok', executedSteps: r.executedSteps, totalSteps: r.totalSteps });
+    await audit.end({
+      status: auditWarnings > 0 ? 'warn' : 'ok',
+      executedSteps: r.executedSteps,
+      totalSteps: r.totalSteps,
+      qualityAuditWarnings: auditWarnings,
+    });
   } catch (err) {
     const msg = (err as Error).message;
     const stack = (err as Error).stack;
@@ -194,10 +223,39 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     if (stack && stack !== msg) {
       console.error(chalk.gray(stack));
     }
+    await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
     await audit.end({ status: 'error', message: msg, stack });
     process.exitCode = 5;
   } finally {
     await scoreStore.flush();
     await lock.release();
+  }
+}
+
+async function persistProjectMemory(
+  ws: Workspace,
+  audit: AuditLogger,
+  planPath: string,
+  language: Language,
+  intent: PlanIntent,
+): Promise<void> {
+  try {
+    await refreshProjectMemory(ws, { planPath, language, intent });
+  } catch (err) {
+    await audit.event('note', `project memory refresh failed: ${(err as Error).message}`, {
+      planPath,
+    });
+  }
+}
+
+function printProjectAudit(
+  result: Awaited<ReturnType<typeof runProjectAudit>>,
+): void {
+  const failing = result.checks.filter((check) => !check.ok);
+  if (failing.length === 0) return;
+  for (const check of failing) {
+    const marker = check.severity === 'error' ? chalk.red('✖') : chalk.yellow('!');
+    console.log(marker, `[audit:${check.name}] ${check.summary}`);
+    if (check.detail) console.log(chalk.gray(check.detail));
   }
 }

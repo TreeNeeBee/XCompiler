@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
-import { DOC_NAMES } from './docs.js';
 import { PlanSchema, type Language, type PlanIntent } from './plan.js';
+import { PROJECT_MEMORY_PATH, refreshProjectMemory } from './project_memory.js';
 
 export interface IncrementalBaseline {
   summary: string;
@@ -37,28 +37,26 @@ export async function loadIncrementalBaseline(
     languageSource = plan.language ? planLabel || 'plan.json' : undefined;
   }
 
-  for (const rel of [
-    DOC_NAMES.topic,
-    DOC_NAMES.requirement,
-    DOC_NAMES.architecture,
-    DOC_NAMES.tasks,
-    DOC_NAMES.refactor,
-    DOC_NAMES.delivery,
-  ]) {
-    const text = await readWorkspaceFile(ws, rel, 2200);
-    if (!text) continue;
-    sections.push(`## Existing document: ${rel}\n${text}`);
-    sources.push(rel);
+  const memory = await refreshProjectMemory(ws, {
+    planPath: planSource,
+    language,
+    intent: plan?.intent,
+    maxChars: Math.min(maxChars, 11_000),
+  });
+  if (memory.summary) {
+    sections.push(`## Existing project memory\n${memory.summary}`);
+    sources.push(...memory.keyFiles.map((file) => file.path));
+    sources.push(PROJECT_MEMORY_PATH);
+    if (!language && memory.language) {
+      language = memory.language;
+      languageSource = PROJECT_MEMORY_PATH;
+    }
   }
 
   const manifestSummary = await loadManifestSummary(ws);
-  if (manifestSummary) {
-    sections.push(manifestSummary.text);
-    sources.push(...manifestSummary.sources);
-    if (!language && manifestSummary.language) {
-      language = manifestSummary.language;
-      languageSource = manifestSummary.sources[0];
-    }
+  if (!language && manifestSummary?.language) {
+    language = manifestSummary.language;
+    languageSource = manifestSummary.sources[0];
   }
 
   const tree = await listProjectFiles(ws.root);
@@ -96,7 +94,7 @@ async function loadPlanSummary(
   _ws: Workspace,
   planPath: string,
   label: string,
-): Promise<{ text: string; language?: Language } | null> {
+): Promise<{ text: string; language?: Language; intent?: PlanIntent } | null> {
   try {
     const raw = await fs.readFile(planPath, 'utf8');
     const parsed = PlanSchema.safeParse(JSON.parse(raw));
@@ -117,6 +115,7 @@ async function loadPlanSummary(
         `- generatedAt: ${plan.createdAt}`,
       ].join('\n'),
       language: plan.language,
+      intent: plan.intent,
     };
   } catch {
     return null;
@@ -156,7 +155,7 @@ async function loadManifestSummary(
     }
   }
   if (await ws.exists('requirements.txt')) {
-    const text = await readWorkspaceFile(ws, 'requirements.txt', 1200);
+    const text = await readTruncatedWorkspaceFile(ws, 'requirements.txt', 1200);
     if (text) {
       return {
         text: `## Existing manifest: requirements.txt\n${text}`,
@@ -168,11 +167,10 @@ async function loadManifestSummary(
   return null;
 }
 
-async function readWorkspaceFile(ws: Workspace, rel: string, maxChars: number): Promise<string> {
+async function readTruncatedWorkspaceFile(ws: Workspace, rel: string, maxChars: number): Promise<string> {
   try {
     const raw = await ws.readFile(rel);
-    const text = rel === DOC_NAMES.topic ? stripGeneratedBaselineSection(raw) : raw;
-    return text.length > maxChars ? `${text.slice(0, maxChars)}\n... [truncated]` : text;
+    return raw.length > maxChars ? `${raw.slice(0, maxChars)}\n... [truncated]` : raw;
   } catch {
     return '';
   }
@@ -218,12 +216,6 @@ function relInsideWorkspace(root: string, maybeAbs?: string): string | null {
 
 function dedup(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-function stripGeneratedBaselineSection(text: string): string {
-  const idx = text.search(/^##\s+(Existing project baseline|现有工程基线)\s*$/m);
-  if (idx < 0) return text;
-  return text.slice(0, idx).trimEnd();
 }
 
 function inferLanguageFromTree(tree: string[]): Language | undefined {

@@ -14,6 +14,7 @@ import { PlanSchema } from '../core/plan.js';
 import { DOC_NAMES } from '../core/docs.js';
 import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incremental.js';
 import { lintPlan } from '../core/lint.js';
+import { refreshProjectMemory } from '../core/project_memory.js';
 import { renderPlanMarkdown } from '../core/render.js';
 import { savePlan } from '../core/storage.js';
 import { AuditLogger } from '../audit/audit.js';
@@ -348,6 +349,11 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   // 归档上一版本（如有），再写入新版本。topic.md 已在第 3.5 步落盘，这里只处理 plan.
   await archiveIfExists(ws, DOC_NAMES.plan, audit);
   await ws.writeFile(DOC_NAMES.plan, planMd);
+  await refreshProjectMemory(ws, {
+    planPath,
+    language: parsed.data.language,
+    intent: parsed.data.intent,
+  });
   await ws.remove(draftDir);
   await audit.event('plan.persist', `plan.json written: ${planPath}`, {
     planPath,

@@ -24,6 +24,14 @@ class ScriptedLLM implements LLMClient {
   }
 }
 
+class CapturingScriptedLLM extends ScriptedLLM {
+  public lastUser = '';
+  override async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+    this.lastUser = messages.filter((m) => m.role === 'user').map((m) => m.content).join('\n\n');
+    return super.chat(messages, options);
+  }
+}
+
 class FakeRouter {
   constructor(private readonly clients: Record<string, LLMClient>) {}
   for(role: Role | 'default' = 'default'): LLMClient {
@@ -285,5 +293,154 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(plan.steps[0]?.status).toBe('DONE');
     expect(plan.steps[0]?.retries).toBe(1);
     expect(await ws.exists('src/hello.py')).toBe(true);
+  });
+
+  it('injects refreshed project memory and related files into step context', async () => {
+    const plan = fakePlan();
+    plan.language = 'typescript';
+    plan.intent = 'feature';
+    plan.steps = [
+      {
+        ...plan.steps[2]!,
+        id: 'S003',
+        phase: 'CODE',
+        title: 'Extend reporting service',
+        description: 'Add invoice export orchestration to the reporting service.',
+        systemPrompt: 'Only extend the existing reporting module.',
+        role: 'Coder',
+        outputs: ['src/reporting/export.ts'],
+        dependsOn: [],
+      },
+      {
+        ...plan.steps[3]!,
+        id: 'S004',
+        phase: 'TEST',
+        title: 'Verify reporting export',
+        description: 'Consume the reporting export API from tests.',
+        role: 'Tester',
+        inputs: ['src/reporting/export.ts'],
+        outputs: ['tests/reporting/export.test.ts'],
+        dependsOn: ['S003'],
+        acceptance: 'export API is covered by tests',
+      },
+    ];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('docs/topic.md', 'Existing reporting workflow already exports invoices.');
+    await ws.writeFile('docs/02-architecture.md', 'ReportingService is the central coordinator.');
+    await ws.writeFile('src/reporting/service.ts', 'export class ReportingService { exportInvoices() { return "csv"; } }\n');
+    (sandbox as unknown as { build: () => Promise<{ rebuilt: boolean; reason: string }> }).build =
+      async () => ({ rebuilt: false, reason: 'stubbed' });
+    (sandbox as unknown as { runTests: () => Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> }).runTests =
+      async () => ({ exitCode: 0, stdout: '1 passed', stderr: '', timedOut: false });
+
+    const coder = new CapturingScriptedLLM([
+      JSON.stringify({
+        thoughts: 'extend reporting',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/reporting/export.ts', content: 'export const exportReport = () => "ok";\n' } },
+        ],
+        done: true,
+      }),
+    ]);
+    const router = new FakeRouter({
+      Coder: coder,
+      Tester: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'add export test',
+          actions: [
+            { tool: 'write_file', args: { path: 'tests/reporting/export.test.ts', content: 'export {};\n' } },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+    });
+
+    const r = await engine.run(plan);
+    expect(r.failedStepId).toBeUndefined();
+    expect(coder.lastUser).toContain('.toaa/project_memory.json#summary');
+    expect(coder.lastUser).toContain('docs/02-architecture.md');
+    expect(coder.lastUser).toContain('src/reporting/service.ts');
+    expect(coder.lastUser).toContain('ReportingService');
+    expect(coder.lastUser).toContain('.toaa/downstream/S003.md');
+    expect(coder.lastUser).toContain('Verify reporting export');
+  });
+
+  it('refreshes project memory between steps so later work sees newly created modules', async () => {
+    const plan = fakePlan();
+    plan.language = 'typescript';
+    plan.intent = 'feature';
+    plan.steps = [
+      {
+        ...plan.steps[2]!,
+        id: 'S003',
+        phase: 'CODE',
+        title: 'Create reporting service',
+        description: 'Add the reporting service module.',
+        systemPrompt: 'Create the reporting module.',
+        role: 'Coder',
+        outputs: ['src/reporting/service.ts'],
+        dependsOn: [],
+      },
+      {
+        ...plan.steps[2]!,
+        id: 'S004',
+        phase: 'CODE',
+        title: 'Extend reporting service',
+        description: 'Build the export module on top of the reporting service.',
+        systemPrompt: 'Reuse the reporting module instead of rewriting it.',
+        role: 'Coder',
+        outputs: ['src/reporting/export.ts'],
+        dependsOn: ['S003'],
+      },
+    ];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('docs/topic.md', 'Add invoice export support to the reporting flow.');
+    (sandbox as unknown as { build: () => Promise<{ rebuilt: boolean; reason: string }> }).build =
+      async () => ({ rebuilt: false, reason: 'stubbed' });
+
+    const coder = new CapturingScriptedLLM([
+      JSON.stringify({
+        thoughts: 'create reporting service',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/reporting/service.ts', content: 'export class ReportingService { exportInvoices() { return "csv"; } }\n' } },
+        ],
+        done: true,
+      }),
+      JSON.stringify({
+        thoughts: 'extend reporting service',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/reporting/export.ts', content: 'export const exportReport = () => "ok";\n' } },
+        ],
+        done: true,
+      }),
+    ]);
+    const router = new FakeRouter({ Coder: coder });
+
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+    });
+
+    const r = await engine.run(plan);
+    expect(r.failedStepId).toBeUndefined();
+    expect(coder.lastUser).toContain('src/reporting/service.ts');
+    expect(coder.lastUser).toContain('exportInvoices');
   });
 });
