@@ -20,9 +20,21 @@ describe('calibrateStepShape', () => {
     expect(s!.role).toBe('Planner');                         // DELIVERY -> Planner 兜底
     expect(s!.acceptance.length).toBeGreaterThan(0);
     expect(s!.systemPrompt.length).toBeGreaterThanOrEqual(20);
-    expect(s!.tools).toEqual([]);
+    expect(s!.tools).toEqual(['skill:author']);
     expect(s!.dependsOn).toEqual([]);
     expect(s!.maxRetries).toBe(3);
+  });
+
+  it('adds phase-aware default tools when a writable step forgot to declare any', () => {
+    const raw = [
+      { id: 'S001', phase: 'TASK', title: '任务拆解', description: '编写任务清单', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: ['docs/03-tasks.md'] },
+      { id: 'S002', phase: 'TEST', title: '补测试', description: '写测试并执行', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['tests/test_app.py'] },
+      { id: 'S003', phase: 'DEBUG', title: '调试修复', description: '修复失败测试', systemPrompt: 'x'.repeat(30), role: 'Debugger', outputs: ['src/app.py'] },
+    ] as unknown as Step[];
+    const out = calibrateStepShape(raw);
+    expect(out[0]!.tools).toEqual(['skill:author']);
+    expect(out[1]!.tools).toEqual(['skill:tester']);
+    expect(out[2]!.tools).toEqual(['skill:debugger']);
   });
 
   it('maps role aliases to whitelist (developer -> Coder, qa -> Tester)', () => {

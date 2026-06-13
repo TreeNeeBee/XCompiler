@@ -181,8 +181,14 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 9. REFACTOR 阶段：每个 REFACTOR Step 必须 dependsOn 至少一个 TEST Step，且 outputs 包含 docs/04-refactor.md
+  // 9. REFACTOR 阶段：计划必须至少有一个 REFACTOR Step；每个 REFACTOR Step 必须 dependsOn 至少一个 TEST Step，且 outputs 包含 docs/04-refactor.md
   const refactorSteps = plan.steps.filter((s) => s.phase === 'REFACTOR');
+  if (refactorSteps.length === 0) {
+    issues.push({
+      level: 'error',
+      message: `Plan must include at least one REFACTOR step whose outputs include ${DOC_NAMES.refactor}.`,
+    });
+  }
   for (const r of refactorSteps) {
     const dependsOnTest = r.dependsOn.some((d) => stepById.get(d)?.phase === 'TEST');
     if (!dependsOnTest) {

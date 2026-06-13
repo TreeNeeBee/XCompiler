@@ -295,6 +295,63 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(await ws.exists('src/hello.py')).toBe(true);
   });
 
+  it('auto-adds essential author tools for doc-producing Planner steps from older plans', async () => {
+    const plan = fakePlan();
+    plan.steps = [
+      {
+        id: 'S003',
+        phase: 'TASK',
+        title: 'Task breakdown',
+        description: 'Write docs/03-tasks.md with executable implementation tasks.',
+        systemPrompt: 'Split the architecture into concrete CODE tasks and save them to docs/03-tasks.md.',
+        role: 'Planner',
+        tools: [],
+        inputs: ['docs/02-architecture.md'],
+        outputs: ['docs/03-tasks.md'],
+        dependsOn: [],
+        acceptance: 'docs/03-tasks.md exists',
+        status: 'PENDING',
+        retries: 0,
+        maxRetries: 3,
+      },
+    ];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('docs/02-architecture.md', '# arch\n- module A\n- module B\n');
+    (sandbox as unknown as { build: () => Promise<{ rebuilt: boolean; reason: string }> }).build =
+      async () => ({ rebuilt: false, reason: 'stubbed' });
+
+    const router = new FakeRouter({
+      Planner: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'write task breakdown',
+          actions: [
+            {
+              tool: 'write_file',
+              args: { path: 'docs/03-tasks.md', content: '# tasks\n- T001\n- T002\n' },
+            },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+    });
+
+    const r = await engine.run(plan);
+    expect(r.failedStepId).toBeUndefined();
+    expect(plan.steps[0]?.status).toBe('DONE');
+    expect(await ws.exists('docs/03-tasks.md')).toBe(true);
+  });
+
   it('injects refreshed project memory and related files into step context', async () => {
     const plan = fakePlan();
     plan.language = 'typescript';

@@ -18,8 +18,13 @@ interface OpenAIChatResponse {
 }
 
 interface OpenAIStreamChunk {
-  choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
+  choices?: Array<{
+    delta?: { content?: string };
+    message?: { content?: string };
+    finish_reason?: string | null;
+  }>;
   error?: { message?: string };
+  done?: boolean;
 }
 
 export class OpenAIClient implements LLMClient {
@@ -124,6 +129,27 @@ export class OpenAIClient implements LLMClient {
       let buf = '';
       let aggregate = '';
       let done = false;
+      let cancelled = false;
+      const cancelReader = () => {
+        if (cancelled) return;
+        cancelled = true;
+        ctrl.abort();
+        void reader.cancel().catch(() => {});
+      };
+      const shouldStopByContent = () => {
+        try {
+          if (options.streamStopWhen?.(aggregate)) return true;
+        } catch {
+          /* ignore stop predicate errors during partial streams */
+        }
+        if (!options.validate) return false;
+        try {
+          options.validate(aggregate);
+          return true;
+        } catch {
+          return false;
+        }
+      };
       const onData = (data: string) => {
         if (data === '[DONE]') {
           done = true;
@@ -136,7 +162,14 @@ export class OpenAIClient implements LLMClient {
           return;
         }
         if (chunk.error) throw new Error(`OpenAI error: ${chunk.error.message ?? JSON.stringify(chunk.error)}`);
+        if (chunk.done === true) {
+          done = true;
+        }
+        let terminalChoice = false;
         for (const choice of chunk.choices ?? []) {
+          if (choice.finish_reason && choice.finish_reason !== 'tool_calls') {
+            terminalChoice = true;
+          }
           const piece = choice.delta?.content ?? choice.message?.content ?? '';
           if (!piece) continue;
           aggregate += piece;
@@ -146,7 +179,12 @@ export class OpenAIClient implements LLMClient {
               `OpenAI stream output exceeded ${maxOutputChars} chars (likely token loop); aborting`,
             );
           }
+          if (shouldStopByContent()) {
+            done = true;
+            return;
+          }
         }
+        if (terminalChoice || shouldStopByContent()) done = true;
       };
 
       try {
@@ -163,15 +201,21 @@ export class OpenAIClient implements LLMClient {
               const trimmed = line.trim();
               if (!trimmed.startsWith('data:')) continue;
               onData(trimmed.slice(5).trim());
+              if (done) break;
             }
+            if (done) break;
             sep = findSseSeparator(buf);
           }
         }
-        buf += decoder.decode();
-        for (const line of buf.split(/\r?\n/)) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          onData(trimmed.slice(5).trim());
+        if (done && !cancelled) {
+          cancelReader();
+        } else {
+          buf += decoder.decode();
+          for (const line of buf.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) continue;
+            onData(trimmed.slice(5).trim());
+          }
         }
       } catch (err) {
         // 确保连接被释放；优先抛出 watchdog 的可读原因。

@@ -17,6 +17,7 @@ export interface OllamaConfig {
 interface OllamaChatResponse {
   message?: { role: string; content: string };
   error?: string;
+  done?: boolean;
 }
 
 export class OllamaClient implements LLMClient {
@@ -53,6 +54,20 @@ export class OllamaClient implements LLMClient {
             if (piece) options!.onToken!(piece);
           } catch {
             /* ignore non-JSON keep-alive */
+          }
+        },
+        (aggregate) => {
+          try {
+            if (options?.streamStopWhen?.(aggregate)) return true;
+          } catch {
+            /* ignore stop predicate errors during partial streams */
+          }
+          if (!options?.validate) return false;
+          try {
+            options.validate(aggregate);
+            return true;
+          } catch {
+            return false;
           }
         },
       );
@@ -141,10 +156,12 @@ export function streamPostNdjson(
   body: unknown,
   watchdog: StreamWatchdog,
   onLine: (line: string) => void,
+  shouldStopWhen?: (aggregate: string) => boolean,
 ): Promise<string> {
   const lib = url.protocol === 'https:' ? https : http;
   const payload = JSON.stringify(body);
   return new Promise((resolve, reject) => {
+    let settled = false;
     const req = lib.request(
       {
         method: 'POST',
@@ -167,6 +184,20 @@ export function streamPostNdjson(
         const isError = !res.statusCode || res.statusCode >= 400;
         const timers: NodeJS.Timeout[] = [];
         let idleTimer: NodeJS.Timeout | null = null;
+        const finish = (value: string) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(value);
+          res.destroy();
+          req.destroy();
+        };
+        const fail = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          reject(err);
+        };
         const armIdle = () => {
           if (watchdog.idleTimeoutMs <= 0) return;
           if (idleTimer) clearTimeout(idleTimer);
@@ -233,8 +264,9 @@ export function streamPostNdjson(
             const line = buf.slice(0, idx).trim();
             buf = buf.slice(idx + 1);
             if (!line) continue;
+            let obj: OllamaChatResponse | null = null;
             try {
-              const obj = JSON.parse(line) as OllamaChatResponse;
+              obj = JSON.parse(line) as OllamaChatResponse;
               const piece = obj.message?.content;
               if (piece) {
                 aggregate += piece;
@@ -256,14 +288,25 @@ export function streamPostNdjson(
                 }
               }
               if (obj.error) {
-                cleanup();
-                reject(new Error(`Ollama error: ${obj.error}`));
+                fail(new Error(`Ollama error: ${obj.error}`));
                 return;
               }
             } catch {
               /* skip */
             }
             onLine(line);
+            if (obj?.done === true) {
+              finish(aggregate);
+              return;
+            }
+            try {
+              if (shouldStopWhen?.(aggregate)) {
+                finish(aggregate);
+                return;
+              }
+            } catch {
+              /* ignore partial-output stop predicate failures */
+            }
             // watchdog: 输出上限
             if (watchdog.maxOutputChars > 0 && aggregate.length > watchdog.maxOutputChars) {
               aborted = true;
@@ -285,6 +328,8 @@ export function streamPostNdjson(
           }
         });
         res.on('end', () => {
+          if (settled) return;
+          settled = true;
           cleanup();
           if (aborted) return; // reject already issued via req.destroy
           if (isError) {
@@ -294,12 +339,18 @@ export function streamPostNdjson(
           }
         });
         res.on('error', (e) => {
+          if (settled) return;
+          settled = true;
           cleanup();
           if (!aborted) reject(e);
         });
       },
     );
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
     req.write(payload);
     req.end();
   });

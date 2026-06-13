@@ -12,7 +12,11 @@ import type { AuditLogger } from '../audit/audit.js';
 import { buildDefaultRegistry, EditGuard, type ToolRegistry, type ToolContext, type Tool } from '../tools/index.js';
 import { StepExecutor, verifyOutputs } from '../agents/executor.js';
 import type { ExecutorRunMetrics } from '../agents/executor.js';
-import { calibrateDebugSuggestions, renderDebugSuggestions } from '../agents/calibration.js';
+import {
+  calibrateDebugSuggestions,
+  ensureEssentialToolRefs,
+  renderDebugSuggestions,
+} from '../agents/calibration.js';
 import { t } from '../i18n/index.js';
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
@@ -408,7 +412,8 @@ export class PhaseEngine {
   ): Promise<{ ok: boolean; failureLog: string; reason?: string; metrics?: ExecutorRunMetrics }> {
     const role = debug ? 'Debugger' : step.role;
     // 解析 step.tools 中的 skill: 引用为底层工具名
-    const { resolvedToolNames, hints } = this.skills.resolve(step.tools);
+    const effectiveToolRefs = ensureEssentialToolRefs(step);
+    const { resolvedToolNames, hints } = this.skills.resolve(effectiveToolRefs);
     // 在 debug 模式下追加 debugger skill 默认工具集
     let extraNames: string[] = [];
     if (debug) {
