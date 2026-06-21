@@ -4,6 +4,32 @@ import type { AddressInfo } from 'node:net';
 import { OllamaClient } from '../src/llm/ollama.js';
 
 describe('OllamaClient streaming', () => {
+  it('forwards the configured thinking flag to Ollama', async () => {
+    let requestBody: { think?: boolean } | undefined;
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk.toString()));
+      req.on('end', () => {
+        requestBody = JSON.parse(body) as { think?: boolean };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ message: { role: 'assistant', content: 'ok' } }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        think: false,
+      });
+      await expect(client.chat([{ role: 'user', content: 'hi' }])).resolves.toBe('ok');
+      expect(requestBody?.think).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it('aggregates NDJSON chunks and invokes onToken for each piece', async () => {
     // Mock ollama server that streams NDJSON when stream=true
     const server = createServer((req, res) => {
@@ -182,6 +208,31 @@ describe('OllamaClient streaming', () => {
     }
   });
 
+  it('times out while waiting for response headers', async () => {
+    const server = createServer((_req, _res) => {
+      // Accept the request but never send response headers. Watchdogs must cover
+      // this phase as well as an already-started response body.
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 100,
+        streamIdleTimeoutMs: 1_000,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/wall-clock 100ms/);
+      expect(Date.now() - t0).toBeLessThan(1_000);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('does NOT abort on legitimate repetitive content (e.g. python regex columns)', async () => {
     // 模拟 LLM 写一段含 ~3KB Python 正则的 JSON 输出。重复的 `\\s+(\\d+)` 单元 12 字符，
     // 远小于 detectLoop 的 200-char 窗口，不应触发。
@@ -210,9 +261,9 @@ describe('OllamaClient streaming', () => {
     }
   });
 
-  it('sliding wall-clock: healthy slow stream beyond timeoutMs survives (extended by data)', async () => {
-    // requestTimeoutMs = 200ms；服务器每 80ms 推一段。total ≈ 720ms（=9*80），
-    // 应当**不**触发 wall-clock：每个 chunk 把 deadline 顺延 +200ms（受 hardCap=4*200=800ms 钳制）。
+  it('idle timeout resets while a healthy slow stream is producing data', async () => {
+    // 服务器每 80ms 推一段，总耗时约 720ms；关闭总 wall-clock，仅验证每个
+    // chunk 都会刷新 120ms idle deadline。
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       let n = 0;
@@ -235,8 +286,8 @@ describe('OllamaClient streaming', () => {
       const client = new OllamaClient({
         baseUrl: `http://127.0.0.1:${port}`,
         model: 'm',
-        requestTimeoutMs: 200, // 远小于总耗时 ~720ms
-        streamIdleTimeoutMs: 0,
+        requestTimeoutMs: 0,
+        streamIdleTimeoutMs: 120,
         maxOutputChars: 0,
       });
       const out = await client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} });
@@ -248,9 +299,8 @@ describe('OllamaClient streaming', () => {
     }
   });
 
-  it('sliding wall-clock: hard cap (4× timeoutMs) still kicks in on runaway healthy streams', async () => {
-    // 服务器每 50ms 推一段且永不停。requestTimeoutMs=120ms → hardCap=480ms。
-    // 即使 chunk 持续到达，也必须在 ~480-500ms 左右被 hard cap 中止。
+  it('fixed wall-clock stops a runaway stream even while data keeps arriving', async () => {
+    // 服务器每 50ms 推一段且永不停。总 wall-clock 不能因收到数据而滑动延长。
     let stop = false;
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
@@ -276,10 +326,10 @@ describe('OllamaClient streaming', () => {
       const t0 = Date.now();
       await expect(
         client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
-      ).rejects.toThrow(/hard cap/);
+      ).rejects.toThrow(/wall-clock 120ms/);
       const elapsed = Date.now() - t0;
-      expect(elapsed).toBeGreaterThanOrEqual(400); // 没有提前误杀
-      expect(elapsed).toBeLessThan(1500); // 也没有放任无限
+      expect(elapsed).toBeGreaterThanOrEqual(80);
+      expect(elapsed).toBeLessThan(800);
     } finally {
       stop = true;
       await new Promise<void>((r) => server.close(() => r()));

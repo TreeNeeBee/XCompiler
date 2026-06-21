@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 import { execRaw, sanitizeVenvName } from './subprocess.js';
@@ -40,7 +41,7 @@ export interface DockerSandboxOptions {
  *
  * 网络策略：
  *   - `off`        → `--network none`
- *   - `pypi-only`  → 默认网络（Docker 网络层无法只放行 PyPI；TOAA 依赖镜像源 + 文档约束实现"只装包不联网"）
+ *   - `pypi-only`  → 拒绝启动；Docker 本身无法可靠提供域名级白名单，禁止静默降级
  *   - `full`       → 默认网络
  *   build 阶段必须能联网拉取依赖；exec 阶段若设 `off` 则完全断网。
  */
@@ -58,6 +59,9 @@ export class DockerSandbox implements Sandbox {
   private readonly venvName: string;
 
   constructor(private readonly opts: DockerSandboxOptions) {
+    if (opts.limits.network === 'pypi-only') {
+      throw new Error(t().system.unsupportedPypiOnlyNetwork);
+    }
     this.language = opts.language ?? 'python';
     this.image = opts.image ?? (this.language === 'typescript' ? 'node:20-slim' : 'python:3.11-slim');
     this.workdir = opts.workdir ?? '/workspace';
@@ -167,7 +171,8 @@ export class DockerSandbox implements Sandbox {
       );
     }
     await fs.writeFile(cacheAbs, sig, 'utf8');
-    await this.opts.audit?.event('sandbox.exec', `docker sandbox built (${reqContent ? 'with deps' : 'empty'})`, {
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.dockerBuilt(!!reqContent), {
+      messageId: 'sandbox.docker_built',
       image: this.image,
     });
     return { rebuilt: true, reason: venvExists ? 'requirements changed' : 'venv created' };
@@ -200,6 +205,9 @@ export class DockerSandbox implements Sandbox {
       }
     }
 
+    const installCommand = lockContent.trim()
+      ? 'npm ci --ignore-scripts --no-audit --no-fund'
+      : 'npm install --ignore-scripts --no-audit --no-fund';
     const r = await execRaw(
       this.dockerBin,
       [
@@ -213,7 +221,7 @@ export class DockerSandbox implements Sandbox {
         this.image,
         'bash',
         '-lc',
-        'npm install --no-audit --no-fund',
+        installCommand,
       ],
       { timeoutMs: this.opts.limits.wall_seconds * 1000 * 10 },
     );
@@ -221,7 +229,9 @@ export class DockerSandbox implements Sandbox {
       throw new Error(`docker sandbox build failed (exit=${r.exitCode}):\n${r.stderr || r.stdout}`);
     }
     await fs.writeFile(cacheAbs, sig, 'utf8');
-    await this.opts.audit?.event('sandbox.exec', 'docker node sandbox built (npm install)', { image: this.image });
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.dockerNodeBuilt, {
+      messageId: 'sandbox.docker_node_built', image: this.image,
+    });
     return { rebuilt: true, reason: modulesExist ? 'package.json changed' : 'node_modules created' };
   }
 
@@ -267,7 +277,8 @@ export class DockerSandbox implements Sandbox {
     }
     dockerArgs.push(...this.extraRunArgs, this.image, cmd, ...argv);
 
-    await this.opts.audit?.event('sandbox.exec', `docker ${cmd} ${argv.join(' ')}`, {
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.command('docker', `${cmd} ${argv.join(' ')}`), {
+      messageId: 'sandbox.command',
       cwd: containerCwd,
       timeoutMs,
       image: this.image,

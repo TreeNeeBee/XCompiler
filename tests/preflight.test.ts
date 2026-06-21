@@ -94,22 +94,37 @@ describe('preflightProviders', () => {
     ).rejects.toThrow(/没有可用的 provider|没有任何 ollama 服务器可达/);
   });
 
-  it('does not zero when server is unreachable (avoids one-network-blip wipeout)', async () => {
+  it('fails fast without permanently zeroing scores when all servers are unreachable', async () => {
     const cfg = mkCfg();
     const scores = new ScoreStore('/tmp/x/config.yaml');
-    // both providers start at default 1; server unreachable, but cfg.role[Coder] still has a live one
-    // (this scenario does NOT trigger auto-import path because role_fallbacks/cfg.llm.scores keep them alive)
-    try {
-      await preflightProviders(cfg, scores, undefined, {
+    await expect(
+      preflightProviders(cfg, scores, undefined, {
         fetchTags: async () => {
           throw new Error('ECONNREFUSED');
         },
-      });
-    } catch {
-      // we expect this to throw because role has no live provider after server-down
-      // but scores must not have been wiped to 0 (they stay at default 1)
-    }
+      }),
+    ).rejects.toThrow(/没有任何 ollama 服务器可达/);
+    // A transient outage blocks this run but does not persistently disable providers.
     expect(scores.get('ollama_code')).toBe(1);
     expect(scores.get('ollama_design')).toBe(1);
+  });
+
+  it('continues with a configured fallback while excluding unreachable Ollama providers', async () => {
+    const cfg = mkCfg({
+      providers: {
+        ollama_code: { api_key: '', base_url: 'http://srv', model: 'qwen' },
+        ollama_design: { api_key: '', base_url: 'http://srv', model: 'gemma' },
+        openai: { api_key: 'k', base_url: 'http://openai', model: 'gpt' },
+      },
+      fallbacks: ['openai'],
+    });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    const result = await preflightProviders(cfg, scores, undefined, {
+      fetchTags: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    expect(result.unreachable).toEqual(['ollama_code', 'ollama_design']);
+    expect(scores.get('ollama_code')).toBe(1);
   });
 });

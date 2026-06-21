@@ -16,8 +16,8 @@ export type Phase = (typeof PHASES)[number];
 export const LANGUAGES = ['python', 'typescript'] as const;
 export type Language = (typeof LANGUAGES)[number];
 
-/** Plan intent: greenfield generation vs incremental feature / refactor work. */
-export const PLAN_INTENTS = ['greenfield', 'feature', 'refactor'] as const;
+/** Plan intent: greenfield generation, incremental work, or isolated self-bootstrap. */
+export const PLAN_INTENTS = ['greenfield', 'feature', 'refactor', 'self'] as const;
 export type PlanIntent = (typeof PLAN_INTENTS)[number];
 
 export const PHASE_ORDER: Record<Phase, number> = {
@@ -49,6 +49,24 @@ export const ROLES = [
 ] as const;
 export type Role = (typeof ROLES)[number];
 
+/**
+ * ARCH 阶段的结构化模块契约。
+ *
+ * Planner 在执行 V 模型前先声明本次要新增/修改的架构模块；ARCH Step 将其展开为
+ * docs/02-architecture.md，后续 CODE / TEST Step 则必须完整覆盖这里登记的路径。
+ * 字段保持在 Plan 顶层，是为了让 lint 能在真正执行前发现“架构有模块、实现却漏文件”的问题。
+ */
+export const ArchitectureModuleSchema = z.object({
+  id: z.string().regex(/^M\d{3,}$/u, 'Architecture module id must look like M001'),
+  name: z.string().min(1),
+  responsibility: z.string().min(10),
+  sourcePaths: z.array(z.string().min(1)).min(1),
+  testPaths: z.array(z.string().min(1)).min(1),
+  dependencies: z.array(z.string()).default([]),
+});
+
+export type ArchitectureModule = z.infer<typeof ArchitectureModuleSchema>;
+
 export const StepSchema = z.object({
   id: z.string().regex(/^S\d{3,}$/u, 'Step id must look like S001'),
   phase: z.enum(PHASES),
@@ -78,6 +96,10 @@ export const PlanSchema = z
     language: z.enum(LANGUAGES).default('python'),
     intent: z.enum(PLAN_INTENTS).default('greenfield'),
     requirementDigest: z.string().min(1),
+    /**
+     * 本次变更涉及的结构化架构模块。旧版 plan 可缺省；新版 Planner 对复杂需求必须生成。
+     */
+    architectureModules: z.array(ArchitectureModuleSchema).optional(),
     /** 全局开发约束（项目背景、语言与依赖策略），会拼接到每个 Step 的 system prompt 中。 */
     globalPrompt: z.string().default(''),
     /** 增量开发时的基线工程摘要（由 toaa_c 从现有 workspace 文档/源码树汇总）。 */

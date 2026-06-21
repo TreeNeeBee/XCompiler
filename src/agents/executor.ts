@@ -22,46 +22,6 @@ import { t } from '../i18n/index.js';
  * 最终通过 verifyOutputs() 校验 step.outputs 是否全部生成。
  */
 
-const SYSTEM = `你是 TOAA 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
-
-每一轮你必须返回严格 JSON：
-{
-  "thoughts": "<用一句话说明本轮意图>",
-  "actions": [ { "tool": "<工具名>", "args": { ... } }, ... ],
-  "done": true | false
-}
-
-规则：
-1. 仅可调用本 Step 授权的工具白名单。
-2. 写入文件必须落在本 Step 的 outputs 白名单内（其它路径会被拒绝）。
-3. 对生成代码遵循目标语言 Python 的最佳实践；模块可导入、函数有类型注解。
-   - 【导入约定】src/ 下的模块互相 import 时使用 "from <module> import ..."（同级名称），
-     **严禁写成 "from src.<module> import ..."**。如果 main.py 需要从项目根运行，
-     在 import 之前加一行：sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))，
-     以保证 "python src/main.py ..." 和 "python -m src.main ..." 两种调用都能走通。
-   - 【测试约定】tests/ 下的文件同样以 "from <module> import ..." 导入被测模块；
-     **TOAA 已自动生成 tests/conftest.py 把项目根与 src/ 注入 sys.path**，
-     因此 pytest 与 "python tests/test_*.py" 两种执行方式都能解析模块，
-     测试文件头部**无需**再写 sys.path.insert(...)，避免重复污染。
-     如果 LLM 自己额外创建/编辑 conftest.py，必须保留上面 sys.path 注入逻辑，禁止删除。
-   - 【测试自包含】测试**严禁**直接 open() 一个磁盘上不存在的样例文件（如 "test.dbc"、"sample.csv"）；
-     当被测函数需要文件输入时，必须二选一：
-       (a) 用 pytest 的 tmp_path fixture 在测试函数内 tmp_path.joinpath("x.dbc").write_text(...) 构造内容并传入；
-       (b) 用 write_file 把样例写到 tests/fixtures/<name>——TEST/DEBUG 阶段 tests/fixtures/ 已默认放开写权限，
-           子目录会自动 mkdir -p，**无需**提前在 outputs 登记 fixture 路径。
-     绝不允许出现"测试代码引用了一个谁都没创建的文件"——这会让 Debugger 反复 FileNotFoundError 死循环。
-   - 【fixture 迭代】当测试已经能运行但被测函数报"Invalid syntax / Parse error / Malformed"等解析失败错误，
-     说明 fixture 文件本身格式不合法（DBC/CSV/JSON/...），**不是被测代码的 bug**。
-     必须 read_file 看清当前 fixture 内容 → write_file 按目标格式的最小合法样例**整文件重写** → 再 run_tests。
-     严禁因为解析错误就去改被测模块、测试断言或 mock 掉解析逻辑——先把 fixture 修对再说。
-4. 当所有 outputs 文件均已生成且自检通过，把 done 设为 true 且 actions 为空。
-5. 任何错误都通过下一轮的 actions 修正；不要尝试越权或捏造工具。
-6. 【大文件拆块写入】write_file / append_file 单次 content 不得超过 6000 字节（约 150 行 Python）。
-   - 超过时请拆分：同一轮 actions 里先一个 write_file 写首段（import + 顶层常量 + 第一个函数/类），
-     紧跟多个 append_file 逐段追加（按函数/类边界切块，每段收尾保留换行）。
-   - 拆分必须保证拼接后仓 Python 语法合法；严禁在函数体中间拆断。
-   - 对已存在文件的局部修改使用 replace_in_file / apply_patch，不要重复覆盖整个文件。`;
-
 export interface ExecutorOptions {
   llm: LLMClient;
   /** 同一 Step 内最多对话轮数，避免无限循环。 */
@@ -166,7 +126,10 @@ export class StepExecutor {
     let actualRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
-      const rep = makeStreamReporter(`${inp.step.id} ${inp.step.role} round ${round}`);
+      const rep = makeStreamReporter(
+        `${inp.step.id} ${inp.step.role} round ${round}`,
+        this.opts.llm.name,
+      );
       // 另起一份本轮完整原始输出的拼接，以便 llm.chat 报错/超时/loop 被 abort 时仔细存证。
       // 上限 256KB，略大于 ollama 默认 maxOutputChars，只作为内存保护。
       const RAW_CAP = 256 * 1024;
@@ -178,6 +141,7 @@ export class StepExecutor {
           responseFormat: 'json',
           temperature: 0.1,
           onProvider: (name) => { provider = name; },
+          onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
           streamStopWhen: isCompleteTurnJson,
           onToken: (chunk) => {
             if (rawAggregate.length < RAW_CAP) {
@@ -187,7 +151,7 @@ export class StepExecutor {
           },
         });
       } catch (err) {
-        rep.done();
+        rep.done('failed');
         const errMsg = (err as Error).message;
         // 把部分流落盘到 .toaa/llm-stream/<step>-<role>-r<n>.txt
         const dumpRel = `.toaa/llm-stream/${inp.step.id}-${inp.step.role}-r${round}.txt`;
@@ -196,14 +160,14 @@ export class StepExecutor {
           await fs.mkdir(path.dirname(dumpAbs), { recursive: true });
           await fs.writeFile(
             dumpAbs,
-            `# llm.chat failed: ${errMsg}\n# stream length: ${rawAggregate.length} chars\n\n${rawAggregate}`,
+            `${t().audit.partialFailureHeader(errMsg)}\n${t().audit.streamLength(rawAggregate.length)}\n\n${rawAggregate}`,
             'utf8',
           );
         } catch {
           /* best-effort */
         }
         await inp.ctx.audit?.executorTurn(inp.step.id, inp.step.role, round, {
-          thoughts: `(llm.chat 失败）${errMsg}`,
+          thoughts: t().audit.llmChatFailedThought(errMsg),
           actions: [],
           done: false,
           raw: rawAggregate,
@@ -211,8 +175,15 @@ export class StepExecutor {
         });
         await inp.ctx.audit?.event(
           'llm.error',
-          `${inp.step.id} round ${round} aborted after ${rawAggregate.length} chars: ${errMsg}`,
-          { stepId: inp.step.id, role: inp.step.role, round, partialDump: dumpRel, partialBytes: rawAggregate.length },
+          t().audit.llmChatAborted(inp.step.id, round, rawAggregate.length, errMsg),
+          {
+            messageId: 'audit.llm_chat_aborted',
+            stepId: inp.step.id,
+            role: inp.step.role,
+            round,
+            partialDump: dumpRel,
+            partialBytes: rawAggregate.length,
+          },
         );
         throw err;
       }
@@ -252,17 +223,27 @@ export class StepExecutor {
       });
       const turnResults: Array<ToolResult & { tool: string }> = [];
       for (const a of actions) {
-        const t = toolMap.get(a.tool);
-        if (!t) {
+        const selectedTool = toolMap.get(a.tool);
+        if (!selectedTool) {
           const r = { ok: false, error: `tool not allowed for this step: ${a.tool}` };
           calls.push({ tool: a.tool, ok: false, error: r.error });
           turnResults.push({ ...r, tool: a.tool });
-          await inp.ctx.audit?.event('tool.call', `denied ${a.tool}`, { stepId: inp.step.id });
+          await inp.ctx.audit?.event('tool.call', t().audit.toolDenied(a.tool), {
+            messageId: 'audit.tool_denied', stepId: inp.step.id, tool: a.tool,
+          });
           continue;
         }
-        await inp.ctx.audit?.event('tool.call', `${a.tool}`, { stepId: inp.step.id, args: a.args });
-        const r = await safeRunTool(t, a.args, inp.ctx);
-        await inp.ctx.audit?.event('tool.result', r.summary ?? (r.ok ? 'ok' : r.error ?? 'fail'), {
+        await inp.ctx.audit?.event('tool.call', t().audit.toolCalled(a.tool), {
+          messageId: 'audit.tool_called', stepId: inp.step.id, tool: a.tool, args: a.args,
+        });
+        const toolReporter = makeStreamReporter(
+          t().stream.toolExecution(inp.step.id, a.tool),
+          t().stream.toolRunner,
+        );
+        const r = await safeRunTool(selectedTool, a.args, inp.ctx);
+        toolReporter.done(r.ok ? 'done' : 'failed');
+        await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, r.ok, r.summary ?? r.error ?? ''), {
+          messageId: 'audit.tool_result',
           stepId: inp.step.id,
           tool: a.tool,
           ok: r.ok,
@@ -362,7 +343,9 @@ export async function verifyOutputs(inp: ExecutorRunInput): Promise<{ ok: boolea
 
 function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
   const ctxBlock = (inp.contextSnippets ?? [])
-    .map((s) => `### ${s.path}\n\`\`\`\n${truncate(s.content, 2200)}\n\`\`\``)
+    .map((s) =>
+      `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.toaa/architecture-contract.json' ? 8000 : 2200)}\n\`\`\``,
+    )
     .join('\n\n');
   const dbg = inp.debugContext
     ? `## debug failure log\n\`\`\`\n${truncate(inp.debugContext.failureLog, 4000)}\n\`\`\`\n` +

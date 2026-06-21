@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox, ExecResult } from '../sandbox/types.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 
 const BOOTSTRAP_MARKER = '# >>> toaa: sys.path bootstrap (auto) >>>';
 const BOOTSTRAP_BLOCK = [
@@ -79,7 +80,8 @@ export async function autoFixSrcImports(
     if (next === orig) continue;
     await ws.writeFile(rel, next);
     fixed.push(rel);
-    await audit.event('fs.write', `auto-fixed src import in ${rel}`, {
+    await audit.event('fs.write', t().audit.autoFixedSrcImport(rel), {
+      messageId: 'audit.auto_fixed_src_import',
       path: rel,
       reason: 'inject sys.path bootstrap',
     });
@@ -108,7 +110,9 @@ export async function ensurePyTestBootstrap(
     `    if _p not in sys.path:\n` +
     `        sys.path.insert(0, _p)\n`;
   await ws.writeFile(rel, content);
-  await audit.event('conftest.autogen', `wrote ${rel}`, { path: rel });
+  await audit.event('conftest.autogen', t().audit.wroteFile(rel), {
+    messageId: 'audit.wrote_file', path: rel,
+  });
 }
 
 export interface EntrypointProbe {
@@ -126,8 +130,8 @@ export interface EntrypointProbe {
  * 优先级：
  *   1. \`python src/main.py --help\`
  *   2. \`python -m <pkg> --help\`（取 src/ 下第一个含 \`__main__.py\` 的子包）
- *   3. 若都不存在 → 返回 ok=true 跳过（Planner 已要求至少一个入口；缺失会被
- *      verifyOutputs / docs lint 在更早阶段拦下）。
+ *   3. 若都不存在 → 返回 ok=false。入口是 DELIVERY 的强制验收项，不能依赖
+ *      Planner 提示词或文档 lint 间接兜底。
  *
  * exit !=0 / timeout / 包含典型的 ModuleNotFoundError 文本 → ok=false，
  * 调用方据此构造 failureLog 并触发 DEBUG 重试。
@@ -135,7 +139,7 @@ export interface EntrypointProbe {
 export async function probeEntrypoint(
   ws: Workspace,
   sandbox: Sandbox,
-): Promise<EntrypointProbe | null> {
+): Promise<EntrypointProbe> {
   const tail = (s: string): string => s.split('\n').slice(-30).join('\n');
   let cmd: string | null = null;
   let argv: string[] = [];
@@ -158,7 +162,16 @@ export async function probeEntrypoint(
       /* ignore */
     }
   }
-  if (!cmd) return null;
+  if (!cmd) {
+    return {
+      ok: false,
+      command: 'python src/main.py --help',
+      exitCode: -1,
+      timedOut: false,
+      stdoutTail: '',
+      stderrTail: t().engine.missingPythonEntrypoint,
+    };
+  }
   let r: ExecResult;
   try {
     r = await sandbox.runProgram(argv, { timeoutMs: 30_000 });

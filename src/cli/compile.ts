@@ -5,11 +5,12 @@ import { spinner as ora } from '../util/spinner.js';
 import { confirm, editor, input, select } from '@inquirer/prompts';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
+import { reportRoleModelAdvice } from '../llm/role_advice.js';
 import { ScoreStore } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { Workspace } from '../workspace/workspace.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
-import { Planner, buildPlan } from '../agents/planner.js';
+import { Planner, buildPlan, type ClarificationCategory, type ClarifyQuestion, type PlannerInput } from '../agents/planner.js';
 import { PlanSchema } from '../core/plan.js';
 import { DOC_NAMES } from '../core/docs.js';
 import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incremental.js';
@@ -21,6 +22,8 @@ import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { setLocale, t } from '../i18n/index.js';
 import type { Language, PlanIntent } from '../core/plan.js';
+import { PluginHost } from '../plugins/host.js';
+import type { ToaaPlugin } from '../plugins/types.js';
 
 export interface CompileOptions {
   workspace: string;
@@ -39,6 +42,17 @@ export interface CompileOptions {
   baselinePlanFile?: string;
   yes?: boolean;
   force?: boolean;
+  /** 程序化插件入口；动态插件加载将在后续版本基于它实现。 */
+  plugins?: ToaaPlugin[];
+  pluginStrict?: boolean;
+}
+
+/** CLI 可映射为退出码、程序化调用方可捕获并安全收尾的编译终止。 */
+export class CompileExitError extends Error {
+  constructor(public readonly exitCode: number, message: string) {
+    super(message);
+    this.name = 'CompileExitError';
+  }
 }
 
 export function resolveCompileLanguage(
@@ -51,28 +65,27 @@ export function resolveCompileLanguage(
 
 export async function runCompile(opts: CompileOptions): Promise<{ planPath?: string }> {
   const ws = new Workspace(path.resolve(opts.workspace));
-  console.log(chalk.green('✔'), 'Workspace:', ws.root);
+  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  // Locale 必须在第一条输出之前生效，确保终端与审计文件从头到尾使用同一语言。
+  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
+  console.log(chalk.green('✔'), t().compile.workspaceReady(ws.root));
 
   let lock;
   try {
     lock = await acquireLock(ws.root, 'toaa_c', { force: !!opts.force });
   } catch (err) {
     if (err instanceof LockError) {
-      console.error(chalk.red('✖'), err.message);
-      process.exit(6);
+      console.error(chalk.red('✖'), t().system.unhandledError(err.message));
+      throw new CompileExitError(6, err.message);
     }
     throw err;
   }
   if (opts.force) {
-    console.log(chalk.yellow('!'), '--force: overriding workspace lock and regenerating plan.');
+    console.log(chalk.yellow('!'), t().compile.forceOverride);
   }
 
   let scoreStore: ScoreStore | undefined;
   try {
-  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
-  // Honour config-side locale unless an explicit --lang was already set
-  // (CLI flag is applied by the parent Commander preAction before runCompile is called).
-  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
   const M = t();
   const audit = new AuditLogger({ root: ws.root, command: 'toaa_c' });
   await audit.start({
@@ -85,15 +98,24 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     roles: cfg.llm.roles,
     default_provider: cfg.llm.default,
   });
+  const pluginHost = new PluginHost({
+    plugins: opts.plugins,
+    strict: opts.pluginStrict,
+    audit,
+  });
+  await pluginHost.initialize();
   if (opts.topicFile && opts.inputFile) {
-    console.log(chalk.yellow('!'), '--topic and --input were both supplied; --topic wins, --input is ignored.');
+    console.log(chalk.yellow('!'), M.compile.topicInputConflict);
   }
   const topicMode = !!opts.topicFile;
   const intent = opts.intent ?? 'greenfield';
+  await pluginHost.emit('compile.start', { workspace: ws.root, intent, topicMode });
   scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
+  let unavailableProviders = new Set<string>();
   try {
     const pf = await preflightProviders(cfg, scoreStore, audit);
+    unavailableProviders = new Set(pf.unreachable);
     if (pf.zeroed.length > 0) {
       console.log(chalk.yellow('!'), t().execute.preflightModelMissing(pf.zeroed.join(', ')));
     }
@@ -101,12 +123,13 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       console.log(chalk.yellow('!'), t().execute.preflightAutoAdded(Object.keys(pf.autoAdded).length));
     }
   } catch (err) {
-    console.error(chalk.red('✖'), (err as Error).message);
+    console.error(chalk.red('✖'), t().system.unhandledError((err as Error).message));
     await audit.end({ status: 'error', message: (err as Error).message, stage: 'llm-preflight' });
     await scoreStore.flush();
-    process.exit(7);
+    throw new CompileExitError(7, (err as Error).message);
   }
-  const router = new LLMRouter(cfg, audit, scoreStore);
+  const router = new LLMRouter(cfg, audit, scoreStore, unavailableProviders, pluginHost);
+  await reportRoleModelAdvice(router, audit);
   const baseline =
     isIncrementalIntent(intent)
       ? await loadIncrementalBaseline(ws, { planPath: opts.baselinePlanFile })
@@ -115,7 +138,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     const msg = M.compile.baselineMissing(ws.root);
     console.error(chalk.red('✖'), msg);
     await audit.end({ status: 'aborted', reason: 'incremental baseline missing', workspace: ws.root });
-    process.exit(8);
+    throw new CompileExitError(8, msg);
   }
   if (baseline.summary) {
     console.log(chalk.green('✔'), M.compile.baselineLoaded(intent, baseline.sources.join(', ')));
@@ -134,7 +157,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const planner = new Planner(router.for('Planner'), audit, language);
 
   const trace = (msg: string) => {
-    if (process.env.TOAA_TRACE === '1') process.stderr.write(`[toaa-trace] ${msg}\n`);
+    if (process.env.TOAA_TRACE === '1') process.stderr.write(t().audit.traceLine('toaa-trace', msg) + '\n');
   };
 
   // 1. Intake — topic 模式下读取已有 topic.md 直接当作 raw
@@ -145,9 +168,9 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     if (!rawRequirement.trim()) {
       console.error(chalk.red(M.compile.topicEmptyExit));
       await audit.end({ status: 'aborted', reason: 'empty topic file' });
-      process.exit(1);
+      throw new CompileExitError(1, M.compile.topicEmptyExit);
     }
-    await audit.userInput('topic.md (--topic)', rawRequirement);
+    await audit.userInput(M.compile.auditTopicInput, rawRequirement);
     console.log(chalk.green('✔'), M.compile.topicLoaded(path.resolve(opts.topicFile!)));
   } else {
     trace('intake.start');
@@ -156,37 +179,42 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     if (!rawRequirement.trim()) {
       console.error(chalk.red(M.compile.requirementEmptyExit));
       await audit.end({ status: 'aborted', reason: 'empty requirement' });
-      process.exit(1);
+      throw new CompileExitError(1, M.compile.requirementEmptyExit);
     }
     trace('audit.userInput.intake');
-    await audit.userInput('Original requirement (Intake)', rawRequirement);
+    await audit.userInput(M.compile.auditOriginalRequirement, rawRequirement);
     trace('audit.userInput.intake.done');
   }
 
   // 2. Clarify — topic 模式跳过（topic.md 已经是冻结后的选题书）
   trace('clarify.section.enter');
-  const clarifications: Array<{ question: string; answer: string }> = [];
+  const clarifications: Array<{
+    question: string;
+    answer: string;
+    category?: ClarificationCategory;
+    why?: string;
+  }> = [];
+  let clarificationQuestions: ClarifyQuestion[] = [];
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
   if (!opts.yes && !topicMode) {
     trace('ora.clarify.start');
-    const spin = ora(M.compile.spinClarify).start();
+    const spin = ora(M.compile.spinClarify, { animate: false }).start();
     trace('ora.clarify.started');
-    let questions: Awaited<ReturnType<Planner['clarify']>> = [];
     try {
       trace('planner.clarify.call');
-      questions = await planner.clarify(rawRequirement, {
+      clarificationQuestions = await planner.clarify(rawRequirement, {
         intent,
         hasBaseline: !!baseline.summary,
       });
-      trace(`planner.clarify.return n=${questions.length}`);
-      spin.succeed(M.compile.clarifySucceed(questions.length));
+      trace(`planner.clarify.return n=${clarificationQuestions.length}`);
+      spin.succeed(M.compile.clarifySucceed(clarificationQuestions.length));
     } catch (err) {
       spin.fail(M.compile.clarifyFail);
       throw err;
     }
-    for (const q of questions) {
-      const ans = await input({ message: `${q.id} ${q.question}` });
-      clarifications.push({ question: q.question, answer: ans });
+    for (const q of clarificationQuestions) {
+      const ans = await input({ message: `${q.id} [${q.category}] ${q.question}\n  ↳ ${q.why}` });
+      clarifications.push({ question: q.question, answer: ans, category: q.category, why: q.why });
       await audit.userInput(M.compile.auditClarifyAnswer(q.id, q.question), ans);
     }
   }
@@ -207,10 +235,20 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
         })
       ).trim();
       if (userAddenda) {
-        await audit.userInput('User addenda', userAddenda);
+        await audit.userInput(M.compile.auditUserAddenda, userAddenda);
       }
     }
   }
+  const clarifyContext = {
+    rawRequirement,
+    questions: clarificationQuestions,
+    clarifications,
+    userAddenda,
+  };
+  await pluginHost.emit('compile.afterClarify', clarifyContext);
+  rawRequirement = clarifyContext.rawRequirement;
+  clarificationQuestions = clarifyContext.questions;
+  userAddenda = clarifyContext.userAddenda;
 
   // 3. Draft topic.md + 确认门 1
   //   topic.md 是“需求澄清后的项目选题书”，作为后续 V 模型拆解的唯一输入。
@@ -231,15 +269,15 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     trace('ws.writeFile.draftTopic.done');
 
     if (!opts.yes) {
-      console.log('\n' + chalk.cyan('─── topic.md (preview) ───'));
+      console.log('\n' + chalk.cyan(M.compile.topicPreviewHeader));
       console.log(topicMd);
-      console.log(chalk.cyan('──────────────────────────────'));
+      console.log(chalk.cyan(M.compile.topicPreviewFooter));
       const decision = await select({
-        message: '需求是否符合预期?',
+        message: M.compile.gate1Confirm,
         choices: [
-          { name: '✅ confirm — 进入计划生成', value: 'confirm' },
-          { name: '✏️  edit    — 打开编辑器修改', value: 'edit' },
-          { name: '❌ cancel  — 放弃本次会话', value: 'cancel' },
+          { name: M.compile.gate1ChoiceConfirm, value: 'confirm' },
+          { name: M.compile.gate1ChoiceEdit, value: 'edit' },
+          { name: M.compile.gate1ChoiceCancel, value: 'cancel' },
         ],
       });
       await audit.userDecision(M.compile.gate1AuditLabel, decision);
@@ -252,7 +290,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       if (decision === 'edit') {
         const edited = await editor({ message: M.compile.editTopicMsg, default: topicMd, postfix: '.md' });
         await ws.writeFile(draftTopic, edited);
-        await audit.userInput('Edited topic.md', edited);
+        await audit.userInput(M.compile.auditEditedTopic, edited);
       }
     }
   }
@@ -264,7 +302,8 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const finalTopicMd = await ws.readFile(draftTopic);
   await archiveIfExists(ws, DOC_NAMES.topic, audit);
   await ws.writeFile(DOC_NAMES.topic, finalTopicMd);
-  await audit.event('topic.persist', `topic.md written: ${ws.abs(DOC_NAMES.topic)}`, {
+  await audit.event('topic.persist', M.compile.auditTopicPersisted(ws.abs(DOC_NAMES.topic)), {
+    messageId: 'compile.topic_persisted',
     topicPath: ws.abs(DOC_NAMES.topic),
     mode: topicMode ? 'topic-input' : 'clarified',
   });
@@ -272,51 +311,59 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
 
   // 4. Decompose — with topic.md as the V-model input
   trace('ora.spin2.start');
-  const spin2 = ora(M.compile.spinDecompose).start();
+  const spin2 = ora(M.compile.spinDecompose, { animate: false }).start();
   trace('ora.spin2.started');
   let draft;
   try {
-    draft = await planner.decompose({
+    const plannerInput: PlannerInput = {
       rawRequirement: finalTopicMd,
       clarifications,
       userAddenda,
       baselineContext: baseline.summary,
       intent,
-    });
+    };
+    const decomposeContext = { input: plannerInput };
+    await pluginHost.emit('compile.beforeDecompose', decomposeContext);
+    draft = await planner.decompose(decomposeContext.input);
   } catch (err) {
     spin2.fail(M.compile.decomposeFail);
     const msg = (err as Error).message ?? String(err);
     console.error(chalk.red(M.compile.plannerInvalidPlan), msg);
     console.error(chalk.gray(M.compile.plannerInvalidPlanHint1));
     console.error(chalk.gray(M.compile.plannerInvalidPlanHint2));
-    await audit.event('llm.error', 'planner.decompose failed', { stage: 'decompose', error: msg });
+    await audit.event('llm.error', M.compile.auditDecomposeFailed, {
+      messageId: 'compile.decompose_failed', stage: 'decompose', error: msg,
+    });
     await audit.end({ status: 'error', stage: 'decompose', error: msg });
-    process.exit(4);
+    throw new CompileExitError(4, msg);
   }
   spin2.succeed(M.compile.decomposeSucceed(draft.steps.length));
 
   // 5. 构建并校验 plan
-  const plan = buildPlan(draft, {
+  let plan = buildPlan(draft, {
     userAddenda,
     language,
     intent,
     baselineSummary: baseline.summary,
   });
+  const planContext = { plan };
+  await pluginHost.emit('compile.afterPlan', planContext);
+  plan = planContext.plan;
   const parsed = PlanSchema.safeParse(plan);
   if (!parsed.success) {
     console.error(chalk.red(M.compile.schemaFail));
     console.error(parsed.error.format());
     await ws.writeFile(`${draftDir}/plan.invalid.json`, JSON.stringify(plan, null, 2));
     console.error(chalk.gray(M.compile.schemaInvalidSavedAt(ws.abs(`${draftDir}/plan.invalid.json`))));
-    process.exit(2);
+    throw new CompileExitError(2, M.compile.schemaFail);
   }
   const issues = lintPlan(parsed.data).filter((i) => i.level === 'error');
   if (issues.length > 0) {
     console.error(chalk.red(M.compile.lintFail(issues.length)));
-    for (const i of issues) console.error(` - [${i.stepId ?? '*'}] ${i.message}`);
+    for (const i of issues) console.error(M.compile.lintIssue(i.stepId ?? '*', i.message));
     // 落到 draft 便于排查
     await ws.writeFile(`${draftDir}/plan.invalid.json`, JSON.stringify(plan, null, 2));
-    process.exit(3);
+    throw new CompileExitError(3, M.compile.lintFail(issues.length));
   }
 
   const planMd = renderPlanMarkdown(parsed.data);
@@ -326,7 +373,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   if (!opts.yes) {
     console.log('\n' + chalk.cyan(M.compile.planPreviewHeader));
     console.log(planMd.split('\n').slice(0, 60).join('\n'));
-    if (planMd.split('\n').length > 60) console.log(chalk.gray('… (truncated; see docs/plan.md)'));
+    if (planMd.split('\n').length > 60) console.log(chalk.gray(M.compile.planPreviewTruncated));
     console.log(chalk.cyan(M.compile.planPreviewFooter));
     const ok = await confirm({
       message: M.compile.gate2Confirm,
@@ -355,13 +402,15 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     intent: parsed.data.intent,
   });
   await ws.remove(draftDir);
-  await audit.event('plan.persist', `plan.json written: ${planPath}`, {
+  await audit.event('plan.persist', M.compile.auditPlanPersisted(planPath), {
+    messageId: 'compile.plan_persisted',
     planPath,
     steps: parsed.data.steps.length,
   });
 
   console.log(chalk.green('✔'), M.compile.planWritten(planPath));
-  console.log('  Next:', chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`));
+  console.log(M.compile.nextCommand(chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`)));
+  await pluginHost.emit('compile.finish', { plan: parsed.data, planPath });
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
   return { planPath };
   } finally {
@@ -393,7 +442,7 @@ async function readMultiline(): Promise<string> {
         if (line.trim() === '') {
           process.stdin.removeListener('data', onData);
           process.stdin.removeListener('end', onEnd);
-          try { process.stdin.pause(); } catch {}
+          try { process.stdin.pause(); } catch { /* stdin already closed */ }
           resolve(lines.join('\n'));
           return;
         }
@@ -403,18 +452,23 @@ async function readMultiline(): Promise<string> {
     const onEnd = () => {
       if (buf.trim()) lines.push(buf.replace(/\r$/, ''));
       process.stdin.removeListener('data', onData);
-      try { process.stdin.pause(); } catch {}
+      try { process.stdin.pause(); } catch { /* stdin already closed */ }
       resolve(lines.join('\n'));
     };
     process.stdin.on('data', onData);
     process.stdin.once('end', onEnd);
-    try { process.stdin.resume(); } catch {}
+    try { process.stdin.resume(); } catch { /* stdin is not resumable */ }
   });
 }
 
 function renderTopicDraft(
   raw: string,
-  qa: Array<{ question: string; answer: string }>,
+  qa: Array<{
+    question: string;
+    answer: string;
+    category?: ClarificationCategory;
+    why?: string;
+  }>,
   addenda: string = '',
 ): string {
   const M = t().compile;
@@ -431,7 +485,8 @@ function renderTopicDraft(
     lines.push(M.topicSecClarify);
     lines.push('');
     for (const [i, c] of qa.entries()) {
-      lines.push(`- **Q${i + 1}** ${c.question}`);
+      lines.push(`- **Q${i + 1}${c.category ? ` · ${c.category}` : ''}** ${c.question}`);
+      if (c.why) lines.push(`  - **Why** ${c.why}`);
       lines.push(`  - **A** ${c.answer}`);
     }
     lines.push('');

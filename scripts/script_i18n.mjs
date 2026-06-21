@@ -1,0 +1,103 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const locale = /^(zh|cn|zh-cn)$/iu.test(process.env.TOAA_LANG ?? '') ? 'zh' : 'en';
+
+const catalogs = {
+  en: {
+    'version.invalid_package': ([value]) => `Invalid package version: ${value}`,
+    'version.invalid_plugin_api': ([value]) => `Invalid toaa.pluginApiVersion: ${value}`,
+    'version.lock_root_missing': () => 'package-lock.json is missing packages[""]',
+    'version.set_usage': () => 'Usage: npm run version:set -- <semver>',
+    'version.synced': ([core, api]) => `TOAA version metadata synchronized: core=${core}, plugin-api=${api}`,
+    'version.consistent': ([core, api]) => `TOAA version metadata is consistent: core=${core}, plugin-api=${api}`,
+    'version.lock_mismatch': ([value]) => `package-lock.json version is ${value}`,
+    'version.lock_root_mismatch': ([value]) => `package-lock.json packages[""] version is ${value}`,
+    'version.runtime_stale': () => 'src/version.ts is stale',
+    'version.metadata_mismatch': ([version, errors]) => `Version metadata does not match package.json (${version}): ${errors}. Run npm run version:sync.`,
+    'version.unknown_command': ([command]) => `Unknown command: ${command}`,
+    'package.header': () => '==> TOAA packaging',
+    'package.version': ([value]) => `    Version:  ${value}`,
+    'package.root': ([value]) => `    Root:     ${value}`,
+    'package.entry': ([value]) => `    Entry:    ${value}`,
+    'package.output': ([value]) => `    Output:   ${value}`,
+    'package.targets': ([value]) => `    Targets:  ${value}`,
+    'package.cjs_build': ([entry]) => `==> [1/4] Build CJS bundle -> ${entry}`,
+    'package.entry_missing': ([entry]) => `ERROR: ${entry} was not generated; inspect tsup.pkg.config.ts`,
+    'package.pkg_missing': ([value]) => `ERROR: packaging tool not found at ${value}; run npm ci or npm install first`,
+    'package.cross_compile': () => '==> [2/4] Cross-platform compilation with @yao-pkg/pkg',
+    'package.target': ([target]) => `  -> ${target}`,
+    'package.target_failed': ([target]) => `ERROR: failed to build target ${target}; no partial artifact was retained`,
+    'package.macos_no_ldid': () => '    NOTE: ldid not found on macOS; pkg normally invokes system codesign.',
+    'package.signed': ([signer]) => `    (ad-hoc signed by ${signer})`,
+    'package.unsigned': () => 'ERROR: ldid is unavailable and automatic download failed; refusing to release an unsigned macOS binary.',
+    'package.codesign_hint': ([exe]) => `          Before first run on macOS execute: codesign --sign - ${exe}`,
+    'package.codesign_missing': () => 'ERROR: macOS system codesign utility was not found',
+    'package.smoke_failed': ([binary]) => `ERROR: packaged executable failed to start: ${binary}`,
+    'package.smoke_version_mismatch': ([expected, actual]) => `ERROR: packaged version mismatch: expected ${expected}, got ${actual}`,
+    'package.smoke_passed': ([target, version]) => `    Native smoke test passed: ${target} v${version}`,
+    'package.host_unsupported': ([os, arch]) => `ERROR: unsupported native packaging host: ${os}/${arch}; specify an explicit target`,
+    'package.unknown_target': ([target]) => `ERROR: unknown target '${target}' (allowed: native / all / linux-x64 / linux-arm64 / macos-arm64 / macos-x64 / win-x64)`,
+    'package.targets_empty': () => 'ERROR: no packaging target was selected',
+    'package.archive': () => '==> [3/4] Create release archives',
+    'package.zip_missing': ([dir]) => `ERROR: zip command not found; cannot create the release archive for ${dir}/`,
+    'package.created': ([file]) => `  -> ${file}`,
+    'package.checksum': () => '==> [4/4] Generate SHA-256 checksums',
+    'package.checksum_tool_missing': () => 'ERROR: neither sha256sum nor shasum is available',
+    'package.no_archives': () => 'ERROR: no release archives were generated',
+    'package.complete': ([root]) => `✔ Packaging complete. Artifacts: ${root}/`,
+  },
+  zh: {
+    'version.invalid_package': ([value]) => `无效的软件包版本：${value}`,
+    'version.invalid_plugin_api': ([value]) => `无效的 toaa.pluginApiVersion：${value}`,
+    'version.lock_root_missing': () => 'package-lock.json 缺少 packages[""]',
+    'version.set_usage': () => '用法：npm run version:set -- <semver>',
+    'version.synced': ([core, api]) => `TOAA 版本元数据已同步：core=${core}，plugin-api=${api}`,
+    'version.consistent': ([core, api]) => `TOAA 版本元数据一致：core=${core}，plugin-api=${api}`,
+    'version.lock_mismatch': ([value]) => `package-lock.json 版本为 ${value}`,
+    'version.lock_root_mismatch': ([value]) => `package-lock.json packages[""] 版本为 ${value}`,
+    'version.runtime_stale': () => 'src/version.ts 已过期',
+    'version.metadata_mismatch': ([version, errors]) => `版本元数据与 package.json（${version}）不一致：${errors}。请运行 npm run version:sync。`,
+    'version.unknown_command': ([command]) => `未知命令：${command}`,
+    'package.header': () => '==> TOAA 打包',
+    'package.version': ([value]) => `    版本：    ${value}`,
+    'package.root': ([value]) => `    项目根：  ${value}`,
+    'package.entry': ([value]) => `    入口：    ${value}`,
+    'package.output': ([value]) => `    输出根：  ${value}`,
+    'package.targets': ([value]) => `    目标：    ${value}`,
+    'package.cjs_build': ([entry]) => `==> [1/4] 生成 CJS 单文件 -> ${entry}`,
+    'package.entry_missing': ([entry]) => `错误：未生成 ${entry}；请检查 tsup.pkg.config.ts`,
+    'package.pkg_missing': ([value]) => `错误：未找到打包工具 ${value}；请先运行 npm ci 或 npm install`,
+    'package.cross_compile': () => '==> [2/4] 使用 @yao-pkg/pkg 跨平台编译',
+    'package.target': ([target]) => `  -> ${target}`,
+    'package.target_failed': ([target]) => `错误：目标 ${target} 构建失败；未保留不完整产物`,
+    'package.macos_no_ldid': () => '    注意：macOS 上未检测到 ldid；pkg 通常会自动调用系统 codesign。',
+    'package.signed': ([signer]) => `    （已由 ${signer} 执行 ad-hoc 签名）`,
+    'package.unsigned': () => '错误：ldid 不可用且自动下载失败；拒绝发布未签名的 macOS 二进制。',
+    'package.codesign_hint': ([exe]) => `          首次运行前请在 macOS 执行：codesign --sign - ${exe}`,
+    'package.codesign_missing': () => '错误：未找到 macOS 系统 codesign 工具',
+    'package.smoke_failed': ([binary]) => `错误：打包后的可执行程序无法启动：${binary}`,
+    'package.smoke_version_mismatch': ([expected, actual]) => `错误：打包版本不一致：期望 ${expected}，实际 ${actual}`,
+    'package.smoke_passed': ([target, version]) => `    原生包冒烟验证通过：${target} v${version}`,
+    'package.host_unsupported': ([os, arch]) => `错误：不支持当前宿主机原生打包：${os}/${arch}；请显式指定目标`,
+    'package.unknown_target': ([target]) => `错误：未知目标“${target}”（合法值：native / all / linux-x64 / linux-arm64 / macos-arm64 / macos-x64 / win-x64）`,
+    'package.targets_empty': () => '错误：未选择任何打包目标',
+    'package.archive': () => '==> [3/4] 打包发布产物',
+    'package.zip_missing': ([dir]) => `错误：未找到 zip 命令，无法为 ${dir}/ 生成发布压缩包`,
+    'package.created': ([file]) => `  -> ${file}`,
+    'package.checksum': () => '==> [4/4] 生成 SHA-256 校验和',
+    'package.checksum_tool_missing': () => '错误：未找到 sha256sum 或 shasum 工具',
+    'package.no_archives': () => '错误：未生成任何发布压缩包',
+    'package.complete': ([root]) => `✔ 打包完成。产物位于 ${root}/`,
+  },
+};
+
+export function scriptMessage(id, ...args) {
+  const renderer = catalogs[locale][id];
+  if (!renderer) throw new Error(`Unknown script message ID: ${id}`);
+  return renderer(args);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  console.log(scriptMessage(process.argv[2], ...process.argv.slice(3)));
+}

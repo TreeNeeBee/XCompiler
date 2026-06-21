@@ -40,4 +40,37 @@ describe('AuditLogger jsonl flush', () => {
     expect(lines).toHaveLength(50);
     expect(lines.map((e) => e.data.i)).toEqual([...Array(50).keys()]);
   });
+
+  it('promotes the i18n message ID to the audit event envelope', async () => {
+    const audit = new AuditLogger({ root: tmp, command: 'toaa_test' });
+    await audit.start();
+    await audit.event('note', 'localized message', {
+      messageId: 'test.localized_message',
+      detail: 1,
+    });
+    const lines = readFileSync(path.join(tmp, '.toaa/audit.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    const event = lines.find((e) => e.kind === 'note');
+    expect(event?.messageId).toBe('test.localized_message');
+    expect(event?.data.detail).toBe(1);
+  });
+
+  it('redacts credentials by default and supports metadata-only content capture', async () => {
+    const redacted = new AuditLogger({ root: tmp, command: 'toaa_test' });
+    await redacted.start();
+    await redacted.userInput('requirement', 'api_key=super-secret-value');
+    const redactedLog = readFileSync(path.join(tmp, '.toaa/audit.jsonl'), 'utf8');
+    expect(redactedLog).not.toContain('super-secret-value');
+    expect(redactedLog).toContain('[REDACTED]');
+
+    const metadataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-metadata-'));
+    const metadata = new AuditLogger({ root: metadataRoot, command: 'toaa_test', contentMode: 'metadata' });
+    await metadata.start();
+    await metadata.llmResponse('Coder', 'model', 'private response');
+    const metadataLog = readFileSync(path.join(metadataRoot, '.toaa/audit.jsonl'), 'utf8');
+    expect(metadataLog).not.toContain('private response');
+    expect(metadataLog).toContain('sha256');
+  });
 });

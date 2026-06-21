@@ -1,26 +1,39 @@
 import path from 'node:path';
 import { Command } from 'commander';
-import { runCompile } from './compile.js';
+import { runCompile, CompileExitError } from './compile.js';
 import { runExecute } from './execute.js';
 import { runLs, runShow } from './inspect.js';
 import { runDoctorCli } from './doctor.js';
 import { resolveCompileWorkspace, resolveEvolveWorkspace } from './workspace.js';
+import { runBootstrap } from './bootstrap.js';
 import { setLocale, t } from '../i18n/index.js';
+import { TOAA_VERSION } from '../version.js';
+import {
+  localeFromArgv,
+  configureLocalizedHelp,
+  parseIntent,
+  parseLocale,
+  parseNonNegativeInteger,
+  parsePhase,
+  parseStepId,
+} from './arguments.js';
 
 // Resolve UI locale early — env var TOAA_LANG and the global --lang flag both work.
 // CLI flag wins (parsed below by Commander preAction).
-setLocale(process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
 
 const program = new Command();
+configureLocalizedHelp(program);
 program
   .name('toaa')
   .description(t().cli.rootDescription)
-  .option('--lang <code>', t().cli.optLang)
+  .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (thisCmd) => {
     const lang = thisCmd.opts().lang as string | undefined;
     if (lang) setLocale(lang);
   })
-  .version('0.1.1');
+  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption);
+program.addHelpCommand('help [command]', t().cli.helpOption);
 
 program
   .command('c')
@@ -33,7 +46,7 @@ program
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
   .option('-t, --topic <file>', t().cli.optTopic)
-  .option('--intent <kind>', t().cli.optIntent, 'greenfield')
+  .option('--intent <kind>', t().cli.optIntent, parseIntent, 'greenfield')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--yes', t().cli.optYes, false)
@@ -45,7 +58,7 @@ program
       baseDir: opts.baseDir,
       name: opts.name,
     });
-    const compiled = await runCompile({
+    await runCompile({
       workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
@@ -68,7 +81,7 @@ program
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
   .option('-t, --topic <file>', t().cli.optTopic)
-  .option('--intent <kind>', t().cli.optIntent, 'feature')
+  .option('--intent <kind>', t().cli.optIntent, parseIntent, 'feature')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--yes', t().cli.optYes, false)
@@ -102,6 +115,33 @@ program
   });
 
 program
+  .command('bootstrap')
+  .description(t().cli.bootstrapDescription)
+  .option('-r, --repository <dir>', t().cli.optRepository)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('-i, --input <file>', t().cli.optInput)
+  .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--yes', t().cli.optYes, false)
+  .option('--force', t().cli.optForce, false)
+  .option('--promote', t().cli.optPromote, false)
+  .option('--cleanup', t().cli.optCleanup, false)
+  .option('--docker-qualification', t().cli.optDockerQualification, false)
+  .action(async (opts) => {
+    const result = await runBootstrap({
+      repository: opts.repository,
+      configPath: opts.config,
+      inputFile: opts.input,
+      topicFile: opts.topic,
+      yes: !!opts.yes,
+      force: !!opts.force,
+      promote: !!opts.promote,
+      cleanup: !!opts.cleanup,
+      dockerQualification: !!opts.dockerQualification,
+    });
+    if (!['qualified', 'promoted'].includes(result.status)) process.exitCode = 4;
+  });
+
+program
   .command('run')
   .description(t().cli.runDescription)
   .argument('[plan]', t().cli.argPlan)
@@ -109,8 +149,8 @@ program
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
   .option('-c, --config <file>', t().cli.optConfig)
   .option('--dry-run', t().cli.optDryRun, false)
-  .option('--from <stepId>', t().cli.optFrom)
-  .option('--phase <phase>', t().cli.optPhase)
+  .option('--from <stepId>', t().cli.optFrom, parseStepId)
+  .option('--phase <phase>', t().cli.optPhase, parsePhase)
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
   .action(async (planArg, opts) => {
@@ -142,26 +182,26 @@ program
   .description(t().cli.lsDescription)
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace, process.cwd())
-  .option('-d, --max-depth <n>', t().cli.optMaxDepth, '4')
+  .option('-d, --max-depth <n>', t().cli.optMaxDepth, parseNonNegativeInteger, 4)
   .action(async (opts) => {
     const ws = opts.output ?? opts.workspace;
-    await runLs({ workspace: ws, maxDepth: parseInt(opts.maxDepth, 10) });
+    await runLs({ workspace: ws, maxDepth: opts.maxDepth });
   });
 
 program
   .command('show')
   .description(t().cli.showDescription)
-  .argument('<stepId>', t().cli.argStepId)
+  .argument('<stepId>', t().cli.argStepId, parseStepId)
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace, process.cwd())
   .option('-p, --plan <file>', t().cli.optPlan)
-  .option('-n, --tail <n>', t().cli.optTail, '10')
+  .option('-n, --tail <n>', t().cli.optTail, parseNonNegativeInteger, 10)
   .action(async (stepId, opts) => {
     await runShow({
       workspace: opts.output ?? opts.workspace,
       stepId,
       planPath: opts.plan,
-      auditTail: parseInt(opts.tail, 10),
+      auditTail: opts.tail,
     });
   });
 
@@ -175,6 +215,10 @@ program
   });
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error(err?.message ?? err);
-  process.exit(1);
+  if (err instanceof CompileExitError) {
+    process.exitCode = err.exitCode;
+    return;
+  }
+  console.error(t().system.unhandledError(err?.message ?? String(err)));
+  process.exitCode = 1;
 });

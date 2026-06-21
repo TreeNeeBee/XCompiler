@@ -1,5 +1,6 @@
-import type { Language, Step } from '../core/plan.js';
+import type { ArchitectureModule, Language, Step } from '../core/plan.js';
 import { DOC_NAMES, PHASE_DOC } from '../core/docs.js';
+import { pathCoveredByOutputs } from '../core/architecture.js';
 
 /**
  * 统一的 LLM 输出校准层（"calibration"）。
@@ -13,6 +14,8 @@ import { DOC_NAMES, PHASE_DOC } from '../core/docs.js';
  *  - calibrateDocPaths:           V 模型阶段验收文档路径规范化 / 自动补齐 / 禁止项剔除
  *  - calibrateStepIds:            Step id → S### 形式（同步 dependsOn）
  *  - calibrateStepShape:          补齐 schema 必填项（role/acceptance/systemPrompt/title/description）
+ *  - calibrateArchitectureStepMappings:
+ *                                   按 architectureModules 拆分被 LLM 合并的 CODE / TEST Step
  */
 
 // =============================================================================
@@ -387,6 +390,140 @@ function dedup<T>(arr: T[]): T[] {
 }
 
 // =============================================================================
+// 4a. ARCH 模块 ↔ CODE/TEST Step 映射校准
+// =============================================================================
+
+/**
+ * LLM 经常能正确列出 architectureModules，却在 steps 里把多个模块塞进同一个 CODE / TEST Step
+ * （例如 models.py + holiday_service.py 一起实现，或一个 TEST Step 写 3 个测试文件）。
+ * 严格拒绝会导致整盘 fallback；测试文件过大还会撞上 write_file 尺寸限制。
+ * 这里按结构化 ARCH 契约做机械、安全的拆分：
+ *  - 一个覆盖多个 module.sourcePaths 的 CODE Step，被拆成多个相邻 CODE Step；
+ *  - 每个拆出的 CODE Step 只保留自己模块的 sourcePaths；
+ *  - 一个覆盖多个 module.testPaths 的 TEST Step，被拆成多个相邻 TEST Step；
+ *  - 每个拆出的 TEST Step 只保留自己模块的 testPaths；
+ *  - TEST Step 若产出某模块 testPaths，会自动 dependsOn 对应 CODE Step；
+ *  - 模块 dependency 会同步成 CODE Step dependsOn；
+ *  - 最后重新编号为 S###，保持 V 模型原有顺序。
+ */
+export function calibrateArchitectureStepMappings(
+  steps: Step[],
+  modules: ArchitectureModule[] | undefined | null,
+): Step[] {
+  if (!modules || modules.length === 0) return steps;
+
+  const replacementByOriginalStep = new Map<string, string[]>();
+  const ownerByModule = new Map<string, string>();
+  const expanded: Step[] = [];
+
+  for (const step of steps) {
+    if (step.phase !== 'CODE' && step.phase !== 'TEST') {
+      expanded.push(step);
+      continue;
+    }
+
+    const coveredModules = step.phase === 'CODE'
+      ? modules.filter((module) =>
+          module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
+        )
+      : modules.filter((module) =>
+          module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
+        );
+
+    if (coveredModules.length <= 1) {
+      if (step.phase === 'CODE' && coveredModules.length === 1) {
+        ownerByModule.set(coveredModules[0]!.id, step.id);
+      }
+      expanded.push(step);
+      continue;
+    }
+
+    const replacementIds: string[] = [];
+    for (const [index, module] of coveredModules.entries()) {
+      const id = index === 0 ? step.id : makeSyntheticStepId(step.id, module.id);
+      replacementIds.push(id);
+      if (step.phase === 'CODE') ownerByModule.set(module.id, id);
+      const outputs = step.phase === 'CODE'
+        ? module.sourcePaths
+        : module.testPaths.filter((testPath) => pathCoveredByOutputs(testPath, step.outputs));
+      expanded.push({
+        ...step,
+        id,
+        title: step.title + '（' + module.id + ' ' + module.name + '）',
+        description: module.responsibility,
+        systemPrompt:
+          step.systemPrompt + '\n\n' +
+          (step.phase === 'CODE'
+            ? '校准约束：本 CODE Step 只能实现架构模块 '
+            : '校准约束：本 TEST Step 只能验证架构模块 ') +
+          module.id + ' ' + module.name + '。' +
+          (step.phase === 'CODE'
+            ? '只写这些源码路径：' + module.sourcePaths.join(', ') + '。不得修改其它架构模块的源码。'
+            : '只写这些测试路径：' + outputs.join(', ') + '。不得把多个架构模块的测试合并到同一个文件。'),
+        outputs: [...outputs],
+      });
+    }
+    replacementByOriginalStep.set(step.id, replacementIds);
+  }
+
+  const rewired = expanded.map((step) => {
+    let dependsOn = expandStepDependencies(step.dependsOn, replacementByOriginalStep, step.id);
+
+    if (step.phase === 'CODE') {
+      const owned = modules.find((module) =>
+        module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
+      );
+      if (owned) {
+        const moduleDependencyOwners = owned.dependencies
+          .map((moduleId) => ownerByModule.get(moduleId))
+          .filter((owner): owner is string => Boolean(owner) && owner !== step.id);
+        dependsOn = dedup([...dependsOn, ...moduleDependencyOwners]);
+      }
+    }
+
+    if (step.phase === 'TEST') {
+      const testedOwners = modules
+        .filter((module) => module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)))
+        .map((module) => ownerByModule.get(module.id))
+        .filter((owner): owner is string => Boolean(owner));
+      dependsOn = dedup([...dependsOn, ...testedOwners]);
+    }
+
+    return { ...step, dependsOn };
+  });
+
+  return renumberSteps(rewired);
+}
+
+function makeSyntheticStepId(originalStepId: string, moduleId: string): string {
+  return originalStepId + '__' + moduleId;
+}
+
+function expandStepDependencies(
+  dependsOn: string[],
+  replacementByOriginalStep: Map<string, string[]>,
+  selfId: string,
+): string[] {
+  return dedup(
+    dependsOn
+      .flatMap((depId) => replacementByOriginalStep.get(depId) ?? [depId])
+      .filter((depId) => depId !== selfId),
+  );
+}
+
+function renumberSteps(steps: Step[]): Step[] {
+  const idMap = new Map<string, string>();
+  for (const [index, step] of steps.entries()) {
+    idMap.set(step.id, 'S' + String(index + 1).padStart(3, '0'));
+  }
+  return steps.map((step, index) => ({
+    ...step,
+    id: 'S' + String(index + 1).padStart(3, '0'),
+    dependsOn: dedup(step.dependsOn.map((depId) => idMap.get(depId) ?? depId)),
+  }));
+}
+
+// =============================================================================
 // 4b. Plan 覆盖率补齐（自动注入缺失的 TEST Step）
 // =============================================================================
 
@@ -650,7 +787,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
     // 命中：traceback 含 tests/ 路径且缺失文件是相对裸名（典型测试 fixture，如 'test.dbc'）。
     // 同时支持 Python 标准 traceback `File "tests/x.py"` 与 pytest 短格式 `tests/x.py:NN:`。
     patterns: [
-      /(?:File\s+["']|^|\s)[^"'\s]*tests\/[^"'\s]+\.py(?:["']|:)[^]*?FileNotFoundError:[^\n]*['"]([^'"\/\\:]+\.[A-Za-z0-9]+)['"]/,
+      /(?:File\s+["']|^|\s)[^"'\s]*tests\/[^"'\s]+\.py(?:["']|:)[^]*?FileNotFoundError:[^\n]*['"]([^'"/\\:]+\.[A-Za-z0-9]+)['"]/,
     ],
     build: (m) => {
       const f = m[1] ?? '<fixture>';

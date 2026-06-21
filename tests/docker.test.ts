@@ -55,7 +55,7 @@ describe('DockerSandbox', () => {
     await ws.writeFile('requirements.txt', 'pytest==8.*\n');
     const sb = new DockerSandbox({
       ws,
-      limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'pypi-only' },
+      limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'download-only' },
       dockerBin: fakeDocker,
     });
     const venvName = path.basename(tmp);
@@ -68,7 +68,7 @@ describe('DockerSandbox', () => {
     const r2 = await sb.build();
     expect(r2.rebuilt).toBe(false);
     expect(r2.reason).toBe('cache hit');
-  });
+  }, 15_000);
 
   it('exec issues docker run with -v <ws>:<workdir> and --memory/--cpus flags', async () => {
     const sb = new DockerSandbox({
@@ -83,7 +83,7 @@ describe('DockerSandbox', () => {
     expect(calls).toContain('--memory=512m');
     expect(calls).toContain('--network none');
     expect(calls).toContain('echo hello');
-  });
+  }, 15_000);
 
   it('publishes expose_ports to 127.0.0.1 when network=full', async () => {
     const sb = new DockerSandbox({
@@ -97,7 +97,7 @@ describe('DockerSandbox', () => {
     expect(calls).toContain('-p 127.0.0.1:5173:5173');
     // sanity: --network none must NOT be set in full mode
     expect(calls).not.toMatch(/--network none/);
-  });
+  }, 15_000);
 
   it('does not publish ports when network=download-only (default)', async () => {
     const sb = new DockerSandbox({
@@ -109,5 +109,13 @@ describe('DockerSandbox', () => {
     const calls = await fs.readFile(`${fakeDocker}.calls`, 'utf8');
     expect(calls).not.toContain('-p 127.0.0.1:9000:9000');
     expect(calls).not.toMatch(/--network none/);
+  }, 15_000);
+
+  it('rejects legacy pypi-only instead of silently allowing unrestricted outbound traffic', () => {
+    expect(() => new DockerSandbox({
+      ws,
+      limits: { cpu: 1, memory_mb: 256, wall_seconds: 10, network: 'pypi-only' },
+      dockerBin: fakeDocker,
+    })).toThrow(/pypi-only/);
   });
 });

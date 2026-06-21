@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 
 /**
  * 每个 LLM provider 的运行时评分（默认 1.0）。
@@ -51,7 +52,8 @@ export class ScoreStore {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
         // 文件存在但解析失败：保留 ctor 初值，记一笔 audit 但不阻断启动。
-        await this.audit?.event('llm.error', `failed to read ${this.sidecarPath}: ${(err as Error).message}`, {
+        await this.audit?.event('llm.error', t().llm.scoreReadFailed(this.sidecarPath, (err as Error).message), {
+          messageId: 'llm.score_read_failed',
           sidecarPath: this.sidecarPath,
         });
       }
@@ -69,8 +71,8 @@ export class ScoreStore {
     if (prev === v) return;
     this.scores.set(name, v);
     this.dirty = true;
-    void this.audit?.event('llm.score', `score(${name}) = ${v.toFixed(2)} (was ${(prev ?? ScoreStore.DEFAULT).toFixed(2)})`, {
-      provider: name, score: v, previous: prev ?? ScoreStore.DEFAULT, reason: reason ?? 'set',
+    void this.audit?.event('llm.score', t().llm.scoreChanged(name, v.toFixed(2), (prev ?? ScoreStore.DEFAULT).toFixed(2)), {
+      messageId: 'llm.score_changed', provider: name, score: v, previous: prev ?? ScoreStore.DEFAULT, reason: reason ?? 'set',
     });
     this.scheduleSave();
   }
@@ -101,7 +103,8 @@ export class ScoreStore {
     if (!this.dirty) return;
     this.dirty = false;
     this.writeQueue = this.writeQueue.then(() => this.persist()).catch(async (err) => {
-      await this.audit?.event('llm.error', `failed to persist scores: ${(err as Error).message}`, {
+      await this.audit?.event('llm.error', t().llm.scorePersistFailed((err as Error).message), {
+        messageId: 'llm.score_persist_failed',
         sidecarPath: this.sidecarPath,
       });
     });
@@ -110,8 +113,8 @@ export class ScoreStore {
   private async persist(): Promise<void> {
     const data = this.snapshot();
     const yaml =
-      `# TOAA LLM provider 评分快照（由 ScoreStore 自动维护，请勿手工编辑）\n` +
-      `# 评分语义：默认 1.0；失败 -0.5（floor 0=禁用）；成功 +0.1（cap 10）。\n` +
+      `${t().llm.scoreFileHeader}\n` +
+      `${t().llm.scoreFileSemantics}\n` +
       YAML.stringify(data);
     const tmp = `${this.sidecarPath}.tmp`;
     await fs.writeFile(tmp, yaml, 'utf8');

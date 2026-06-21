@@ -95,4 +95,22 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const out = await p.decompose({ rawRequirement: 'x', clarifications: [] });
     expect(out.steps.length).toBe(4);
   });
+
+  it('复杂需求缺少 ARCH 模块契约时拒绝 plan，让 fallback 重新生成', async () => {
+    const draft = {
+      requirementDigest: 'OpenAPI server with CLI import/export and SQLite persistence',
+      globalPrompt: '',
+      dependencies: ['pytest'],
+      steps: [
+        minimalStep('S001', 'REQUIREMENT', ['docs/01-requirement.md']),
+        minimalStep('S002', 'ARCH', ['docs/02-architecture.md']),
+        minimalStep('S003', 'CODE', ['src/main.py']),
+        minimalStep('S004', 'DELIVERY', ['docs/05-delivery.md']),
+      ],
+    };
+    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    await expect(
+      p.decompose({ rawRequirement: draft.requirementDigest, clarifications: [] }),
+    ).rejects.toThrow(/omitted architectureModules/);
+  });
 });

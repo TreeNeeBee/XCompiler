@@ -91,10 +91,12 @@ describe('autoFixSrcImports', () => {
 });
 
 describe('probeEntrypoint', () => {
-  it('returns null when no entrypoint exists', async () => {
+  it('fails when no Python entrypoint exists', async () => {
     const { ws } = await tmpWs();
     const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }));
-    expect(await probeEntrypoint(ws, sb)).toBeNull();
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(false);
+    expect(probe.stderrTail).toContain('entrypoint');
   });
 
   it('reports failure when src/main.py --help exits non-zero', async () => {

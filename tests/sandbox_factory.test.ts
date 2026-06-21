@@ -15,7 +15,7 @@ const baseCfg = (sandbox: 'subprocess' | 'docker'): ToaaConfig =>
       max_debug_retries: 3,
       max_edit_lines_per_step: 400,
       sandbox,
-      sandbox_limits: { cpu: 1, memory_mb: 512, wall_seconds: 60, network: 'pypi-only' },
+      sandbox_limits: { cpu: 1, memory_mb: 512, wall_seconds: 60, network: 'download-only' },
       sandbox_docker: { image: 'python:3.11-slim', workdir: '/workspace', pull: false, docker_bin: 'docker', extra_run_args: [] },
     },
   }) as unknown as ToaaConfig;
@@ -59,6 +59,13 @@ describe('sandbox factory — container detection', () => {
     process.env.TOAA_IN_CONTAINER = '0';
     const ws = new Workspace('/tmp/toaa-factory-test');
     expect(() => createSandbox(baseCfg('docker'), ws)).not.toThrow();
+  });
+
+  it('任何 sandbox 都拒绝无法兑现的 pypi-only 策略', () => {
+    const ws = new Workspace('/tmp/toaa-factory-test');
+    const cfg = baseCfg('subprocess');
+    cfg.agent.sandbox_limits.network = 'pypi-only';
+    expect(() => createSandbox(cfg, ws)).toThrow(/pypi-only/);
   });
 
   it('跨语言执行时为 TypeScript plan 选择 node 默认镜像，而不是沿用 Python 自定义镜像', () => {

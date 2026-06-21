@@ -8,6 +8,7 @@ import {
   probeEntrypoint,
   type EntrypointProbe,
 } from './entry_gate.js';
+import { t } from '../i18n/index.js';
 
 /**
  * LanguageProfile：把"某种目标语言的工程化知识"集中到一处，
@@ -51,8 +52,8 @@ export interface LanguageProfile {
   ensureTestBootstrap?(ws: Workspace, audit: AuditLogger): Promise<void>;
   /** 通用兜底：修复入口 import 路径问题（python sys.path；ts 无需）。 */
   autoFixImports?(ws: Workspace, audit: AuditLogger): Promise<string[]>;
-  /** DELIVERY gate：探测入口 `--help` 是否开箱即用。返回 null 表示跳过。 */
-  probeEntry?(ws: Workspace, sandbox: Sandbox): Promise<EntrypointProbe | null>;
+  /** DELIVERY gate：探测入口 `--help` 是否开箱即用；缺失入口必须返回失败。 */
+  probeEntry(ws: Workspace, sandbox: Sandbox): Promise<EntrypointProbe>;
 }
 
 const PY_TEST_RE = /\.py$/;
@@ -140,7 +141,7 @@ export function getLanguageProfile(language: Language): LanguageProfile {
 async function probeTsEntrypoint(
   ws: Workspace,
   sandbox: Sandbox,
-): Promise<EntrypointProbe | null> {
+): Promise<EntrypointProbe> {
   const tail = (s: string): string => s.split('\n').slice(-30).join('\n');
   const entry = await detectTsEntrypoint(ws);
   if (!entry) {
@@ -150,7 +151,7 @@ async function probeTsEntrypoint(
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
-      stderrTail: 'missing TypeScript entrypoint: expected package.json start/bin or one of src/main.ts, src/index.ts, src/main.tsx',
+      stderrTail: t().engine.missingTypeScriptEntrypoint,
     };
   }
   let r;

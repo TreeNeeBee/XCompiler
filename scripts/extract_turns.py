@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import json, re, sys
-with open('doc/audit/copilot-session-ab5315cf.jsonl') as f:
+with open('docs/audit/copilot-session-ab5315cf.jsonl') as f:
     events = [json.loads(l) for l in f if l.strip()]
 rows = []
 turn = 0

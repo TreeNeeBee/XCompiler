@@ -74,6 +74,26 @@ describe('doctor', () => {
     expect(llm.items.some((i) => i.level === 'fail' && /api_key empty/i.test(i.message))).toBe(true);
   });
 
+  it('only warns for an unused openai provider with empty api_key', async () => {
+    const cfgPath = await writeCfg({
+      llm: {
+        default: 'ollama_code',
+        providers: {
+          ollama_code: { api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
+          openai: { api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
+        },
+        roles: { Coder: ['ollama_code'] },
+        fallbacks: [],
+        role_fallbacks: {},
+        scores: {},
+      },
+    });
+    const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
+    const llm = r.sections.find((s) => s.title === '[LLM]')!;
+    expect(llm.items.some((i) => i.level === 'warn' && /api_key empty/i.test(i.message))).toBe(true);
+    expect(llm.items.some((i) => i.level === 'fail' && /api_key empty/i.test(i.message))).toBe(false);
+  });
+
   it('flags role with no live provider (score=0)', async () => {
     const cfgPath = await writeCfg({
       llm: {

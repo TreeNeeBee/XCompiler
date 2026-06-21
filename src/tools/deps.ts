@@ -19,7 +19,7 @@ export const addDependencyTool: Tool<
     const manifestPath = ctx.language === 'typescript' ? 'package.json' : 'requirements.txt';
     const abs = ctx.ws.abs(manifestPath);
     const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
-    let added: string[] = [];
+    const added: string[] = [];
     let final: string[] = [];
 
     if (ctx.language === 'typescript') {

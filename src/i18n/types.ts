@@ -17,6 +17,108 @@ export interface SkillPrompt {
 }
 
 export interface Messages {
+  // ───────── shared LLM role guidance ─────────
+  llm: {
+    coderDebuggerSameModel: (model: string, coderProvider: string, debuggerProvider: string) => string;
+    invalidBaseUrl: (raw: string, fallback: string) => string;
+    providerValidationFailed: (role: string, model: string) => string;
+    providerCallFailed: (role: string, model: string) => string;
+    scoreReadFailed: (path: string, message: string) => string;
+    scoreChanged: (provider: string, score: string, previous: string) => string;
+    scorePersistFailed: (message: string) => string;
+    preflightOllamaReachable: (baseUrl: string, models: number) => string;
+    preflightOllamaUnreachable: (baseUrl: string, message: string) => string;
+    preflightAutoAdded: (providers: number, roles: string) => string;
+    scoreFileHeader: string;
+    scoreFileSemantics: string;
+  };
+
+  system: {
+    configEnvMissing: (names: string) => string;
+    unhandledError: (message: string) => string;
+    unsupportedPypiOnlyNetwork: string;
+    dockerInsideContainerUnsupported: string;
+    firejailUnsupported: string;
+    smokeHeader: (baseUrl: string) => string;
+    smokeOk: (model: string, totalMs: number, firstTokenMs: number, chunks: number, preview: string) => string;
+    smokeFail: (model: string, message: string) => string;
+  };
+
+  plugins: {
+    invalidId: (id: string) => string;
+    duplicateId: (id: string) => string;
+    invalidVersion: (plugin: string, version: string) => string;
+    invalidCoreVersion: (version: string) => string;
+    apiVersionMismatch: (plugin: string, actual: number, expected: number) => string;
+    invalidMinimumVersion: (plugin: string, version: string) => string;
+    coreVersionTooOld: (plugin: string, minimum: string, actual: string) => string;
+    loaded: (plugin: string, version: string) => string;
+    extensionConflict: (plugin: string, kind: string, name: string) => string;
+    hookFailed: (plugin: string, stage: string, message: string) => string;
+    manifestReadFailed: (path: string, message: string) => string;
+    moduleLoadFailed: (plugin: string, path: string, message: string) => string;
+    exportInvalid: (plugin: string, exportName: string) => string;
+    manifestMismatch: (plugin: string) => string;
+  };
+
+  audit: {
+    processLogTitle: string;
+    processLogPreamble: string;
+    sessionStart: (ts: string, command: string) => string;
+    sessionEnd: (ts: string) => string;
+    eventSessionStart: (command: string) => string;
+    eventSessionEnd: (command: string) => string;
+    userInput: (label: string) => string;
+    llmRequest: (role: string, model: string) => string;
+    llmResponse: (role: string, model: string) => string;
+    executorTurn: (stepId: string, round: number, role: string, provider: string, actions: number, done: boolean) => string;
+    thoughtsLabel: string;
+    actionsLabel: string;
+    noThoughts: string;
+    plannerThought: (stage: string, provider: string) => string;
+    markdownAppendFailed: (message: string) => string;
+    jsonlAppendFailed: (message: string) => string;
+    traceLine: (kind: string, message: string) => string;
+    autoFixedSrcImport: (path: string) => string;
+    wroteFile: (path: string) => string;
+    userDecision: (label: string, value: string) => string;
+    eventLlmRequest: (role: string, model: string) => string;
+    eventLlmResponse: (role: string, model: string) => string;
+    eventLlmError: (role: string, model: string, message: string) => string;
+    eventExecutorTurn: (stepId: string, round: number, role: string, provider: string) => string;
+    eventPlannerThought: (stage: string, provider: string) => string;
+    llmChatFailedThought: (message: string) => string;
+    llmChatAborted: (stepId: string, round: number, chars: number, message: string) => string;
+    toolDenied: (tool: string) => string;
+    toolCalled: (tool: string) => string;
+    toolResult: (tool: string, ok: boolean, detail: string) => string;
+    documentArchived: (from: string, to: string) => string;
+    documentArchiveFailed: (path: string, message: string) => string;
+    httpFetchSaved: (method: string, url: string, path: string, bytes: number) => string;
+    httpFetchResponse: (method: string, url: string, status: number, bytes: number) => string;
+    partialFailureHeader: (message: string) => string;
+    streamLength: (chars: number) => string;
+  };
+
+  stream: {
+    resolvingModel: string;
+    waiting: string;
+    streaming: string;
+    done: string;
+    failed: string;
+    chars: (n: number) => string;
+    toolRunner: string;
+    toolExecution: (stepId: string, tool: string) => string;
+  };
+
+  sandboxLog: {
+    subprocessBuilt: (hasDependencies: boolean) => string;
+    subprocessNodeBuilt: string;
+    dockerBuilt: (hasDependencies: boolean) => string;
+    dockerNodeBuilt: string;
+    command: (runtime: string, command: string) => string;
+  };
+
   // ───────── CLI: shared option / argument descriptions ─────────
   cli: {
     rootDescription: string;
@@ -47,10 +149,85 @@ export interface Messages {
     argPlan: string;
     argStepId: string;
     evolveDescription: string;
+    bootstrapDescription: string;
+    optRepository: string;
+    optPromote: string;
+    optCleanup: string;
+    optDockerQualification: string;
+    invalidLocale: (value: string) => string;
+    invalidIntent: (value: string, allowed: string) => string;
+    invalidPhase: (value: string, allowed: string) => string;
+    invalidStepId: (value: string) => string;
+    invalidNonNegativeInteger: (value: string) => string;
+    helpUsage: string;
+    helpArguments: string;
+    helpOptions: string;
+    helpCommands: string;
+    helpOption: string;
+    versionOption: string;
+    defaultValue: (value: string) => string;
+  };
+
+  bootstrap: {
+    notGitRepository: (path: string) => string;
+    dirtyRepository: (files: string) => string;
+    worktreeReady: (path: string, branch: string) => string;
+    compileStarted: string;
+    compileFailed: (exitCode: number, message: string) => string;
+    compileCancelled: string;
+    executeStarted: string;
+    executeFailed: (status: string) => string;
+    qualificationStarted: string;
+    qualificationDockerExperimental: string;
+    missingScript: (name: string) => string;
+    missingBin: string;
+    checkPassed: (name: string, durationMs: number) => string;
+    checkFailed: (name: string, exitCode: number) => string;
+    reportWritten: (path: string) => string;
+    candidateReady: (branch: string) => string;
+    promoted: (branch: string) => string;
+    cleanupDone: (path: string) => string;
+    promotionBlocked: string;
+    hostHeadChanged: string;
+    candidateDirty: (files: string) => string;
+    candidateStatusUnknown: string;
+    candidateMoved: (expected: string, actual: string) => string;
+    candidateNotBasedOnBase: (candidate: string, base: string) => string;
+    promotionVerificationFailed: (expected: string, actual: string) => string;
+    reportTitle: string;
+    reportNone: string;
+    reportNextQualified: (repository: string, candidateCommit: string) => string;
+    reportNextPromoted: string;
+    reportNextFailed: string;
+    reportLabels: {
+      status: string;
+      repository: string;
+      baseCommit: string;
+      candidateCommit: string;
+      branch: string;
+      worktree: string;
+      createdAt: string;
+      checks: string;
+      changedFiles: string;
+      nextStep: string;
+    };
   };
 
   // ───────── compile (toaa c) ─────────
   compile: {
+    workspaceReady: (path: string) => string;
+    forceOverride: string;
+    topicInputConflict: string;
+    auditTopicInput: string;
+    auditOriginalRequirement: string;
+    auditUserAddenda: string;
+    auditEditedTopic: string;
+    auditTopicPersisted: (path: string) => string;
+    auditDecomposeFailed: string;
+    lintIssue: (stepId: string, message: string) => string;
+    planPreviewTruncated: string;
+    auditPlanPersisted: (path: string) => string;
+    nextCommand: (command: string) => string;
     topicEmptyExit: string;
     topicLoaded: (path: string) => string;
     requirementEmptyExit: string;
@@ -107,16 +284,43 @@ export interface Messages {
     secSystemPrompt: string;
     secOutputs: string;
     secRecentAudit: (n: number) => string;
+    planHeader: (path: string, language: string) => string;
+    planStatusSummary: (total: number, done: number, pending: number, failed: number, skipped: number, running: number) => string;
+    planReadFailed: (path: string, message: string) => string;
+    stepHeader: (id: string, phase: string, title: string, status: string, retries: number, maxRetries: number) => string;
+    stepRoleTools: (role: string, tools: string) => string;
+    stepDependsOn: (ids: string) => string;
+    outputStatus: (exists: boolean, path: string) => string;
+    auditEntry: (ts: string, kind: string, message: string) => string;
   };
 
   // ───────── execute (toaa run) ─────────
   execute: {
+    forceReset: string;
+    manifestRecalibrated: (path: string) => string;
+    manifestSeeded: (path: string) => string;
+    auditPlanLoaded: (path: string) => string;
+    planLoaded: (path: string) => string;
+    planSummary: (language: string, steps: number) => string;
     preflightModelMissing: (names: string) => string;
     preflightAutoAdded: (n: number) => string;
     runInterrupted: (failedStepId: string, executed: number, total: number) => string;
     runReasonLabel: string;
     runFailureLogHeader: string;
     runAllDone: (executed: number, total: number) => string;
+    projectAuditSummary: (errors: number, warnings: number) => string;
+    projectMemoryRefreshFailed: (message: string) => string;
+    projectAuditCheck: (name: string, summary: string) => string;
+    auditDeliveryDocPresent: string;
+    auditDeliveryDocMissing: string;
+    auditTestFilesFound: (count: number) => string;
+    auditTestFilesMissing: string;
+    auditEntrypointOk: (command: string) => string;
+    auditEntrypointFailed: (command: string) => string;
+    auditPackageJsonMissing: string;
+    auditScriptMissing: (name: string) => string;
+    auditCommandOk: (name: string) => string;
+    auditCommandFailed: (name: string, exitCode: number, timedOut: boolean) => string;
   };
 
   // ───────── engine ─────────
@@ -143,6 +347,33 @@ export interface Messages {
     fixSuggestionsHeader: string;
     auditHint: (id: string) => string;
     spinStepRunning: (id: string, phase: string, title: string) => string;
+    noFailureLog: string;
+    suggestionLine: (index: number, code: string, hint: string) => string;
+    phaseStart: (id: string, phase: string, title: string) => string;
+    phaseFailed: (id: string, debug: boolean, reason: string) => string;
+    phaseDone: (id: string, rounds: number) => string;
+    phaseException: (id: string, message: string) => string;
+    archGateReason: (missing: number) => string;
+    archGateMissing: (tokens: string) => string;
+    archGateInstruction: (path: string) => string;
+    testGateReason: (exitCode: number, timedOut: boolean) => string;
+    deliveryGateReason: (command: string, exitCode: number, timedOut: boolean) => string;
+    missingPythonEntrypoint: string;
+    missingTypeScriptEntrypoint: string;
+    reasonLine: (reason: string) => string;
+    roundsLine: (rounds: number) => string;
+    commandLine: (command: string) => string;
+    stdoutTailHeader: string;
+    stderrTailHeader: string;
+    testStdoutTailHeader: string;
+    testStderrTailHeader: string;
+    outputsMissing: (paths: string) => string;
+    metricsLine: (health: string, parseFail: number, repeat: number, toolFail: string, progress: string) => string;
+    metricsUnavailable: string;
+    toolCallsHeader: string;
+    toolCallLine: (tool: string, ok: boolean, detail: string) => string;
+    projectMemoryRefreshFailed: (message: string) => string;
+    deliveryFixHints: (language: string) => string[];
   };
 
   // ───────── render (plan.md / topic.md headers) ─────────
@@ -158,15 +389,16 @@ export interface Messages {
     plannerSystem: (profile: LanguageProfile) => string;
     plannerClarify: (
       rawRequirement: string,
-      opts?: { intent?: 'greenfield' | 'feature' | 'refactor'; hasBaseline?: boolean },
+      opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; hasBaseline?: boolean; complex?: boolean },
     ) => string;
     plannerDecompose: (
       rawRequirement: string,
       qa: string,
       addenda: string,
-      opts?: { intent?: 'greenfield' | 'feature' | 'refactor'; baseline?: string },
+      opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; baseline?: string },
     ) => string;
     plannerClarifySystem: string;
+    plannerSelfMode: string;
     executorSystem: (profile: LanguageProfile) => string;
     executorDebugBlock: (reason: string, suggestions?: string) => string;
     executorGlobalBlock: (globalPrompt: string) => string;

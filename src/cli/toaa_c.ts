@@ -1,15 +1,19 @@
 import { Command } from 'commander';
-import { runCompile } from './compile.js';
+import { runCompile, CompileExitError } from './compile.js';
 import { resolveCompileWorkspace } from './workspace.js';
 import { setLocale, t } from '../i18n/index.js';
+import { TOAA_VERSION } from '../version.js';
+import { configureLocalizedHelp, localeFromArgv, parseIntent, parseLocale } from './arguments.js';
 
-setLocale(process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
 
 const program = new Command();
+configureLocalizedHelp(program);
 program
   .name('toaa_c')
-  .description('TOAA — Compile a natural language requirement into plan.json')
-  .option('--lang <code>', t().cli.optLang)
+  .description(t().cli.compileDescription)
+  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption)
+  .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
@@ -18,7 +22,7 @@ program
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
   .option('-t, --topic <file>', t().cli.optTopic)
-  .option('--intent <kind>', t().cli.optIntent, 'greenfield')
+  .option('--intent <kind>', t().cli.optIntent, parseIntent, 'greenfield')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--yes', t().cli.optYes, false)
@@ -44,6 +48,10 @@ program
   });
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error(err?.message ?? err);
-  process.exit(1);
+  if (err instanceof CompileExitError) {
+    process.exitCode = err.exitCode;
+    return;
+  }
+  console.error(t().system.unhandledError(err?.message ?? String(err)));
+  process.exitCode = 1;
 });

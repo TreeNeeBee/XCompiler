@@ -32,7 +32,7 @@
 | 输出       | 全流程 Markdown 文档 + 可交付源码          |
 | 控制       | 状态机驱动，关键节点强制人工确认                 |
 | 实现技术栈    | TypeScript + Node.js ≥ 20        |
-| 目标产物语言   | **Python（当前唯一支持）**；TS / C/C++ 后续 |
+| 目标产物语言   | **Python、TypeScript**；C/C++ 后续 |
 
 ---
 
@@ -99,10 +99,11 @@ Intake → Clarify(LLM) → Decompose(LLM) → Lint → Preview → Confirm(Huma
 
 **两道强制确认门**（任一未通过则不写 `plan.json`）：
 
-1. 需求摘要确认（`docs/requirements.md` 草案）
+1. 需求选题书确认（`docs/topic.md` 草案）
 2. 计划确认（`plan.md` 草案，含 Step 列表）
 
-确认前所有产物仅落在 `docs/.draft/`，确认后才正式写入 `workspace/plan.json` 与 `docs/plan.md`。
+Gate 1 确认后立即持久化 `docs/topic.md`，即使后续计划生成失败也可复用；计划在 Gate 2
+确认前仍位于 `docs/.draft/`，确认后才写入 `workspace/plan.json` 与 `docs/plan.md`。
 
 Step / Plan 数据结构：
 
@@ -137,12 +138,12 @@ export interface Step {
 
 export interface Plan {
   version: '1';
-  language: 'python';            // 当前固定
+  language: 'python' | 'typescript';
   requirementDigest: string;
   /** toaa_c 沉淀出的全局开发约束（项目背景、全局约定、语言与依赖策略），所有 Step 共享。 */
   globalPrompt: string;
-  /** ARCH 阶段决定的 pip 依赖初始集（会褉照到 requirements.txt）。 */
-  pythonRequirements: string[];
+  /** 计划级依赖；Python 在运行前生成 requirements.txt，TS 由 ARCH 同步 package.json。 */
+  dependencies: string[];
   createdAt: string;             // ISO 时间
   steps: Step[];
 }
@@ -155,7 +156,7 @@ Plan Lint 规则：
 - 阶段顺序：`REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY`。
 - 每个 CODE Step 至少有一个对应 TEST Step。
 - **每个 Step 必须携带非空 `systemPrompt`**；`REQUIREMENT` / `ARCH` Step 的 outputs 不得包含 `src/**/*.py` 或 `tests/**/*.py`（阶段纯度）。
-- **至少一个 `ARCH` Step 必须输出 `requirements.txt`**，且其 `systemPrompt` 明确要求同步写入 Python 依赖以供后续阶段 `pip install`。
+- Python 依赖由 Plan 顶层 `dependencies` 声明，`toaa_run` 在执行前统一生成 `requirements.txt`；任何 Step 都不得把它声明为输出。TypeScript 的 `package.json` 由 ARCH 阶段维护。
 
 ### 4.2 `toaa_run`：计划 → 代码
 
@@ -197,32 +198,34 @@ async function toaaRun(planPath: string) {
 
 | 阶段          | 允许产出                                          | 明确禁止                          |
 | ----------- | ---------------------------------------------- | ----------------------------- |
-| REQUIREMENT | Markdown 需求书、验收场景                          | 实现代码、包含函数体的伪代码                   |
-| ARCH        | Markdown 架构、接口签名 / 数据类型 / 模块划分、`requirements.txt` | 函数实现体、可执行脚本、测试代码          |
+| REQUIREMENT | `docs/01-requirement.md`、验收场景                   | 实现代码、包含函数体的伪代码                   |
+| ARCH        | `docs/02-architecture.md`、接口 / 数据类型 / 模块契约 | 函数实现体、可执行脚本、测试代码          |
 | TASK        | Markdown 任务 checklist                              | 代码                            |
 | CODE        | `src/**` 实现                                   | 跳过接口签约、跳过依赖声明               |
-| TEST        | `tests/**` + `docs/test_report.md`              | 修改 `src/**`（需走 DEBUG）          |
-| DEBUG       | `src/**` 修复、`requirements.txt` 修补                | 重写需求 / 架构文档                  |
-| REFACTOR    | 等价重构                                          | 行为改变                          |
-| DELIVERY    | `docs/delivery.md`、交付清单                         | 新增代码                          |
+| TEST        | `tests/**`，并在 Sandbox 中运行测试              | 未经授权修改无关模块          |
+| DEBUG       | 依赖链授权范围内的 `src/**` / `tests/**` 修复       | 重写需求 / 架构文档                  |
+| REFACTOR    | `docs/04-refactor.md` + 等价源码重构                | 行为改变                          |
+| DELIVERY    | `docs/05-delivery.md`、交付清单                     | 新增代码                          |
 
 > Plan Lint 会检查这些越阶产出并拒绝写入 `plan.json`。
 
 | 阶段          | 产物                                                                | 关键约束                                            |
 | ----------- | ----------------------------------------------------------------- | ----------------------------------------------- |
-| REQUIREMENT | `docs/requirements.md`、`docs/requirements_test.md`                  | 双确认门后才落盘                                        |
-| ARCH        | `docs/architecture.md`、`docs/architecture_test.md`、**`requirements.txt`** | Architect 必须输出 Python 依赖（带版本约束），作为 Sandbox 构建依据 |
-| TASK        | `docs/tasks.md`                                                    | Checklist 形式                                    |
-| CODE        | `src/`、`tests/`、`docs/implementation.md`                          | 仅用 diff / patch 修改；禁止全量覆盖                       |
-| TEST        | `docs/test_report.md`                                              | **必须在 Sandbox 内运行 `pytest`**                    |
-| DEBUG       | 修复后的 `src/` + 更新的 `requirements.txt`                                | Sandbox 内闭环；最多 3 次重试                            |
-| REFACTOR    | `docs/refactor.md`                                                 | 行为不变前提下的结构优化                                    |
-| DELIVERY    | `docs/delivery.md`                                                 | 功能说明、使用方式、交付清单                                  |
+| REQUIREMENT | `docs/01-requirement.md`                                           | 从冻结的 `docs/topic.md` 提炼可验收需求                      |
+| ARCH        | `docs/02-architecture.md`                                          | 逐项呈现结构化模块契约；TypeScript greenfield 可创建 manifest |
+| TASK        | `docs/03-tasks.md`                                                 | 按模块形成可独立验收的任务清单                               |
+| CODE        | `src/**`                                                           | 使用受 EditGuard 约束的增量工具修改                           |
+| TEST        | `tests/**`                                                         | 在语言 Sandbox 中执行完整测试                                |
+| DEBUG       | 修复后的 `src/**` / `tests/**`                                     | Sandbox 内闭环，采用自适应重试窗口                            |
+| REFACTOR    | `docs/04-refactor.md` + 授权源码                                   | 先全量回归，再做行为不变的结构优化                             |
+| DELIVERY    | `docs/05-delivery.md`                                              | 使用方式、入口、依赖、测试证据和已知边界                       |
 
-### 5.1 `requirements.txt` 约定
+### 5.1 依赖清单约定
 
-- 一行一个依赖，使用 `==` 或 `~=` 固定版本，禁止裸名。
-- 运行依赖写 `requirements.txt`；测试依赖写 `requirements-dev.txt`（默认含 `pytest`、`pytest-cov`）。
+- Python 的 `plan.dependencies` 使用可由 pip 解析的裸包名，运行前由 TOAA 统一校准并种入
+  `requirements.txt`；Step 不得直接把该文件列为输出，新增依赖通过 `add_dependency`。
+- TypeScript greenfield 由 ARCH 创建 `package.json`；feature / refactor / self 默认复用现有
+  manifest，只有需求确实涉及依赖或脚本时才修改。
 - DEBUG 阶段缺包时通过 `add_dependency` Skill 安装并**回写**到 `requirements.txt`，确保声明与运行一致。
 
 ---
@@ -336,24 +339,22 @@ Sandbox 失败 → 捕获错误 → Debugger LLM
 ```text
 workspace/
 ├── plan.json                  # toaa_c 产出，toaa_run 回写
-├── requirements.txt           # ARCH 阶段产出，运行依赖
-├── requirements-dev.txt       # 测试 / 调试依赖
+├── requirements.txt | package.json
 ├── docs/
+│   ├── topic.md
 │   ├── plan.md                # plan.json 的人类可读视图
-│   ├── requirements.md
-│   ├── architecture.md
-│   ├── tasks.md
-│   ├── test_report.md
-│   ├── refactor.md
-│   ├── delivery.md
+│   ├── 01-requirement.md
+│   ├── 02-architecture.md
+│   ├── 03-tasks.md
+│   ├── 04-refactor.md
+│   ├── 05-delivery.md
+│   ├── process_log.md
 │   └── history/               # 阶段 + 时间戳归档
-├── src/                       # Python 源码
-├── tests/                     # pytest
-├── logs/
-│   ├── run-<ts>.log
-│   └── edits-<step-id>.jsonl  # Skill 审计
+├── src/                       # Python / TypeScript 源码
+├── tests/                     # pytest / Vitest
+├── .toaa/                     # 锁、审计、项目记忆、debug cache、自举报告
 ├── .sandbox/                  # venv / docker 缓存（gitignore）
-└── artifacts/
+└── node_modules/              # TypeScript subprocess sandbox（按需）
 ```
 
 文档规范：全部 Markdown，每阶段独立文件，禁止覆盖式重写，历史版本归档至 `docs/history/`。
@@ -402,7 +403,7 @@ Q3 是否需要 TUI？                    > 否
 ```text
 $ toaa run workspace/plan.json
 [S001 REQUIREMENT] ✔ DONE  (0.4s)
-[S002 ARCH       ] ✔ DONE  (3.1s)   → requirements.txt
+[S002 ARCH       ] ✔ DONE  (3.1s)   → docs/02-architecture.md
 [S009 CODE       ] ✖ FAILED → DEBUG (1/3)
    ↳ pytest: AssertionError tests/test_store.py::test_add
    ↳ Debugger: apply_patch (12 lines)
@@ -411,12 +412,14 @@ $ toaa run workspace/plan.json
 ✔ 入口: python -m todo_cli --help
 ```
 
-运行时快捷键：`Ctrl+C` 优雅停 / `p` 暂停于下个 Step 边界 / `s` 跳过当前 Step。
+`toaa_run` 保持非交互：不读取 stdin，也不提供 `p`/`s` 运行时快捷键。可使用 `Ctrl+C` 发送进程中断信号；恢复时依据已持久化的 Step 状态继续执行。
 
 ### 10.4 全局命令
 
 ```text
 toaa c | compile           交互式编译需求 → plan.json
+toaa evolve                在现有工程中编译并执行增量计划
+toaa bootstrap             在隔离 worktree 中构建并验证下一代 TOAA
 toaa run <plan.json>       执行计划
 toaa ls                    列出 workspace 中的 plan
 toaa show <step-id>        查看 Step 定义与产物
@@ -427,6 +430,13 @@ toaa resume                从最近中断处续跑
 --no-color   --json        CI 友好输出
 --yes                      非交互模式（仅在需求来源为文件时生效）
 ```
+
+### 10.5 功能自举
+
+TOAA 采用代际自举，不允许正在运行的进程热替换自身。稳定版本 N 在独立 Git worktree
+中生成候选版本 N+1，完整执行 V 模型，再通过 typecheck、测试、构建、CLI smoke 与
+打包预检。默认只保留候选分支和自举报告；只有显式 `--promote` 才允许在宿主仓库
+仍然干净且 HEAD 未变化时执行快进合并。完整协议见 [self_bootstrap.md](self_bootstrap.md)。
 
 ---
 
@@ -452,7 +462,7 @@ llm:
     Debugger:  openai
 
 agent:
-  language: python              # 当前仅 python
+  language: python              # python | typescript
   max_steps: 50
   max_debug_retries: 3
   sandbox: subprocess           # subprocess | docker | firejail
@@ -460,7 +470,7 @@ agent:
     cpu: 1
     memory_mb: 1024
     wall_seconds: 60
-    network: pypi-only          # off | pypi-only | full
+    network: download-only      # off | download-only | full；旧 pypi-only 会被拒绝
 ```
 
 密钥通过 `.env` 注入，禁止硬编码。

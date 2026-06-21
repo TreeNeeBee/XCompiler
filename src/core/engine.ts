@@ -22,6 +22,8 @@ import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import { DebugCache } from './debug_cache.js';
 import { getLanguageProfile, type LanguageProfile } from './language.js';
+import { missingArchitectureDocumentTokens } from './architecture.js';
+import { DOC_NAMES } from './docs.js';
 import {
   loadProjectMemory,
   PROJECT_MEMORY_PATH,
@@ -30,6 +32,7 @@ import {
   selectMemorySnippetsForStep,
   type ProjectMemory,
 } from './project_memory.js';
+import { PluginHost } from '../plugins/host.js';
 
 export interface EngineOptions {
   ws: Workspace;
@@ -40,6 +43,8 @@ export interface EngineOptions {
   planPath: string;
   registry?: ToolRegistry;
   skills?: SkillRegistry;
+  /** 程序化插件入口；CLI 动态加载器后续只需向该 Host 注入插件。 */
+  plugins?: PluginHost;
   /** 从指定 stepId 开始（之前的 Step 标记为 SKIPPED 并不执行）。 */
   fromStepId?: string;
   /** 仅执行指定 phase。 */
@@ -71,6 +76,8 @@ export interface EngineResult {
 export class PhaseEngine {
   private readonly registry: ToolRegistry;
   private readonly skills: SkillRegistry;
+  private readonly plugins: PluginHost;
+  private pluginExtensionsApplied = false;
   /** 跨 toaa run 持久化的 debug 历史（`<workspace>/.toaa/debug_cache.json`）。 */
   private readonly debugCache: DebugCache;
   /** 当前 Plan 的语言 profile（在 run() 起始处按 plan.language 解析）。 */
@@ -83,10 +90,28 @@ export class PhaseEngine {
   constructor(private readonly opts: EngineOptions) {
     this.registry = opts.registry ?? buildDefaultRegistry();
     this.skills = opts.skills ?? buildDefaultSkills();
+    this.plugins = opts.plugins ?? new PluginHost();
     this.debugCache = new DebugCache(opts.ws.abs('.toaa/debug_cache.json'));
   }
 
   async run(plan: Plan): Promise<EngineResult> {
+    await this.plugins.initialize();
+    if (!this.pluginExtensionsApplied) {
+      this.plugins.applyExtensions({ tools: this.registry, skills: this.skills });
+      this.pluginExtensionsApplied = true;
+    }
+    await this.plugins.emit('run.before', { plan });
+    try {
+      const result = await this.runCore(plan);
+      await this.plugins.emit('run.after', { plan, result });
+      return result;
+    } catch (error) {
+      await this.plugins.emit('run.error', { plan, error });
+      throw error;
+    }
+  }
+
+  private async runCore(plan: Plan): Promise<EngineResult> {
     this.profile = getLanguageProfile(plan.language);
     await this.refreshCurrentProjectMemory(plan);
     const order = topoSort(plan.steps);
@@ -123,7 +148,15 @@ export class PhaseEngine {
         continue;
       }
 
-      const ok = await this.executeStepWithDebug(plan, step);
+      await this.plugins.emit('step.before', { plan, step });
+      let ok: boolean;
+      try {
+        ok = await this.executeStepWithDebug(plan, step);
+      } catch (error) {
+        await this.plugins.emit('step.error', { plan, step, error });
+        throw error;
+      }
+      await this.plugins.emit('step.after', { plan, step, ok });
       executed++;
       await savePlan(this.opts.planPath, plan);
       if (!ok) {
@@ -240,6 +273,7 @@ export class PhaseEngine {
       await savePlan(this.opts.planPath, plan);
       const spin = ora(
         t().engine.spinDebugRetry(step.id, attempt, budget, absoluteCap, lastReason),
+        { animate: false },
       ).start();
       let r: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
       try {
@@ -390,14 +424,14 @@ export class PhaseEngine {
     console.log(chalk.red(t().engine.reasonLabel) + info.reason);
     const tail = info.failureLog
       ? info.failureLog.split('\n').slice(-80).join('\n')
-      : '(no log captured)';
+      : t().engine.noFailureLog;
     console.log(chalk.gray(t().engine.failureLogHeader));
     console.log(tail);
     const sugs = calibrateDebugSuggestions(info.failureLog, info.reason);
     if (sugs.length > 0) {
       console.log(chalk.yellow(t().engine.fixSuggestionsHeader));
       sugs.forEach((s, i) => {
-        console.log(chalk.yellow(`  ${i + 1}. [${s.code}] `) + s.hint);
+        console.log(chalk.yellow(t().engine.suggestionLine(i + 1, s.code, s.hint)));
       });
     }
     console.log(chalk.gray(t().engine.auditHint(step.id)));
@@ -406,6 +440,48 @@ export class PhaseEngine {
 
   /** 一次执行尝试：可选 debug 模式（使用 Debugger 角色 + 注入失败日志）。 */
   private async runOneAttempt(
+    plan: Plan,
+    step: Step,
+    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
+  ): Promise<{ ok: boolean; failureLog: string; reason?: string; metrics?: ExecutorRunMetrics }> {
+    const role = debug ? 'Debugger' : step.role;
+    await this.plugins.emit('step.attempt.before', {
+      plan,
+      step,
+      role,
+      debug: !!debug,
+      retry: step.retries,
+    });
+    try {
+      const outcome = await this.runOneAttemptCore(plan, step, debug);
+      await this.plugins.emit('step.attempt.after', {
+        plan,
+        step,
+        role,
+        debug: !!debug,
+        retry: step.retries,
+        outcome,
+      });
+      return outcome;
+    } catch (error) {
+      const outcome = {
+        ok: false,
+        failureLog: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        reason: error instanceof Error ? error.message : String(error),
+      };
+      await this.plugins.emit('step.attempt.after', {
+        plan,
+        step,
+        role,
+        debug: !!debug,
+        retry: step.retries,
+        outcome,
+      });
+      throw error;
+    }
+  }
+
+  private async runOneAttemptCore(
     plan: Plan,
     step: Step,
     debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
@@ -440,7 +516,10 @@ export class PhaseEngine {
       stepId: step.id,
       maxLines: this.opts.maxEditLinesPerStep ?? 400,
     });
-    const guardedTools = baseTools.map((t) => guard.wrap(t));
+    const guardedTools = baseTools.map((tool) => {
+      const guarded = guard.wrap(tool);
+      return this.plugins.size > 0 ? this.plugins.wrapTool(guarded) : guarded;
+    });
 
     const ctx: ToolContext = {
       ws: this.opts.ws,
@@ -467,7 +546,8 @@ export class PhaseEngine {
     step.status = 'RUNNING';
     await savePlan(this.opts.planPath, plan);
     const sha = await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug retry' : 'before');
-    await this.opts.audit.event('phase.start', `${step.id} ${debug ? 'DEBUG' : step.phase} ${step.title}`, {
+    await this.opts.audit.event('phase.start', t().engine.phaseStart(step.id, debug ? 'DEBUG' : step.phase, step.title), {
+      messageId: 'engine.phase_start',
       role,
       tools: allNames,
       snapshot: sha,
@@ -476,7 +556,10 @@ export class PhaseEngine {
 
     const spin = debug
       ? null
-      : ora(t().engine.spinStepRunning(step.id, step.phase, chalk.bold(step.title))).start();
+      : ora(
+          t().engine.spinStepRunning(step.id, step.phase, chalk.bold(step.title)),
+          { animate: false },
+        ).start();
     try {
       const r = await executor.run({
         step,
@@ -500,22 +583,50 @@ export class PhaseEngine {
       });
       const verify = await verifyOutputs({ step, tools: guardedTools, ctx });
       if (r.success && verify.ok) {
+        // ARCH 阶段强制验收门：架构文档必须逐项覆盖 Plan 的结构化模块契约。
+        if (step.phase === 'ARCH' && (plan.architectureModules?.length ?? 0) > 0) {
+          const architecture = await this.opts.ws.readFile(DOC_NAMES.architecture);
+          const missingTokens = missingArchitectureDocumentTokens(
+            architecture,
+            plan.architectureModules ?? [],
+          );
+          if (missingTokens.length > 0) {
+            const reason = t().engine.archGateReason(missingTokens.length);
+            const failureLog = [
+              t().engine.reasonLine(reason),
+              t().engine.roundsLine(r.rounds),
+              t().engine.archGateMissing(missingTokens.join(', ')),
+              t().engine.archGateInstruction(DOC_NAMES.architecture),
+            ].join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+              messageId: 'engine.phase_failed',
+              rounds: r.rounds,
+              reason,
+              retry: step.retries,
+            });
+            await this.opts.git.revertTo(sha);
+            return { ok: false, failureLog, reason, metrics: r.metrics };
+          }
+        }
+
         // TEST 阶段强制验收门：必须测试退出码 0，否则视为失败进入 DEBUG。
         if (step.phase === 'TEST') {
           const pt = await this.opts.sandbox.runTests([], {});
           if (pt.exitCode !== 0 || pt.timedOut) {
             const tail = (s: string) => s.split('\n').slice(-30).join('\n');
-            const reason = `TEST gate: tests exit=${pt.exitCode}${pt.timedOut ? ' (timeout)' : ''}`;
+            const reason = t().engine.testGateReason(pt.exitCode, !!pt.timedOut);
             const failureLog = [
-              `reason: ${reason}`,
-              `rounds: ${r.rounds}`,
-              '--- test stdout (tail) ---',
+              t().engine.reasonLine(reason),
+              t().engine.roundsLine(r.rounds),
+              t().engine.testStdoutTailHeader,
               tail(pt.stdout),
-              '--- test stderr (tail) ---',
+              t().engine.testStderrTailHeader,
               tail(pt.stderr),
             ].join('\n');
-            spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
-            await this.opts.audit.event('phase.end', `${step.id} FAILED`, {
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+              messageId: 'engine.phase_failed',
               rounds: r.rounds,
               reason,
               retry: step.retries,
@@ -530,40 +641,24 @@ export class PhaseEngine {
         if (step.phase === 'DELIVERY') {
           // gate 前再跑一次 auto-fix（DELIVERY Step 自身可能新建/改写了入口）
           await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit);
-          const probe = this.profile.probeEntry
-            ? await this.profile.probeEntry(this.opts.ws, this.opts.sandbox)
-            : null;
-          if (probe && !probe.ok) {
-            const reason = `DELIVERY gate: \`${probe.command}\` exit=${probe.exitCode}${probe.timedOut ? ' (timeout)' : ''}`;
-            const fixHints = this.profile.id === 'typescript'
-              ? [
-                  'Fix directions (priority order):',
-                  '  1. If stderr mentions module resolution / Cannot find module / ERR_MODULE_NOT_FOUND ->',
-                  '     use relative ESM imports with explicit .js specifiers for local .ts modules.',
-                  '  2. If stderr mentions --help / unknown option -> main() must support --help and exit 0.',
-                  '  3. If stderr shows application exceptions -> fix the implementation; keep the entrypoint thin.',
-                ]
-              : [
-                  '修复方向（按优先级）：',
-                  '  1. 若 stderr 含 ModuleNotFoundError: No module named \'src\' →',
-                  '     在 src/main.py 顶部插入 sys.path 自举（见 planner 规则 #19），',
-                  '     或把 `from src.xxx` 改成 `from xxx`（不带 src. 前缀）。',
-                  '  2. 若 stderr 含 argparse 报错 → main() 必须支持 --help 不需要其他参数即可退出 0。',
-                  '  3. 若 stderr 含业务异常 → 修对应实现；入口本身只做参数解析与调用。',
-                ];
+          const probe = await this.profile.probeEntry(this.opts.ws, this.opts.sandbox);
+          if (!probe.ok) {
+            const reason = t().engine.deliveryGateReason(probe.command, probe.exitCode, !!probe.timedOut);
+            const fixHints = t().engine.deliveryFixHints(this.profile.id);
             const failureLog = [
-              `reason: ${reason}`,
-              `rounds: ${r.rounds}`,
-              `command: ${probe.command}`,
-              '--- stdout (tail) ---',
+              t().engine.reasonLine(reason),
+              t().engine.roundsLine(r.rounds),
+              t().engine.commandLine(probe.command),
+              t().engine.stdoutTailHeader,
               probe.stdoutTail,
-              '--- stderr (tail) ---',
+              t().engine.stderrTailHeader,
               probe.stderrTail,
               '',
               ...fixHints,
             ].join('\n');
-            spin?.fail(`${step.id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`);
-            await this.opts.audit.event('phase.end', `${step.id} FAILED`, {
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+              messageId: 'engine.phase_failed',
               rounds: r.rounds,
               reason,
               retry: step.retries,
@@ -575,26 +670,29 @@ export class PhaseEngine {
         step.status = 'DONE';
         await this.refreshCurrentProjectMemory(plan);
         await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug done' : 'done');
-        spin?.succeed(`${step.id} DONE (rounds=${r.rounds})`);
-        await this.opts.audit.event('phase.end', `${step.id} DONE`, { rounds: r.rounds, retry: step.retries });
+        spin?.succeed(t().engine.phaseDone(step.id, r.rounds));
+        await this.opts.audit.event('phase.end', t().engine.phaseDone(step.id, r.rounds), {
+          messageId: 'engine.phase_done', rounds: r.rounds, retry: step.retries,
+        });
         // 不在这里调 markDone：executeStepWithDebug 中统一处理（避免 retry-loop 里双写）。
         return { ok: true, failureLog: '' };
       }
-      const reason = r.error ?? `outputs missing: ${verify.missing.join(', ')}`;
+      const reason = r.error ?? t().engine.outputsMissing(verify.missing.join(', '));
       const m = r.metrics;
       const metricsLine = m
-        ? `metrics: health=${m.healthScore.toFixed(2)} parseFail=${m.parseFailures} repeat=${m.repeatedTurns} toolFail=${m.toolFailRatio.toFixed(2)} progress=${m.progressRatio.toFixed(2)}`
-        : 'metrics: (n/a)';
+        ? t().engine.metricsLine(m.healthScore.toFixed(2), m.parseFailures, m.repeatedTurns, m.toolFailRatio.toFixed(2), m.progressRatio.toFixed(2))
+        : t().engine.metricsUnavailable;
       const failureLog =
         [
-          `reason: ${reason}`,
-          `rounds: ${r.rounds}`,
+          t().engine.reasonLine(reason),
+          t().engine.roundsLine(r.rounds),
           metricsLine,
-          'tool calls:',
-          ...r.toolCalls.map((c) => `  - ${c.tool} ${c.ok ? 'OK' : 'FAIL'} ${c.summary ?? c.error ?? ''}`),
+          t().engine.toolCallsHeader,
+          ...r.toolCalls.map((c) => t().engine.toolCallLine(c.tool, c.ok, c.summary ?? c.error ?? '')),
         ].join('\n');
-      spin?.fail(`${step.id} ${debug ? 'DEBUG' : ''} FAILED — ${reason}`);
-      await this.opts.audit.event('phase.end', `${step.id} FAILED`, {
+      spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+      await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+        messageId: 'engine.phase_failed',
         rounds: r.rounds,
         reason,
         retry: step.retries,
@@ -606,8 +704,10 @@ export class PhaseEngine {
     } catch (err) {
       const msg = (err as Error).message;
       const stack = (err as Error).stack ?? msg;
-      spin?.fail(`${step.id} FAILED — ${msg}`);
-      await this.opts.audit.event('phase.end', `${step.id} FAILED (exception)`, { error: msg, stack });
+      spin?.fail(t().engine.phaseException(step.id, msg));
+      await this.opts.audit.event('phase.end', t().engine.phaseException(step.id, msg), {
+        messageId: 'engine.phase_exception', error: msg, stack,
+      });
       await this.opts.git.revertTo(sha).catch(() => {});
       return { ok: false, failureLog: stack, reason: msg };
     } finally {
@@ -621,6 +721,12 @@ export class PhaseEngine {
     debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
   ): Promise<Array<{ path: string; content: string }>> {
     const out = new Map<string, string>();
+    if ((plan.architectureModules?.length ?? 0) > 0) {
+      out.set(
+        '.toaa/architecture-contract.json',
+        JSON.stringify({ architectureModules: plan.architectureModules }, null, 2),
+      );
+    }
     const interesting = debug ? [...step.inputs, ...step.outputs] : step.inputs;
     for (const p of interesting) {
       await this.pushWorkspaceSnippet(out, p);
@@ -675,7 +781,8 @@ export class PhaseEngine {
       });
     } catch (err) {
       this.projectMemory = await loadProjectMemory(this.opts.ws);
-      await this.opts.audit.event('note', `project memory refresh failed: ${(err as Error).message}`, {
+      await this.opts.audit.event('note', t().engine.projectMemoryRefreshFailed((err as Error).message), {
+        messageId: 'engine.project_memory_refresh_failed',
         planPath: this.opts.planPath,
       });
     }

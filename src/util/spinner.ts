@@ -6,8 +6,6 @@
 import oraReal, { type Ora } from 'ora';
 
 const isPkg = typeof (process as unknown as { pkg?: unknown }).pkg !== 'undefined';
-const isTTY = !!process.stdout.isTTY;
-
 interface SimpleSpinner {
   start(text?: string): SimpleSpinner;
   succeed(text?: string): SimpleSpinner;
@@ -84,8 +82,9 @@ class TtyMiniSpinner implements SimpleSpinner {
   }
 }
 
-export function spinner(text: string): Ora | SimpleSpinner {
-  if (!isTTY) return new PlainSpinner(text);
+export function spinner(text: string, options: { animate?: boolean } = {}): Ora | SimpleSpinner {
+  // LLM 调用自身已有模型/计时流式状态行；外层只打印静态起止，避免两个动画争抢光标。
+  if (options.animate === false || !process.stdout.isTTY) return new PlainSpinner(text);
   if (isPkg) return new TtyMiniSpinner(text);
   return oraReal(text);
 }

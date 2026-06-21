@@ -5,6 +5,8 @@ import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
 import type { ScoreStore } from './scores.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import { t } from '../i18n/index.js';
+import type { PluginHost } from '../plugins/host.js';
 
 export class LLMRouter {
   private readonly clients = new Map<string, LLMClient>();
@@ -13,6 +15,8 @@ export class LLMRouter {
     private readonly cfg: ToaaConfig,
     private readonly audit?: AuditLogger,
     private readonly scores?: ScoreStore,
+    private readonly unavailable: ReadonlySet<string> = new Set(),
+    private readonly plugins?: PluginHost,
   ) {
     for (const [name, p] of Object.entries(cfg.llm.providers)) {
       const client = createClient(name, p);
@@ -35,8 +39,8 @@ export class LLMRouter {
     const ranked = this.rankByScore(candidates);
     if (ranked.length === 0) {
       throw new Error(
-        `No usable LLM provider for role ${role}: all candidates [${candidates.join(', ')}] have score=0. ` +
-          `Run preflight or restore at least one provider in config.`,
+        `No usable LLM provider for role ${role}: candidates [${candidates.join(', ')}] ` +
+          `are disabled or unreachable in this run. Run preflight or restore at least one provider in config.`,
       );
     }
     const clients = ranked
@@ -51,8 +55,22 @@ export class LLMRouter {
       String(role),
       this.scores,
     );
-    if (!this.audit) return composite;
-    return wrapWithAudit(composite, String(role), this.audit);
+    const observable = this.audit
+      ? wrapWithAudit(composite, String(role), this.audit)
+      : composite;
+    return this.plugins && this.plugins.size > 0
+      ? this.plugins.wrapLLM(observable, String(role))
+      : observable;
+  }
+
+  /** 返回某角色按当前评分/可用性解析后的首选 provider 与模型，供启动诊断使用。 */
+  primarySelection(role: Role | 'default'): { provider: string; model: string } | undefined {
+    const ranked = this.rankByScore(this.resolveChain(role));
+    for (const provider of ranked) {
+      const config = this.cfg.llm.providers[provider];
+      if (config && this.clients.has(provider)) return { provider, model: config.model };
+    }
+    return undefined;
   }
 
   private resolveChain(role: Role | 'default'): string[] {
@@ -76,10 +94,10 @@ export class LLMRouter {
 
   /** 按评分降序排序；评分 = 0 的剔除；并列保持声明顺序（稳定排序）。 */
   private rankByScore(names: string[]): string[] {
-    if (!this.scores) return [...names];
+    if (!this.scores) return names.filter((name) => !this.unavailable.has(name));
     const scored = names.map((n, i) => ({ n, i, s: this.scores!.get(n) }));
     return scored
-      .filter((x) => x.s > 0)
+      .filter((x) => x.s > 0 && !this.unavailable.has(x.n))
       .sort((a, b) => (b.s - a.s) || (a.i - b.i))
       .map((x) => x.n);
   }
@@ -104,6 +122,7 @@ class FallbackClient implements LLMClient {
     for (let i = 0; i < this.chain.length; i++) {
       const c = this.chain[i]!;
       try {
+        try { options?.onProviderStart?.(c.name, c.client.name); } catch { /* display only */ }
         const out = await c.client.chat(messages, options);
         if (options?.validate) {
           try {
@@ -111,8 +130,9 @@ class FallbackClient implements LLMClient {
           } catch (vErr) {
             await this.audit?.event(
               'llm.error',
-              `[${this.role}] provider ${c.client.name} 输出验证失败，切换到下一个`,
+              t().llm.providerValidationFailed(this.role, c.client.name),
               {
+                messageId: 'llm.provider_validation_failed',
                 provider: c.name,
                 attempt: i + 1,
                 remaining: this.chain.length - i - 1,
@@ -126,14 +146,16 @@ class FallbackClient implements LLMClient {
           }
         }
         this.scores?.boost(c.name, `success in role ${this.role}`);
+        try { options?.onProvider?.(c.name); } catch { /* observability must not fail the call */ }
         return out;
       } catch (err) {
         lastErr = err;
         this.scores?.decay(c.name, `chat threw in role ${this.role}: ${(err as Error).message.slice(0, 120)}`);
         await this.audit?.event(
           'llm.error',
-          `[${this.role}] provider ${c.client.name} failed, trying next`,
+          t().llm.providerCallFailed(this.role, c.client.name),
           {
+            messageId: 'llm.provider_call_failed',
             provider: c.name,
             attempt: i + 1,
             remaining: this.chain.length - i - 1,
@@ -154,8 +176,6 @@ function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMC
       try {
         const out = await inner.chat(messages, options);
         await audit.llmResponse(role, inner.name, out);
-        // 通知调用者：本次响应的真实 provider 是谁（供上层追溯）。
-        try { options?.onProvider?.(inner.name); } catch { /* never break the call site */ }
         return out;
       } catch (err) {
         await audit.llmError(role, inner.name, err);
@@ -174,6 +194,7 @@ function createClient(
     request_timeout_ms?: number;
     stream_idle_timeout_ms?: number;
     max_output_chars?: number;
+    think?: boolean;
   },
 ): LLMClient | null {
   if (isOllamaProvider(name)) {
@@ -183,6 +204,7 @@ function createClient(
       requestTimeoutMs: p.request_timeout_ms,
       streamIdleTimeoutMs: p.stream_idle_timeout_ms,
       maxOutputChars: p.max_output_chars,
+      think: p.think,
     });
   }
   if (isOpenAICompatibleProvider(name)) {
@@ -231,8 +253,7 @@ export function normalizeBaseUrl(raw: string | undefined, fallback: string): str
     new URL(withScheme);
     return withScheme;
   } catch {
-    // eslint-disable-next-line no-console
-    console.warn(`[toaa] invalid base_url (${JSON.stringify(raw)}); falling back to ${fallback}`);
+    console.warn(t().llm.invalidBaseUrl(JSON.stringify(raw), fallback));
     return fallback;
   }
 }

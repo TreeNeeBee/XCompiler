@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 
@@ -19,6 +20,8 @@ export interface SubprocessSandboxOptions {
   sandboxDir?: string;
   /** Python 解释器。默认从 PATH 找 python3 / python。 */
   pythonBin?: string;
+  /** 是否继承宿主进程环境。默认 true；验证不可信候选时应设为 false。 */
+  inheritEnv?: boolean;
 }
 
 /**
@@ -91,6 +94,13 @@ export class SubprocessSandbox implements Sandbox {
    */
   async build(manifestFile?: string): Promise<{ rebuilt: boolean; reason: string }> {
     await fs.mkdir(this.sandboxAbs, { recursive: true });
+    if (this.opts.inheritEnv === false) {
+      await Promise.all([
+        fs.mkdir(path.join(this.sandboxAbs, 'home'), { recursive: true }),
+        fs.mkdir(path.join(this.sandboxAbs, 'tmp'), { recursive: true }),
+        fs.mkdir(path.join(this.sandboxAbs, 'npm-cache'), { recursive: true }),
+      ]);
+    }
     if (this.language === 'typescript') {
       return this.buildNode(manifestFile ?? 'package.json');
     }
@@ -120,7 +130,7 @@ export class SubprocessSandbox implements Sandbox {
     if (!venvExists) {
       // 优先尝试带 pip 的 venv；某些发行版（如 Debian/Ubuntu 默认 python3 不含 ensurepip）
       // 会失败，再退回 --without-pip + 手动 ensurepip。
-      let r = await execRaw(py, ['-m', 'venv', this.venvAbs], { timeoutMs: 60_000 });
+      const r = await execRaw(py, ['-m', 'venv', this.venvAbs], { timeoutMs: 60_000 });
       if (r.exitCode !== 0) {
         const r2 = await execRaw(py, ['-m', 'venv', '--without-pip', this.venvAbs], { timeoutMs: 60_000 });
         if (r2.exitCode !== 0) {
@@ -158,7 +168,9 @@ export class SubprocessSandbox implements Sandbox {
       }
     }
     await fs.writeFile(this.cacheFile, sig, 'utf8');
-    await this.opts.audit?.event('sandbox.exec', `sandbox built (${reqContent ? 'with deps' : 'empty'})`);
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.subprocessBuilt(!!reqContent), {
+      messageId: 'sandbox.subprocess_built',
+    });
     return { rebuilt: true, reason: venvExists ? 'requirements changed' : 'venv created' };
   }
 
@@ -182,16 +194,21 @@ export class SubprocessSandbox implements Sandbox {
     if (modulesExist && cached === sig) {
       return { rebuilt: false, reason: 'cache hit' };
     }
-    const r = await execRaw('npm', ['install', '--no-audit', '--no-fund'], {
+    const installArgs = lockContent.trim()
+      ? ['ci', '--ignore-scripts', '--no-audit', '--no-fund']
+      : ['install', '--ignore-scripts', '--no-audit', '--no-fund'];
+    const r = await execRaw('npm', installArgs, {
       cwd: this.opts.ws.root,
-      env: { ...process.env },
+      env: this.baseEnvironment(),
       timeoutMs: this.opts.limits.wall_seconds * 1000 * 10,
     });
     if (r.exitCode !== 0) {
-      throw new Error(`npm install failed (cwd=${this.opts.ws.root}):\n${r.stderr || r.stdout}`);
+      throw new Error(`npm dependency install failed (cwd=${this.opts.ws.root}):\n${r.stderr || r.stdout}`);
     }
     await fs.writeFile(this.cacheFile, sig, 'utf8');
-    await this.opts.audit?.event('sandbox.exec', 'node sandbox built (npm install)');
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.subprocessNodeBuilt, {
+      messageId: 'sandbox.subprocess_node_built',
+    });
     return { rebuilt: true, reason: modulesExist ? 'package.json changed' : 'node_modules created' };
   }
 
@@ -203,25 +220,40 @@ export class SubprocessSandbox implements Sandbox {
   ): Promise<ExecResult> {
     const cwd = extra?.cwd ?? this.opts.ws.root;
     const timeoutMs = extra?.timeoutMs ?? this.opts.limits.wall_seconds * 1000;
+    const baseEnv = this.baseEnvironment();
     const env =
       this.language === 'typescript'
         ? {
-            ...process.env,
-            PATH: `${this.opts.ws.abs('node_modules/.bin')}:${process.env.PATH ?? ''}`,
+            ...baseEnv,
+            PATH: `${this.opts.ws.abs('node_modules/.bin')}:${baseEnv.PATH ?? ''}`,
             ...(extra?.env ?? {}),
           }
         : {
-            ...process.env,
-            PATH: `${path.join(this.venvAbs, 'bin')}:${process.env.PATH ?? ''}`,
+            ...baseEnv,
+            PATH: `${path.join(this.venvAbs, 'bin')}:${baseEnv.PATH ?? ''}`,
             VIRTUAL_ENV: this.venvAbs,
             ...(extra?.env ?? {}),
           };
-    await this.opts.audit?.event('sandbox.exec', `${cmd} ${argv.join(' ')}`, {
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.command('subprocess', `${cmd} ${argv.join(' ')}`), {
+      messageId: 'sandbox.command',
       cwd,
       timeoutMs,
     });
     const r = await execRaw(cmd, argv, { cwd, env, timeoutMs });
     return r;
+  }
+
+  private baseEnvironment(): NodeJS.ProcessEnv {
+    if (this.opts.inheritEnv !== false) return { ...process.env };
+    return {
+      PATH: process.env.PATH ?? '',
+      HOME: path.join(this.sandboxAbs, 'home'),
+      TMPDIR: path.join(this.sandboxAbs, 'tmp'),
+      CI: '1',
+      NO_COLOR: '1',
+      NPM_CONFIG_CACHE: path.join(this.sandboxAbs, 'npm-cache'),
+      NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+    };
   }
 
   /** 运行工程入口程序。Python → venv python；TypeScript → npx tsx。 */

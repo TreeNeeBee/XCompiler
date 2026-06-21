@@ -12,6 +12,8 @@ import type { Plan } from '../src/core/plan.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import type { Role } from '../src/core/plan.js';
+import { PluginHost } from '../src/plugins/host.js';
+import { TOAA_PLUGIN_API_VERSION } from '../src/version.js';
 
 class ScriptedLLM implements LLMClient {
   readonly name = 'scripted';
@@ -136,6 +138,67 @@ function fakePlan(): Plan {
 }
 
 describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
+  it('emits run, step, attempt and tool hooks in lifecycle order', async () => {
+    const plan = fakePlan();
+    plan.steps = plan.steps.slice(0, 1);
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    const events: string[] = [];
+    const plugins = new PluginHost({
+      plugins: [{
+        manifest: {
+          id: 'engine-lifecycle',
+          version: '1.0.0',
+          apiVersion: TOAA_PLUGIN_API_VERSION,
+          minToaaVersion: '0.1.3',
+        },
+        setup(api) {
+          for (const hook of [
+            'run.before',
+            'step.before',
+            'step.attempt.before',
+            'tool.before',
+            'tool.after',
+            'step.attempt.after',
+            'step.after',
+            'run.after',
+          ] as const) {
+            api.on(hook, () => { events.push(hook); });
+          }
+        },
+      }],
+    });
+    const router = new FakeRouter({
+      Planner: new ScriptedLLM([JSON.stringify({
+        thoughts: 'write requirements',
+        actions: [{ tool: 'write_file', args: { path: 'docs/01-requirement.md', content: '# req' } }],
+        done: true,
+      })]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      plugins,
+      planPath,
+      maxRoundsPerStep: 1,
+    });
+    const result = await engine.run(plan);
+    expect(result.failedStepId).toBeUndefined();
+    expect(events).toEqual([
+      'run.before',
+      'step.before',
+      'step.attempt.before',
+      'tool.before',
+      'tool.after',
+      'step.attempt.after',
+      'step.after',
+      'run.after',
+    ]);
+  });
+
   it('walks all phases and persists plan with DONE statuses', async () => {
     const plan = fakePlan();
     const planPath = path.join(tmp, 'plan.json');

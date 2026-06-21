@@ -141,6 +141,10 @@ describe('PlanSchema', () => {
   it('parses a valid plan', () => {
     expect(() => PlanSchema.parse(makePlan())).not.toThrow();
   });
+
+  it('accepts the isolated self-bootstrap intent', () => {
+    expect(PlanSchema.parse(makePlan({ intent: 'self' })).intent).toBe('self');
+  });
 });
 
 describe('lintPlan', () => {
@@ -165,6 +169,14 @@ describe('lintPlan', () => {
   it('passes for a TypeScript plan whose ARCH step owns package.json', () => {
     const errs = lintPlan(makeTypeScriptPlan()).filter((i) => i.level === 'error');
     expect(errs).toEqual([]);
+  });
+
+  it('does not require an incremental TypeScript plan to rewrite package.json', () => {
+    const plan = makeTypeScriptPlan();
+    plan.intent = 'self';
+    plan.steps[1]!.outputs = ['docs/02-architecture.md'];
+    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    expect(errs.some((e) => e.message.includes('package.json'))).toBe(false);
   });
 
   it('rejects TypeScript plans when package.json is not owned by exactly one ARCH step', () => {
@@ -273,7 +285,7 @@ describe('lintPlan', () => {
     });
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('Non-trivial request detected'))).toBe(true);
-    expect(errs.some((e) => e.message.includes('at least 3 CODE steps'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('at least 6 CODE steps'))).toBe(true);
   });
 
   it('rejects incremental plans that ignore a large existing baseline', () => {
@@ -292,7 +304,7 @@ describe('lintPlan', () => {
     });
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('Non-trivial request detected'))).toBe(true);
-    expect(errs.some((e) => e.message.includes('at least 3 CODE steps'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('at least 6 CODE steps'))).toBe(true);
   });
 
   it('allows a surgical incremental change on a small baseline', () => {
