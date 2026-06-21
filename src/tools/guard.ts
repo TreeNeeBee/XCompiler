@@ -50,24 +50,23 @@ export class EditGuard {
   /** 用 EditGuard 包装一个 Tool；非写类工具透传，仅写类工具走 guard 路径。 */
   wrap<A, R>(t: Tool<A, R>): Tool<A, R> {
     if (!WRITE_TOOLS.has(t.name)) return t;
-    const self = this;
     return {
       name: t.name,
       description: t.description,
       argsSchema: t.argsSchema,
-      async run(args: A, ctx: ToolContext): Promise<ToolResult<R>> {
-        if (self.accumulatedLines > self.maxLines) {
+      run: async (args: A, ctx: ToolContext): Promise<ToolResult<R>> => {
+        if (this.accumulatedLines > this.maxLines) {
           const r: ToolResult<R> = {
             ok: false,
-            error: `EditGuard: max ${self.maxLines} lines per step exceeded (now ${self.accumulatedLines})`,
+            error: `EditGuard: max ${this.maxLines} lines per step exceeded (now ${this.accumulatedLines})`,
           };
-          await self.record({ tool: t.name, args, ok: false, error: r.error });
+          await this.record({ tool: t.name, args, ok: false, error: r.error });
           return r;
         }
         const approx = approxLineDelta(t.name, args);
         const r = await t.run(args, ctx);
-        if (r.ok) self.accumulatedLines += approx;
-        await self.record({
+        if (r.ok) this.accumulatedLines += approx;
+        await this.record({
           tool: t.name,
           args,
           ok: r.ok,

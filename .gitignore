@@ -3,12 +3,17 @@ dist/
 *.log
 .env
 .env.local
+llm_scores.yaml
 .sandbox/
 workspace/.draft/
 workspace/logs/
 .toaa/
 coverage/
 .tools/
+
+# 审计、会话与开发追溯记录仅保存在本地，可能包含提示词、路径和运行环境信息。
+docs/audit/
+docs/dev_audit_log.md
 
 # release/ 目录由 .github/workflows/release.yml 在 tag 推送时通过 GitHub Releases 发布，
 # 不再纳入版本库（历史中曾短暂入库，已通过 git rm 移除，commit 历史保留）。

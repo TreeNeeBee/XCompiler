@@ -7,6 +7,7 @@ import { getLanguageProfile } from '../core/language.js';
 import type { Sandbox } from './types.js';
 import { SubprocessSandbox } from './subprocess.js';
 import { DockerSandbox } from './docker.js';
+import { t } from '../i18n/index.js';
 
 /**
  * 检测当前进程是否跑在容器里。依据（任一命中即认为在容器内）：
@@ -53,15 +54,12 @@ export function createSandbox(
       ? configuredImage
       : profile.defaultDockerImage;
   const kind = cfg.agent.sandbox;
+  if (cfg.agent.sandbox_limits.network === 'pypi-only') {
+    throw new Error(t().system.unsupportedPypiOnlyNetwork);
+  }
   if (kind === 'docker') {
     if (isRunningInContainer()) {
-      throw new Error(
-        '检测到 TOAA 运行在容器内，不支持 sandbox=docker（DooD 会导致 bind-mount 路径错位、docker.sock GID 冲突等问题）。\n' +
-          '请任选一种：\n' +
-          '  1) 修改 config.yaml：agent.sandbox: subprocess（推荐，容器内已内置 python3+venv）\n' +
-          '  2) 在宿主机上直接运行 TOAA（npm link 后用 toaa）以使用 docker 沙盒\n' +
-          '如确实需要绕过检测（如在可控环境中调试 DooD），可设 TOAA_IN_CONTAINER=0 覆盖。',
-      );
+      throw new Error(t().system.dockerInsideContainerUnsupported);
     }
     return new DockerSandbox({
       ws,
@@ -76,7 +74,7 @@ export function createSandbox(
     });
   }
   if (kind === 'firejail') {
-    throw new Error('sandbox=firejail is not implemented yet; use subprocess or docker.');
+    throw new Error(t().system.firejailUnsupported);
   }
   // 在容器内默认提示（但不抦截）：subprocess 是唯一推荐选项
   return new SubprocessSandbox({ ws, limits: cfg.agent.sandbox_limits, audit, language });

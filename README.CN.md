@@ -18,7 +18,7 @@ TOAA 把"写代码"这件事按"编译 → 执行"两阶段拆分，对标传统
 | 命令 | 定位 | 输入 | 输出 |
 |---|---|---|---|
 | **`toaa c`** | **AI 编译器** —— 把自然语言需求"翻译"成可执行的阶段步骤（plan） | 一段需求文本（`-i req.md` 或交互输入） | `plan.json`（拓扑有序的 Step DAG）+ `topic.md` + `plan.md` |
-| **`toaa run`** | **AI 执行器** —— 按拓扑顺序依次执行编译输出的阶段步骤 | `plan.json` | 可运行 Python/TypeScript 工程 + 绿色测试 + `docs/delivery.md` |
+| **`toaa run`** | **AI 执行器** —— 按拓扑顺序依次执行编译输出的阶段步骤 | `plan.json` | 可运行 Python/TypeScript 工程 + 绿色测试 + `docs/05-delivery.md` |
 
 > 类比：`toaa c` ≈ 编译器把 C 源码翻译成机器指令；`toaa run` ≈ CPU 顺次执行这些指令。
 > 区别：TOAA 的"指令"是 V 模型阶段（REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY），"执行单元"是受沙盒约束的多 Agent 循环。
@@ -62,7 +62,7 @@ TOAA 把软件工程的 **V 模型** 直接编码为 `toaa c` 的拆解骨架与
 | TEST | Tester (`tester`) | `tests/**.{py,ts}` | **测试 exit=0** |
 | DEBUG | Debugger (`debugger`) | 修复 patch | ≤ `max_debug_retries` |
 | REFACTOR | Refactorer | 优化后的 `src/` | 测试不退化 |
-| DELIVERY | Author | `docs/delivery.md` | 全 Step DONE |
+| DELIVERY | Author | `docs/05-delivery.md` | 全 Step DONE |
 
 ---
 
@@ -110,6 +110,9 @@ TOAA 把软件工程的 **V 模型** 直接编码为 `toaa c` 的拆解骨架与
    │   openai)    │ │              │ │                  │
    └──────────────┘ └──────────────┘ └──────────────────┘
 ```
+
+运行时还提供类型安全的 PluginHost，覆盖 compile、LLM、run、step、attempt 和 tool
+等关键边界。插件可以注册 Tool / Skill，但仍受原有工具白名单与 EditGuard 安全模型约束。
 
 各层职责：
 
@@ -159,6 +162,9 @@ toaa c -w path/to/workspace -i feature_req.md --intent feature --yes
 
 # 或一条命令完成 compile + run
 toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
+
+# 在隔离 worktree 中让稳定版本构建、验证下一代 TOAA
+toaa bootstrap -r path/to/TOAA -i self_req.md --yes
 ```
 
 ### 常用选项
@@ -167,10 +173,12 @@ toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
 |---|---|---|
 | `toaa c` | `-i <file>` | 使用需求文件，跳过交互输入 |
 | `toaa c` | `-t <file>` | 复用已有 `topic.md`，跳过 Gate 1 |
-| `toaa c` | `--intent <greenfield\|feature\|refactor>` | 选择新建工程或基于现有工程做增量规划 |
+| `toaa c` | `--intent <greenfield\|feature\|refactor\|self>` | 选择新建、增量或隔离自举规划 |
 | `toaa c` | `--baseline-plan <file>` | 为增量规划显式指定已有 `plan.json` |
 | `toaa c` | `--force` | 覆写 workspace 锁，强制重新生成 plan |
 | `toaa evolve` | `...` | 先编译增量 plan，再在同一 workspace 内立即执行 |
+| `toaa bootstrap` | `--promote` | 质量门全部通过后显式快进晋级候选版本；默认只生成候选和报告 |
+| `toaa bootstrap` | `--docker-qualification` | 显式启用实验性 Docker 质量门；默认使用 subprocess 沙箱 |
 | `toaa run` | `--reset` | 重置所有 Step 为 PENDING |
 | `toaa run` | `--force` | 等价于 `--reset` + 覆写锁 |
 | `toaa run` | `--from <stepId>` / `--phase <phase>` | 断点续跑 / 仅跑某阶段 |
@@ -194,13 +202,17 @@ toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
 
 | 路径 | 内容 |
 |---|---|
-| [doc/TOAA_design.md](doc/TOAA_design.md) | 总体设计：V 模型阶段、Agent / Skill / Tool 抽象、Sandbox 与 Workspace |
-| [doc/implementation_plan.md](doc/implementation_plan.md) | M1 → M5 里程碑与落地步骤 |
-| [doc/deploy.md](doc/deploy.md) | 部署指南（本地 + Docker） |
-| [doc/dev_journal.md](doc/dev_journal.md) | TOAA 自身开发交付日志（每次需求 / 决策 / 产物 / 验证） |
+| [docs/TOAA_design.md](docs/TOAA_design.md) | 总体设计：V 模型阶段、Agent / Skill / Tool 抽象、Sandbox 与 Workspace |
+| [docs/implementation_plan.md](docs/implementation_plan.md) | M1 → M6 里程碑与落地步骤 |
+| [docs/deploy.md](docs/deploy.md) | 部署指南（本地 + Docker） |
+| [docs/plugin_api.md](docs/plugin_api.md) | 插件 API、生命周期 Hooks、执行顺序与失败策略 |
+| [docs/versioning.md](docs/versioning.md) | 核心版本、Plugin API 版本、同步命令与发版校验 |
+| [docs/self_bootstrap.md](docs/self_bootstrap.md) | 代际自举、worktree 隔离、质量门与晋级协议 |
+| [docs/dev_audit_log.md](docs/dev_audit_log.md) | TOAA 自身开发交付日志（每次需求 / 决策 / 产物 / 验证） |
 
 > 文档分层：
-> - `doc/dev_journal.md` 记录"我们如何建造 TOAA"，是 TOAA 项目的交付物之一。
+> - `docs/` 是唯一文档根目录；设计文档使用语义化名称，V 模型运行产物使用 `01-`～`05-` 阶段前缀。
+> - `docs/dev_audit_log.md` 记录"我们如何建造 TOAA"，是 TOAA 项目的交付物之一。
 > - `<workspace>/docs/process_log.md` 由运行时 `AuditLogger` 自动生成，记录"用户用 TOAA 开发某 Python 项目"的全部交互，作为该产品的交付汇总。
 
 ---
@@ -229,7 +241,7 @@ npm run smoke:ollama            # 真实 ollama 端到端冒烟
 
 ## 部署
 
-完整步骤见 [doc/deploy.md](doc/deploy.md)：
+完整步骤见 [docs/deploy.md](docs/deploy.md)：
 
 ```bash
 # A. 本地（Node 20 + Python 3）

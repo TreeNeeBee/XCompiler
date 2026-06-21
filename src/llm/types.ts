@@ -33,6 +33,11 @@ export interface ChatOptions {
    * 调用者（如 Executor）需要在审计 / Markdown 记录中为响应打上正确的“via 哪个模型”标签。
    */
   onProvider?: (name: string) => void;
+  /**
+   * 每次开始尝试候选 provider 时触发。用于 CLI 在等待首个 token 前显示
+   * 当前 provider 与模型；fallback 切换时会再次触发。
+   */
+  onProviderStart?: (name: string, model: string) => void;
 }
 
 export interface LLMClient {

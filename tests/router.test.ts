@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { LLMRouter } from '../src/llm/router.js';
+import { findSharedCoderDebuggerModel, reportRoleModelAdvice } from '../src/llm/role_advice.js';
 import { ScoreStore } from '../src/llm/scores.js';
 import type { ToaaConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
@@ -99,14 +100,24 @@ describe('LLMRouter fallback chain', () => {
       },
     });
     const client = router.for('Coder');
-    const out = await client.chat([{ role: 'user', content: 'hi' }]);
+    let selectedProvider: string | undefined;
+    const out = await client.chat([{ role: 'user', content: 'hi' }], {
+      onProvider: (name) => { selectedProvider = name; },
+    });
     expect(out).toBe('ok');
     expect(firstCalls).toBe(1);
     expect(secondCalls).toBe(1);
+    expect(selectedProvider).toBe('openai');
   });
 });
 
 describe('LLMRouter score-sorted chain', () => {
+  it('skips providers marked unreachable for the current run', () => {
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const router = new LLMRouter(cfg, undefined, undefined, new Set(['ollama_code']));
+    expect(router.for('Coder').name).toBe('openai:gpt');
+  });
+
   it('orders candidates by score descending', () => {
     const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
@@ -162,5 +173,51 @@ describe('LLMRouter score-sorted chain', () => {
     const router = new LLMRouter(cfg);
     const client = router.for('Coder');
     expect(client.name).toBe('ollama:qwen');
+  });
+});
+
+describe('Coder and Debugger model advice', () => {
+  it('detects when both roles resolve to the same primary model', () => {
+    const cfg = mkCfg({
+      roles: { Coder: ['ollama_code'], Debugger: ['ollama_code'] },
+    });
+    const advice = findSharedCoderDebuggerModel(new LLMRouter(cfg));
+    expect(advice).toEqual({
+      coder: { provider: 'ollama_code', model: 'qwen' },
+      debugger: { provider: 'ollama_code', model: 'qwen' },
+    });
+  });
+
+  it('does not advise when Coder and Debugger use different models', () => {
+    const cfg = mkCfg({
+      roles: { Coder: ['ollama_code'], Debugger: ['ollama_design'] },
+    });
+    expect(findSharedCoderDebuggerModel(new LLMRouter(cfg))).toBeUndefined();
+  });
+
+  it('compares the score-selected primary providers', () => {
+    const cfg = mkCfg({
+      roles: {
+        Coder: ['ollama_code'],
+        Debugger: ['ollama_code', 'ollama_design'],
+      },
+    });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('ollama_design', 2, 'preferred debugger');
+    expect(findSharedCoderDebuggerModel(new LLMRouter(cfg, undefined, scores))).toBeUndefined();
+  });
+
+  it('prints a non-blocking suggestion when the selected models match', async () => {
+    const cfg = mkCfg({
+      roles: { Coder: ['ollama_code'], Debugger: ['ollama_code'] },
+    });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await expect(reportRoleModelAdvice(new LLMRouter(cfg))).resolves.toBeDefined();
+      expect(log).toHaveBeenCalledOnce();
+      expect(String(log.mock.calls[0]?.[1])).toMatch(/different models|不同模型/);
+    } finally {
+      log.mockRestore();
+    }
   });
 });

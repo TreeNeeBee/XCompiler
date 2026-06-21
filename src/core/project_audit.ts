@@ -5,6 +5,7 @@ import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox, ExecResult } from '../sandbox/types.js';
 import type { Plan } from './plan.js';
 import type { LanguageProfile } from './language.js';
+import { t } from '../i18n/index.js';
 
 export interface ProjectAuditCheck {
   name: string;
@@ -41,8 +42,7 @@ export async function runProjectAudit(opts: {
   checks.push(await checkTestFiles(opts.ws));
   checks.push(await runTestAudit(opts.sandbox));
 
-  const entryCheck = await runEntryAudit(opts.ws, opts.sandbox, opts.profile);
-  if (entryCheck) checks.push(entryCheck);
+  checks.push(await runEntryAudit(opts.ws, opts.sandbox, opts.profile));
 
   if (opts.plan.language === 'typescript') {
     checks.push(...await runTypeScriptAudit(opts.ws, opts.sandbox));
@@ -56,26 +56,28 @@ export async function runProjectAudit(opts: {
 async function checkDeliveryDoc(ws: Workspace): Promise<ProjectAuditCheck> {
   const exists = await ws.exists('docs/05-delivery.md');
   return exists
-    ? { name: 'delivery-doc', severity: 'info', ok: true, summary: 'delivery documentation present' }
-    : { name: 'delivery-doc', severity: 'error', ok: false, summary: 'missing docs/05-delivery.md' };
+    ? { name: 'delivery-doc', severity: 'info', ok: true, summary: t().execute.auditDeliveryDocPresent }
+    : { name: 'delivery-doc', severity: 'error', ok: false, summary: t().execute.auditDeliveryDocMissing };
 }
 
 async function checkTestFiles(ws: Workspace): Promise<ProjectAuditCheck> {
   const files = await listFiles(ws, 'tests');
-  const concreteTests = files.filter((file) => /\.(test\.ts|spec\.ts|test_[^/]+\.py|test\.py|test_.+\.py)$/u.test(file));
+  const concreteTests = files.filter((file) =>
+    /(?:\.(?:test|spec)\.ts|\/(?:test_[^/]+|test)\.py)$/u.test(file),
+  );
   if (concreteTests.length > 0) {
     return {
       name: 'test-files',
       severity: 'info',
       ok: true,
-      summary: `found ${concreteTests.length} concrete test file(s)`,
+      summary: t().execute.auditTestFilesFound(concreteTests.length),
     };
   }
   return {
     name: 'test-files',
     severity: 'warn',
     ok: false,
-    summary: 'no concrete test files found under tests/',
+    summary: t().execute.auditTestFilesMissing,
   };
 }
 
@@ -88,22 +90,21 @@ async function runEntryAudit(
   ws: Workspace,
   sandbox: Sandbox,
   profile: LanguageProfile,
-): Promise<ProjectAuditCheck | null> {
-  const probe = profile.probeEntry ? await profile.probeEntry(ws, sandbox) : null;
-  if (!probe) return null;
+): Promise<ProjectAuditCheck> {
+  const probe = await profile.probeEntry(ws, sandbox);
   if (probe.ok) {
     return {
       name: 'entrypoint',
       severity: 'info',
       ok: true,
-      summary: `entrypoint ok: ${probe.command}`,
+      summary: t().execute.auditEntrypointOk(probe.command),
     };
   }
   return {
     name: 'entrypoint',
     severity: 'error',
     ok: false,
-    summary: `entrypoint failed: ${probe.command}`,
+    summary: t().execute.auditEntrypointFailed(probe.command),
     detail: tailText(probe.stderrTail || probe.stdoutTail),
   };
 }
@@ -111,7 +112,7 @@ async function runEntryAudit(
 async function runTypeScriptAudit(ws: Workspace, sandbox: Sandbox): Promise<ProjectAuditCheck[]> {
   const pkg = await readPackageJson(ws);
   if (!pkg) {
-    return [{ name: 'package-json', severity: 'error', ok: false, summary: 'missing package.json' }];
+    return [{ name: 'package-json', severity: 'error', ok: false, summary: t().execute.auditPackageJsonMissing }];
   }
   const scripts =
     pkg.scripts && typeof pkg.scripts === 'object' && !Array.isArray(pkg.scripts)
@@ -126,7 +127,7 @@ async function runTypeScriptAudit(ws: Workspace, sandbox: Sandbox): Promise<Proj
       name: 'build-script',
       severity: 'warn',
       ok: false,
-      summary: 'package.json has no build script',
+      summary: t().execute.auditScriptMissing('build'),
     });
   }
   if (typeof scripts.lint === 'string' && scripts.lint.trim()) {
@@ -137,7 +138,7 @@ async function runTypeScriptAudit(ws: Workspace, sandbox: Sandbox): Promise<Proj
       name: 'lint-script',
       severity: 'warn',
       ok: false,
-      summary: 'package.json has no lint script',
+      summary: t().execute.auditScriptMissing('lint'),
     });
   }
   return checks;
@@ -153,14 +154,14 @@ function toExecCheck(
       name,
       severity: 'info',
       ok: true,
-      summary: `${name} ok`,
+      summary: t().execute.auditCommandOk(name),
     };
   }
   return {
     name,
     severity,
     ok: false,
-    summary: `${name} failed (exit=${result.exitCode}${result.timedOut ? ', timeout' : ''})`,
+    summary: t().execute.auditCommandFailed(name, result.exitCode, result.timedOut),
     detail: tailText(result.stderr || result.stdout),
   };
 }

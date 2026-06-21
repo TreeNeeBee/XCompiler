@@ -80,6 +80,22 @@ describe('project memory', () => {
     expect(loaded?.keyFiles.some((file) => file.path === 'src/exporter.ts')).toBe(true);
   });
 
+  it('loads the stable design contracts when planning a self-bootstrap', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
+    const ws = new Workspace(root);
+    await ws.writeFile('docs/TOAA_design.md', 'Stable runtime and V-model architecture.');
+    await ws.writeFile('docs/self_bootstrap.md', 'Generation N builds N+1 in an isolated worktree.');
+    await ws.writeFile('package.json', JSON.stringify({ name: '@toaa/cli' }));
+
+    const memory = await buildProjectMemory(ws, { language: 'typescript', intent: 'self' });
+
+    expect(memory.summary).toContain('Stable runtime and V-model architecture.');
+    expect(memory.summary).toContain('Generation N builds N+1');
+    expect(memory.keyFiles.map((file) => file.path)).toEqual(
+      expect.arrayContaining(['docs/TOAA_design.md', 'docs/self_bootstrap.md']),
+    );
+  });
+
   it('selects relevant snippets for the current step', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
     const ws = new Workspace(root);

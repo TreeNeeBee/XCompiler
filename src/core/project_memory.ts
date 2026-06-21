@@ -82,7 +82,23 @@ export async function buildProjectMemory(
   if (opts.planPath) sections.push(`- planPath: ${path.resolve(opts.planPath)}`);
   sections.push('');
 
-  for (const rel of [DOC_NAMES.topic, DOC_NAMES.requirement, DOC_NAMES.architecture, DOC_NAMES.tasks, DOC_NAMES.refactor, DOC_NAMES.delivery]) {
+  const projectDocs = [
+    DOC_NAMES.topic,
+    DOC_NAMES.requirement,
+    DOC_NAMES.architecture,
+    DOC_NAMES.tasks,
+    DOC_NAMES.refactor,
+    DOC_NAMES.delivery,
+    ...(intent === 'self'
+      ? [
+          'docs/TOAA_design.md',
+          'docs/self_bootstrap.md',
+          'docs/implementation_plan.md',
+          'docs/plugin_api.md',
+        ]
+      : []),
+  ];
+  for (const rel of projectDocs) {
     const doc = await readWorkspaceText(ws, rel, 1600);
     if (!doc) continue;
     keyFiles.push({ path: rel, kind: 'doc', excerpt: doc });
@@ -494,7 +510,7 @@ function extractImportedStems(text: string): string[] {
       if (stem) stems.add(stem);
     }
   }
-  for (const match of text.matchAll(/^\s*from\s+([A-Za-z0-9_\.]+)\s+import\s+/gmu)) {
+  for (const match of text.matchAll(/^\s*from\s+([A-Za-z0-9_.]+)\s+import\s+/gmu)) {
     const stem = (match[1] ?? '').replace(/^src\./u, '').replace(/\./g, '/');
     if (stem) stems.add(stem);
   }

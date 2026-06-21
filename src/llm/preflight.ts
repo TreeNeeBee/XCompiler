@@ -1,5 +1,6 @@
 import type { ToaaConfig } from '../config/config.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 import { getJson } from './ollama.js';
 import { normalizeBaseUrl } from './router.js';
 import type { ScoreStore } from './scores.js';
@@ -19,6 +20,8 @@ export interface PreflightOptions {
 export interface PreflightResult {
   /** 探活后被置 0 评分的 provider（模型不在 ollama 服务器上）。 */
   zeroed: string[];
+  /** 本次探活不可达的 provider；只影响当前运行，不持久化为 score=0。 */
+  unreachable: string[];
   /** 自动加入的合成 provider（key=合成名, value=模型名）。 */
   autoAdded: Record<string, string>;
   /** 每个 ollama base_url 的可达模型清单（探活成功才有）。 */
@@ -44,7 +47,7 @@ export async function preflightProviders(
 ): Promise<PreflightResult> {
   const probeTimeoutMs = options.probeTimeoutMs ?? 3000;
   const fetchTags = options.fetchTags ?? defaultFetchTags;
-  const result: PreflightResult = { zeroed: [], autoAdded: {}, tags: {} };
+  const result: PreflightResult = { zeroed: [], unreachable: [], autoAdded: {}, tags: {} };
 
   // 1) 收集所有 ollama provider 及其 base_url
   const ollamaProviders: Array<{ name: string; baseUrl: string; model: string }> = [];
@@ -64,11 +67,18 @@ export async function preflightProviders(
     try {
       const tags = await fetchTags(baseUrl, probeTimeoutMs);
       result.tags[baseUrl] = tags;
-      await audit?.event('llm.score', `preflight: ollama ${baseUrl} 可达，发现 ${tags.length} 个模型`, {
+      await audit?.event('llm.score', t().llm.preflightOllamaReachable(baseUrl, tags.length), {
+        messageId: 'llm.preflight_ollama_reachable',
         baseUrl, tagsCount: tags.length, tags,
       });
     } catch (err) {
-      await audit?.event('llm.error', `preflight: ollama ${baseUrl} 不可达：${(err as Error).message}`, {
+      for (const provider of ollamaProviders) {
+        if (provider.baseUrl === baseUrl && !result.unreachable.includes(provider.name)) {
+          result.unreachable.push(provider.name);
+        }
+      }
+      await audit?.event('llm.error', t().llm.preflightOllamaUnreachable(baseUrl, (err as Error).message), {
+        messageId: 'llm.preflight_ollama_unreachable',
         baseUrl, error: (err as Error).message,
       });
     }
@@ -91,7 +101,8 @@ export async function preflightProviders(
   }
 
   // 4) 检查每个角色是否还有活着的候选；若没有，触发 auto-import
-  const rolesNeedingRescue = listRolesWithoutLiveProvider(cfg, scores);
+  const unavailable = new Set(result.unreachable);
+  const rolesNeedingRescue = listRolesWithoutLiveProvider(cfg, scores, unavailable);
   if (rolesNeedingRescue.length > 0) {
     const reachable = baseUrls.filter((u) => result.tags[u] && result.tags[u]!.length > 0);
     if (reachable.length === 0) {
@@ -124,12 +135,13 @@ export async function preflightProviders(
       }
       cfg.llm.roles[role] = merged;
     }
-    await audit?.event('llm.score', `preflight: 自动注入 ${Object.keys(result.autoAdded).length} 个 provider，覆盖角色 [${rolesNeedingRescue.join(', ')}]`, {
+    await audit?.event('llm.score', t().llm.preflightAutoAdded(Object.keys(result.autoAdded).length, rolesNeedingRescue.join(', ')), {
+      messageId: 'llm.preflight_auto_added',
       sourceUrl, autoAdded: result.autoAdded, rescuedRoles: rolesNeedingRescue,
     });
 
     // 4c) 再次校验：仍为空就退出
-    const stillEmpty = listRolesWithoutLiveProvider(cfg, scores);
+    const stillEmpty = listRolesWithoutLiveProvider(cfg, scores, unavailable);
     if (stillEmpty.length > 0) {
       throw new Error(
         `LLM preflight failed: ollama server ${sourceUrl} 已加载，但角色 [${stillEmpty.join(', ')}] ` +
@@ -150,7 +162,11 @@ function candidatesForRole(cfg: ToaaConfig, role: string): string[] {
   return [cfg.llm.default, ...(cfg.llm.fallbacks ?? [])];
 }
 
-function listRolesWithoutLiveProvider(cfg: ToaaConfig, scores: ScoreStore): string[] {
+function listRolesWithoutLiveProvider(
+  cfg: ToaaConfig,
+  scores: ScoreStore,
+  unavailable: ReadonlySet<string> = new Set(),
+): string[] {
   // 检查所有显式声明过的角色
   const rolesToCheck = new Set<string>([
     ...Object.keys(cfg.llm.roles ?? {}),
@@ -160,7 +176,9 @@ function listRolesWithoutLiveProvider(cfg: ToaaConfig, scores: ScoreStore): stri
   const out: string[] = [];
   for (const r of rolesToCheck) {
     const cands = candidatesForRole(cfg, r);
-    const live = cands.filter((n) => scores.get(n) > 0 && cfg.llm.providers[n]);
+    const live = cands.filter(
+      (n) => !unavailable.has(n) && scores.get(n) > 0 && cfg.llm.providers[n],
+    );
     if (live.length === 0) out.push(r);
   }
   return out;

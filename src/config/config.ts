@@ -3,6 +3,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
+import { t } from '../i18n/index.js';
 
 const ProviderSchema = z.object({
   api_key: z.string().nullish().transform((v) => v ?? ''),
@@ -14,6 +15,8 @@ const ProviderSchema = z.object({
   stream_idle_timeout_ms: z.number().int().nonnegative().optional(),
   /** 流式输出字符上限。默认 200000。0 = 不限制。 */
   max_output_chars: z.number().int().nonnegative().optional(),
+  /** Ollama thinking 模型是否启用长思考；弱服务器上的结构化任务可设为 false。 */
+  think: z.boolean().optional(),
 });
 
 const LocaleSchema = z.enum(['en', 'zh']);
@@ -73,7 +76,8 @@ const ConfigSchema = z.object({
          *  - `off`            — no network at all (`docker --network none`).
          *  - `download-only`  — outbound traffic allowed, no inbound port publishing
          *                       (default; lets python pip-install / fetch web pages).
-         *  - `pypi-only`      — alias of `download-only` (kept for backward compatibility).
+         *  - `pypi-only`      — legacy value; rejected at sandbox creation rather than silently
+         *                       allowing unrestricted outbound traffic.
          *  - `full`           — outbound + every port in `expose_ports` is published
          *                       to `127.0.0.1` so host-side tests can reach the app.
          */
@@ -184,10 +188,7 @@ function expandEnv(s: string): string {
   if (missing.size > 0) {
     // 不抛错（OPENAI_* 在不使用 openai provider 时确实可缺），但给出明显提示。
     // 若关键 provider 因此变成空 base_url，createClient 会兜底到 localhost。
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[toaa] config 中以下环境变量未设置（已替换为空串）：${[...missing].join(', ')}`,
-    );
+    console.warn(t().system.configEnvMissing([...missing].join(', ')));
   }
   return out;
 }

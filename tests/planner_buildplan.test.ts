@@ -84,4 +84,31 @@ describe('buildPlan — Step id 规整', () => {
     expect(synthetic?.description).toContain('Vitest');
     expect(synthetic?.acceptance).toContain('npm test');
   });
+
+  it('把结构化 ARCH 契约注入 ARCH/CODE/TEST 的执行提示', () => {
+    const draft = {
+      requirementDigest: 'small API module',
+      globalPrompt: 'g',
+      dependencies: ['pytest'],
+      architectureModules: [
+        {
+          id: 'M001',
+          name: 'api',
+          responsibility: 'Expose the bounded application API surface.',
+          sourcePaths: ['src/api.py'],
+          testPaths: ['tests/test_api.py'],
+          dependencies: [],
+        },
+      ],
+      steps: [
+        baseStep({ id: 'S001', phase: 'ARCH', role: 'Architect', outputs: ['docs/02-architecture.md'] }),
+        baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/api.py'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'TEST', role: 'Tester', outputs: ['tests/test_api.py'], dependsOn: ['S002'] }),
+      ],
+    };
+    const plan = buildPlan(draft);
+    expect(plan.steps[0]?.systemPrompt).toContain('M001 api');
+    expect(plan.steps[1]?.systemPrompt).toContain('本 CODE Step 仅实现架构模块');
+    expect(plan.steps[2]?.systemPrompt).toContain('本 TEST Step 验证架构模块');
+  });
 });

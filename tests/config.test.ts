@@ -48,4 +48,14 @@ describe('config locale', () => {
     expect(config.locale).toBe('zh');
     expect(Object.prototype.hasOwnProperty.call(config, 'ui_language')).toBe(false);
   });
+
+  it('parses the optional Ollama think flag', async () => {
+    const cfg = baseConfig();
+    const llm = cfg.llm as Record<string, unknown>;
+    const providers = llm.providers as Record<string, Record<string, unknown>>;
+    providers.ollama_code!.think = false;
+    const cfgPath = await writeConfig(cfg);
+    const { config } = await loadConfigWithPath(cfgPath);
+    expect(config.llm.providers.ollama_code!.think).toBe(false);
+  });
 });

@@ -177,31 +177,18 @@ describe('OpenAI-compatible streaming', () => {
     const originalFetch = globalThis.fetch;
     const encoder = new TextEncoder();
     const cancel = vi.fn(() => new Promise<void>(() => {}));
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      body: {
-        getReader() {
-          let reads = 0;
-          return {
-            async read() {
-              reads++;
-              if (reads === 1) {
-                return {
-                  done: false,
-                  value: encoder.encode(
-                    `data: ${JSON.stringify({ choices: [{ delta: { content: 'hello' } }] })}\n\n` +
-                    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
-                  ),
-                };
-              }
-              return new Promise<never>(() => {});
-            },
-            cancel,
-          };
-        },
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ delta: { content: 'hello' } }] })}\n\n` +
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+          ),
+        );
       },
-      text: async () => '',
-    }) as Response);
+      cancel,
+    });
+    globalThis.fetch = vi.fn(async () => new Response(body));
     try {
       const client = new OpenAIClient({
         apiKey: '',

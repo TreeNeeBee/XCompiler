@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from './workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { t } from '../i18n/index.js';
 
 /**
  * 文档历史归档：写入阶段产物前，把上一版本平移到 docs/history/ 下，
@@ -30,15 +31,18 @@ export async function archiveIfExists(
   try {
     await ws.ensure('docs/history');
     await fs.rename(ws.abs(norm), ws.abs(target));
-    await audit?.event('plan.persist', `archived ${norm} -> ${target}`, {
+    await audit?.event('plan.persist', t().audit.documentArchived(norm, target), {
+      messageId: 'audit.document_archived',
       from: norm,
       to: target,
     });
     return target;
   } catch (err) {
-    await audit?.event('plan.persist', `archive failed for ${norm}`, {
+    const message = (err as Error).message;
+    await audit?.event('plan.persist', t().audit.documentArchiveFailed(norm, message), {
+      messageId: 'audit.document_archive_failed',
       from: norm,
-      error: (err as Error).message,
+      error: message,
     });
     return null;
   }

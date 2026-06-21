@@ -1,6 +1,6 @@
 {
   "name": "@toaa/cli",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "TOAA — AI Software Factory: V-model driven, multi-LLM orchestrated software development agent.",
   "license": "Apache-2.0",
   "type": "module",
@@ -9,13 +9,37 @@
     "toaa_c": "./dist/cli/toaa_c.js",
     "toaa_run": "./dist/cli/toaa_run.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/runtime/runtime.d.ts",
+      "import": "./dist/runtime/runtime.js"
+    },
+    "./plugins": {
+      "types": "./dist/plugins/index.d.ts",
+      "import": "./dist/plugins/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/runtime.d.ts",
+      "import": "./dist/runtime/runtime.js"
+    }
+  },
   "files": [
-    "dist",
+    "dist/cli",
+    "dist/plugins",
+    "dist/runtime",
+    "docs/plugin_api.md",
+    "docs/self_bootstrap.md",
+    "docs/versioning.md",
     "README.md",
     "LICENSE",
     "NOTICE"
   ],
   "scripts": {
+    "version:check": "node scripts/version.mjs check",
+    "version:sync": "node scripts/version.mjs sync",
+    "version:set": "node scripts/version.mjs set",
+    "prepack": "npm run version:check",
+    "prebuild": "npm run version:check",
     "build": "tsup",
     "dev": "tsx src/cli/toaa.ts",
     "dev:c": "tsx src/cli/toaa_c.ts",
@@ -23,10 +47,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke:ollama": "tsx scripts/smoke_ollama.ts",
+    "smoke:ollama": "node --import tsx scripts/smoke_ollama.ts",
     "lint": "eslint \"src/**/*.ts\"",
     "build:pkg": "tsup --config tsup.pkg.config.ts",
     "package": "bash scripts/package.sh",
+    "package:native": "bash scripts/package.sh native",
+    "package:all": "bash scripts/package.sh all",
     "package:linux-x64": "bash scripts/package.sh linux-x64",
     "package:linux-arm64": "bash scripts/package.sh linux-arm64",
     "package:macos-arm64": "bash scripts/package.sh macos-arm64",
@@ -45,14 +71,20 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/node": "^22.10.2",
     "@yao-pkg/pkg": "^6.19.0",
+    "eslint": "^9.39.4",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.61.1",
     "vitest": "^2.1.8"
   },
   "engines": {
     "node": ">=20"
+  },
+  "toaa": {
+    "pluginApiVersion": 1
   }
 }

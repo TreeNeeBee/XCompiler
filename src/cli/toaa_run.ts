@@ -2,22 +2,26 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { runExecute } from './execute.js';
 import { setLocale, t } from '../i18n/index.js';
+import { TOAA_VERSION } from '../version.js';
+import { configureLocalizedHelp, localeFromArgv, parseLocale, parsePhase, parseStepId } from './arguments.js';
 
-setLocale(process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
 
 const program = new Command();
+configureLocalizedHelp(program);
 program
   .name('toaa_run')
-  .description('TOAA — Execute a confirmed plan.json')
-  .option('--lang <code>', t().cli.optLang)
+  .description(t().cli.runDescription)
+  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption)
+  .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
   .argument('[plan]', t().cli.argPlan)
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
   .option('-c, --config <file>', t().cli.optConfig)
   .option('--dry-run', t().cli.optDryRun, false)
-  .option('--from <stepId>', t().cli.optFrom)
-  .option('--phase <phase>', t().cli.optPhase)
+  .option('--from <stepId>', t().cli.optFrom, parseStepId)
+  .option('--phase <phase>', t().cli.optPhase, parsePhase)
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
   .action(async (planArg, opts) => {
@@ -45,6 +49,6 @@ program
   });
 
 program.parseAsync(process.argv).catch((err) => {
-  console.error(err?.message ?? err);
+  console.error(t().system.unhandledError(err?.message ?? String(err)));
   process.exit(1);
 });

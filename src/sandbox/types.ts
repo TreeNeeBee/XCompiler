@@ -15,7 +15,7 @@ export interface SandboxLimits {
   /**
    * - `off`            disable network completely (`docker --network none`).
    * - `download-only`  outbound only (default), no inbound port publishing.
-   * - `pypi-only`      alias of `download-only` (kept for backward compatibility).
+   * - `pypi-only`      legacy value; rejected because no enforceable allowlist exists.
    * - `full`           outbound + publish `expose_ports` to 127.0.0.1.
    */
   network: 'off' | 'pypi-only' | 'download-only' | 'full';

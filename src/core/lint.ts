@@ -1,6 +1,7 @@
 import { PHASE_ORDER, type Plan, type Step } from './plan.js';
 import { DOC_NAMES, PHASE_DOC } from './docs.js';
 import { getLanguageProfile } from './language.js';
+import { analyzeArchitectureDemand, validateArchitectureContract } from './architecture.js';
 
 export interface LintIssue {
   level: 'error' | 'warn';
@@ -132,13 +133,20 @@ export function lintPlan(plan: Plan): LintIssue[] {
       }
     }
   } else {
-    // TypeScript 等：依赖清单（package.json）由某个 ARCH Step 撰写，必须有人产出它。
+    // Greenfield TypeScript：ARCH 必须创建 package.json。
+    // 增量/自举：现有 manifest 是基线契约，除非需求确实修改它，否则不应列为输出。
     const manifestSteps = plan.steps.filter((s) => ownsManifest(s));
     const archManifestSteps = manifestSteps.filter((s) => s.phase === 'ARCH');
-    if (archManifestSteps.length !== 1) {
+    if (
+      (plan.intent === 'greenfield' && archManifestSteps.length !== 1) ||
+      (plan.intent !== 'greenfield' && archManifestSteps.length > 1)
+    ) {
       issues.push({
         level: 'error',
-        message: `For ${profile.displayName} plans, exactly one ARCH step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`,
+        message:
+          plan.intent === 'greenfield'
+            ? `For ${profile.displayName} greenfield plans, exactly one ARCH step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`
+            : `For ${profile.displayName} incremental plans, at most one ARCH step may modify the existing ${profile.manifestFile}.`,
       });
     }
     for (const s of manifestSteps) {
@@ -255,33 +263,52 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 12. 复杂度门槛：明显跨多个关注面的需求，不允许退化成单 CODE / 单模块最小实现。
-  const complexity = analyzePlanComplexity(plan, profile.codeExtensions);
-  if (complexity.nonTrivial) {
+  // 12. 架构规模门槛：按需求关注面线性扩展，不再把复杂工程的最低要求固定封顶为 3。
+  const demand = analyzeArchitectureDemand(plan, plan.language);
+  if (demand.nonTrivial) {
     const codeSteps = plan.steps.filter((s) => s.phase === 'CODE');
     const sourceOutputs = dedup(
       codeSteps.flatMap((s) =>
         s.outputs.filter((out) => out.startsWith('src/') && profile.codeExtensions.some((ext) => out.endsWith(ext))),
       ),
     );
-    const minCodeSteps = complexity.surfaces.length >= 3 || complexity.baselineModules >= 6 ? 3 : 2;
-    if (codeSteps.length < minCodeSteps) {
+    if (codeSteps.length < demand.minCodeSteps) {
       issues.push({
         level: 'error',
         stepId: codeSteps[0]?.id,
         message:
-          `Non-trivial request detected (${complexity.reasonLabel}). ` +
-          `Plan must contain at least ${minCodeSteps} CODE steps so architecture is not collapsed into a tiny MVP.`,
+          `Non-trivial request detected (${demand.reasonLabel}). ` +
+          `Plan must contain at least ${demand.minCodeSteps} CODE steps so every architecture module is independently verifiable.`,
       });
     }
-    if (sourceOutputs.length < minCodeSteps) {
+    if (sourceOutputs.length < demand.minModules) {
       issues.push({
         level: 'error',
         stepId: codeSteps[0]?.id,
         message:
-          `Non-trivial request detected (${complexity.reasonLabel}). ` +
-          `CODE outputs currently cover only ${sourceOutputs.length} source module(s); expected at least ${minCodeSteps}.`,
+          `Non-trivial request detected (${demand.reasonLabel}). ` +
+          `CODE outputs currently cover only ${sourceOutputs.length} source module(s); expected at least ${demand.minModules}.`,
       });
+    }
+  }
+
+  // 13. V 模型可追踪性：ARCH 模块必须逐一落到独立 CODE Step，并被对应 TEST Step 验证。
+  const architectureModules = plan.architectureModules ?? [];
+  if (demand.nonTrivial && architectureModules.length === 0) {
+    issues.push({
+      level: 'warn',
+      message:
+        'Legacy plan has no architectureModules contract; regenerate with `toaa c` to enable ARCH → CODE → TEST traceability.',
+    });
+  }
+  if (architectureModules.length > 0) {
+    for (const contractIssue of validateArchitectureContract(
+      architectureModules,
+      plan.steps,
+      plan.language,
+      demand,
+    )) {
+      issues.push({ level: 'error', ...contractIssue });
     }
   }
 
@@ -341,59 +368,6 @@ function nextStepId(steps: Step[]): string {
     return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
   }, 0);
   return 'S' + String(max + 1).padStart(3, '0');
-}
-
-function analyzePlanComplexity(
-  plan: Plan,
-  codeExtensions: string[],
-): { nonTrivial: boolean; surfaces: string[]; baselineModules: number; reasonLabel: string } {
-  const intent = plan.intent ?? 'greenfield';
-  const text = [plan.requirementDigest, plan.userAddenda ?? '', plan.globalPrompt ?? '', plan.baselineSummary ?? '']
-    .join('\n')
-    .toLowerCase();
-  const surfaces = COMPLEXITY_SURFACES
-    .filter((surface) => surface.pattern.test(text))
-    .map((surface) => surface.name);
-  const baselineModules = countBaselineModules(plan.baselineSummary ?? '', codeExtensions);
-  const nonTrivial =
-    surfaces.length >= 2 ||
-    (surfaces.length >= 1 && baselineModules >= 4) ||
-    baselineModules >= 6 ||
-    (intent !== 'greenfield' && (surfaces.length >= 2 || (surfaces.length >= 1 && baselineModules >= 2)));
-  return {
-    nonTrivial,
-    surfaces,
-    baselineModules,
-    reasonLabel: `surfaces=${surfaces.join('/') || '(none)'}, baselineModules=${baselineModules}, intent=${intent}`,
-  };
-}
-
-const COMPLEXITY_SURFACES: Array<{ name: string; pattern: RegExp }> = [
-  { name: 'api', pattern: /\b(api|openapi|endpoint|http|server|router|rest|graphql)\b/u },
-  { name: 'cli', pattern: /\b(cli|command|subcommand|terminal|console)\b/u },
-  { name: 'persistence', pattern: /\b(sqlite|postgres|mysql|database|persist|storage|repository)\b/u },
-  { name: 'auth', pattern: /\b(auth|login|oauth|permission|role|session|token)\b/u },
-  { name: 'io', pattern: /\b(import|export|csv|excel|pdf|report|upload|download)\b/u },
-  { name: 'integration', pattern: /\b(webhook|github|slack|third[- ]party|external|integration|sdk)\b/u },
-  { name: 'streaming', pattern: /\b(stream|streaming|sse|websocket|realtime)\b/u },
-  { name: 'ui', pattern: /\b(ui|frontend|page|screen|react|view|dashboard)\b/u },
-];
-
-function countBaselineModules(summary: string, codeExtensions: string[]): number {
-  if (!summary) return 0;
-  const lines = summary.split('\n');
-  const modules = new Set<string>();
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!/(^###\s+|^- )src\//u.test(trimmed)) continue;
-    const normalized = trimmed
-      .replace(/^###\s+/u, '')
-      .replace(/^- /u, '')
-      .split(':')[0]!
-      .trim();
-    if (codeExtensions.some((ext) => normalized.endsWith(ext))) modules.add(normalized);
-  }
-  return modules.size;
 }
 
 function dedup<T>(values: T[]): T[] {

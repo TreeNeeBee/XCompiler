@@ -116,6 +116,13 @@ async function checkLlm(
   }
   sec.items.push({ level: 'ok', message: M.llmProviderListed(providers.length) });
 
+  const referencedProviders = new Set<string>([
+    cfg.llm.default,
+    ...(cfg.llm.fallbacks ?? []),
+    ...Object.values(cfg.llm.roles ?? {}).flat(),
+    ...Object.values(cfg.llm.role_fallbacks ?? {}).flat(),
+  ]);
+
   // Group ollama providers by base_url so we only probe each server once.
   const ollamaByUrl = new Map<string, Array<{ name: string; model: string }>>();
   const openaiList: Array<{ name: string; baseUrl: string; apiKey: string; model: string; requiresApiKey: boolean }> = [];
@@ -166,7 +173,10 @@ async function checkLlm(
   // 2b) openai: api_key + connection (+ model membership warn)
   for (const p of openaiList) {
     if (p.requiresApiKey && !p.apiKey) {
-      sec.items.push({ level: 'fail', message: M.openaiKeyMissing(p.name) });
+      sec.items.push({
+        level: referencedProviders.has(p.name) ? 'fail' : 'warn',
+        message: M.openaiKeyMissing(p.name),
+      });
       continue;
     }
     if (skipNetwork) continue;

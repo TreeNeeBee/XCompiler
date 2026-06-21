@@ -1,6 +1,7 @@
 import type { Tool } from './types.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { t } from '../i18n/index.js';
 
 /**
  * Network access tools.
@@ -112,7 +113,8 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
       const abs = ctx.ws.abs(args.saveAs);
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, trimmed);
-      await ctx.audit?.event('tool.call', `http_fetch ${method} ${args.url} → ${args.saveAs} (${trimmed.length}B)`, {
+      await ctx.audit?.event('tool.call', t().audit.httpFetchSaved(method, args.url, args.saveAs, trimmed.length), {
+        messageId: 'audit.http_fetch_saved',
         stepId: ctx.stepId,
         status: res.status,
       });
@@ -143,7 +145,8 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
     } catch {
       bodyText = `[binary response, ${arr.length} bytes; use saveAs to download]`;
     }
-    await ctx.audit?.event('tool.call', `http_fetch ${method} ${args.url} → ${res.status} (${arr.length}B)`, {
+    await ctx.audit?.event('tool.call', t().audit.httpFetchResponse(method, args.url, res.status, arr.length), {
+      messageId: 'audit.http_fetch_response',
       stepId: ctx.stepId,
       status: res.status,
       truncated,

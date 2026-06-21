@@ -18,7 +18,7 @@ TOAA splits "writing code" into two phases — **compile** and **execute** — m
 | Command | Role | Input | Output |
 |---|---|---|---|
 | **`toaa c`** | **AI Compiler** — translates natural-language requirements into executable phase-steps (a plan) | A requirement text (`-i req.md`, `-t topic.md`, or interactive) | `plan.json` (topologically ordered Step DAG) + `topic.md` + `plan.md` |
-| **`toaa run`** | **AI Executor** — runs the compiled phase-steps in topological order | `plan.json` | Runnable Python/TypeScript project + green tests + `docs/delivery.md` |
+| **`toaa run`** | **AI Executor** — runs the compiled phase-steps in topological order | `plan.json` | Runnable Python/TypeScript project + green tests + `docs/05-delivery.md` |
 
 > Analogy: `toaa c` ≈ a compiler turning C source into machine instructions; `toaa run` ≈ the CPU executing those instructions.
 > Difference: TOAA's "instructions" are V-model phases (REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY), and each "execution unit" is a sandbox-constrained multi-Agent loop.
@@ -57,12 +57,12 @@ TOAA encodes the **V-model** of software engineering directly as the decompositi
 | Phase | Lead Agent / Skill | Mandatory Artefact | Quality Gate |
 |---|---|---|---|
 | REQUIREMENT | Planner | `topic.md` | Gate 1 human confirmation |
-| ARCH | Architect | `architecture.md` + language manifest (`requirements.txt` / `package.json`) | plan lint |
+| ARCH | Architect | `architecture.md`；TypeScript 同步维护 `package.json` | plan lint |
 | CODE | Coder (`patcher` / `author`) | `src/**.{py,ts}` | EditGuard line cap |
 | TEST | Tester (`tester`) | `tests/**.{py,ts}` | **tests exit=0** |
 | DEBUG | Debugger (`debugger`) | fix patch | ≤ `max_debug_retries` |
 | REFACTOR | Refactorer | optimised `src/` | tests do not regress |
-| DELIVERY | Author | `docs/delivery.md` | All Steps DONE + entry `--help` =0 |
+| DELIVERY | Author | `docs/05-delivery.md` | All Steps DONE + entry `--help` =0 |
 
 ---
 
@@ -103,13 +103,17 @@ TOAA encodes the **V-model** of software engineering directly as the decompositi
             ┌──────────────┼──────────────────┐
             ▼              ▼                  ▼
    ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
-   │  LLM Router  │ │   Sandbox    │ │   Workspace      │
+            │  LLM Router  │ │   Sandbox    │ │   Workspace      │
    │  chain +     │ │  subprocess  │ │   git + audit    │
    │  fallback    │ │  / docker    │ │   + .toaa/       │
    │  (ollama,    │ │  venv iso.   │ │   plan.json      │
    │   openai)    │ │              │ │                  │
    └──────────────┘ └──────────────┘ └──────────────────┘
 ```
+
+The runtime also exposes a typed PluginHost across the compile, LLM, run, step,
+attempt and tool boundaries. Plugins can register Tools / Skills without bypassing
+the existing whitelist and EditGuard security model.
 
 Layer responsibilities:
 
@@ -159,6 +163,9 @@ toaa c -w path/to/workspace -i feature_req.md --intent feature --yes
 
 # or compile + execute in one go
 toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
+
+# let stable TOAA build and qualify its next generation in an isolated worktree
+toaa bootstrap -r path/to/TOAA -i self_req.md --yes
 ```
 
 ### Common options
@@ -167,10 +174,12 @@ toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
 |---|---|---|
 | `toaa c` | `-i <file>` | Use a requirements file (non-interactive) |
 | `toaa c` | `-t <file>` | Reuse a previously clarified `topic.md` and skip Gate 1 |
-| `toaa c` | `--intent <greenfield\|feature\|refactor>` | Choose between new-project planning and incremental evolution |
+| `toaa c` | `--intent <greenfield\|feature\|refactor\|self>` | Choose greenfield, incremental, or isolated self-bootstrap planning |
 | `toaa c` | `--baseline-plan <file>` | Point incremental planning at an explicit existing `plan.json` |
 | `toaa c` | `--force` | Override the workspace lock and regenerate the plan |
 | `toaa evolve` | `...` | Compile an incremental plan, then immediately execute it in the same workspace |
+| `toaa bootstrap` | `--promote` | Explicitly fast-forward a qualified candidate; the default only creates a candidate and report |
+| `toaa bootstrap` | `--docker-qualification` | Opt into the experimental Docker qualification runner; subprocess is the default |
 | `toaa run` | `--reset` | Reset all Steps to PENDING |
 | `toaa run` | `--force` | Equivalent to `--reset` + override lock |
 | `toaa run` | `--from <stepId>` / `--phase <phase>` | Resume / run only one phase |
@@ -195,13 +204,17 @@ toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
 
 | Path | Content |
 |---|---|
-| [doc/TOAA_design.md](doc/TOAA_design.md) | Overall design: V-model phases, Agent / Skill / Tool abstractions, Sandbox & Workspace |
-| [doc/implementation_plan.md](doc/implementation_plan.md) | M1 → M5 milestones and landing steps |
-| [doc/deploy.md](doc/deploy.md) | Deployment guide (local + Docker) |
-| [doc/dev_audit_log.md](doc/dev_audit_log.md) | TOAA's own delivery log (every requirement / decision / artefact / verification) |
+| [docs/TOAA_design.md](docs/TOAA_design.md) | Overall design: V-model phases, Agent / Skill / Tool abstractions, Sandbox & Workspace |
+| [docs/implementation_plan.md](docs/implementation_plan.md) | M1 → M6 milestones and landing steps |
+| [docs/deploy.md](docs/deploy.md) | Deployment guide (local + Docker) |
+| [docs/plugin_api.md](docs/plugin_api.md) | Typed plugin API, lifecycle hooks, ordering and failure policy |
+| [docs/versioning.md](docs/versioning.md) | Core and Plugin API version sources, sync commands and release checks |
+| [docs/self_bootstrap.md](docs/self_bootstrap.md) | Generational bootstrap, worktree isolation, qualification gates and promotion protocol |
+| [docs/dev_audit_log.md](docs/dev_audit_log.md) | TOAA's own delivery log (every requirement / decision / artefact / verification) |
 
 > Doc layering:
-> - `doc/dev_audit_log.md` documents "how we built TOAA" and is itself a TOAA deliverable.
+> - `docs/` is the single documentation root; design documents use semantic names while V-model run artefacts use the `01-` through `05-` phase prefixes.
+> - `docs/dev_audit_log.md` documents "how we built TOAA" and is itself a TOAA deliverable.
 > - `<workspace>/docs/process_log.md` is auto-generated by the runtime `AuditLogger`, recording every interaction of "the user building a Python project with TOAA" as that product's delivery summary.
 
 ---
@@ -214,7 +227,7 @@ toaa evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
 | `max_debug_rounds_per_step` | `max(8, 2 × max_rounds_per_step)` | DEBUG retry round cap |
 | `max_debug_retries` | 3 | Max DEBUG retry count |
 | `max_edit_lines_per_step` | 400 | EditGuard cumulative write-line cap per Step |
-| `sandbox_limits.network` | `pypi-only` | docker mode only; set to `off` for `--network none` |
+| `sandbox_limits.network` | `download-only` | unrestricted outbound without published ports; use `off` for isolation; legacy `pypi-only` is rejected |
 
 ---
 
@@ -230,7 +243,7 @@ npm run smoke:ollama            # real ollama end-to-end smoke test
 
 ## Deployment
 
-Full steps in [doc/deploy.md](doc/deploy.md):
+Full steps in [docs/deploy.md](docs/deploy.md):
 
 ```bash
 # A. Local (Node 20 + Python 3)

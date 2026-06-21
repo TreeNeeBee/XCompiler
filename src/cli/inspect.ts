@@ -24,25 +24,18 @@ export async function runLs(opts: LsOptions): Promise<void> {
       const plan = await loadPlan(f);
       const summary = summarize(plan);
       console.log(
-        `${chalk.green('●')} ${chalk.cyan(path.relative(root, f) || f)} ` +
-          `${chalk.gray(`lang=${plan.language}`)}`,
+        chalk.green('●'),
+        t().inspect.planHeader(chalk.cyan(path.relative(root, f) || f), plan.language),
       );
-      console.log(
-        `   steps=${summary.total}  ` +
-          `${chalk.green('done=' + summary.done)}  ` +
-          `${chalk.yellow('pending=' + summary.pending)}  ` +
-          `${chalk.red('failed=' + summary.failed)}  ` +
-          `${chalk.gray('skipped=' + summary.skipped)}  ` +
-          `running=${summary.running}`,
-      );
+      console.log('  ' + t().inspect.planStatusSummary(
+        summary.total, summary.done, summary.pending, summary.failed, summary.skipped, summary.running,
+      ));
       if (plan.requirementDigest) {
         const oneLine = plan.requirementDigest.split('\n')[0]?.slice(0, 100) ?? '';
         if (oneLine) console.log(`   ${chalk.gray(t().inspect.digestLabel)} ${oneLine}`);
       }
     } catch (err) {
-      console.log(
-        `${chalk.red('✖')} ${path.relative(root, f) || f} — ${(err as Error).message}`,
-      );
+      console.log(chalk.red('✖'), t().inspect.planReadFailed(path.relative(root, f) || f, (err as Error).message));
     }
   }
 }
@@ -67,12 +60,11 @@ export async function runShow(opts: ShowOptions): Promise<void> {
     return;
   }
 
-  console.log(
-    `${chalk.cyan(step.id)} ${chalk.yellow(step.phase)} ${chalk.bold(step.title)}  ` +
-      `${statusBadge(step.status)}  retries=${step.retries}/${step.maxRetries}`,
-  );
-  console.log(`role=${step.role}  tools=[${step.tools.join(', ')}]`);
-  if (step.dependsOn.length > 0) console.log(`dependsOn: ${step.dependsOn.join(', ')}`);
+  console.log(t().inspect.stepHeader(
+    chalk.cyan(step.id), chalk.yellow(step.phase), chalk.bold(step.title), statusBadge(step.status), step.retries, step.maxRetries,
+  ));
+  console.log(t().inspect.stepRoleTools(step.role, step.tools.join(', ')));
+  if (step.dependsOn.length > 0) console.log(t().inspect.stepDependsOn(step.dependsOn.join(', ')));
   console.log('');
   console.log(chalk.gray(t().inspect.secDescription));
   console.log(step.description);
@@ -87,7 +79,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log(chalk.gray(t().inspect.secOutputs));
   for (const out of step.outputs) {
     const exists = await fileExists(path.join(root, out));
-    console.log(`  ${exists ? chalk.green('✓') : chalk.red('✗')} ${out}`);
+    console.log('  ' + t().inspect.outputStatus(exists, out));
   }
   console.log('');
 
@@ -97,7 +89,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   const events = await readAuditFor(auditFile, opts.stepId, tail);
   console.log(chalk.gray(t().inspect.secRecentAudit(events.length)));
   for (const ev of events) {
-    console.log(`  ${ev.ts}  ${chalk.cyan(ev.kind)}  ${ev.msg ?? ''}`);
+    console.log('  ' + t().inspect.auditEntry(ev.ts, chalk.cyan(ev.kind), ev.msg ?? ''));
   }
 }
 

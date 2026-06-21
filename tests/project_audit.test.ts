@@ -95,6 +95,29 @@ describe('project quality audit', () => {
     expect(result.warnings).toBe(0);
   });
 
+  it('fails a Python project that has no runnable entrypoint', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
+    const ws = new Workspace(root);
+    await ws.writeFile('docs/05-delivery.md', 'delivery');
+    await ws.writeFile('tests/test_app.py', 'def test_ok(): assert True\n');
+    const plan = { ...tsPlan(), language: 'python' as const };
+
+    const result = await runProjectAudit({
+      ws,
+      sandbox: new FakeSandbox({ runTests: okResult() }),
+      plan,
+      profile: getLanguageProfile('python'),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      name: 'entrypoint', severity: 'error', ok: false,
+    }));
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      name: 'test-files', severity: 'info', ok: true,
+    }));
+  });
+
   it('warns when TypeScript project has no build or lint script', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
     const ws = new Workspace(root);

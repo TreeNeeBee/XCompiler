@@ -4,14 +4,21 @@ llm:
   # 默认使用本地 ollama 上的 coder 模型
   default: ollama_code
   providers:
-    # 设计/需求向：gemma4:31b（推理与结构化输出更稳）
+    # 设计/需求向：gemma4:31b-mlx（推理与结构化输出更稳）
     ollama_design:
       base_url: ${OLLAMA_BASE_URL}
-      model: gemma4:31b
-    # 编码/测试/调试向：qwen3-coder:30b
+      model: gemma4:31b-mlx
+      request_timeout_ms: 900000
+      stream_idle_timeout_ms: 300000
+      # 弱服务器生成大型结构化 JSON 时关闭长思考，避免正文首 token 等待数分钟。
+      think: false
+    # 编码/测试/调试向：qwen3.6:35b-mlx
     ollama_code:
       base_url: ${OLLAMA_BASE_URL}
-      model: qwen3-coder:30b
+      model: qwen3.6:35b-mlx
+      request_timeout_ms: 900000
+      stream_idle_timeout_ms: 300000
+      think: false
     # 备用：OpenAI 兼容
     openai:
       api_key: ${OPENAI_API_KEY}
@@ -32,7 +39,8 @@ llm:
     Architect: [ollama_design]
     Coder:     [ollama_code]
     Tester:    [ollama_code]
-    Debugger:  [ollama_code]
+    # Prefer a model different from Coder so debugging gets an independent reasoning path.
+    Debugger:  [ollama_design, ollama_code]
 
   # 评分快照（preflight 与运行时自动维护，落盘到同目录的 llm_scores.yaml）。
   # 这里可以手工写初值；空 = 全部默认 1.0。
@@ -55,8 +63,9 @@ agent:
     cpu: 1
     memory_mb: 1024
     wall_seconds: 60
-    # off | download-only (default) | pypi-only (alias) | full
+    # off | download-only (default) | full
     #   download-only — outbound HTTP/HTTPS allowed, no inbound port publishing
+    #   pypi-only     — legacy value, rejected because Docker cannot enforce a domain allowlist
     #   full          — also publishes `expose_ports` to 127.0.0.1 for testing
     #                   Python / Node network apps from the host side
     network: download-only

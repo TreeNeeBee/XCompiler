@@ -7,6 +7,7 @@ import { Workspace } from '../workspace/workspace.js';
 import { GitService } from '../workspace/git.js';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
+import { reportRoleModelAdvice } from '../llm/role_advice.js';
 import { ScoreStore } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
@@ -18,6 +19,10 @@ import { runProjectAudit, shouldRunProjectAudit } from '../core/project_audit.js
 import { refreshProjectMemory } from '../core/project_memory.js';
 import type { Language, PlanIntent } from '../core/plan.js';
 import { setLocale, t } from '../i18n/index.js';
+import { PluginHost } from '../plugins/host.js';
+import type { ToaaPlugin } from '../plugins/types.js';
+import type { EngineResult } from '../core/engine.js';
+import type { ProjectAuditResult } from '../core/project_audit.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -28,9 +33,21 @@ export interface ExecuteOptions {
   onlyPhase?: string;
   resetStatus?: boolean;
   force?: boolean;
+  /** CLI 默认设置 process.exitCode；嵌入式宿主可关闭并仅检查 ExecuteResult。 */
+  setProcessExitCode?: boolean;
+  /** 程序化插件入口；CLI 文件加载器后续基于该入口实现。 */
+  plugins?: ToaaPlugin[];
+  pluginStrict?: boolean;
 }
 
-export async function runExecute(opts: ExecuteOptions): Promise<void> {
+export interface ExecuteResult {
+  status: 'ok' | 'failed' | 'error' | 'dry-run';
+  engine?: EngineResult;
+  audit?: ProjectAuditResult;
+  message?: string;
+}
+
+export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   // 非交互式守则：toaa_run 不读任何 stdin。
   try {
     if ((process.stdin as { isTTY?: boolean }).isTTY) {
@@ -41,13 +58,17 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     /* ignore */
   }
   const ws = new Workspace(path.resolve(opts.workspace));
+  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  // AuditLogger 会立即创建过程日志，因此必须先应用配置语言。
+  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
   let lock;
   try {
     lock = await acquireLock(ws.root, 'toaa_run', { force: !!opts.force });
   } catch (err) {
     if (err instanceof LockError) {
-      console.error(chalk.red('✖'), err.message);
-      process.exit(6);
+      console.error(chalk.red('✖'), t().system.unhandledError(err.message));
+      if (opts.setProcessExitCode !== false) process.exitCode = 6;
+      return { status: 'error', message: err.message };
     }
     throw err;
   }
@@ -59,13 +80,19 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     fromStepId: opts.fromStepId ?? '',
     onlyPhase: opts.onlyPhase ?? '',
   });
+  const pluginHost = new PluginHost({
+    plugins: opts.plugins,
+    strict: opts.pluginStrict,
+    audit,
+  });
+  await pluginHost.initialize();
 
   const planAbs = path.resolve(opts.planPath);
   const plan = await loadPlan(planAbs);
 
   // --force 隐含重置所有 Step 状态、覆写锁，让整个 Plan 从头执行。
   if (opts.force) {
-    console.log(chalk.yellow('!'), '--force：重置所有 Step 为 PENDING，覆写 workspace 锁。');
+    console.log(chalk.yellow('!'), t().execute.forceReset);
     opts.resetStatus = true;
   }
 
@@ -95,22 +122,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       await ws.writeFile(reqRel, desired);
       await audit.event(
         'plan.persist',
-        existing
-          ? `recalibrated ${reqRel} (stripped version pins / hallucinated names)`
-          : `seeded ${reqRel} from plan.dependencies`,
-        { previousLines: existing.split('\n').length - 1, newLines: desired.split('\n').length - 1 },
+        existing ? t().execute.manifestRecalibrated(reqRel) : t().execute.manifestSeeded(reqRel),
+        {
+          messageId: existing ? 'execute.manifest_recalibrated' : 'execute.manifest_seeded',
+          previousLines: existing.split('\n').length - 1,
+          newLines: desired.split('\n').length - 1,
+        },
       );
     }
   }
 
   const order = topoSort(plan.steps);
-  await audit.event('plan.persist', `plan loaded: ${planAbs}`, {
+  await audit.event('plan.persist', t().execute.auditPlanLoaded(planAbs), {
+    messageId: 'execute.plan_loaded',
     steps: plan.steps.length,
     order: order.map((s) => s.id),
   });
 
-  console.log(chalk.green('✔'), 'Plan loaded:', planAbs);
-  console.log(chalk.gray(`  language=${plan.language}, steps=${plan.steps.length}`));
+  console.log(chalk.green('✔'), t().execute.planLoaded(planAbs));
+  console.log(chalk.gray(t().execute.planSummary(plan.language, plan.steps.length)));
   console.log('');
 
   if (opts.dryRun) {
@@ -120,16 +150,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       );
     }
     await audit.end({ status: 'ok', mode: 'dry-run' });
-    return;
+    return { status: 'dry-run' };
   }
 
-  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
-  // Honour config-side locale unless TOAA_LANG / --lang already overrode it earlier.
-  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
   const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
+  let unavailableProviders = new Set<string>();
   try {
     const pf = await preflightProviders(cfg, scoreStore, audit);
+    unavailableProviders = new Set(pf.unreachable);
     if (pf.zeroed.length > 0) {
       console.log(chalk.yellow('!'), t().execute.preflightModelMissing(pf.zeroed.join(', ')));
     }
@@ -137,13 +166,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       console.log(chalk.yellow('!'), t().execute.preflightAutoAdded(Object.keys(pf.autoAdded).length));
     }
   } catch (err) {
-    console.error(chalk.red('✖'), (err as Error).message);
+    console.error(chalk.red('✖'), t().system.unhandledError((err as Error).message));
     await audit.end({ status: 'error', message: (err as Error).message, stage: 'llm-preflight' });
     await scoreStore.flush();
     await lock.release();
-    process.exit(7);
+    if (opts.setProcessExitCode !== false) process.exitCode = 7;
+    return { status: 'error', message: (err as Error).message };
   }
-  const router = new LLMRouter(cfg, audit, scoreStore);
+  const router = new LLMRouter(cfg, audit, scoreStore, unavailableProviders, pluginHost);
+  await reportRoleModelAdvice(router, audit);
   const git = new GitService(ws);
   const sandbox = createSandbox(cfg, ws, audit, plan.language);
 
@@ -153,6 +184,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
     sandbox,
     router,
     audit,
+    plugins: pluginHost,
     planPath: planAbs,
     fromStepId: opts.fromStepId,
     onlyPhase: opts.onlyPhase,
@@ -186,14 +218,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
         failedStepId: r.failedStepId,
         failureReason: r.failureReason,
       });
-      process.exitCode = 4;
-      return;
+      if (opts.setProcessExitCode !== false) process.exitCode = 4;
+      return { status: 'failed', engine: r, message: r.failureReason };
     }
     let auditWarnings = 0;
     if (shouldRunProjectAudit(plan, { onlyPhase: opts.onlyPhase })) {
       const auditResult = await runProjectAudit({ ws, sandbox, plan, profile });
       printProjectAudit(auditResult);
-      await audit.event('note', `project audit: ${auditResult.errors} error(s), ${auditResult.warnings} warning(s)`, {
+      await audit.event('note', t().execute.projectAuditSummary(auditResult.errors, auditResult.warnings), {
+        messageId: 'execute.project_audit_summary',
         checks: auditResult.checks,
       });
       if (!auditResult.ok) {
@@ -204,8 +237,8 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
           qualityAuditErrors: auditResult.errors,
           qualityAuditWarnings: auditResult.warnings,
         });
-        process.exitCode = 4;
-        return;
+        if (opts.setProcessExitCode !== false) process.exitCode = 4;
+        return { status: 'failed', engine: r, audit: auditResult };
       }
       auditWarnings = auditResult.warnings;
     }
@@ -216,16 +249,18 @@ export async function runExecute(opts: ExecuteOptions): Promise<void> {
       totalSteps: r.totalSteps,
       qualityAuditWarnings: auditWarnings,
     });
+    return { status: 'ok', engine: r };
   } catch (err) {
     const msg = (err as Error).message;
     const stack = (err as Error).stack;
-    console.error(chalk.red('✖'), msg);
+    console.error(chalk.red('✖'), t().system.unhandledError(msg));
     if (stack && stack !== msg) {
       console.error(chalk.gray(stack));
     }
     await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
     await audit.end({ status: 'error', message: msg, stack });
-    process.exitCode = 5;
+    if (opts.setProcessExitCode !== false) process.exitCode = 5;
+    return { status: 'error', message: msg };
   } finally {
     await scoreStore.flush();
     await lock.release();
@@ -242,7 +277,8 @@ async function persistProjectMemory(
   try {
     await refreshProjectMemory(ws, { planPath, language, intent });
   } catch (err) {
-    await audit.event('note', `project memory refresh failed: ${(err as Error).message}`, {
+    await audit.event('note', t().execute.projectMemoryRefreshFailed((err as Error).message), {
+      messageId: 'execute.project_memory_refresh_failed',
       planPath,
     });
   }
@@ -255,7 +291,7 @@ function printProjectAudit(
   if (failing.length === 0) return;
   for (const check of failing) {
     const marker = check.severity === 'error' ? chalk.red('✖') : chalk.yellow('!');
-    console.log(marker, `[audit:${check.name}] ${check.summary}`);
+    console.log(marker, t().execute.projectAuditCheck(check.name, check.summary));
     if (check.detail) console.log(chalk.gray(check.detail));
   }
 }

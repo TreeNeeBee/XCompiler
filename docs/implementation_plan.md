@@ -1,7 +1,7 @@
 # TOAA 实施计划（Implementation Plan）
 
 > 本文件配套 [`TOAA_design.md`](./TOAA_design.md)，给出从 0 到 1 的落地步骤。
-> 全部用 TypeScript + Node.js ≥ 20 实现；目标产物语言：Python。
+> 全部用 TypeScript + Node.js ≥ 20 实现；当前目标产物语言：Python、TypeScript。
 
 ---
 
@@ -9,11 +9,12 @@
 
 | 里程碑 | 名称              | 范围                                              | 验收标准                                          |
 | --- | --------------- | ----------------------------------------------- | --------------------------------------------- |
-| M1  | 骨架 + `toaa_c` MVP | 项目脚手架、CLI、单 LLM、需求 → plan.json（含双确认门）            | 输入一段需求 → 落盘合法 `plan.json` + `requirements.txt` 由 ARCH Step 描述生成 |
+| M1  | 骨架 + `toaa_c` MVP | 项目脚手架、CLI、单 LLM、需求 → plan.json（含双确认门）            | 输入一段需求 → 落盘合法 `plan.json` + 规范化阶段文档 |
 | M2  | `toaa_run` 顺序执行 | Phase Engine、原子 Tool、Sandbox(subprocess)、断点续跑   | 给定 M1 的 plan，可生成可运行 Python 工程并通过自带 `pytest`   |
 | M3  | DEBUG 闭环 + Skill | Skill 集合、git 快照、`logs/edits-*.jsonl`、≤3 次重试    | 故意注入 bug 的 plan，能在 ≤3 次内自动修复并回归通过             |
 | M4  | 多 LLM 角色 + Docker Sandbox | 按角色路由 provider；docker 模式；网络与资源限制                | 同一 plan 在 docker sandbox 内端到端跑通                |
-| M5  | 完整 V 模型 + 交付    | TASK / REFACTOR / DELIVERY 阶段、`docs/history/` | 输出 `docs/delivery.md` 与可分发产物                  |
+| M5  | 完整 V 模型 + 交付    | TASK / REFACTOR / DELIVERY 阶段、`docs/history/` | 输出 `docs/05-delivery.md` 与可分发产物                  |
+| M6  | 插件扩展 + 功能自举   | 生命周期 Hook、self 模式、worktree 隔离、质量门与晋级 | N 能安全构建并验证 N+1，宿主失败可回滚 |
 
 ---
 
@@ -57,19 +58,19 @@
 1. CLI 入口：`toaa c [-i <file>] [-o <plan.json>] [--yes]`。
 2. Intake：读文件或 `readline` 多行输入。
 3. Clarify：Planner LLM 反问 N 个问题，用户逐条回答。
-4. 生成 `docs/.draft/requirements.md` → 预览 → **确认门 1**。
+4. 生成 `docs/.draft/topic.md` → 预览 → **确认门 1**，确认后写入 `docs/topic.md`。
 5. Decompose：Planner LLM 输出 Step 数组；执行 Plan Lint。
 6. 生成 `docs/.draft/plan.md` → 预览 → **确认门 2**。
-7. 写入 `workspace/plan.json` + `docs/plan.md` + `docs/requirements.md`，删除 `.draft/`。
+7. 写入 `workspace/plan.json` + `docs/plan.md`，删除 `.draft/`。
 
-### S1.5 ARCH Step 模板（让 LLM 产出 requirements.txt）
+### S1.5 ARCH Step 与依赖清单
 
-- 在 Planner 的 prompt 模板中，强制 ARCH Step 的 `outputs` 含 `requirements.txt`，并要求 `description` 中说明依赖推导思路。
-- 添加 schema 校验：`language === 'python'` 时 plan 内必须存在至少一个产出 `requirements.txt` 的 ARCH Step。
+- Python 依赖记录在 `plan.dependencies`，运行时校准后种入 `requirements.txt`；ARCH Step 不得直接输出该文件。
+- TypeScript greenfield 的 ARCH Step 创建 `package.json`；增量与 self 模式默认复用既有 manifest。
 
 ### S1.6 验收
 
-- 用例：「写一个 CLI 待办事项工具」→ `toaa_c` 落盘 `plan.json`，通过 `validatePlan`，含 ARCH→`requirements.txt`、CODE→`src/...`、TEST→`tests/...`。
+- 用例：「写一个 CLI 待办事项工具」→ `toaa_c` 落盘 `plan.json`，通过 `validatePlan`；Python 依赖保存在 Plan 顶层并由运行期生成 `requirements.txt`，CODE/TEST 分别产出源码与测试。
 
 ---
 
@@ -113,14 +114,14 @@
 
 ### S3.1 Skill 抽象
 
-- `Skill` 接口：`name`、`requiredTools`、`run(ctx, args)`、`audit(record)`。
-- 实现 9 个 Skill：`read_code`、`apply_patch`、`replace_in_file`、`create_file`、`rename_symbol`、`add_dependency`、`run_tests`、`run_python`、`revert_change`。
-- `add_dependency` 完成后必须把新增依赖**回写** `requirements.txt`，并触发 sandbox 重建。
+- `Skill` 是面向 LLM 的组合能力：`name`、`prompt`、`tools`；执行仍由受控原子 Tool 完成。
+- 默认实现 `patcher`、`author`、`tester`、`dep_resolver`、`debugger`、`refactorer` 六个组合 Skill。
+- `add_dependency` 属于受 EditGuard 约束的原子 Tool；完成后必须回写依赖清单并触发 sandbox 重建。
 
 ### S3.2 编辑约束守门
 
 - `EditGuard`：拒绝 `outputs` 白名单外的写入；统计行数，超 400 行报错。
-- 每次 Skill 调用产生一条 `EditRecord` 追加到 `logs/edits-<step-id>.jsonl`。
+- 每次底层写 Tool 调用产生一条 `EditRecord` 追加到 `logs/edits-<step-id>.jsonl`；Skill 不另建可绕过 Tool 审计的执行通道。
 
 ### S3.3 Debugger 闭环
 
@@ -147,7 +148,7 @@
 
 - `DockerSandbox`：使用 `python:3.x-slim`，挂载 workspace 卷为读写、其它路径只读。
 - 依赖镜像缓存键 = hash(`requirements.txt` + `requirements-dev.txt` + python 版本)。
-- 网络策略：默认 `pypi-only`（启动时仅放行 PyPI 镜像 host），可配置。
+- 网络策略：默认 `download-only`（允许任意出站下载但不发布入站端口）；`off` 完全断网，`full` 可显式发布端口。由于 Docker 原生网络无法可靠执行域名白名单，旧 `pypi-only` 配置会 fail-closed，而不会降级为任意出站。
 
 ### S4.3 资源限制
 
@@ -165,8 +166,8 @@
 ### S5.1 TASK / REFACTOR / DELIVERY
 
 - 模板化 prompt 让 Planner 在拆解时默认包含这三类 Step。
-- REFACTOR Step：要求行为不变，必须先跑全量回归再写 `docs/refactor.md`。
-- DELIVERY Step：汇总产出，生成 `docs/delivery.md`（含 README、入口命令、依赖列表、测试报告链接）。
+- REFACTOR Step：要求行为不变，必须先跑全量回归再写 `docs/04-refactor.md`。
+- DELIVERY Step：汇总产出，生成 `docs/05-delivery.md`（含 README、入口命令、依赖列表、测试证据链接）。
 
 ### S5.2 文档历史归档
 
@@ -183,23 +184,58 @@
 
 ---
 
+## M6 — 插件扩展与功能自举
+
+### S6.1 生命周期扩展
+
+- 对 compile、LLM、run、Step、attempt 与 Tool 暴露类型化 Hook。
+- 插件注册的 Tool 继续受白名单和 EditGuard 约束，失败策略可配置为 continue / fail。
+
+### S6.2 自举工程模式
+
+- `PlanIntent` 增加 `self`，作为增量模式加载既有源码、测试、清单和核心设计文档。
+- Planner 保留既有入口、公共导出与 `package.json`，不得套用 greenfield 的 `src/main.ts` 约束。
+- Plan Lint 允许增量 TypeScript 计划复用现有 manifest，仅在需求涉及依赖或脚本时修改。
+
+### S6.3 代际执行与隔离
+
+- `toaa bootstrap` 从稳定版本 N 创建 `toaa/bootstrap/<run-id>` 分支和隔离 worktree。
+- N 仅在候选 worktree 中执行 compile / run；Step 快照与硬回滚不得作用于宿主 checkout。
+- 宿主仓库非 clean 或自举期间 HEAD 变化时，禁止晋级。
+- qualification 默认使用最小环境变量的 subprocess 沙箱；Docker 未完成环境验证前仅显式启用。
+
+### S6.4 质量门与晋级
+
+- 必选门：version check、typecheck、test、build、lint、CLI smoke、`bootstrap --help` smoke、`npm pack --dry-run`。
+- 默认产出 `.toaa/bootstrap/reports/<run-id>.md` 和候选分支，不修改当前分支。
+- 质量门前后必须保持候选 HEAD 不变且 worktree clean；报告与晋级绑定已验证 commit SHA。
+- 只有显式 `--promote` 且全部必选门通过时，才允许按该 SHA `--ff-only` 晋级为 N+1。
+
+### S6.5 验收
+
+- N 能在隔离 worktree 中构建 N+1，失败不会改变宿主 HEAD 或未跟踪文件。
+- N+1 通过全部确定性门禁并保留下一轮 `toaa bootstrap` 入口；真实 provider 驱动的连续两代演练仍需发布前人工验收，不能用 CLI smoke 冒充。
+- 报告可追溯 base commit、candidate commit、候选分支、变更文件和各质量门结果。
+
+---
+
 ## 横切事项
 
 ### 测试策略
 
 - 单元测试（`vitest`）：types / Plan Lint / Tools / Skills / Sandbox 抽象。
 - 契约测试：LLM provider 用录制的固定回放（`nock` / `msw`）以保证 CI 稳定。
-- 端到端测试：在 GitHub Actions 中跑 `subprocess` sandbox 的最小 plan。
+- Engine 端到端测试使用固定 LLM 回放与 subprocess/FakeSandbox；真实 provider 与 Docker 环境验证作为发布前人工验收，不伪装成 CI 已覆盖能力。
 
 ### CI/CD
 
-- GitHub Actions：`lint → typecheck → unit → e2e(subprocess) → build → npm publish`（手动触发 publish）。
-- 发布物：`@toaa/cli`（npm），可选 `pkg` 产出 Linux / macOS 二进制。
+- GitHub Release：`version:check → typecheck → lint → test → pkg build`，上传 Linux / macOS / Windows 二进制与校验和。
+- npm 包保留 `@toaa/cli` 元数据与 `npm pack` 质量门；当前没有自动 `npm publish`，不得在文档中声称已发布。
 
 ### 安全
 
 - `.env` + 环境变量；CI 用 secrets。
-- Sandbox 默认 `pypi-only`；放行其它出网必须显式配置。
+- Sandbox 默认 `download-only`；需要执行期硬隔离时必须显式使用 `off`。旧 `pypi-only` 因无法兑现域名级隔离而被拒绝。
 - Skill 调用全部审计；危险操作（`revert_change` / 跨白名单写）需要二次确认或 plan 中显式授权。
 
 ### 文档

@@ -41,7 +41,7 @@ npm ci
 ```bash
 cp .env.example .env
 # 编辑 .env：
-#   OLLAMA_BASE_URL=http://10.80.105.160:11434
+#   OLLAMA_BASE_URL=http://10.80.106.160:11434
 #   OPENAI_API_KEY=...（可空）
 
 cp config.example.yaml config.yaml
@@ -69,10 +69,13 @@ toaa --version
 ```bash
 # 1) 单测（不依赖 LLM/网络）
 npm run typecheck
-npm test                           # 应 12 files / 55 tests passed
+npm test                           # 完整 Vitest 回归（含本机回环网络测试）
 
 # 2) ollama 烟测（需 OLLAMA_BASE_URL 可达）
-OLLAMA_BASE_URL=http://10.80.105.160:11434 npm run smoke:ollama
+OLLAMA_BASE_URL=http://10.80.106.160:11434 \
+OLLAMA_REQUEST_TIMEOUT_MS=900000 \
+OLLAMA_STREAM_IDLE_TIMEOUT_MS=300000 \
+npm run smoke:ollama
 
 # 3) 端到端编排
 mkdir -p /tmp/hello-demo && cat > /tmp/hello-demo/intake.md <<'EOF'
@@ -108,12 +111,17 @@ rm -rf <repo>/node_modules <repo>/dist
 >
 > ⚠️ **注意**：单文件可执行程序仍然需要目标机器自带 **Python 3.11+ / git** —— 它们用于沙盒（pip / pytest）和 snapshot/revert。这是 TOAA 自身的运行期依赖，不在打包范围内。
 
-### 1.7.1 一次性打全部目标
+### 1.7.1 本机原生打包与全目标发版
 
 ```bash
-# 三目标全打：linux-x64 / linux-arm64 / win-x64
+# 自动识别当前 Linux/macOS 的架构，只打本机可直接运行的目标
 npm run package
+
+# 发版模式：linux-x64 / linux-arm64 / macos-arm64 / win-x64 全部打包
+npm run package:all
 ```
+
+全目标模式会由 `@yao-pkg/pkg` 按需下载各平台的 Node 基础二进制，因此首次执行需要访问其 GitHub Releases；CI 发版固定使用该入口。本机原生模式只需要当前平台的基础二进制。
 
 产物布局：
 
@@ -138,12 +146,12 @@ dist/pkg/
 └── toaa-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
 ```
 
-> **macOS Apple Silicon 已纳入默认目标**（macos-arm64）。
+> **macOS Apple Silicon 原生目标为 macos-arm64**；`npm run package` 会在 Apple Silicon Mac 上自动选择该目标。
 > 关键点：
 >
 > - `--no-bytecode` 已默认开启 — 解决 V8 bytecode snapshot 在 Node 20 readline / NDJSON HTTP 流场景下的 SIGSEGV。
-> - 强制代码签名 — 脚本会按 (1) 系统已装的 `ldid` → (2) 自动从 ProcursusTeam/ldid releases 拉取与本机架构匹配的静态二进制到 `.tools/ldid` → (3) 都失败时打印 `codesign --sign -` 提示。
-> - macos-x64（Intel Mac）作为可选目标，需手动指定：`./scripts/package.sh macos-x64`。
+> - 强制代码签名 — macOS 本机使用系统 `codesign` 执行并验证 ad-hoc 签名；Linux 交叉打包 macOS 目标时使用 `ldid`。
+> - macos-x64（Intel Mac）会在 Intel Mac 上被自动选择，也可显式执行 `npm run package:macos-x64`。
 
 ### 1.7.2 单目标打包
 
@@ -151,11 +159,14 @@ dist/pkg/
 npm run package:linux-x64
 npm run package:linux-arm64
 npm run package:macos-arm64
+npm run package:macos-x64
 npm run package:win-x64
 
 # 或直接调脚本
 ./scripts/package.sh linux-x64 win-x64
 ./scripts/package.sh macos-arm64 macos-x64
+./scripts/package.sh native
+./scripts/package.sh all
 TARGETS="linux-arm64" ./scripts/package.sh
 ```
 
@@ -192,6 +203,7 @@ copy config.example.yaml $env:USERPROFILE\.toaa\config.yaml
 | 1. 构建 CJS 单包 | [tsup.pkg.config.ts](../tsup.pkg.config.ts) | `src/cli/toaa.ts` → `dist/pkg-build/toaa.cjs`（约 1.7 MB，已 inline 全部依赖）|
 | 2. 跨平台编译 | `@yao-pkg/pkg` (vercel/pkg 维护活跃 fork) | `toaa.cjs` + 内置 Node20 → 各目标平台 native binary（约 55 MB）|
 | 3. 压缩发布 | `tar` / `zip` | `toaa-<target>/` → `toaa-<target>.tar.gz` / `.zip`（约 21 MB）|
+| 4. 完整性校验 | `sha256sum` / `shasum` | 所有压缩包 → `dist/pkg/SHA256SUMS` |
 
 脚本主入口：[scripts/package.sh](../scripts/package.sh)。配置都集中在 `tsup.pkg.config.ts` 与 `package.json -> scripts`。
 
@@ -199,8 +211,7 @@ copy config.example.yaml $env:USERPROFILE\.toaa\config.yaml
 > `toaa` 是统一入口，`toaa c` ≡ `toaa_c`，`toaa run` ≡ `toaa_run`。一个 60 MB 的可执行文件
 > 可以承担全部子命令；如果想要 `toaa_c.exe` 这种命名，复制重命名即可，行为不变。
 
-> **Windows .zip 需要 zip 命令**：脚本检测不到 `zip` 时会跳过压缩步骤、只保留目录，
-> 提示用户自行用 7-Zip / PowerShell `Compress-Archive` 打包。Linux / WSL 上 `apt install zip` 即可。
+> **Windows .zip 需要 zip 命令**：选择 Windows 目标但检测不到 `zip` 时，脚本会终止发版，避免留下不完整的发布产物。Linux / WSL 上可执行 `apt install zip` 安装。
 
 
 ---
@@ -223,7 +234,7 @@ copy config.example.yaml $env:USERPROFILE\.toaa\config.yaml
 ```bash
 cd toaa
 docker build -t toaa:latest .
-# 或带版本 tag：docker build -t toaa:0.1.0 -t toaa:latest .
+# 或带版本 tag：docker build -t toaa:0.1.3 -t toaa:latest .
 ```
 
 ### 2.3 配置文件准备

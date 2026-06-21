@@ -1,5 +1,7 @@
 import { promises as fs, appendFileSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { t } from '../i18n/index.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
@@ -38,6 +40,7 @@ export interface AuditEvent {
   ts: string;
   kind: AuditKind;
   message: string;
+  messageId?: string;
   data?: Record<string, unknown>;
 }
 
@@ -50,18 +53,24 @@ export interface AuditLoggerOptions {
   mdRelPath?: string;
   /** jsonl 文件相对路径，默认 .toaa/audit.jsonl */
   jsonlRelPath?: string;
+  /** full=完整内容；redacted=保留内容但遮蔽凭据（默认）；metadata=仅保留长度与摘要。 */
+  contentMode?: AuditContentMode;
 }
+
+export type AuditContentMode = 'full' | 'redacted' | 'metadata';
 
 export class AuditLogger {
   private readonly mdAbs: string;
   private readonly jsonlAbs: string;
   private readonly command: string;
+  private readonly contentMode: AuditContentMode;
   private startTs = '';
   /** 串行化 markdown 追加，防止并发 appendFile 交错。 */
   private mdQueue: Promise<void> = Promise.resolve();
 
   constructor(opts: AuditLoggerOptions) {
     this.command = opts.command;
+    this.contentMode = resolveContentMode(opts.contentMode ?? process.env.TOAA_AUDIT_CONTENT_MODE);
     this.mdAbs = path.resolve(opts.root, opts.mdRelPath ?? 'docs/process_log.md');
     this.jsonlAbs = path.resolve(opts.root, opts.jsonlRelPath ?? '.toaa/audit.jsonl');
   }
@@ -72,7 +81,7 @@ export class AuditLogger {
     await this.appendMd(
       [
         '',
-        `## ▶ Session ${this.startTs} — \`${this.command}\``,
+        t().audit.sessionStart(this.startTs, this.command),
         '',
         '```yaml',
         ...Object.entries(meta).map(([k, v]) => `${k}: ${stringify(v)}`),
@@ -80,15 +89,21 @@ export class AuditLogger {
         '',
       ].join('\n'),
     );
-    await this.event('session.start', `start ${this.command}`, meta);
+    await this.event('session.start', t().audit.eventSessionStart(this.command), {
+      messageId: 'audit.session_start',
+      ...meta,
+    });
   }
 
   async end(summary: Record<string, unknown> = {}): Promise<void> {
-    await this.event('session.end', `end ${this.command}`, summary);
+    await this.event('session.end', t().audit.eventSessionEnd(this.command), {
+      messageId: 'audit.session_end',
+      ...summary,
+    });
     await this.appendMd(
       [
         '',
-        `### ◀ Session end ${new Date().toISOString()}`,
+        t().audit.sessionEnd(new Date().toISOString()),
         '',
         '```yaml',
         ...Object.entries(summary).map(([k, v]) => `${k}: ${stringify(v)}`),
@@ -104,26 +119,32 @@ export class AuditLogger {
   async event(kind: AuditKind, message: string, data?: Record<string, unknown>): Promise<void> {
     await this.ensureFiles();
     const ev: AuditEvent = { ts: new Date().toISOString(), kind, message };
-    if (data) ev.data = data;
+    if (data) {
+      const { messageId, ...payload } = data;
+      if (typeof messageId === 'string') ev.messageId = messageId;
+      if (Object.keys(payload).length > 0) ev.data = payload;
+    }
     await this.appendJsonl(ev);
     await this.appendMd(`- \`${ev.ts}\` **${kind}** — ${escapeMd(message)}\n`);
   }
 
   /** 用户输入 / 决策。会把内容以引用块写入 markdown。 */
   async userInput(label: string, content: string): Promise<void> {
+    const storedContent = protectAuditContent(content, this.contentMode);
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'user.input',
       message: label,
-      data: { content },
+      messageId: 'audit.user_input',
+      data: { content: storedContent, contentMode: this.contentMode },
     });
     await this.appendMd(
       [
         '',
-        `#### 👤 用户输入 — ${escapeMd(label)}`,
+        t().audit.userInput(escapeMd(label)),
         '',
         '```text',
-        content,
+        renderAuditContent(storedContent),
         '```',
         '',
       ].join('\n'),
@@ -131,26 +152,29 @@ export class AuditLogger {
   }
 
   async userDecision(label: string, value: string): Promise<void> {
-    await this.event('user.decision', `${label} → ${value}`, { label, value });
+    await this.event('user.decision', t().audit.userDecision(label, value), {
+      messageId: 'audit.user_decision', label, value,
+    });
   }
 
   /** LLM 请求/响应：完整 prompt 与回包写入 markdown 折叠块。 */
   async llmRequest(role: string, model: string, messages: unknown, options?: unknown): Promise<void> {
+    const storedMessages = protectAuditContent(messages, this.contentMode);
+    const storedOptions = protectAuditContent(options, this.contentMode);
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'llm.request',
-      message: `${role} → ${model}`,
-      data: { role, model, messages, options },
+      message: t().audit.eventLlmRequest(role, model),
+      messageId: 'audit.llm_request',
+      data: { role, model, messages: storedMessages, options: storedOptions, contentMode: this.contentMode },
     });
     await this.appendMd(
       [
         '',
-        `<details><summary>🤖 LLM Request — <code>${escapeMd(role)}</code> via <code>${escapeMd(
-          model,
-        )}</code></summary>`,
+        `<details><summary>${t().audit.llmRequest(escapeMd(role), escapeMd(model))}</summary>`,
         '',
         '```json',
-        safeStringify({ messages, options }),
+        safeStringify({ messages: storedMessages, options: storedOptions }),
         '```',
         '',
         '</details>',
@@ -160,21 +184,21 @@ export class AuditLogger {
   }
 
   async llmResponse(role: string, model: string, content: string, meta?: Record<string, unknown>): Promise<void> {
+    const storedContent = protectAuditContent(content, this.contentMode);
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'llm.response',
-      message: `${role} ← ${model}`,
-      data: { role, model, content, ...meta },
+      message: t().audit.eventLlmResponse(role, model),
+      messageId: 'audit.llm_response',
+      data: { role, model, content: storedContent, contentMode: this.contentMode, ...redactValue(meta) as Record<string, unknown> },
     });
     await this.appendMd(
       [
         '',
-        `<details><summary>📩 LLM Response — <code>${escapeMd(role)}</code> via <code>${escapeMd(
-          model,
-        )}</code></summary>`,
+        `<details><summary>${t().audit.llmResponse(escapeMd(role), escapeMd(model))}</summary>`,
         '',
         '```text',
-        content,
+        renderAuditContent(storedContent),
         '```',
         '',
         '</details>',
@@ -185,7 +209,9 @@ export class AuditLogger {
 
   async llmError(role: string, model: string, err: unknown): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
-    await this.event('llm.error', `${role} via ${model}: ${msg}`, { role, model });
+    await this.event('llm.error', t().audit.eventLlmError(role, model, msg), {
+      messageId: 'audit.llm_error', role, model,
+    });
   }
 
   /**
@@ -198,28 +224,27 @@ export class AuditLogger {
     round: number,
     payload: { thoughts?: string; actions?: unknown[]; done?: boolean; raw?: string; provider?: string },
   ): Promise<void> {
+    const storedPayload = protectAuditContent(payload, this.contentMode) as Record<string, unknown>;
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'executor.turn',
-      message: `${stepId} round=${round} role=${role}${payload.provider ? ` via ${payload.provider}` : ''}`,
-      data: payload,
+      message: t().audit.eventExecutorTurn(stepId, round, role, payload.provider ?? ''),
+      messageId: 'audit.executor_turn',
+      data: { ...storedPayload, contentMode: this.contentMode },
     });
-    const summary = (payload.thoughts ?? '').trim().slice(0, 200) || '(no thoughts)';
+    const summary = (payload.thoughts ?? '').trim().slice(0, 200) || t().audit.noThoughts;
     const actCount = Array.isArray(payload.actions) ? payload.actions.length : 0;
-    const providerTag = payload.provider
-      ? ` · via <code>${escapeMd(payload.provider)}</code>`
-      : '';
     await this.appendMd(
       [
         '',
-        `<details><summary>🧠 Executor turn — <code>${escapeMd(stepId)}</code> round ${round} / role <code>${escapeMd(role)}</code>${providerTag} (actions=${actCount}, done=${payload.done === true})</summary>`,
+        `<details><summary>${t().audit.executorTurn(escapeMd(stepId), round, escapeMd(role), escapeMd(payload.provider ?? ''), actCount, payload.done === true)}</summary>`,
         '',
-        '**thoughts:**',
+        t().audit.thoughtsLabel,
         '',
         '> ' + escapeMd(summary).replace(/\n/g, '\n> '),
         '',
         ...(actCount > 0
-          ? ['**actions:**', '', '```json', safeStringify(payload.actions), '```', '']
+          ? [t().audit.actionsLabel, '', '```json', safeStringify(protectAuditContent(payload.actions, this.contentMode)), '```', '']
           : []),
         '</details>',
         '',
@@ -234,20 +259,21 @@ export class AuditLogger {
     meta?: Record<string, unknown> & { provider?: string },
   ): Promise<void> {
     const provider = meta?.provider;
+    const storedContent = protectAuditContent(content, this.contentMode);
     await this.appendJsonl({
       ts: new Date().toISOString(),
       kind: 'planner.thought',
-      message: `Planner ${stage}${provider ? ` via ${provider}` : ''}`,
-      data: { stage, content, ...meta },
+      message: t().audit.eventPlannerThought(stage, provider ?? ''),
+      messageId: 'audit.planner_thought',
+      data: { stage, content: storedContent, contentMode: this.contentMode, ...redactValue(meta) as Record<string, unknown> },
     });
-    const tag = provider ? ` · via <code>${escapeMd(provider)}</code>` : '';
     await this.appendMd(
       [
         '',
-        `<details><summary>🧩 Planner thought — ${escapeMd(stage)}${tag}</summary>`,
+        `<details><summary>${t().audit.plannerThought(escapeMd(stage), escapeMd(provider ?? ''))}</summary>`,
         '',
         '```text',
-        content,
+        renderAuditContent(storedContent),
         '```',
         '',
         '</details>',
@@ -266,7 +292,7 @@ export class AuditLogger {
     if (!existsSync(this.mdAbs)) {
       writeFileSync(
         this.mdAbs,
-        '# TOAA 开发过程记录 (process_log)\n\n> 由 TOAA 自动生成，记录所有 CLI 会话、用户输入、LLM 交互与执行动作。用于交付时的过程文档汇总。\n',
+        `${t().audit.processLogTitle}\n\n${t().audit.processLogPreamble}\n`,
         'utf8',
       );
     }
@@ -278,7 +304,7 @@ export class AuditLogger {
       () => fs.appendFile(this.mdAbs, text, 'utf8'),
       () => fs.appendFile(this.mdAbs, text, 'utf8'),
     ).catch((err) => {
-      console.warn('[audit] markdown append failed:', (err as Error).message);
+      console.warn(t().audit.markdownAppendFailed((err as Error).message));
     });
     return this.mdQueue;
   }
@@ -290,13 +316,13 @@ export class AuditLogger {
     try {
       appendFileSync(this.jsonlAbs, JSON.stringify(ev) + '\n', 'utf8');
     } catch (err) {
-      console.warn('[audit] jsonl append failed:', (err as Error).message);
+      console.warn(t().audit.jsonlAppendFailed((err as Error).message));
     }
     // 可选 stderr 镜像（TOAA_AUDIT_TRACE=1）：如果文件被外部覆盖丢失，
     // 还能从终端输出交叉验证实际发生了哪些事件。
     if (process.env.TOAA_AUDIT_TRACE === '1') {
       try {
-        process.stderr.write(`[audit] ${ev.kind} ${ev.message}\n`);
+        process.stderr.write(t().audit.traceLine(ev.kind, ev.message) + '\n');
       } catch {
         /* ignore */
       }
@@ -319,4 +345,55 @@ function safeStringify(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+function resolveContentMode(value: string | undefined): AuditContentMode {
+  return value === 'full' || value === 'metadata' || value === 'redacted' ? value : 'redacted';
+}
+
+function protectAuditContent(value: unknown, mode: AuditContentMode): unknown {
+  if (mode === 'full') return value;
+  if (mode === 'redacted') return redactValue(value);
+  const serialized = safeStringify(value);
+  return {
+    omitted: true,
+    bytes: Buffer.byteLength(serialized, 'utf8'),
+    sha256: createHash('sha256').update(serialized).digest('hex'),
+  };
+}
+
+function renderAuditContent(value: unknown): string {
+  return typeof value === 'string' ? value : safeStringify(value);
+}
+
+function redactValue(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') return redactText(value);
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    output[key] = isSensitiveKey(key)
+      ? '[REDACTED]'
+      : redactValue(item, seen);
+  }
+  return output;
+}
+
+const SENSITIVE_KEYS = new Set([
+  'apikey', 'authorization', 'password', 'passwd', 'secret',
+  'accesstoken', 'refreshtoken', 'authtoken', 'cookie',
+]);
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.replace(/[-_]/gu, '').toLowerCase();
+  return SENSITIVE_KEYS.has(normalized);
+}
+
+function redactText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, 'Bearer [REDACTED]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, 'sk-[REDACTED]')
+    .replace(/((?:api[-_]?key|password|passwd|secret|token)\s*[:=]\s*)[^\s,;]+/giu, '$1[REDACTED]');
 }

@@ -38,20 +38,31 @@ jobs:
       - name: Install deps
         run: npm ci
 
+      - name: Verify release version
+        run: |
+          npm run version:check
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
       - name: Type-check
         run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
 
       - name: Test (vitest)
         run: npx vitest run
 
       - name: Package all targets (linux-x64 / linux-arm64 / macos-arm64 / win-x64)
-        run: ./scripts/package.sh
+        run: npm run package:all
 
-      - name: Compute SHA256SUMS
+      - name: Verify SHA256SUMS
         working-directory: dist/pkg
-        run: |
-          sha256sum *.tar.gz *.zip > SHA256SUMS
-          cat SHA256SUMS
+        run: sha256sum --check SHA256SUMS
 
       - name: Extract release notes (commits between prev tag → this tag, or README excerpt for first release)
         id: notes

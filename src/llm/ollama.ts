@@ -12,6 +12,8 @@ export interface OllamaConfig {
   streamIdleTimeoutMs?: number;
   /** 流式模式下输出字符上限，超过即中断（防 token-loop 撑爆内存）；默认 200_000。 */
   maxOutputChars?: number;
+  /** 是否启用 Ollama thinking；不设置时遵循模型默认值。 */
+  think?: boolean;
 }
 
 interface OllamaChatResponse {
@@ -34,6 +36,7 @@ export class OllamaClient implements LLMClient {
       messages,
       stream,
       format: options?.responseFormat === 'json' ? 'json' : undefined,
+      think: this.cfg.think,
       options: {
         temperature: options?.temperature ?? 0.2,
         num_predict: options?.maxTokens,
@@ -162,7 +165,44 @@ export function streamPostNdjson(
   const payload = JSON.stringify(body);
   return new Promise((resolve, reject) => {
     let settled = false;
-    const req = lib.request(
+    let response: http.IncomingMessage | null = null;
+    let idleTimer: NodeJS.Timeout | null = null;
+    let wallTimer: NodeJS.Timeout | null = null;
+
+    const cleanup = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (wallTimer) clearTimeout(wallTimer);
+      idleTimer = null;
+      wallTimer = null;
+    };
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+      response?.destroy();
+      req.destroy();
+    };
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+      response?.destroy();
+      req.destroy();
+    };
+    const armIdle = () => {
+      if (watchdog.idleTimeoutMs <= 0 || settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        fail(new Error(`stream idle for ${watchdog.idleTimeoutMs}ms; aborting`));
+      }, watchdog.idleTimeoutMs);
+    };
+
+    // 两个 watchdog 都必须覆盖 DNS / TCP connect / 等待响应头阶段。
+    // 旧实现把它们建在 response 回调里：服务端若接受连接后不回响应头，
+    // callback 永远不执行，请求也就永远没有任何超时保护。
+    const req: http.ClientRequest = lib.request(
       {
         method: 'POST',
         protocol: url.protocol,
@@ -176,88 +216,21 @@ export function streamPostNdjson(
         },
       },
       (res) => {
+        response = res;
         let aggregate = '';
         let buf = '';
         let errBody = '';
-        let aborted = false;
         const repeatDetector = new RepeatTokenDetector();
         const isError = !res.statusCode || res.statusCode >= 400;
-        const timers: NodeJS.Timeout[] = [];
-        let idleTimer: NodeJS.Timeout | null = null;
-        const finish = (value: string) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          resolve(value);
-          res.destroy();
-          req.destroy();
-        };
-        const fail = (err: Error) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          reject(err);
-        };
-        const armIdle = () => {
-          if (watchdog.idleTimeoutMs <= 0) return;
-          if (idleTimer) clearTimeout(idleTimer);
-          idleTimer = setTimeout(() => {
-            aborted = true;
-            req.destroy(new Error(`stream idle for ${watchdog.idleTimeoutMs}ms; aborting`));
-          }, watchdog.idleTimeoutMs);
-          timers.push(idleTimer);
-        };
         armIdle();
-        // Wall-clock 采用"滑动 deadline"语义：初始 deadline = now + timeoutMs；
-        // 每次有 chunk 到达就把 deadline 顺延到 max(deadline, now + timeoutMs)，
-        // 直到达到硬上限 hardCap = timeoutMs * 4。这样：
-        //   - 健康但慢的流（用户报例：S007 round1 已 2780 chars）不会被误杀；
-        //   - 真卡死由 idleTimeout 兜底（已存在）；
-        //   - 真出现 token-loop 由 maxOutputChars / detectLoop 兜底；
-        //   - 极端长跑也不会无限拖：硬上限 = 4× 配置值。
-        let wallTimer: NodeJS.Timeout | null = null;
-        const wallStart = Date.now();
-        const hardDeadline = watchdog.timeoutMs > 0 ? wallStart + watchdog.timeoutMs * 4 : 0;
-        let currentDeadline = watchdog.timeoutMs > 0 ? wallStart + watchdog.timeoutMs : 0;
-        const armWall = () => {
-          if (watchdog.timeoutMs <= 0) return;
-          if (wallTimer) clearTimeout(wallTimer);
-          const fireAt = Math.min(currentDeadline, hardDeadline);
-          const delay = Math.max(0, fireAt - Date.now());
-          wallTimer = setTimeout(() => {
-            aborted = true;
-            const elapsed = Date.now() - wallStart;
-            const reason =
-              currentDeadline >= hardDeadline
-                ? `stream wall-clock hard cap ${watchdog.timeoutMs * 4}ms reached after ${elapsed}ms (extended ${Math.floor((elapsed - watchdog.timeoutMs) / watchdog.timeoutMs)}× by data); aborting`
-                : `stream wall-clock ${watchdog.timeoutMs}ms exceeded; aborting`;
-            req.destroy(new Error(reason));
-          }, delay);
-          timers.push(wallTimer);
-        };
-        const bumpWall = () => {
-          if (watchdog.timeoutMs <= 0) return;
-          // 收到数据则把 deadline 滑到至少 now + timeoutMs（受 hardDeadline 钳制）
-          const next = Date.now() + watchdog.timeoutMs;
-          if (next > currentDeadline) {
-            currentDeadline = Math.min(next, hardDeadline);
-            armWall();
-          }
-        };
-        armWall();
-        const cleanup = () => {
-          for (const t of timers) clearTimeout(t);
-          timers.length = 0;
-          idleTimer = null;
-        };
         res.setEncoding('utf8');
         res.on('data', (chunk: string) => {
+          if (settled) return;
           if (isError) {
             errBody += chunk;
             return;
           }
           armIdle();
-          bumpWall();
           buf += chunk;
           let idx;
           while ((idx = buf.indexOf('\n')) >= 0) {
@@ -271,17 +244,13 @@ export function streamPostNdjson(
               if (piece) {
                 aggregate += piece;
                 if (repeatDetector.feed(piece)) {
-                  aborted = true;
-                  cleanup();
-                  req.destroy(
+                  fail(
                     new Error('detected token loop in stream (repeated identical token); aborting'),
                   );
                   return;
                 }
                 if (detectLoop(aggregate)) {
-                  aborted = true;
-                  cleanup();
-                  req.destroy(
+                  fail(
                     new Error('detected cyclic token loop in stream (periodic tail); aborting'),
                   );
                   return;
@@ -294,7 +263,12 @@ export function streamPostNdjson(
             } catch {
               /* skip */
             }
-            onLine(line);
+            try {
+              onLine(line);
+            } catch (err) {
+              fail(err instanceof Error ? err : new Error(String(err)));
+              return;
+            }
             if (obj?.done === true) {
               finish(aggregate);
               return;
@@ -309,9 +283,7 @@ export function streamPostNdjson(
             }
             // watchdog: 输出上限
             if (watchdog.maxOutputChars > 0 && aggregate.length > watchdog.maxOutputChars) {
-              aborted = true;
-              cleanup();
-              req.destroy(
+              fail(
                 new Error(
                   `stream output exceeded ${watchdog.maxOutputChars} chars (likely token loop); aborting`,
                 ),
@@ -320,37 +292,36 @@ export function streamPostNdjson(
             }
             // watchdog: token loop
             if (detectLoop(aggregate)) {
-              aborted = true;
-              cleanup();
-              req.destroy(new Error('detected token loop in stream; aborting'));
+              fail(new Error('detected token loop in stream; aborting'));
               return;
             }
           }
         });
         res.on('end', () => {
           if (settled) return;
-          settled = true;
-          cleanup();
-          if (aborted) return; // reject already issued via req.destroy
           if (isError) {
-            reject(new Error(`HTTP ${res.statusCode}: ${errBody.slice(0, 500)}`));
+            fail(new Error(`HTTP ${res.statusCode}: ${errBody.slice(0, 500)}`));
           } else {
-            resolve(aggregate);
+            finish(aggregate);
           }
         });
         res.on('error', (e) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          if (!aborted) reject(e);
+          fail(e);
+        });
+        res.on('aborted', () => {
+          fail(new Error('stream response aborted before completion'));
         });
       },
     );
     req.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
+      fail(err);
     });
+    if (watchdog.timeoutMs > 0) {
+      wallTimer = setTimeout(() => {
+        fail(new Error(`stream wall-clock ${watchdog.timeoutMs}ms exceeded; aborting`));
+      }, watchdog.timeoutMs);
+    }
+    armIdle();
     req.write(payload);
     req.end();
   });
