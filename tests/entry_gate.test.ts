@@ -14,7 +14,7 @@ import { AuditLogger } from '../src/audit/audit.js';
 import type { Sandbox, ExecResult, ExecExtra } from '../src/sandbox/types.js';
 
 async function tmpWs(): Promise<{ ws: Workspace; audit: AuditLogger; dir: string }> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-entrygate-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-entrygate-'));
   const ws = new Workspace(dir);
   const audit = new AuditLogger({ root: dir, command: 'test' });
   await audit.start({ component: 'test' });
@@ -25,7 +25,9 @@ class FakeSandbox implements Sandbox {
   readonly kind = 'subprocess' as const;
   constructor(private readonly impl: (argv: string[]) => ExecResult) {}
   async build() { return { rebuilt: false, reason: 'stub' }; }
-  async exec(): Promise<ExecResult> { throw new Error('not used'); }
+  async exec(_cmd: string, argv: string[]): Promise<ExecResult> {
+    return this.impl(argv);
+  }
   async runProgram(args: string[], _extra?: ExecExtra): Promise<ExecResult> {
     return this.impl(args);
   }
@@ -45,7 +47,7 @@ describe('entry_gate sys.path bootstrap', () => {
 
   it('does not double-inject if marker already present', () => {
     const once = injectSrcBootstrap('from src.foo import bar\n');
-    expect(once).toContain('toaa: sys.path bootstrap');
+    expect(once).toContain('xcompiler: sys.path bootstrap');
     const twice = injectSrcBootstrap(once);
     expect(twice).toBe(once);
   });
@@ -54,8 +56,8 @@ describe('entry_gate sys.path bootstrap', () => {
     const src = '#!/usr/bin/env python\nfrom src.x import y\n';
     const out = injectSrcBootstrap(src);
     expect(out.startsWith('#!/usr/bin/env python\n')).toBe(true);
-    expect(out).toContain('_toaa_sys.path.insert');
-    expect(out.indexOf('from src.x')).toBeGreaterThan(out.indexOf('_toaa_sys.path.insert'));
+    expect(out).toContain('_xcompiler_sys.path.insert');
+    expect(out.indexOf('from src.x')).toBeGreaterThan(out.indexOf('_xcompiler_sys.path.insert'));
   });
 });
 
@@ -67,7 +69,7 @@ describe('autoFixSrcImports', () => {
     const fixed = await autoFixSrcImports(ws, audit);
     expect(fixed).toEqual(['src/main.py']);
     const content = await ws.readFile('src/main.py');
-    expect(content).toContain('_toaa_sys.path.insert');
+    expect(content).toContain('_xcompiler_sys.path.insert');
     // running again must be a no-op
     const fixed2 = await autoFixSrcImports(ws, audit);
     expect(fixed2).toEqual([]);
@@ -102,7 +104,7 @@ describe('probeEntrypoint', () => {
   it('reports failure when src/main.py --help exits non-zero', async () => {
     const { ws } = await tmpWs();
     await ws.ensure('src');
-    await ws.writeFile('src/main.py', 'raise SystemExit(2)\n');
+    await ws.writeFile('src/main.py', 'def main():\n    raise SystemExit(2)\nif __name__ == "__main__":\n    main()\n');
     const sb = new FakeSandbox((argv) => {
       expect(argv).toEqual(['src/main.py', '--help']);
       return { exitCode: 2, stdout: '', stderr: 'boom', timedOut: false, durationMs: 1 };
@@ -113,10 +115,76 @@ describe('probeEntrypoint', () => {
     expect(probe?.stderrTail).toContain('boom');
   });
 
+  it('fails import-only src/main.py even when Python would exit 0', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile('src/main.py', 'import argparse\nimport logging\n# placeholder\n');
+    const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }));
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(false);
+    expect(probe.stderrTail).toMatch(/placeholder|占位/);
+  });
+
+  it('fails when --help exits 0 but prints no usage/help text', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile(
+      'src/main.py',
+      'def main():\n    print("hello")\nif __name__ == "__main__":\n    main()\n',
+    );
+    const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: 'hello\n', stderr: '', timedOut: false, durationMs: 1 }));
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(false);
+    expect(probe.stderrTail).toContain('help/usage');
+  });
+
+  it('passes when src/main.py has a real CLI structure and help output', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile(
+      'src/main.py',
+      'import argparse\n\ndef main():\n    parser = argparse.ArgumentParser(description="demo")\n    parser.parse_args()\n\nif __name__ == "__main__":\n    main()\n',
+    );
+    const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: 'usage: main.py [-h]\n', stderr: '', timedOut: false, durationMs: 1 }));
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(true);
+  });
+
+  it('fails when no-arg smoke detects a network API failure even if --help works', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile(
+      'src/main.py',
+      'import argparse\n\ndef main():\n    argparse.ArgumentParser(description="demo").parse_args()\n\nif __name__ == "__main__":\n    main()\n',
+    );
+    const calls: string[][] = [];
+    const sb = new FakeSandbox((argv) => {
+      calls.push(argv);
+      if (argv.includes('--help')) {
+        return { exitCode: 0, stdout: 'usage: main.py [-h]\n', stderr: '', timedOut: false, durationMs: 1 };
+      }
+      return {
+        exitCode: 0,
+        stdout: 'An unexpected error occurred.\n',
+        stderr: 'ERROR Weather API request failed: 404 Client Error: Not Found\n',
+        timedOut: false,
+        durationMs: 1,
+      };
+    });
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(false);
+    expect(probe.command).toBe('python src/main.py');
+    expect(probe.stderrTail).toContain('Network API failure detected');
+    expect(calls).toEqual([['src/main.py', '--help'], ['src/main.py']]);
+  });
+
   it('falls back to python -m src.<pkg> --help', async () => {
     const { ws } = await tmpWs();
     await ws.ensure('src/myapp');
-    await ws.writeFile('src/myapp/__main__.py', 'print("hi")\n');
+    await ws.writeFile(
+      'src/myapp/__main__.py',
+      'import argparse\n\ndef main():\n    argparse.ArgumentParser(description="demo").parse_args()\n\nif __name__ == "__main__":\n    main()\n',
+    );
     const sb = new FakeSandbox((argv) => {
       expect(argv).toEqual(['-m', 'src.myapp', '--help']);
       return { exitCode: 0, stdout: 'usage', stderr: '', timedOut: false, durationMs: 1 };
@@ -159,6 +227,31 @@ describe('probeEntrypoint', () => {
     expect(probe?.command).toBe('npm run --silent start -- --help');
   });
 
+  it('prefers direct node src/main.ts when probing TypeScript source entries', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile('src/main.ts', 'console.log("usage")\n');
+    await ws.writeFile('package.json', JSON.stringify({
+      type: 'module',
+      scripts: { start: 'tsx src/main.ts' },
+    }, null, 2));
+    const sb: Sandbox = {
+      kind: 'subprocess',
+      async build() { return { rebuilt: false, reason: 'stub' }; },
+      async exec(cmd: string, argv: string[]) {
+        expect(cmd).toBe('node');
+        expect(argv).toEqual(['src/main.ts', '--help']);
+        return { exitCode: 0, stdout: 'usage', stderr: '', timedOut: false, durationMs: 1 };
+      },
+      async runProgram() { throw new Error('should not use runProgram'); },
+      async runTests() { throw new Error('not used'); },
+      async installDeps() { return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }; },
+    };
+    const probe = await getLanguageProfile('typescript').probeEntry?.(ws, sb);
+    expect(probe?.ok).toBe(true);
+    expect(probe?.command).toBe('node src/main.ts --help');
+  });
+
   it('uses package.json bin when probing TypeScript delivery', async () => {
     const { ws } = await tmpWs();
     await ws.writeFile('package.json', JSON.stringify({
@@ -168,16 +261,17 @@ describe('probeEntrypoint', () => {
     const sb: Sandbox = {
       kind: 'subprocess',
       async build() { return { rebuilt: false, reason: 'stub' }; },
-      async exec() { throw new Error('not used'); },
-      async runProgram(args: string[]) {
-        expect(args).toEqual(['bin/app.ts', '--help']);
+      async exec(cmd: string, argv: string[]) {
+        expect(cmd).toBe('node');
+        expect(argv).toEqual(['bin/app.ts', '--help']);
         return { exitCode: 0, stdout: 'usage', stderr: '', timedOut: false, durationMs: 1 };
       },
+      async runProgram() { throw new Error('should not use runProgram'); },
       async runTests() { throw new Error('not used'); },
       async installDeps() { return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }; },
     };
     const probe = await getLanguageProfile('typescript').probeEntry?.(ws, sb);
     expect(probe?.ok).toBe(true);
-    expect(probe?.command).toBe('npx tsx bin/app.ts --help');
+    expect(probe?.command).toBe('node bin/app.ts --help');
   });
 });

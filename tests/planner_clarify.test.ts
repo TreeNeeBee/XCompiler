@@ -26,7 +26,7 @@ const standardQuestions = [
 describe('Planner.clarify — multi-dimensional quality gate', () => {
   it('accepts a function-first seven-question set', async () => {
     const p = new Planner(fakeLLM(JSON.stringify(standardQuestions)));
-    const questions = await p.clarify('Create a small customer lookup command.');
+    const questions = await p.clarify('Create a small customer lookup CLI application.');
     expect(questions).toHaveLength(7);
     expect(questions[0]).toMatchObject({ id: 'Q1', category: 'functionality' });
     expect(questions[5]?.why).toContain('extension seam');
@@ -37,7 +37,7 @@ describe('Planner.clarify — multi-dimensional quality gate', () => {
     aliased[3]!.category = 'scope';
     aliased[4]!.category = 'performance';
     const p = new Planner(fakeLLM(JSON.stringify({ questions: aliased })));
-    const questions = await p.clarify('Create a small customer lookup command.');
+    const questions = await p.clarify('Create a small customer lookup CLI application.');
     expect(questions[3]?.category).toBe('boundary');
     expect(questions[4]?.category).toBe('quality');
   });

@@ -28,7 +28,7 @@ let ws: Workspace;
 let ctx: ToolContext;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-exec-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-exec-'));
   ws = new Workspace(tmp);
   ctx = { ws, sandbox: undefined as never, allowedWrites: ['src/'], stepId: 'S010' };
 });
@@ -76,7 +76,7 @@ describe('StepExecutor system prompt assembly', () => {
     const ctxWithAudit = { ...ctx, audit };
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: ctxWithAudit });
     expect(r.success).toBe(true);
-    const jsonl = await fs.readFile(path.join(tmp, '.toaa/audit.jsonl'), 'utf8');
+    const jsonl = await fs.readFile(path.join(tmp, '.xcompiler/audit.jsonl'), 'utf8');
     const lines = jsonl.trim().split('\n').map((l) => JSON.parse(l));
     const turns = lines.filter((l) => l.kind === 'executor.turn');
     expect(turns.length).toBeGreaterThan(0);
@@ -157,5 +157,27 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
     const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
     expect(written).toBe('def run():\n    print("x")\n    return None\n');
+  });
+
+  it('does not accept done=true while tool failures remain unresolved', async () => {
+    class FailedToolLLM implements LLMClient {
+      readonly name = 'failed-tool';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'write required output but also attempted a denied file',
+          actions: [
+            { tool: 'write_file', args: { path: 'outside/x.py', content: 'bad = True\n' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new FailedToolLLM(), maxRounds: 1 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('unresolved tool failures remain');
+    expect(r.toolCalls.find((c) => c.tool === 'write_file' && !c.ok)?.error).toContain('write denied');
+    await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
   });
 });

@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { ScoreStore } from '../src/llm/scores.js';
 
 async function tmpDir(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'toaa-scores-'));
+  return fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-scores-'));
 }
 
 describe('ScoreStore', () => {

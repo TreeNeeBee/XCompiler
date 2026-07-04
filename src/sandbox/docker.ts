@@ -36,7 +36,7 @@ export interface DockerSandboxOptions {
  *   把"环境构建产物"全部落在挂载卷里 → 重启容器后立即复用，无 docker volume 黏性。
  * - exec/runPython/runPytest：每次起一个临时容器（--rm），cgroup 限制由 --cpus / --memory 提供，
  *   wall-clock 超时由 host 端 spawn 控制。
- * - "debug 时直接修改工程代码"：因为是 bind mount，TOAA 工具在宿主机上的写入会瞬时反映到容器；
+ * - "debug 时直接修改工程代码"：因为是 bind mount，XCompiler 工具在宿主机上的写入会瞬时反映到容器；
  *   下一次 exec 直接看到新代码，无需重新构建镜像。
  *
  * 网络策略：

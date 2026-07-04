@@ -7,6 +7,7 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push(`# Plan (language: ${plan.language})`);
   lines.push('');
   lines.push(`- Intent: ${plan.intent}`);
+  lines.push(`- Project type: ${plan.projectType ?? 'application'}`);
   lines.push(`- Created: ${plan.createdAt}`);
   lines.push(`- Steps: ${plan.steps.length}`);
   lines.push('');
@@ -20,6 +21,28 @@ export function renderPlanMarkdown(plan: Plan): string {
     lines.push('```text');
     lines.push(plan.globalPrompt.trim());
     lines.push('```');
+    lines.push('');
+  }
+  if (plan.complexityAssessment) {
+    lines.push('## Complexity assessment');
+    lines.push('');
+    lines.push(`- Level: ${plan.complexityAssessment.level}`);
+    lines.push(`- Split recommended: ${plan.complexityAssessment.splitRecommended ? 'yes' : 'no'}`);
+    lines.push(`- User forced phase split: ${plan.complexityAssessment.userForcedPhaseSplit ? 'yes' : 'no'}`);
+    lines.push(`- Rationale: ${plan.complexityAssessment.rationale}`);
+    lines.push('');
+  }
+  if ((plan.implementationPhases?.length ?? 0) > 0) {
+    lines.push('## Implementation phases');
+    lines.push('');
+    lines.push('| Phase | Status | Objective | Scope | Deliverables | Depends on |');
+    lines.push('| --- | --- | --- | --- | --- | --- |');
+    for (const phase of plan.implementationPhases ?? []) {
+      lines.push(
+        `| ${phase.id} ${escapePipe(phase.title)} | ${phase.status} | ${escapePipe(phase.objective)} | ` +
+        `${phase.scope.join(', ') || '—'} | ${phase.deliverables.join(', ') || '—'} | ${phase.dependsOn.join(', ') || '—'} |`,
+      );
+    }
     lines.push('');
   }
   if (plan.dependencies && plan.dependencies.length > 0) {
@@ -49,6 +72,10 @@ export function renderPlanMarkdown(plan: Plan): string {
     }
     lines.push('');
   }
+  lines.push('## V-model macro workflow');
+  lines.push('');
+  for (const item of renderMacroWorkflow(plan)) lines.push(item);
+  lines.push('');
   lines.push('## Steps');
   lines.push('');
   lines.push('| ID | Phase | Role | Title | Outputs | Depends |');
@@ -72,6 +99,10 @@ export function renderPlanMarkdown(plan: Plan): string {
     lines.push(`- Outputs: ${s.outputs.join(', ')}`);
     lines.push(`- Tools: ${s.tools.join(', ') || '—'}`);
     lines.push(`- Acceptance: ${s.acceptance}`);
+    if ((s.subTasks?.length ?? 0) > 0) {
+      lines.push('- Subtasks:');
+      for (const item of renderSubTasks(s.subTasks ?? [], 1)) lines.push(item);
+    }
     lines.push('');
     lines.push(t().render.labelSystemPrompt);
     lines.push('');
@@ -85,4 +116,30 @@ export function renderPlanMarkdown(plan: Plan): string {
 
 function escapePipe(s: string): string {
   return s.replace(/\|/g, '\\|');
+}
+
+function renderMacroWorkflow(plan: Plan): string[] {
+  const lines: string[] = [];
+  for (const step of plan.steps) {
+    lines.push(`- ${step.id} ${step.phase}: ${step.title} (${step.role})`);
+    if (step.subTasks && step.subTasks.length > 0) {
+      lines.push(...renderSubTasks(step.subTasks, 1));
+    }
+  }
+  return lines;
+}
+
+function renderSubTasks(tasks: NonNullable<Plan['steps'][number]['subTasks']>, depth: number): string[] {
+  const lines: string[] = [];
+  const indent = '  '.repeat(depth);
+  for (const task of tasks) {
+    const outputs = task.outputs && task.outputs.length > 0 ? ` [${task.outputs.join(', ')}]` : '';
+    lines.push(`${indent}- ${task.id}: ${task.title}${outputs}`);
+    lines.push(`${indent}  ${task.description}`);
+    if (task.acceptance) lines.push(`${indent}  Acceptance: ${task.acceptance}`);
+    if (task.subTasks && task.subTasks.length > 0) {
+      lines.push(...renderSubTasks(task.subTasks, depth + 1));
+    }
+  }
+  return lines;
 }

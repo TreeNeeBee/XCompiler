@@ -2,22 +2,24 @@ import { Command } from 'commander';
 import { runCompile, CompileExitError } from './compile.js';
 import { resolveCompileWorkspace } from './workspace.js';
 import { setLocale, t } from '../i18n/index.js';
-import { TOAA_VERSION } from '../version.js';
+import { XCOMPILER_VERSION } from '../version.js';
 import { configureLocalizedHelp, localeFromArgv, parseIntent, parseLocale } from './arguments.js';
+import { xcEnv } from '../config/env.js';
 
-setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
+const defaultBaseDir = xcEnv('DEFAULT_BASE_DIR') ?? '/tmp';
 
 const program = new Command();
 configureLocalizedHelp(program);
 program
-  .name('toaa_c')
+  .name('xcompiler_build')
   .description(t().cli.compileDescription)
-  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption)
+  .version(XCOMPILER_VERSION, '-V, --version', t().cli.versionOption)
   .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
-  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--base-dir <dir>', t().cli.optBaseDir, defaultBaseDir)
   .option('--name <name>', t().cli.optName)
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
@@ -25,6 +27,7 @@ program
   .option('--intent <kind>', t().cli.optIntent, parseIntent, 'greenfield')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--project-file <file>', t().cli.optProjectFile)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
@@ -42,6 +45,8 @@ program
       intent: opts.intent,
       baselinePlanFile: opts.baselinePlan,
       outputFile: opts.planOut,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'build',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
     });

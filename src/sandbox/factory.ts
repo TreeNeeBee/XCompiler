@@ -1,25 +1,26 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
-import type { ToaaConfig } from '../config/config.js';
+import type { XCompilerConfig } from '../config/config.js';
 import type { Language } from '../core/plan.js';
 import { getLanguageProfile } from '../core/language.js';
 import type { Sandbox } from './types.js';
 import { SubprocessSandbox } from './subprocess.js';
 import { DockerSandbox } from './docker.js';
 import { t } from '../i18n/index.js';
+import { xcEnv } from '../config/env.js';
 
 /**
  * 检测当前进程是否跑在容器里。依据（任一命中即认为在容器内）：
- *  - 环境变量 TOAA_IN_CONTAINER=1（显式覆盖 / Dockerfile 中设置）
+ *  - 环境变量 XC_IN_CONTAINER=1（显式覆盖 / Dockerfile 中设置）
  *  - /.dockerenv 文件存在（docker 默认创建）
  *  - /run/.containerenv 存在（podman 默认创建）
  *  - /proc/1/cgroup 包含 'docker' / 'kubepods' / 'containerd'
  *
- * 显式设 TOAA_IN_CONTAINER=0 强制按"宿主"对待（仅在你确认 DooD 路径语义无误时使用）。
+ * 显式设 XC_IN_CONTAINER=0 强制按"宿主"对待（仅在你确认 DooD 路径语义无误时使用）。
  */
 export function isRunningInContainer(): boolean {
-  const env = process.env.TOAA_IN_CONTAINER;
+  const env = xcEnv('IN_CONTAINER');
   if (env === '1') return true;
   if (env === '0') return false;
   if (existsSync('/.dockerenv') || existsSync('/run/.containerenv')) return true;
@@ -35,12 +36,12 @@ export function isRunningInContainer(): boolean {
 /**
  * 工厂：按 config.agent.sandbox 选择实现。
  *
- * 约束：当 TOAA 本身运行在容器内时，**不支持** sandbox=docker（DooD 在多数
+ * 约束：当 XCompiler 本身运行在容器内时，**不支持** sandbox=docker（DooD 在多数
  * 部署中会造成 bind-mount 路径语义不一致、docker.sock GID 错位等问题）。给
- * 出明确错误信息，引导用户改用 sandbox=subprocess 或在宿主上运行 TOAA。
+ * 出明确错误信息，引导用户改用 sandbox=subprocess 或在宿主上运行 XCompiler。
  */
 export function createSandbox(
-  cfg: ToaaConfig,
+  cfg: XCompilerConfig,
   ws: Workspace,
   audit?: AuditLogger,
   language: Language = cfg.agent.language,

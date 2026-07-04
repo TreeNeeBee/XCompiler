@@ -2,17 +2,18 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { runExecute } from './execute.js';
 import { setLocale, t } from '../i18n/index.js';
-import { TOAA_VERSION } from '../version.js';
+import { XCOMPILER_VERSION } from '../version.js';
 import { configureLocalizedHelp, localeFromArgv, parseLocale, parsePhase, parseStepId } from './arguments.js';
+import { xcEnv } from '../config/env.js';
 
-setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
 
 const program = new Command();
 configureLocalizedHelp(program);
 program
-  .name('toaa_run')
+  .name('xcompiler_run')
   .description(t().cli.runDescription)
-  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption)
+  .version(XCOMPILER_VERSION, '-V, --version', t().cli.versionOption)
   .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (cmd) => { const l = cmd.opts().lang as string | undefined; if (l) setLocale(l); })
   .argument('[plan]', t().cli.argPlan)
@@ -24,11 +25,12 @@ program
   .option('--phase <phase>', t().cli.optPhase, parsePhase)
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
+  .option('--project-file <file>', t().cli.optProjectFile)
   .action(async (planArg, opts) => {
     const explicit = opts.output ?? opts.workspace;
     // workspace 推断优先级：
     //  1. 显式 -o / -w
-    //  2. plan 参数给出时 → 取 plan 所在目录（避免在 toaa 源码目录里 run 别人的项目）
+    //  2. plan 参数给出时 → 取 plan 所在目录（避免在 XCompiler 源码目录里 run 别人的项目）
     //  3. 均未提供 → process.cwd()
     const ws = explicit
       ? path.resolve(explicit)
@@ -45,6 +47,8 @@ program
       onlyPhase: opts.phase,
       resetStatus: !!opts.reset,
       force: !!opts.force,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'run',
     });
   });
 

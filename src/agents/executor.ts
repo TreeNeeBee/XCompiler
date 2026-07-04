@@ -39,7 +39,7 @@ export interface ExecutorRunInput {
   skillHints?: string[];
   /** debug 模式下传入上一轮失败记录（错误文本 / 失败测试 / 上下文）。 */
   debugContext?: { reason: string; failureLog: string; suggestions?: string };
-  /** Plan 级别的全局 system prompt（toaa_c 沉淀）。 */
+  /** Plan 级别的全局 system prompt（xcompiler build 沉淀）。 */
   globalPrompt?: string;
   /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
   languageProfile?: LanguageProfile;
@@ -83,6 +83,7 @@ interface LLMTurn {
 interface TurnFeedbackContext {
   declaredDone: boolean;
   actionCount: number;
+  unresolvedFailures?: string[];
 }
 
 export class StepExecutor {
@@ -92,7 +93,7 @@ export class StepExecutor {
     const maxRounds = this.opts.maxRounds ?? 6;
     const toolMap = new Map(inp.tools.map((t) => [t.name, t]));
     const toolDocs = inp.tools
-      .map((t) => `- ${t.name}: ${t.description} args=${JSON.stringify(t.argsSchema)}`)
+      .map((t) => `- ${t.name}: ${describeToolForStep(t, inp.ctx)} args=${JSON.stringify(t.argsSchema)}`)
       .join('\n');
     const skillBlock =
       inp.skillHints && inp.skillHints.length > 0
@@ -123,6 +124,7 @@ export class StepExecutor {
     let lastActionsKey: string | null = null;
     /** 每个 (tool+args) 指纹被尝试过的累计次数；用于检测"换汤不换药"。 */
     const actionFingerprints = new Map<string, number>();
+    const unresolvedToolFailures = new Map<string, string>();
     let actualRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
@@ -153,8 +155,8 @@ export class StepExecutor {
       } catch (err) {
         rep.done('failed');
         const errMsg = (err as Error).message;
-        // 把部分流落盘到 .toaa/llm-stream/<step>-<role>-r<n>.txt
-        const dumpRel = `.toaa/llm-stream/${inp.step.id}-${inp.step.role}-r${round}.txt`;
+        // 把部分流落盘到 .xcompiler/llm-stream/<step>-<role>-r<n>.txt
+        const dumpRel = `.xcompiler/llm-stream/${inp.step.id}-${inp.step.role}-r${round}.txt`;
         try {
           const dumpAbs = inp.ctx.ws.abs(dumpRel);
           await fs.mkdir(path.dirname(dumpAbs), { recursive: true });
@@ -226,6 +228,7 @@ export class StepExecutor {
         const selectedTool = toolMap.get(a.tool);
         if (!selectedTool) {
           const r = { ok: false, error: `tool not allowed for this step: ${a.tool}` };
+          updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
           calls.push({ tool: a.tool, ok: false, error: r.error });
           turnResults.push({ ...r, tool: a.tool });
           await inp.ctx.audit?.event('tool.call', t().audit.toolDenied(a.tool), {
@@ -242,6 +245,7 @@ export class StepExecutor {
         );
         const r = await safeRunTool(selectedTool, a.args, inp.ctx);
         toolReporter.done(r.ok ? 'done' : 'failed');
+        updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
         await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, r.ok, r.summary ?? r.error ?? ''), {
           messageId: 'audit.tool_result',
           stepId: inp.step.id,
@@ -252,7 +256,7 @@ export class StepExecutor {
         turnResults.push({ ...r, tool: a.tool });
       }
       const verify = await verifyOutputs(inp);
-      if (turn.done && verify.ok) {
+      if (turn.done && verify.ok && unresolvedToolFailures.size === 0) {
         const metrics = computeMetrics({
           rounds: actualRounds,
           parseFailures,
@@ -269,6 +273,7 @@ export class StepExecutor {
         content: renderFeedback(turnResults, verify, {
           declaredDone: turn.done === true,
           actionCount: actions.length,
+          unresolvedFailures: [...unresolvedToolFailures.values()],
         }),
       });
     }
@@ -287,10 +292,70 @@ export class StepExecutor {
       rounds: maxRounds,
       toolCalls: calls,
       finalThought,
-      error: 'max rounds exceeded without satisfying outputs',
+      error:
+        finalVerify.ok && unresolvedToolFailures.size > 0
+          ? `unresolved tool failures remain: ${[...unresolvedToolFailures.values()].join('; ')}`
+          : 'max rounds exceeded without satisfying outputs',
       metrics,
     };
   }
+}
+
+function updateUnresolvedToolFailures(
+  unresolved: Map<string, string>,
+  action: LLMAction,
+  result: ToolResult,
+): void {
+  const keys = actionResolutionKeys(action);
+  if (result.ok) {
+    for (const key of keys) unresolved.delete(key);
+    return;
+  }
+  const detail = `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`;
+  for (const key of keys) unresolved.set(key, detail);
+}
+
+function actionResolutionKeys(action: LLMAction): string[] {
+  const targets = actionTargetPaths(action.tool, action.args);
+  if (targets.length > 0) return targets.map((target) => `path:${target}`);
+  return [`tool:${action.tool}`];
+}
+
+function actionTargetPaths(tool: string, args: Record<string, unknown>): string[] {
+  if (tool === 'write_file' || tool === 'append_file' || tool === 'replace_in_file') {
+    return typeof args.path === 'string' ? [normalizeRelPath(args.path)] : [];
+  }
+  if (tool === 'apply_patch' && typeof args.patch === 'string') {
+    return extractPatchTargets(args.patch).map(normalizeRelPath);
+  }
+  if (tool === 'add_dependency') return ['requirements.txt'];
+  if (tool === 'http_fetch' && typeof args.saveAs === 'string') {
+    return [normalizeRelPath(args.saveAs)];
+  }
+  return [];
+}
+
+function extractPatchTargets(patch: string): string[] {
+  const out = new Set<string>();
+  for (const line of patch.split('\n')) {
+    const m =
+      line.match(/^\*\*\* (?:Update File|Add File|Delete File):\s+(.+)$/) ??
+      line.match(/^\+\+\+\s+b\/(.+)$/) ??
+      line.match(/^---\s+a\/(.+)$/);
+    if (m?.[1] && m[1] !== '/dev/null') out.add(m[1].trim());
+  }
+  return [...out];
+}
+
+function normalizeRelPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
+}
+
+function describeToolForStep(tool: Tool, ctx: ToolContext): string {
+  if ((tool.name === 'write_file' || tool.name === 'append_file') && ctx.writeChunkBytes) {
+    return `${tool.description} 当前 Step content chunk limit: ${ctx.writeChunkBytes}B.`;
+  }
+  return tool.description;
 }
 
 async function safeRunTool(t: Tool, args: unknown, ctx: ToolContext): Promise<ToolResult> {
@@ -344,7 +409,7 @@ export async function verifyOutputs(inp: ExecutorRunInput): Promise<{ ok: boolea
 function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
   const ctxBlock = (inp.contextSnippets ?? [])
     .map((s) =>
-      `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.toaa/architecture-contract.json' ? 8000 : 2200)}\n\`\`\``,
+      `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.xcompiler/architecture-contract.json' ? 8000 : 2200)}\n\`\`\``,
     )
     .join('\n\n');
   const dbg = inp.debugContext
@@ -360,9 +425,15 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
     '## description',
     inp.step.description,
     '',
-    '## outputs (whitelist for writes)',
+    '## required outputs',
     inp.step.outputs.map((o) => `- ${o}`).join('\n'),
     '',
+    '## writable paths (tool allowlist)',
+    inp.ctx.allowedWrites.map((o) => `- ${o}`).join('\n'),
+    '',
+    inp.step.subTasks && inp.step.subTasks.length > 0
+      ? `## step subtasks (execute inside this macro Step)\n${renderStepSubTasks(inp.step.subTasks, 0)}\n`
+      : '',
     '## available tools',
     toolDocs || '(none)',
     '',
@@ -374,6 +445,22 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
     t().prompts.executorUserPromptOutro,
   ]
     .filter(Boolean)
+    .join('\n');
+}
+
+function renderStepSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number): string {
+  const indent = '  '.repeat(depth);
+  return tasks
+    .flatMap((task) => {
+      const outputs = task.outputs && task.outputs.length > 0 ? ` outputs=[${task.outputs.join(', ')}]` : '';
+      const lines = [
+        `${indent}- ${task.id}: ${task.title}${outputs}`,
+        `${indent}  ${task.description}`,
+      ];
+      if (task.acceptance) lines.push(`${indent}  acceptance: ${task.acceptance}`);
+      if (task.subTasks && task.subTasks.length > 0) lines.push(renderStepSubTasks(task.subTasks, depth + 1));
+      return lines;
+    })
     .join('\n');
 }
 
@@ -396,6 +483,15 @@ function renderFeedback(
         `Invalid completion: required outputs are still missing. ` +
         `Next response must include concrete write actions that create: ${verify.missing.join(', ')}. ` +
         `Do not return done=true with actions=[] until those files exist.`,
+      );
+    }
+  }
+  if (turn.unresolvedFailures && turn.unresolvedFailures.length > 0) {
+    lines.push(`Unresolved tool failures remain: ${turn.unresolvedFailures.join('; ')}`);
+    if (turn.declaredDone) {
+      lines.push(
+        `Invalid completion: do not return done=true until each failed tool call is corrected ` +
+        `or superseded by a successful tool call on the same target.`,
       );
     }
   }

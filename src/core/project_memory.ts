@@ -5,7 +5,7 @@ import type { Workspace } from '../workspace/workspace.js';
 import { DOC_NAMES } from './docs.js';
 import { PlanSchema, type Language, type PlanIntent, type Step } from './plan.js';
 
-export const PROJECT_MEMORY_PATH = '.toaa/project_memory.json';
+export const PROJECT_MEMORY_PATH = '.xcompiler/project_memory.json';
 
 export interface ProjectMemoryFile {
   path: string;
@@ -91,7 +91,7 @@ export async function buildProjectMemory(
     DOC_NAMES.delivery,
     ...(intent === 'self'
       ? [
-          'docs/TOAA_design.md',
+          'docs/XCompiler_design.md',
           'docs/self_bootstrap.md',
           'docs/implementation_plan.md',
           'docs/plugin_api.md',

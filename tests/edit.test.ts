@@ -12,7 +12,7 @@ let ws: Workspace;
 let ctx: ToolContext;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-edit-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-edit-'));
   ws = new Workspace(tmp);
   ctx = {
     ws,

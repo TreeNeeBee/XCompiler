@@ -9,7 +9,7 @@ import { setLocale } from '../src/i18n/index.js';
 setLocale('en');
 
 async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-doctor-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-doctor-'));
   const cfgPath = path.join(dir, 'config.yaml');
   const base = {
     locale: 'en',
@@ -38,7 +38,7 @@ async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
 
 describe('doctor', () => {
   it('reports config-load failure as a single fail item', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-doctor-'));
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-doctor-'));
     const cfgPath = path.join(dir, 'config.yaml');
     await fs.writeFile(cfgPath, 'this is: not: valid: yaml: [', 'utf8');
     const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });

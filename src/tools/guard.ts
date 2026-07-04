@@ -25,13 +25,80 @@ export interface EditRecord {
 export interface EditGuardOptions {
   ws: Workspace;
   stepId: string;
-  /** 单 Step 内累计写入/修改行数上限，超过则后续写操作直接拒绝。 */
-  maxLines?: number;
+  /**
+   * 单 Step 内累计写入/修改行数上限，超过则后续写操作直接拒绝。
+   * 传入数字时按固定值执行；传入/省略 auto 时按当前 Step 上下文估算。
+   */
+  maxLines?: number | 'auto';
+  /** 用于 auto 行数预算的 Step/工具上下文。 */
+  budgetContext?: EditGuardBudgetContext;
   /** edits 日志相对 workspace 的路径，默认 logs/edits-<stepId>.jsonl */
   logRelPath?: string;
 }
 
-const WRITE_TOOLS = new Set(['write_file', 'apply_patch', 'replace_in_file', 'add_dependency']);
+const WRITE_TOOLS = new Set(['write_file', 'append_file', 'apply_patch', 'replace_in_file', 'add_dependency']);
+const DEFAULT_EDIT_LINES_PER_STEP = 400;
+const AUTO_EDIT_LINES_HARD_CAP = 2400;
+
+export interface EditGuardBudgetContext {
+  phase?: string;
+  role?: string;
+  debug?: boolean;
+  tools?: readonly string[];
+  outputs?: readonly string[];
+  allowedWrites?: readonly string[];
+  contextChars?: number;
+}
+
+export function resolveEditGuardMaxLines(
+  maxLines: number | 'auto' | undefined,
+  ctx: EditGuardBudgetContext = {},
+): number {
+  if (typeof maxLines === 'number') return maxLines;
+
+  const tools = new Set(ctx.tools ?? []);
+  const writeToolBonus =
+    (tools.has('write_file') ? 160 : 0) +
+    (tools.has('append_file') ? 120 : 0) +
+    (tools.has('apply_patch') ? 120 : 0) +
+    (tools.has('replace_in_file') ? 80 : 0) +
+    (tools.has('add_dependency') ? 20 : 0);
+
+  const phaseBonus: Record<string, number> = {
+    CODE: 300,
+    TEST: 420,
+    DEBUG: 560,
+    REFACTOR: 360,
+    ARCH: 180,
+    TASK: 120,
+    REQUIREMENT: 80,
+    DELIVERY: 80,
+  };
+
+  const writeTargets = [...(ctx.outputs ?? []), ...(ctx.allowedWrites ?? [])];
+  const uniqueTargets = new Set(writeTargets.map((x) => x.replace(/\\/g, '/').replace(/\/+$/, '')));
+  let targetBonus = 0;
+  for (const target of uniqueTargets) {
+    if (!target) continue;
+    const looksLikeFile = /\.[A-Za-z0-9]+$/.test(target);
+    targetBonus += looksLikeFile ? 120 : 70;
+    if (target.startsWith('tests/') || target.includes('/tests/')) targetBonus += 80;
+    if (target.startsWith('src/') || target.includes('/src/')) targetBonus += 60;
+  }
+  targetBonus = Math.min(targetBonus, 640);
+
+  const contextBonus = Math.min(Math.ceil((ctx.contextChars ?? 0) / 1200) * 40, 480);
+  const debugBonus = ctx.debug || ctx.role === 'Debugger' ? 260 : 0;
+  const dynamic =
+    DEFAULT_EDIT_LINES_PER_STEP +
+    (phaseBonus[ctx.phase ?? ''] ?? 160) +
+    writeToolBonus +
+    targetBonus +
+    contextBonus +
+    debugBonus;
+
+  return Math.min(Math.max(dynamic, DEFAULT_EDIT_LINES_PER_STEP), AUTO_EDIT_LINES_HARD_CAP);
+}
 
 export class EditGuard {
   private accumulatedLines = 0;
@@ -39,7 +106,7 @@ export class EditGuard {
   private readonly maxLines: number;
 
   constructor(private readonly opts: EditGuardOptions) {
-    this.maxLines = opts.maxLines ?? 400;
+    this.maxLines = resolveEditGuardMaxLines(opts.maxLines, opts.budgetContext);
     this.logAbs = opts.ws.abs(opts.logRelPath ?? `logs/edits-${opts.stepId}.jsonl`);
   }
 
@@ -93,7 +160,7 @@ export class EditGuard {
 /** 粗略估计本次写操作影响的行数。 */
 function approxLineDelta(tool: string, args: unknown): number {
   const a = args as Record<string, unknown>;
-  if (tool === 'write_file' && typeof a?.content === 'string') {
+  if ((tool === 'write_file' || tool === 'append_file') && typeof a?.content === 'string') {
     return countLines(a.content as string);
   }
   if (tool === 'replace_in_file') {

@@ -1,4 +1,4 @@
-import type { ToaaConfig } from '../config/config.js';
+import type { XCompilerConfig } from '../config/config.js';
 import type { Role } from '../core/plan.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { OllamaClient } from './ollama.js';
@@ -12,7 +12,7 @@ export class LLMRouter {
   private readonly clients = new Map<string, LLMClient>();
 
   constructor(
-    private readonly cfg: ToaaConfig,
+    private readonly cfg: XCompilerConfig,
     private readonly audit?: AuditLogger,
     private readonly scores?: ScoreStore,
     private readonly unavailable: ReadonlySet<string> = new Set(),

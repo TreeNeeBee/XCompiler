@@ -11,7 +11,7 @@ export interface LsOptions {
   maxDepth?: number;
 }
 
-/** `toaa ls` —— 在 workspace 下扫描所有 plan.json 并打印状态摘要。 */
+/** `xcompiler ls` —— 在 workspace 下扫描所有 plan.json 并打印状态摘要。 */
 export async function runLs(opts: LsOptions): Promise<void> {
   const root = path.resolve(opts.workspace);
   const found = await findPlans(root, opts.maxDepth ?? 4);
@@ -48,7 +48,7 @@ export interface ShowOptions {
   auditTail?: number;
 }
 
-/** `toaa show <stepId>` —— 打印 Step 定义、状态、产物、最近审计。 */
+/** `xcompiler show <stepId>` —— 打印 Step 定义、状态、产物、最近审计。 */
 export async function runShow(opts: ShowOptions): Promise<void> {
   const root = path.resolve(opts.workspace);
   const planPath = opts.planPath ? path.resolve(opts.planPath) : path.join(root, 'plan.json');
@@ -72,6 +72,11 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log(chalk.gray(t().inspect.secAcceptance));
   console.log(step.acceptance);
   console.log('');
+  if ((step.subTasks?.length ?? 0) > 0) {
+    console.log(chalk.gray(t().inspect.secSubtasks));
+    for (const line of renderSubTasks(step.subTasks ?? [], 0)) console.log(line);
+    console.log('');
+  }
   console.log(chalk.gray(t().inspect.secSystemPrompt));
   console.log(step.systemPrompt);
   console.log('');
@@ -84,7 +89,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log('');
 
   // 最近审计 (jsonl)
-  const auditFile = path.join(root, '.toaa', 'audit.jsonl');
+  const auditFile = path.join(root, '.xcompiler', 'audit.jsonl');
   const tail = opts.auditTail ?? 10;
   const events = await readAuditFor(auditFile, opts.stepId, tail);
   console.log(chalk.gray(t().inspect.secRecentAudit(events.length)));
@@ -131,6 +136,21 @@ function statusBadge(status: Step['status']): string {
   }
 }
 
+function renderSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number): string[] {
+  const lines: string[] = [];
+  const indent = '  '.repeat(depth);
+  for (const task of tasks) {
+    const outputs = task.outputs && task.outputs.length > 0 ? ` [${task.outputs.join(', ')}]` : '';
+    lines.push(`${indent}- ${task.id}: ${task.title}${outputs}`);
+    lines.push(`${indent}  ${task.description}`);
+    if (task.acceptance) lines.push(`${indent}  acceptance: ${task.acceptance}`);
+    if (task.subTasks && task.subTasks.length > 0) {
+      lines.push(...renderSubTasks(task.subTasks, depth + 1));
+    }
+  }
+  return lines;
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try {
     await fs.stat(p);
@@ -142,7 +162,7 @@ async function fileExists(p: string): Promise<boolean> {
 
 async function findPlans(root: string, maxDepth: number): Promise<string[]> {
   const out: string[] = [];
-  const SKIP = new Set(['node_modules', '.git', 'dist', '.toaa', 'docs']);
+  const SKIP = new Set(['node_modules', '.git', 'dist', '.xcompiler', 'docs']);
   async function walk(dir: string, depth: number): Promise<void> {
     if (depth > maxDepth) return;
     let entries: import('node:fs').Dirent[];
@@ -153,8 +173,8 @@ async function findPlans(root: string, maxDepth: number): Promise<string[]> {
     }
     for (const e of entries) {
       if (e.name.startsWith('.') && e.name !== '.') {
-        if (e.name !== '.toaa') {
-          // skip hidden dirs except .toaa (which itself is in SKIP anyway)
+        if (e.name !== '.xcompiler') {
+          // skip hidden dirs except .xcompiler (which itself is in SKIP anyway)
         }
       }
       if (e.isDirectory()) {

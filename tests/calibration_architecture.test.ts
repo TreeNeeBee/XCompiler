@@ -23,7 +23,7 @@ function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
 }
 
 describe('calibrateArchitectureStepMappings', () => {
-  it('splits CODE and TEST steps that cover multiple architecture modules', () => {
+  it('keeps CODE and TEST macro steps while adding module subtasks', () => {
     const modules: ArchitectureModule[] = [
       {
         id: 'M001',
@@ -73,33 +73,32 @@ describe('calibrateArchitectureStepMappings', () => {
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
     const codeSteps = calibrated.filter((item) => item.phase === 'CODE');
     expect(codeSteps.map((item) => item.outputs)).toEqual([
-      ['src/holiday_service.py'],
-      ['src/models.py'],
+      ['src/holiday_service.py', 'src/models.py'],
       ['src/main.py'],
     ]);
+    expect(codeSteps[0]?.subTasks?.map((task) => task.id)).toEqual(['M001', 'M002']);
 
     const cliStep = codeSteps.find((item) => item.outputs.includes('src/main.py'));
-    expect(cliStep?.dependsOn).toEqual(expect.arrayContaining(['S004', 'S005']));
+    expect(cliStep?.dependsOn).toEqual(expect.arrayContaining(['S004']));
 
     const testSteps = calibrated.filter((item) => item.phase === 'TEST');
     expect(testSteps.map((item) => item.outputs)).toEqual([
-      ['tests/test_holiday_service.py'],
-      ['tests/test_models.py'],
+      ['tests/test_holiday_service.py', 'tests/test_models.py'],
       ['tests/test_cli.py'],
     ]);
+    expect(testSteps[0]?.subTasks?.map((task) => task.id)).toEqual(['M001', 'M002']);
 
-    const modelsTest = testSteps.find((item) => item.outputs.includes('tests/test_models.py'));
-    expect(modelsTest?.dependsOn).toEqual(expect.arrayContaining(['S005']));
+    const sharedTest = testSteps.find((item) => item.outputs.includes('tests/test_models.py'));
+    expect(sharedTest?.dependsOn).toEqual(expect.arrayContaining(['S004']));
 
     const cliTest = testSteps.find((item) => item.outputs.includes('tests/test_cli.py'));
-    expect(cliTest?.dependsOn).toEqual(expect.arrayContaining(['S006']));
+    expect(cliTest?.dependsOn).toEqual(expect.arrayContaining(['S005']));
 
     const demand: ArchitectureDemand = {
       nonTrivial: true,
       surfaces: ['cli', 'integration'],
       baselineModules: 0,
       minModules: 3,
-      minCodeSteps: 3,
       reasonLabel: 'test',
     };
     expect(validateArchitectureContract(modules, calibrated, 'python', demand)).toEqual([]);

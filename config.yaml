@@ -42,7 +42,7 @@ agent:
   max_steps: 50
   max_debug_retries: 3
   # 默认使用 subprocess：在实际工程目录直接 spawn，轻量、无需 docker。
-  # 如需隔离，设为 docker（宿主机必须能访问 /var/run/docker.sock、安装 docker CLI，且 toaa 未运行在容器内）。
+  # 如需隔离，设为 docker（宿主机必须能访问 /var/run/docker.sock、安装 docker CLI，且 XCompiler 未运行在容器内）。
   sandbox: subprocess
   sandbox_limits:
     cpu: 1

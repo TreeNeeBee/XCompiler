@@ -1,29 +1,29 @@
 import { t } from '../i18n/index.js';
-import { TOAA_PLUGIN_API_VERSION, TOAA_VERSION } from '../version.js';
+import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../version.js';
 import type {
   PluginCompatibilityCode,
   PluginCompatibilityReport,
-  ToaaPluginManifest,
+  XCompilerPluginManifest,
 } from './types.js';
 
 export interface PluginRuntimeVersion {
-  toaaVersion?: string;
+  xcompilerVersion?: string;
   pluginApiVersion?: number;
 }
 
 /** 在加载插件代码前可独立调用的 manifest 兼容性检查。 */
 export function checkPluginCompatibility(
-  manifest: ToaaPluginManifest,
+  manifest: XCompilerPluginManifest,
   runtime: PluginRuntimeVersion = {},
 ): PluginCompatibilityReport {
   const candidate = manifest && typeof manifest === 'object'
     ? manifest
-    : {} as ToaaPluginManifest;
-  const toaaVersion = runtime.toaaVersion ?? TOAA_VERSION;
-  const pluginApiVersion = runtime.pluginApiVersion ?? TOAA_PLUGIN_API_VERSION;
+    : {} as XCompilerPluginManifest;
+  const xcompilerVersion = runtime.xcompilerVersion ?? XCOMPILER_VERSION;
+  const pluginApiVersion = runtime.pluginApiVersion ?? XCOMPILER_PLUGIN_API_VERSION;
   const pluginId = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   const pluginVersion = typeof candidate.version === 'string' ? candidate.version : '';
-  const base = { pluginId, pluginVersion, toaaVersion, pluginApiVersion };
+  const base = { pluginId, pluginVersion, xcompilerVersion, pluginApiVersion };
   const reject = (code: Exclude<PluginCompatibilityCode, 'compatible'>, message: string) => ({
     ...base,
     compatible: false,
@@ -31,9 +31,9 @@ export function checkPluginCompatibility(
     message,
   } as const);
 
-  const current = parseSemVer(toaaVersion);
+  const current = parseSemVer(xcompilerVersion);
   if (!current) {
-    return reject('invalid-runtime-version', t().plugins.invalidCoreVersion(toaaVersion));
+    return reject('invalid-runtime-version', t().plugins.invalidCoreVersion(xcompilerVersion));
   }
   if (!/^[a-z0-9][a-z0-9._-]*$/u.test(pluginId)) {
     return reject('invalid-id', t().plugins.invalidId(pluginId));
@@ -47,17 +47,17 @@ export function checkPluginCompatibility(
       t().plugins.apiVersionMismatch(pluginId, candidate.apiVersion, pluginApiVersion),
     );
   }
-  const minimum = parseSemVer(candidate.minToaaVersion);
+  const minimum = parseSemVer(candidate.minXCompilerVersion);
   if (!minimum) {
     return reject(
-      'invalid-min-toaa-version',
-      t().plugins.invalidMinimumVersion(pluginId, String(candidate.minToaaVersion ?? '')),
+      'invalid-min-xcompiler-version',
+      t().plugins.invalidMinimumVersion(pluginId, String(candidate.minXCompilerVersion ?? '')),
     );
   }
   if (compareSemVer(current, minimum) < 0) {
     return reject(
-      'toaa-version-too-old',
-      t().plugins.coreVersionTooOld(pluginId, candidate.minToaaVersion, toaaVersion),
+      'xcompiler-version-too-old',
+      t().plugins.coreVersionTooOld(pluginId, candidate.minXCompilerVersion, xcompilerVersion),
     );
   }
   return { ...base, compatible: true, code: 'compatible' };

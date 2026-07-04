@@ -32,7 +32,7 @@ describe('incremental development support', () => {
   beforeEach(() => setLocale('en'));
 
   it('summarizes an existing workspace baseline', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-incremental-'));
     const ws = new Workspace(root);
     const plan = buildPlan(
       {
@@ -80,9 +80,9 @@ describe('incremental development support', () => {
   });
 
   it('supports an explicit baseline plan outside the workspace', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-incremental-'));
     const ws = new Workspace(root);
-    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-external-plan-'));
+    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-external-plan-'));
     const externalPlanPath = path.join(externalDir, 'baseline-plan.json');
     const externalPlan = buildPlan(
       {
@@ -109,7 +109,7 @@ describe('incremental development support', () => {
   });
 
   it('reuses stored project memory when present', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-incremental-'));
     const ws = new Workspace(root);
     await ws.writeFile('docs/topic.md', 'Existing project supports invoice exports.');
     await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "csv"; }\n');
@@ -124,7 +124,7 @@ describe('incremental development support', () => {
   });
 
   it('refreshes project memory before incremental planning so stale snapshots are not reused', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-incremental-'));
     const ws = new Workspace(root);
     await ws.writeFile('docs/topic.md', 'Old topic');
     await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "old"; }\n');
@@ -140,7 +140,7 @@ describe('incremental development support', () => {
   });
 
   it('strips previously embedded baseline blocks from topic.md when reloading baseline context', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-incremental-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-incremental-'));
     const ws = new Workspace(root);
     await ws.writeFile(
       'docs/topic.md',

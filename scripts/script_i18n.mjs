@@ -1,22 +1,22 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const locale = /^(zh|cn|zh-cn)$/iu.test(process.env.TOAA_LANG ?? '') ? 'zh' : 'en';
+const locale = /^(zh|cn|zh-cn)$/iu.test(process.env.XC_LANG ?? process.env.XCOMPILER_LANG ?? '') ? 'zh' : 'en';
 
 const catalogs = {
   en: {
     'version.invalid_package': ([value]) => `Invalid package version: ${value}`,
-    'version.invalid_plugin_api': ([value]) => `Invalid toaa.pluginApiVersion: ${value}`,
+    'version.invalid_plugin_api': ([value]) => `Invalid xcompiler.pluginApiVersion: ${value}`,
     'version.lock_root_missing': () => 'package-lock.json is missing packages[""]',
     'version.set_usage': () => 'Usage: npm run version:set -- <semver>',
-    'version.synced': ([core, api]) => `TOAA version metadata synchronized: core=${core}, plugin-api=${api}`,
-    'version.consistent': ([core, api]) => `TOAA version metadata is consistent: core=${core}, plugin-api=${api}`,
+    'version.synced': ([core, api]) => `XCompiler version metadata synchronized: core=${core}, plugin-api=${api}`,
+    'version.consistent': ([core, api]) => `XCompiler version metadata is consistent: core=${core}, plugin-api=${api}`,
     'version.lock_mismatch': ([value]) => `package-lock.json version is ${value}`,
     'version.lock_root_mismatch': ([value]) => `package-lock.json packages[""] version is ${value}`,
     'version.runtime_stale': () => 'src/version.ts is stale',
     'version.metadata_mismatch': ([version, errors]) => `Version metadata does not match package.json (${version}): ${errors}. Run npm run version:sync.`,
     'version.unknown_command': ([command]) => `Unknown command: ${command}`,
-    'package.header': () => '==> TOAA packaging',
+    'package.header': () => '==> XCompiler packaging',
     'package.version': ([value]) => `    Version:  ${value}`,
     'package.root': ([value]) => `    Root:     ${value}`,
     'package.entry': ([value]) => `    Entry:    ${value}`,
@@ -49,17 +49,17 @@ const catalogs = {
   },
   zh: {
     'version.invalid_package': ([value]) => `无效的软件包版本：${value}`,
-    'version.invalid_plugin_api': ([value]) => `无效的 toaa.pluginApiVersion：${value}`,
+    'version.invalid_plugin_api': ([value]) => `无效的 xcompiler.pluginApiVersion：${value}`,
     'version.lock_root_missing': () => 'package-lock.json 缺少 packages[""]',
     'version.set_usage': () => '用法：npm run version:set -- <semver>',
-    'version.synced': ([core, api]) => `TOAA 版本元数据已同步：core=${core}，plugin-api=${api}`,
-    'version.consistent': ([core, api]) => `TOAA 版本元数据一致：core=${core}，plugin-api=${api}`,
+    'version.synced': ([core, api]) => `XCompiler 版本元数据已同步：core=${core}，plugin-api=${api}`,
+    'version.consistent': ([core, api]) => `XCompiler 版本元数据一致：core=${core}，plugin-api=${api}`,
     'version.lock_mismatch': ([value]) => `package-lock.json 版本为 ${value}`,
     'version.lock_root_mismatch': ([value]) => `package-lock.json packages[""] 版本为 ${value}`,
     'version.runtime_stale': () => 'src/version.ts 已过期',
     'version.metadata_mismatch': ([version, errors]) => `版本元数据与 package.json（${version}）不一致：${errors}。请运行 npm run version:sync。`,
     'version.unknown_command': ([command]) => `未知命令：${command}`,
-    'package.header': () => '==> TOAA 打包',
+    'package.header': () => '==> XCompiler 打包',
     'package.version': ([value]) => `    版本：    ${value}`,
     'package.root': ([value]) => `    项目根：  ${value}`,
     'package.entry': ([value]) => `    入口：    ${value}`,

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { preflightProviders } from '../src/llm/preflight.js';
 import { ScoreStore } from '../src/llm/scores.js';
-import type { ToaaConfig } from '../src/config/config.js';
+import type { XCompilerConfig } from '../src/config/config.js';
 
-function mkCfg(overrides: Partial<ToaaConfig['llm']> = {}): ToaaConfig {
+function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig {
   return {
     llm: {
       default: 'ollama_code',
@@ -33,7 +33,7 @@ function mkCfg(overrides: Partial<ToaaConfig['llm']> = {}): ToaaConfig {
         extra_run_args: [],
       },
     },
-  } as unknown as ToaaConfig;
+  } as unknown as XCompilerConfig;
 }
 
 describe('preflightProviders', () => {

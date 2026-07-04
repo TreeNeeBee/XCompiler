@@ -7,7 +7,7 @@ export interface DoctorCliOptions extends DoctorOptions {
   strict?: boolean;
 }
 
-/** CLI entrypoint for `toaa doctor`. Prints a coloured report and exits the process. */
+/** CLI entrypoint for `xcompiler doctor`. Prints a coloured report and exits the process. */
 export async function runDoctorCli(opts: DoctorCliOptions = {}): Promise<void> {
   const M = t().doctor;
   console.log(chalk.bold(M.header));

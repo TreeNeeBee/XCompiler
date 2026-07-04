@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# TOAA 跨平台打包脚本
+# XCompiler 跨平台打包脚本
 # -----------------------------------------------------------------------------
 # 产出多目标的单文件可执行程序：
-#   - dist/pkg/toaa-linux-x64/toaa            (Linux x86_64)
-#   - dist/pkg/toaa-linux-arm64/toaa          (Linux aarch64)
-#   - dist/pkg/toaa-macos-arm64/toaa          (macOS Apple Silicon, ad-hoc 签名)
-#   - dist/pkg/toaa-win-x64/toaa.exe          (Windows x86_64)
+#   - dist/pkg/xcompiler-linux-x64/xcompiler            (Linux x86_64)
+#   - dist/pkg/xcompiler-linux-arm64/xcompiler          (Linux aarch64)
+#   - dist/pkg/xcompiler-macos-arm64/xcompiler          (macOS Apple Silicon, ad-hoc 签名)
+#   - dist/pkg/xcompiler-win-x64/xcompiler.exe          (Windows x86_64)
 #
 # 每个目录另外携带：README.md / LICENSE / NOTICE / config.example.yaml /
 #                  .env.example  以便用户开箱即用。
@@ -38,7 +38,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# 所有面向用户的脚本文案通过稳定消息 ID 渲染；TOAA_LANG=CN/zh 切换中文。
+# 所有面向用户的脚本文案通过稳定消息 ID 渲染；XC_LANG=CN/zh 切换中文。
 msg() {
   node "$ROOT/scripts/script_i18n.mjs" "$@"
 }
@@ -104,7 +104,7 @@ if [[ -z "$TARGETS" ]]; then
 fi
 
 NODE_VER="node20"
-ENTRY="dist/pkg-build/toaa.cjs"
+ENTRY="dist/pkg-build/xcompiler.cjs"
 OUT_ROOT="dist/pkg"
 PKG_BIN="$ROOT/node_modules/.bin/pkg"
 
@@ -227,10 +227,10 @@ ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example)
 build_one() {
   local short="$1"               # linux-x64 / linux-arm64 / macos-arm64 / win-x64
   local pkg_target="${NODE_VER}-${short}"
-  local outdir="$OUT_ROOT/toaa-${short}"
+  local outdir="$OUT_ROOT/xcompiler-${short}"
   local staging_dir="${outdir}.staging"
-  local exe_name="toaa"
-  [[ "$short" == win-* ]] && exe_name="toaa.exe"
+  local exe_name="xcompiler"
+  [[ "$short" == win-* ]] && exe_name="xcompiler.exe"
 
   echo
   msg package.target "$pkg_target"
@@ -288,7 +288,7 @@ msg package.archive
 
 cd "$OUT_ROOT"
 for t in $TARGETS; do
-  dir="toaa-${t}"
+  dir="xcompiler-${t}"
   [[ -d "$dir" ]] || continue
   if [[ "$t" == win-* ]]; then
     if command -v zip >/dev/null 2>&1; then
@@ -312,9 +312,9 @@ msg package.checksum
 archives=()
 for t in $TARGETS; do
   if [[ "$t" == win-* ]]; then
-    [[ -f "toaa-${t}.zip" ]] && archives+=("toaa-${t}.zip")
+    [[ -f "xcompiler-${t}.zip" ]] && archives+=("xcompiler-${t}.zip")
   else
-    [[ -f "toaa-${t}.tar.gz" ]] && archives+=("toaa-${t}.tar.gz")
+    [[ -f "xcompiler-${t}.tar.gz" ]] && archives+=("xcompiler-${t}.tar.gz")
   fi
 done
 

@@ -1,15 +1,15 @@
-# TOAA 功能自举设计
+# XCompiler 功能自举设计
 
 ## 目标
 
-功能自举指稳定版本 TOAA-N 能读取自身工程，以完整 V 模型规划、实现并验证下一代
-TOAA-N+1；N+1 晋级后能够继续执行下一轮自举。自举不等同于进程内热更新，正在运行的
+功能自举指稳定版本 XCompiler-N 能读取自身工程，以完整 V 模型规划、实现并验证下一代
+XCompiler-N+1；N+1 晋级后能够继续执行下一轮自举。自举不等同于进程内热更新，正在运行的
 N 在本轮结束前始终是可信执行器。
 
 ## 信任与隔离边界
 
 ```text
-宿主 checkout（TOAA-N，必须 clean）
+宿主 checkout（XCompiler-N，必须 clean）
         │
         ├── base commit ──► 隔离 worktree / 候选分支
         │                         │
@@ -17,13 +17,13 @@ N 在本轮结束前始终是可信执行器。
         │                         ├── 执行 CODE / TEST / DEBUG / DELIVERY
         │                         └── 确定性质量门
         │
-        └── 人工晋级门 ──► git merge --ff-only ──► TOAA-N+1
+        └── 人工晋级门 ──► git merge --ff-only ──► XCompiler-N+1
 ```
 
 - Step 内的 `git add .`、快照提交和 `reset --hard` 只允许发生在候选 worktree。
-- 默认 worktree 位于 `.toaa/bootstrap/worktrees/<run-id>`，该目录不进入版本控制。
-- 候选分支使用 `toaa/bootstrap/<run-id>`，报告位于
-  `.toaa/bootstrap/reports/<run-id>.md`。
+- 默认 worktree 位于 `.xcompiler/bootstrap/worktrees/<run-id>`，该目录不进入版本控制。
+- 候选分支使用 `xcompiler/bootstrap/<run-id>`，报告位于
+  `.xcompiler/bootstrap/reports/<run-id>.md`。
 - 自举开始时宿主必须 clean；晋级时再次验证宿主 HEAD 等于基线提交且仍为 clean。
 - 质量门开始前记录候选 commit；门禁结束后候选 HEAD 必须未变化且 worktree 仍为 clean。
 - 晋级合并已验证的精确 commit SHA，不按可能漂移的候选分支头合并。
@@ -31,7 +31,7 @@ N 在本轮结束前始终是可信执行器。
 ## Self 计划约束
 
 `self` 属于增量意图，加载已有 plan、项目记忆、源码/测试树、manifest，以及
-`TOAA_design.md`、本设计、实施计划和插件 API。
+`XCompiler_design.md`、本设计、实施计划和插件 API。
 
 Planner 必须遵守：
 
@@ -67,16 +67,16 @@ PID 限制和 `no-new-privileges` 下执行。
 
 ```bash
 # 默认：生成候选分支、保留 worktree、写报告，不修改当前分支
-toaa bootstrap -r /path/to/TOAA -i self_req.md --yes
+xcompiler bootstrap -r /path/to/XCompiler -i self_req.md --yes
 
 # 全部门禁通过后，在同一次运行末尾显式快进晋级
-toaa bootstrap -r /path/to/TOAA -i self_req.md --yes --promote
+xcompiler bootstrap -r /path/to/XCompiler -i self_req.md --yes --promote
 
 # 写完报告后删除 worktree，候选分支仍保留
-toaa bootstrap -r /path/to/TOAA -i self_req.md --yes --cleanup
+xcompiler bootstrap -r /path/to/XCompiler -i self_req.md --yes --cleanup
 
 # 实验选项：显式使用尚未完成环境验证的 Docker 质量门
-toaa bootstrap -r /path/to/TOAA -i self_req.md --yes --docker-qualification
+xcompiler bootstrap -r /path/to/XCompiler -i self_req.md --yes --docker-qualification
 ```
 
 ## 回滚与失败处理

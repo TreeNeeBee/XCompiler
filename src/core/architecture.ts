@@ -15,8 +15,15 @@ export interface ArchitectureDemand {
   surfaces: string[];
   baselineModules: number;
   minModules: number;
-  minCodeSteps: number;
   reasonLabel: string;
+}
+
+interface ModuleDemandParts {
+  foundationModules: number;
+  surfaceModules: number;
+  baselinePressureModules: number;
+  intentPressureModules: number;
+  minModules: number;
 }
 
 const COMPLEXITY_SURFACES: Array<{ name: string; pattern: RegExp }> = [
@@ -65,22 +72,72 @@ export function analyzeArchitectureDemand(
     (surfaces.length >= 1 && baselineModules >= 4) ||
     (intent !== 'greenfield' && surfaces.length >= 2);
 
-  // 一个复杂工程至少包含“入口/编排 + 核心领域 + 各关注面”，并随关注面线性增长。
-  // 上限用于避免一次 Plan 膨胀到超过常规 V 模型执行窗口。
-  const minModules = nonTrivial
-    ? Math.min(12, Math.max(4, surfaces.length + 2, baselineModules >= 8 ? 5 : 0))
-    : 1;
+  const moduleDemand = estimateModuleDemand({
+    nonTrivial,
+    surfaceCount: surfaces.length,
+    baselineModules,
+    explicitComplexity,
+    intent,
+  });
 
   return {
     nonTrivial,
     surfaces,
     baselineModules,
-    minModules,
-    // V 模型中每个架构模块对应一个可独立验收的 CODE Step。
-    minCodeSteps: minModules,
+    minModules: moduleDemand.minModules,
     reasonLabel:
       `surfaces=${surfaces.join('/') || '(none)'}, explicitComplexity=${explicitComplexity}, ` +
-      `baselineModules=${baselineModules}, intent=${intent}`,
+      `baselineModules=${baselineModules}, intent=${intent}, moduleDemand=` +
+      `foundation:${moduleDemand.foundationModules}+surfaces:${moduleDemand.surfaceModules}+` +
+      `baseline:${moduleDemand.baselinePressureModules}+intent:${moduleDemand.intentPressureModules}` +
+      `=>${moduleDemand.minModules}`,
+  };
+}
+
+function estimateModuleDemand(input: {
+  nonTrivial: boolean;
+  surfaceCount: number;
+  baselineModules: number;
+  explicitComplexity: boolean;
+  intent: PlanIntent;
+}): ModuleDemandParts {
+  if (!input.nonTrivial) {
+    return {
+      foundationModules: 1,
+      surfaceModules: 0,
+      baselinePressureModules: 0,
+      intentPressureModules: 0,
+      minModules: 1,
+    };
+  }
+
+  // Complex work needs independently owned foundations before concern-specific modules:
+  // an entry/orchestration boundary and a core domain boundary.
+  const foundationModules = input.explicitComplexity || input.surfaceCount > 0 ? 2 : 1;
+  const surfaceModules = input.surfaceCount;
+
+  // Existing projects should influence the split, but sub-linearly: a 40-file baseline
+  // should not force 40 new CODE steps for a focused feature. log2 keeps the pressure
+  // proportional to project scale while still growing as the baseline gets larger.
+  const baselinePressureModules =
+    input.baselineModules > 0 ? Math.max(0, Math.ceil(Math.log2(input.baselineModules)) - 2) : 0;
+
+  // Incremental work has to preserve integration boundaries in the existing project.
+  // Scale the extra split by both touched surfaces and baseline size.
+  const intentPressureModules =
+    input.intent === 'greenfield' || input.surfaceCount === 0 || input.baselineModules === 0
+      ? 0
+      : Math.min(input.surfaceCount, Math.max(1, Math.ceil(Math.sqrt(input.baselineModules))));
+
+  const minModules =
+    foundationModules + surfaceModules + baselinePressureModules + intentPressureModules;
+
+  return {
+    foundationModules,
+    surfaceModules,
+    baselinePressureModules,
+    intentPressureModules,
+    minModules,
   };
 }
 
@@ -211,7 +268,7 @@ export function validateArchitectureContract(
   const moduleIds = new Set<string>();
   const allSourcePaths = new Set<string>();
   const allTestPaths = new Set<string>();
-  const dedicatedCodeOwners = new Set<string>();
+  const modulesByCodeOwner = new Map<string, ArchitectureModule[]>();
 
   for (const module of modules) {
     if (moduleIds.has(module.id)) {
@@ -241,18 +298,14 @@ export function validateArchitectureContract(
     if (owners.length !== 1) {
       issues.push({
         message:
-          `${module.id} must map all sourcePaths to exactly one dedicated CODE step; found ${owners.length}.`,
+          `${module.id} must map all sourcePaths to exactly one CODE macro step; found ${owners.length}.`,
       });
       continue;
     }
     const codeOwner = owners[0]!;
-    if (dedicatedCodeOwners.has(codeOwner.id)) {
-      issues.push({
-        stepId: codeOwner.id,
-        message: `${codeOwner.id} owns multiple architecture modules; use one independently verifiable CODE step per module.`,
-      });
-    }
-    dedicatedCodeOwners.add(codeOwner.id);
+    const ownedModules = modulesByCodeOwner.get(codeOwner.id) ?? [];
+    ownedModules.push(module);
+    modulesByCodeOwner.set(codeOwner.id, ownedModules);
 
     const matchingTests = testSteps.filter((step) =>
       module.testPaths.some((path) => pathCoveredByOutputs(path, step.outputs)),
@@ -274,11 +327,14 @@ export function validateArchitectureContract(
     }
   }
 
-  if (demand.nonTrivial && dedicatedCodeOwners.size < demand.minCodeSteps) {
+  for (const [stepId, ownedModules] of modulesByCodeOwner) {
+    if (ownedModules.length <= 1) continue;
+    const step = stepById.get(stepId);
+    if (!step || hasModuleSubTasks(step, ownedModules)) continue;
     issues.push({
+      stepId,
       message:
-        `Architecture contract maps to ${dedicatedCodeOwners.size} dedicated CODE step(s); ` +
-        `expected at least ${demand.minCodeSteps}.`,
+        `${stepId} owns ${ownedModules.length} architecture modules; keep it as one CODE macro step but list each module in subTasks.`,
     });
   }
 
@@ -295,6 +351,27 @@ export function validateArchitectureContract(
   }
 
   return issues;
+}
+
+function hasModuleSubTasks(step: Step, modules: ArchitectureModule[]): boolean {
+  const subTaskText = flattenSubTasks(step)
+    .map((task) => [task.id, task.title, task.description, task.acceptance, ...(task.outputs ?? [])].filter(Boolean).join('\n'))
+    .join('\n');
+  return modules.every((module) =>
+    subTaskText.includes(module.id) ||
+    module.sourcePaths.some((sourcePath) => subTaskText.includes(sourcePath)),
+  );
+}
+
+function flattenSubTasks(step: Step): NonNullable<Step['subTasks']> {
+  const out: NonNullable<Step['subTasks']> = [];
+  const stack = [...(step.subTasks ?? [])];
+  while (stack.length > 0) {
+    const task = stack.shift()!;
+    out.push(task);
+    stack.unshift(...(task.subTasks ?? []));
+  }
+  return out;
 }
 
 export function pathCoveredByOutputs(path: string, outputs: string[]): boolean {

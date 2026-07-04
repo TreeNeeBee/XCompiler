@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildPlan } from '../src/agents/planner.js';
 import { PlanSchema } from '../src/core/plan.js';
+import { renderPlanMarkdown } from '../src/core/render.js';
 import type { Step } from '../src/core/plan.js';
 
 const baseStep = (over: Partial<Step>): Step =>
@@ -85,6 +86,55 @@ describe('buildPlan — Step id 规整', () => {
     expect(synthetic?.acceptance).toContain('npm test');
   });
 
+  it('为复杂或强制分阶段需求生成 P1 当前阶段和 deferred 后续阶段', () => {
+    const draft = {
+      requirementDigest: 'Build a complex reporting platform. Phase 1 core import, Phase 2 dashboard.',
+      globalPrompt: 'g',
+      dependencies: ['pytest'],
+      steps: [baseStep({ id: 'S001', phase: 'CODE', role: 'Coder', outputs: ['src/main.py'] })],
+    };
+    const plan = buildPlan(draft);
+    expect(plan.complexityAssessment?.splitRecommended).toBe(true);
+    expect(plan.complexityAssessment?.userForcedPhaseSplit).toBe(true);
+    expect(plan.implementationPhases?.[0]?.id).toBe('P1');
+    expect(plan.implementationPhases?.[0]?.status).toBe('current');
+    expect(plan.implementationPhases?.some((phase) => phase.status === 'deferred')).toBe(true);
+    expect(plan.implementationPhases?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('rejects Step subTasks deeper than two levels', () => {
+    const plan = buildPlan({
+      requirementDigest: 'r',
+      globalPrompt: 'g',
+      dependencies: ['pytest'],
+      steps: [
+        baseStep({
+          id: 'S001',
+          subTasks: [
+            {
+              id: 'T1',
+              title: 'one',
+              description: 'one',
+              subTasks: [
+                {
+                  id: 'T1.1',
+                  title: 'two',
+                  description: 'two',
+                  subTasks: [{ id: 'T1.1.1', title: 'three', description: 'three' }],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+    const parsed = PlanSchema.safeParse(plan);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.message.includes('nested at most 2 levels'))).toBe(true);
+    }
+  });
+
   it('把结构化 ARCH 契约注入 ARCH/CODE/TEST 的执行提示', () => {
     const draft = {
       requirementDigest: 'small API module',
@@ -110,5 +160,44 @@ describe('buildPlan — Step id 规整', () => {
     expect(plan.steps[0]?.systemPrompt).toContain('M001 api');
     expect(plan.steps[1]?.systemPrompt).toContain('本 CODE Step 仅实现架构模块');
     expect(plan.steps[2]?.systemPrompt).toContain('本 TEST Step 验证架构模块');
+  });
+
+  it('plan markdown 层级展示 V-model macro Step 与两层 subTasks', () => {
+    const plan = buildPlan({
+      requirementDigest: 'r',
+      globalPrompt: 'g',
+      dependencies: ['pytest'],
+      steps: [
+        baseStep({
+          id: 'S001',
+          phase: 'CODE',
+          role: 'Coder',
+          outputs: ['src/main.py'],
+          subTasks: [
+            {
+              id: 'T1',
+              title: 'Core module',
+              description: 'Implement the core module.',
+              acceptance: 'Core module works.',
+              outputs: ['src/core.py'],
+              subTasks: [
+                {
+                  id: 'T1.1',
+                  title: 'Parser',
+                  description: 'Implement parser helper.',
+                  acceptance: 'Parser accepts examples.',
+                  outputs: ['src/parser.py'],
+                },
+              ],
+            },
+          ],
+        }),
+      ],
+    });
+    const markdown = renderPlanMarkdown(plan);
+    expect(markdown).toContain('## V-model macro workflow');
+    expect(markdown).toContain('- S001 CODE:');
+    expect(markdown).toContain('  - T1: Core module [src/core.py]');
+    expect(markdown).toContain('    - T1.1: Parser [src/parser.py]');
   });
 });

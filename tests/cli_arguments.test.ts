@@ -26,7 +26,7 @@ describe('CLI argument validation', () => {
   });
 
   it('finds locale flags early enough to translate help', () => {
-    expect(localeFromArgv(['node', 'toaa', 'run', '--lang', 'CN', '--help'])).toBe('CN');
-    expect(localeFromArgv(['node', 'toaa', '--lang=EN', '--help'])).toBe('EN');
+    expect(localeFromArgv(['node', 'xcompiler', 'run', '--lang', 'CN', '--help'])).toBe('CN');
+    expect(localeFromArgv(['node', 'xcompiler', '--lang=EN', '--help'])).toBe('EN');
   });
 });

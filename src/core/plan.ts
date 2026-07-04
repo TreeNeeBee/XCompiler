@@ -12,6 +12,17 @@ export const PHASES = [
 ] as const;
 export type Phase = (typeof PHASES)[number];
 
+/** Core V-model phases that every executable plan must cover. DEBUG remains optional/planned. */
+export const REQUIRED_V_MODEL_PHASES = [
+  'REQUIREMENT',
+  'ARCH',
+  'TASK',
+  'CODE',
+  'TEST',
+  'REFACTOR',
+  'DELIVERY',
+] as const satisfies readonly Phase[];
+
 /** Supported target languages for generated projects. */
 export const LANGUAGES = ['python', 'typescript'] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -19,6 +30,18 @@ export type Language = (typeof LANGUAGES)[number];
 /** Plan intent: greenfield generation, incremental work, or isolated self-bootstrap. */
 export const PLAN_INTENTS = ['greenfield', 'feature', 'refactor', 'self'] as const;
 export type PlanIntent = (typeof PLAN_INTENTS)[number];
+
+/** Project shape determines delivery documentation requirements. */
+export const PROJECT_TYPES = ['application', 'library', 'mixed'] as const;
+export type ProjectType = (typeof PROJECT_TYPES)[number];
+
+/** Planner's first-pass project complexity estimate. */
+export const COMPLEXITY_LEVELS = ['simple', 'moderate', 'complex'] as const;
+export type ComplexityLevel = (typeof COMPLEXITY_LEVELS)[number];
+
+/** Implementation phase status. Only `current` phases are executed by the current V-model plan. */
+export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'deferred'] as const;
+export type ImplementationPhaseStatus = (typeof IMPLEMENTATION_PHASE_STATUSES)[number];
 
 export const PHASE_ORDER: Record<Phase, number> = {
   REQUIREMENT: 0,
@@ -67,20 +90,78 @@ export const ArchitectureModuleSchema = z.object({
 
 export type ArchitectureModule = z.infer<typeof ArchitectureModuleSchema>;
 
+export interface StepSubtask {
+  id: string;
+  title: string;
+  description: string;
+  acceptance?: string;
+  outputs?: string[];
+  subTasks?: StepSubtask[];
+}
+
+export const StepSubtaskSchema: z.ZodType<StepSubtask> = z.lazy(() =>
+  z
+    .object({
+      id: z.string().min(1),
+      title: z.string().min(1),
+      description: z.string().min(1),
+      acceptance: z.string().min(1).optional(),
+      outputs: z.array(z.string().min(1)).optional(),
+      subTasks: z.array(StepSubtaskSchema).optional(),
+    })
+    .superRefine((task, ctx) => {
+      if (maxSubtaskDepth(task) > 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Step subTasks may be nested at most 2 levels below the parent Step',
+          path: ['subTasks'],
+        });
+      }
+    }),
+);
+
+export const ComplexityAssessmentSchema = z.object({
+  level: z.enum(COMPLEXITY_LEVELS),
+  rationale: z.string().min(1),
+  splitRecommended: z.boolean().default(false),
+  userForcedPhaseSplit: z.boolean().default(false),
+});
+
+export type ComplexityAssessment = z.infer<typeof ComplexityAssessmentSchema>;
+
+export const ImplementationPhaseSchema = z.object({
+  id: z.string().regex(/^P\d{1,3}$/u, 'Implementation phase id must look like P1'),
+  title: z.string().min(1),
+  objective: z.string().min(1),
+  status: z.enum(IMPLEMENTATION_PHASE_STATUSES).default('deferred'),
+  scope: z.array(z.string().min(1)).default([]),
+  deliverables: z.array(z.string().min(1)).default([]),
+  dependsOn: z.array(z.string()).default([]),
+});
+
+export type ImplementationPhase = z.infer<typeof ImplementationPhaseSchema>;
+
+function maxSubtaskDepth(task: StepSubtask): number {
+  const children = task.subTasks ?? [];
+  if (children.length === 0) return 1;
+  return 1 + Math.max(...children.map(maxSubtaskDepth));
+}
+
 export const StepSchema = z.object({
   id: z.string().regex(/^S\d{3,}$/u, 'Step id must look like S001'),
   phase: z.enum(PHASES),
   title: z.string().min(1),
   description: z.string().min(1),
   /**
-   * 本 Step 专属的系统提示词。toaa_c 需为每个 Step 给出明确的范围、输入、产出、验收与禁令，
-   * toaa_run 会拼接到 Executor 的通用 system prompt 后，以防止 LLM 发散。
+   * 本 Step 专属的系统提示词。xcompiler_build 需为每个 Step 给出明确的范围、输入、产出、验收与禁令，
+   * xcompiler_run 会拼接到 Executor 的通用 system prompt 后，以防止 LLM 发散。
    */
-  systemPrompt: z.string().min(1, 'systemPrompt must be non-empty (toaa_c must populate)'),
+  systemPrompt: z.string().min(1, 'systemPrompt must be non-empty (xcompiler_build must populate)'),
   role: z.enum(ROLES),
   tools: z.array(z.string()).default([]),
   inputs: z.array(z.string()).default([]),
   outputs: z.array(z.string()).default([]),
+  subTasks: z.array(StepSubtaskSchema).optional(),
   dependsOn: z.array(z.string()).default([]),
   acceptance: z.string().min(1),
   status: z.enum(STEP_STATUSES).default('PENDING'),
@@ -95,14 +176,17 @@ export const PlanSchema = z
     version: z.literal('1'),
     language: z.enum(LANGUAGES).default('python'),
     intent: z.enum(PLAN_INTENTS).default('greenfield'),
+    projectType: z.enum(PROJECT_TYPES).default('application'),
     requirementDigest: z.string().min(1),
+    complexityAssessment: ComplexityAssessmentSchema.optional(),
+    implementationPhases: z.array(ImplementationPhaseSchema).optional(),
     /**
      * 本次变更涉及的结构化架构模块。旧版 plan 可缺省；新版 Planner 对复杂需求必须生成。
      */
     architectureModules: z.array(ArchitectureModuleSchema).optional(),
     /** 全局开发约束（项目背景、语言与依赖策略），会拼接到每个 Step 的 system prompt 中。 */
     globalPrompt: z.string().default(''),
-    /** 增量开发时的基线工程摘要（由 toaa_c 从现有 workspace 文档/源码树汇总）。 */
+    /** 增量开发时的基线工程摘要（由 xcompiler_build 从现有 workspace 文档/源码树汇总）。 */
     baselineSummary: z.string().default(''),
     /** ARCH 阶段决定的依赖初始集（Python 写入 requirements.txt；TypeScript 写入 package.json）。 */
     dependencies: z.array(z.string()).optional(),

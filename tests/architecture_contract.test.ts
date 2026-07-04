@@ -4,6 +4,8 @@ import { lintPlan } from '../src/core/lint.js';
 import { PlanSchema, type ArchitectureModule, type Plan, type Step } from '../src/core/plan.js';
 import { renderPlanMarkdown } from '../src/core/render.js';
 
+const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'];
+
 const moduleSpecs = [
   ['M001', 'entry', 'Application entry and top-level dependency composition.', 'src/main.py', 'tests/test_main.py'],
   ['M002', 'domain', 'Core domain rules independent from transport and storage.', 'src/domain.py', 'tests/test_domain.py'],
@@ -64,7 +66,46 @@ function complexPlan(): Plan {
     version: '1',
     language: 'python',
     intent: 'greenfield',
+    projectType: 'application',
     requirementDigest: 'Build an OpenAPI server with CLI import/export commands and SQLite persistence.',
+    complexityAssessment: {
+      level: 'complex',
+      rationale: 'multi-surface architecture contract fixture',
+      splitRecommended: true,
+      userForcedPhaseSplit: false,
+    },
+    implementationPhases: [
+      {
+        id: 'P1',
+        title: 'Core functionality',
+        objective: 'Deliver the traceable OpenAPI, CLI, storage, and export core.',
+        status: 'current',
+        scope: ['Core architecture modules', 'Primary tests', 'Delivery docs'],
+        deliverables: ['Runnable core application'],
+        dependsOn: [],
+      },
+      {
+        id: 'P2',
+        title: 'Enhancements',
+        objective: 'Extend operational hardening after the core is stable.',
+        status: 'deferred',
+        scope: ['Operational polish'],
+        deliverables: ['Deferred enhancement plan'],
+        dependsOn: ['P1'],
+      },
+      {
+        id: 'P3',
+        title: 'Scale and operations',
+        objective: 'Plan scale and operational hardening after enhancement work.',
+        status: 'deferred',
+        scope: ['Scale testing', 'Operational observability'],
+        deliverables: ['Deferred scale and operations plan'],
+        dependsOn: ['P2'],
+      },
+    ],
+    globalPrompt: '',
+    baselineSummary: '',
+    userAddenda: '',
     architectureModules,
     dependencies: ['pytest'],
     createdAt: '2026-06-22T00:00:00.000Z',
@@ -80,7 +121,7 @@ function complexPlan(): Plan {
         outputs: ['docs/04-refactor.md'],
         dependsOn: testSteps.map((item) => item.id),
       }),
-      step({ id: 'S017', phase: 'DELIVERY', outputs: ['docs/05-delivery.md'], dependsOn: ['S016'] }),
+      step({ id: 'S017', phase: 'DELIVERY', outputs: [...baseDeliveryDocs], dependsOn: ['S016'] }),
     ],
   };
 }
@@ -92,8 +133,8 @@ describe('V-model architecture contract', () => {
       'python',
     );
     expect(demand.surfaces).toEqual(expect.arrayContaining(['api', 'cli', 'persistence', 'io']));
-    expect(demand.minModules).toBe(6);
-    expect(demand.minCodeSteps).toBe(6);
+    expect(demand.minModules).toBeGreaterThanOrEqual(demand.surfaces.length + 2);
+    expect(demand.reasonLabel).toContain('moduleDemand=');
   });
 
   it('treats domain-heavy platform requirements as complex without infrastructure keywords', () => {
@@ -128,7 +169,7 @@ describe('V-model architecture contract', () => {
     );
     expect(demand.surfaces).toEqual(expect.arrayContaining(['api', 'cli']));
     expect(demand.surfaces).not.toContain('persistence');
-    expect(demand.minModules).toBe(4);
+    expect(demand.minModules).toBeGreaterThanOrEqual(demand.surfaces.length + 2);
   });
 
   it('uses topic answers without treating clarification questions as required surfaces', () => {
@@ -162,7 +203,29 @@ describe('V-model architecture contract', () => {
     expect(demand.surfaces).not.toContain('persistence');
     expect(demand.surfaces).not.toContain('notification');
     expect(demand.surfaces).not.toContain('api');
-    expect(demand.minModules).toBe(4);
+    expect(demand.minModules).toBeGreaterThanOrEqual(demand.surfaces.length + 2);
+  });
+
+  it('raises module demand for incremental work on an existing baseline without a fixed cap', () => {
+    const requirementDigest = 'Extend the existing API and auth workflow with reporting export support.';
+    const greenfield = analyzeArchitectureDemand({ requirementDigest }, 'typescript');
+    const incremental = analyzeArchitectureDemand(
+      {
+        requirementDigest,
+        intent: 'feature',
+        baselineSummary: [
+          '## Existing project memory',
+          '## Module map',
+          '- src/api/server.ts: source module',
+          '- src/auth/service.ts: source module',
+          '- src/reporting/service.ts: source module',
+          '- src/persistence/store.ts: source module',
+        ].join('\n'),
+      },
+      'typescript',
+    );
+    expect(incremental.minModules).toBeGreaterThan(greenfield.minModules);
+    expect(incremental.reasonLabel).toContain('intent:');
   });
 
   it('accepts a fully traceable ARCH → CODE → TEST plan and renders its contract', () => {
@@ -174,15 +237,13 @@ describe('V-model architecture contract', () => {
     expect(markdown).toContain('M006 export');
   });
 
-  it('rejects architecture modules collapsed into one shared CODE step', () => {
+  it('rejects a shared CODE macro step when module subtasks are missing', () => {
     const plan = complexPlan();
-    plan.architectureModules![1] = {
-      ...plan.architectureModules![1]!,
-      sourcePaths: ['src/main.py'],
-    };
+    const entryStep = plan.steps.find((step) => step.outputs.includes('src/main.py'))!;
+    entryStep.outputs = ['src/main.py', 'src/domain.py'];
+    plan.steps = plan.steps.filter((step) => !step.outputs.includes('src/domain.py') || step.id === entryStep.id);
     const errors = lintPlan(plan).filter((issue) => issue.level === 'error');
-    expect(errors.some((issue) => issue.message.includes('owns multiple architecture modules'))).toBe(true);
-    expect(errors.some((issue) => issue.message.includes('owned by more than one module'))).toBe(true);
+    expect(errors.some((issue) => issue.message.includes('owns 2 architecture modules'))).toBe(true);
   });
 
   it('detects an ARCH document that silently omits module paths', () => {

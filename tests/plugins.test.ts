@@ -4,24 +4,24 @@ import { checkPluginCompatibility } from '../src/plugins/compatibility.js';
 import { ToolRegistry, type Tool } from '../src/tools/types.js';
 import { SkillRegistry } from '../src/skills/skill.js';
 import type { LLMClient } from '../src/llm/types.js';
-import type { ToaaPlugin, ToaaPluginManifest } from '../src/plugins/types.js';
-import { TOAA_PLUGIN_API_VERSION, TOAA_VERSION } from '../src/version.js';
+import type { XCompilerPlugin, XCompilerPluginManifest } from '../src/plugins/types.js';
+import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../src/version.js';
 
 const pluginManifest = (
   id: string,
-  overrides: Partial<ToaaPluginManifest> = {},
-): ToaaPluginManifest => ({
+  overrides: Partial<XCompilerPluginManifest> = {},
+): XCompilerPluginManifest => ({
   id,
   version: '1.0.0',
-  apiVersion: TOAA_PLUGIN_API_VERSION,
-  minToaaVersion: '0.1.3',
+  apiVersion: XCOMPILER_PLUGIN_API_VERSION,
+  minXCompilerVersion: '0.1.3',
   ...overrides,
 });
 
 describe('PluginHost', () => {
   it('runs hooks by priority and keeps registration order for ties', async () => {
     const calls: string[] = [];
-    const plugin: ToaaPlugin = {
+    const plugin: XCompilerPlugin = {
       manifest: pluginManifest('order-test'),
       setup(api) {
         api.on('compile.start', () => { calls.push('normal-1'); });
@@ -50,7 +50,7 @@ describe('PluginHost', () => {
   });
 
   it('isolates plugin failures by default and can fail fast in strict mode', async () => {
-    const bad: ToaaPlugin = {
+    const bad: XCompilerPlugin = {
       manifest: pluginManifest('bad-hook'),
       setup(api) {
         api.on('run.before', () => { throw new Error('boom'); });
@@ -68,7 +68,7 @@ describe('PluginHost', () => {
   });
 
   it('wraps tools with mutable before/after contexts', async () => {
-    const plugin: ToaaPlugin = {
+    const plugin: XCompilerPlugin = {
       manifest: pluginManifest('tool-hooks'),
       setup(api) {
         api.on('tool.before', (event) => {
@@ -98,7 +98,7 @@ describe('PluginHost', () => {
 
   it('wraps LLM requests and permits response post-processing', async () => {
     const seen: string[] = [];
-    const plugin: ToaaPlugin = {
+    const plugin: XCompilerPlugin = {
       manifest: pluginManifest('llm-hooks'),
       setup(api) {
         api.on('llm.before', (event) => {
@@ -130,7 +130,7 @@ describe('PluginHost', () => {
       argsSchema: {},
       async run() { return { ok: true }; },
     };
-    const plugin: ToaaPlugin = {
+    const plugin: XCompilerPlugin = {
       manifest: pluginManifest('extensions'),
       setup(api) {
         api.registerTool(tool);
@@ -153,11 +153,11 @@ describe('PluginHost', () => {
     const host = new PluginHost({
       plugins: [{
         manifest: pluginManifest('version-reader'),
-        setup(api) { versions = [api.toaaVersion, api.pluginApiVersion]; },
+        setup(api) { versions = [api.xcompilerVersion, api.pluginApiVersion]; },
       }],
     });
     await host.initialize();
-    expect(versions).toEqual([TOAA_VERSION, TOAA_PLUGIN_API_VERSION]);
+    expect(versions).toEqual([XCOMPILER_VERSION, XCOMPILER_PLUGIN_API_VERSION]);
   });
 
   it('rejects incompatible or malformed plugin metadata before setup', () => {
@@ -166,18 +166,18 @@ describe('PluginHost', () => {
       manifest: pluginManifest('bad-version', { version: 'latest' }), setup,
     }] })).toThrow(/SemVer/);
     expect(() => new PluginHost({ plugins: [{
-      manifest: pluginManifest('bad-api', { apiVersion: TOAA_PLUGIN_API_VERSION + 1 }), setup,
+      manifest: pluginManifest('bad-api', { apiVersion: XCOMPILER_PLUGIN_API_VERSION + 1 }), setup,
     }] })).toThrow(/Plugin API/);
     expect(() => new PluginHost({ plugins: [{
-      manifest: pluginManifest('future-core', { minToaaVersion: '99.0.0' }), setup,
-    }] })).toThrow(/requires TOAA|要求 TOAA/);
+      manifest: pluginManifest('future-core', { minXCompilerVersion: '99.0.0' }), setup,
+    }] })).toThrow(/requires XCompiler|要求 XCompiler/);
     expect(() => new PluginHost({ plugins: [{
       manifest: pluginManifest('Bad ID'), setup,
     }] })).toThrow(/Plugin ID|插件 ID/);
     expect(() => new PluginHost({ plugins: [{
-      manifest: pluginManifest('missing-min', { minToaaVersion: '' }), setup,
-    }] })).toThrow(/minimum TOAA|最低 TOAA/);
-    expect(checkPluginCompatibility(null as unknown as ToaaPluginManifest))
+      manifest: pluginManifest('missing-min', { minXCompilerVersion: '' }), setup,
+    }] })).toThrow(/minimum XCompiler|最低 XCompiler/);
+    expect(checkPluginCompatibility(null as unknown as XCompilerPluginManifest))
       .toMatchObject({ compatible: false, code: 'invalid-id' });
   });
 
@@ -188,9 +188,9 @@ describe('PluginHost', () => {
       code: 'compatible',
       pluginId: 'example.catalog',
     });
-    expect(checkPluginCompatibility(manifest, { toaaVersion: '0.1.2' })).toMatchObject({
+    expect(checkPluginCompatibility(manifest, { xcompilerVersion: '0.1.2' })).toMatchObject({
       compatible: false,
-      code: 'toaa-version-too-old',
+      code: 'xcompiler-version-too-old',
     });
     expect(checkPluginCompatibility(pluginManifest('bad-prerelease', { version: '1.0.0-01' })))
       .toMatchObject({ compatible: false, code: 'invalid-plugin-version' });

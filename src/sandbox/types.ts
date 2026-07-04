@@ -4,7 +4,7 @@
  * 设计要点（与用户约定一致）：
  *  - "开发工程时使用挂载的方式将工程目录挂载到 docker 中运行" —— Docker 实现使用 bind mount，
  *    工程目录在宿主机即可见。
- *  - "debug 时直接修改工程代码" —— 因为是 bind mount，TOAA 通过 Workspace 在宿主机上写入的
+ *  - "debug 时直接修改工程代码" —— 因为是 bind mount，XCompiler 通过 Workspace 在宿主机上写入的
  *    任何文件都会立刻反映到容器内，无需复制 / 拷贝。
  */
 

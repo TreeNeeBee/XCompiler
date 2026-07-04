@@ -20,7 +20,7 @@ export interface StepAttemptOutcome {
 }
 
 /**
- * TOAA 的公共生命周期 Hook。
+ * XCompiler 的公共生命周期 Hook。
  *
  * Context 对象会按顺序传给所有 handler；插件可以原位补充或调整字段，但不得替换
  * workspace / audit 等核心服务。涉及文件写入时仍必须通过 Tool 与 EditGuard。
@@ -140,8 +140,8 @@ export interface HookRegistrationOptions {
 }
 
 export interface PluginApi {
-  /** 当前 TOAA 核心版本。 */
-  readonly toaaVersion: string;
+  /** 当前 XCompiler 核心版本。 */
+  readonly xcompilerVersion: string;
   /** 当前插件 API 主版本；仅同一主版本兼容。 */
   readonly pluginApiVersion: number;
   on<K extends HookName>(
@@ -154,15 +154,15 @@ export interface PluginApi {
 }
 
 /** 可序列化的插件清单；后续 registry / marketplace 不需要加载插件代码即可读取。 */
-export interface ToaaPluginManifest {
+export interface XCompilerPluginManifest {
   /** 全局唯一且稳定的插件 ID，例如 `company.policy-checker`。 */
   id: string;
   /** 插件自身版本，必须是完整 SemVer。 */
   version: string;
-  /** 插件编译时面向的 TOAA Plugin API 主版本。 */
+  /** 插件编译时面向的 XCompiler Plugin API 主版本。 */
   apiVersion: number;
-  /** 插件可运行的最低 TOAA 核心版本；必填完整 SemVer。 */
-  minToaaVersion: string;
+  /** 插件可运行的最低 XCompiler 核心版本；必填完整 SemVer。 */
+  minXCompilerVersion: string;
   /** 以下字段用于插件目录展示，不参与运行时兼容判定。 */
   displayName?: string;
   description?: string;
@@ -176,22 +176,22 @@ export type PluginCompatibilityCode =
   | 'invalid-runtime-version'
   | 'invalid-id'
   | 'invalid-plugin-version'
-  | 'invalid-min-toaa-version'
+  | 'invalid-min-xcompiler-version'
   | 'api-version-mismatch'
-  | 'toaa-version-too-old';
+  | 'xcompiler-version-too-old';
 
 export interface PluginCompatibilityReport {
   compatible: boolean;
   code: PluginCompatibilityCode;
   pluginId: string;
   pluginVersion: string;
-  toaaVersion: string;
+  xcompilerVersion: string;
   pluginApiVersion: number;
   message?: string;
 }
 
-export interface ToaaPlugin {
-  manifest: ToaaPluginManifest;
+export interface XCompilerPlugin {
+  manifest: XCompilerPluginManifest;
   /** 默认 continue：记录错误但不拖垮核心流程。 */
   failureMode?: 'continue' | 'fail';
   setup(api: PluginApi): void | Promise<void>;
@@ -209,17 +209,17 @@ export interface PluginLoadOptions {
   sources: PluginSource[];
   baseDir?: string;
   audit?: AuditLogger;
-  toaaVersion?: string;
+  xcompilerVersion?: string;
   pluginApiVersion?: number;
 }
 
 export interface PluginHostOptions {
-  plugins?: ToaaPlugin[];
+  plugins?: XCompilerPlugin[];
   /** 强制所有插件错误中断主流程，适合 CI / 合规插件。 */
   strict?: boolean;
   audit?: AuditLogger;
   /** 嵌入式宿主可显式传入版本；一般应使用内置默认值。 */
-  toaaVersion?: string;
+  xcompilerVersion?: string;
   pluginApiVersion?: number;
 }
 

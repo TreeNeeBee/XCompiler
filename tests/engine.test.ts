@@ -12,8 +12,10 @@ import type { Plan } from '../src/core/plan.js';
 import type { LLMRouter } from '../src/llm/router.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import type { Role } from '../src/core/plan.js';
+import type { ExecExtra, ExecResult, Sandbox } from '../src/sandbox/types.js';
+import type { ProjectAuditResult } from '../src/core/project_audit.js';
 import { PluginHost } from '../src/plugins/host.js';
-import { TOAA_PLUGIN_API_VERSION } from '../src/version.js';
+import { XCOMPILER_PLUGIN_API_VERSION } from '../src/version.js';
 
 class ScriptedLLM implements LLMClient {
   readonly name = 'scripted';
@@ -43,6 +45,52 @@ class FakeRouter {
   }
 }
 
+class EntrypointProbeSandbox implements Sandbox {
+  readonly kind = 'subprocess' as const;
+  constructor(private readonly workspace: Workspace) {}
+
+  async build(): Promise<{ rebuilt: boolean; reason: string }> {
+    return { rebuilt: false, reason: 'stubbed' };
+  }
+
+  async exec(): Promise<ExecResult> {
+    return okExec();
+  }
+
+  async runProgram(argv: string[], _extra?: ExecExtra): Promise<ExecResult> {
+    if (argv.includes('--help')) {
+      return okExec({ stdout: 'usage: checkpoint [-h]\n' });
+    }
+    const source = await this.workspace.readFile('src/holiday.py');
+    if (source.includes('timor.tech')) {
+      return okExec({
+        stdout: 'An unexpected error occurred.\n',
+        stderr: 'Failed to fetch holiday data: 403 Client Error: Forbidden for url: https://timor.tech/api/holiday/\n',
+      });
+    }
+    return okExec({ stdout: 'Spring Festival countdown: 20 days\nWeather: sunny\n' });
+  }
+
+  async runTests(): Promise<ExecResult> {
+    return okExec();
+  }
+
+  async installDeps(): Promise<ExecResult> {
+    return okExec();
+  }
+}
+
+function okExec(overrides: Partial<ExecResult> = {}): ExecResult {
+  return {
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    durationMs: 1,
+    ...overrides,
+  };
+}
+
 let tmp: string;
 let ws: Workspace;
 let git: GitService;
@@ -50,7 +98,7 @@ let sandbox: SubprocessSandbox;
 let audit: AuditLogger;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-engine-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-engine-'));
   ws = new Workspace(tmp);
   git = new GitService(ws);
   audit = new AuditLogger({ root: tmp, command: 'test' });
@@ -65,8 +113,13 @@ function fakePlan(): Plan {
   return {
     version: '1',
     language: 'python',
+    intent: 'greenfield',
+    projectType: 'application',
     createdAt: new Date().toISOString(),
     requirementDigest: 'demo',
+    globalPrompt: '',
+    baselineSummary: '',
+    userAddenda: '',
     dependencies: ['pytest'],
     steps: [
       {
@@ -138,6 +191,43 @@ function fakePlan(): Plan {
 }
 
 describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
+  it('allows REFACTOR to edit existing src/tests inputs while keeping docs as required outputs', async () => {
+    const plan = fakePlan();
+    const refactorStep = {
+      id: 'S005',
+      phase: 'REFACTOR' as const,
+      title: 'Refactor',
+      description: 'refactor existing code and write report',
+      systemPrompt: '本 Step 专属提示词：先回归，再重构既有源码和测试，最后写报告。',
+      role: 'Coder' as const,
+      tools: ['replace_in_file', 'write_file'],
+      inputs: ['src/hello.py', 'tests/test_hello.py', 'docs/03-tasks.md'],
+      outputs: ['docs/04-refactor.md'],
+      dependsOn: ['S004'],
+      acceptance: 'refactor report written',
+      status: 'PENDING' as const,
+      retries: 0,
+      maxRetries: 3,
+    };
+    plan.steps.push(refactorStep);
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: new FakeRouter({}) as unknown as LLMRouter,
+      audit,
+      planPath: path.join(tmp, 'plan.json'),
+      maxRoundsPerStep: 1,
+    });
+    const allowed = (engine as unknown as {
+      computeStepAllowedWrites(p: Plan, s: typeof refactorStep): string[];
+    }).computeStepAllowedWrites(plan, refactorStep);
+    expect(allowed).toContain('docs/04-refactor.md');
+    expect(allowed).toContain('src/hello.py');
+    expect(allowed).toContain('tests/test_hello.py');
+    expect(allowed).not.toContain('docs/03-tasks.md');
+  });
+
   it('emits run, step, attempt and tool hooks in lifecycle order', async () => {
     const plan = fakePlan();
     plan.steps = plan.steps.slice(0, 1);
@@ -149,8 +239,8 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
         manifest: {
           id: 'engine-lifecycle',
           version: '1.0.0',
-          apiVersion: TOAA_PLUGIN_API_VERSION,
-          minToaaVersion: '0.1.3',
+          apiVersion: XCOMPILER_PLUGIN_API_VERSION,
+          minXCompilerVersion: '0.1.3',
         },
         setup(api) {
           for (const hook of [
@@ -358,6 +448,117 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(await ws.exists('src/hello.py')).toBe(true);
   });
 
+  it('repairs final audit API failures through Debugger instead of only reporting the audit error', async () => {
+    const plan = fakePlan();
+    plan.steps = [
+      {
+        ...plan.steps[2]!,
+        id: 'S004',
+        phase: 'CODE',
+        title: 'Implement API-backed entrypoint',
+        outputs: ['src/holiday.py', 'src/main.py'],
+        dependsOn: [],
+        status: 'DONE',
+      },
+      {
+        id: 'S007',
+        phase: 'DELIVERY',
+        title: 'Delivery',
+        description: 'final delivery docs and runnable entrypoint',
+        systemPrompt: 'Keep the entrypoint runnable and repair final audit failures without masking errors.',
+        role: 'Planner',
+        tools: ['write_file'],
+        inputs: ['src/holiday.py', 'src/main.py'],
+        outputs: ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'],
+        dependsOn: ['S004'],
+        acceptance: 'entrypoint and docs pass final audit',
+        status: 'DONE',
+        retries: 0,
+        maxRetries: 3,
+      },
+    ];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('src/main.py', [
+      'import argparse',
+      'from holiday import get_countdown',
+      '',
+      'def main():',
+      '    argparse.ArgumentParser(description="checkpoint").parse_args()',
+      '    print(get_countdown())',
+      '',
+      'if __name__ == "__main__":',
+      '    main()',
+      '',
+    ].join('\n'));
+    await ws.writeFile('src/holiday.py', [
+      'API_URL = "https://timor.tech/api/holiday/"',
+      '',
+      'def get_countdown():',
+      '    return API_URL',
+      '',
+    ].join('\n'));
+    await ws.writeFile('README.md', '# Checkpoint\n');
+    await ws.writeFile('docs/quickstart.md', '# QuickStart\n');
+    await ws.writeFile('docs/05-delivery.md', '# Delivery\n');
+
+    const router = new FakeRouter({
+      Debugger: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'replace the failed holiday API integration with a reachable built-in calculation',
+          actions: [
+            {
+              tool: 'write_file',
+              args: {
+                path: 'src/holiday.py',
+                content: [
+                  'def get_countdown():',
+                  '    return "Spring Festival countdown: 20 days"',
+                  '',
+                ].join('\n'),
+              },
+            },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+    const repairSandbox = new EntrypointProbeSandbox(ws);
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: repairSandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+      maxDebugRetries: 2,
+    });
+    const auditResult: ProjectAuditResult = {
+      ok: false,
+      warnings: 0,
+      errors: 1,
+      checks: [
+        {
+          name: 'entrypoint',
+          severity: 'error',
+          ok: false,
+          summary: 'entrypoint failed: python src/main.py',
+          detail:
+            'Network API failure detected. Evidence: Failed to fetch holiday data: 403 Client Error: Forbidden for url: https://timor.tech/api/holiday/',
+        },
+      ],
+    };
+
+    const repair = await engine.repairProjectAuditFailure(plan, auditResult);
+    expect(repair.failedStepId).toBeUndefined();
+    expect(await ws.readFile('src/holiday.py')).not.toContain('timor.tech');
+    expect(plan.steps[1]?.status).toBe('DONE');
+    const probe = await repairSandbox.runProgram(['src/main.py']);
+    expect(probe.stderr).toBe('');
+    expect(probe.stdout).toContain('Spring Festival countdown');
+  });
+
   it('auto-adds essential author tools for doc-producing Planner steps from older plans', async () => {
     const plan = fakePlan();
     plan.steps = [
@@ -488,11 +689,11 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
 
     const r = await engine.run(plan);
     expect(r.failedStepId).toBeUndefined();
-    expect(coder.lastUser).toContain('.toaa/project_memory.json#summary');
+    expect(coder.lastUser).toContain('.xcompiler/project_memory.json#summary');
     expect(coder.lastUser).toContain('docs/02-architecture.md');
     expect(coder.lastUser).toContain('src/reporting/service.ts');
     expect(coder.lastUser).toContain('ReportingService');
-    expect(coder.lastUser).toContain('.toaa/downstream/S003.md');
+    expect(coder.lastUser).toContain('.xcompiler/downstream/S003.md');
     expect(coder.lastUser).toContain('Verify reporting export');
   });
 

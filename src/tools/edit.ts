@@ -12,7 +12,7 @@ export const replaceInFileTool: Tool<
   { occurrences: number }
 > = {
   name: 'replace_in_file',
-  description: '把目标文件内的 find 字符串精确替换为 replace（默认要求出现 1 次）。',
+  description: '把当前 Step writable allowlist 内目标文件的 find 字符串精确替换为 replace（默认要求出现 1 次）。',
   argsSchema: { path: 'string', find: 'string', replace: 'string', expectedCount: 'number?' },
   async run(args, ctx) {
     if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
@@ -62,7 +62,7 @@ export const replaceInFileTool: Tool<
             hint.push('  ---');
           }
         } else {
-          hint.push('提示：未在原文中找到 find 的首行片段。考虑改用 read_file 读出原文，再用 write_file 整文件重写（文件 ≤6KB 可直接覆盖）。');
+          hint.push('提示：未在原文中找到 find 的首行片段。考虑改用 read_file 读出原文，再用 apply_patch 精确修改；若要整文件重写，必须低于当前运行时 chunk limit。');
         }
       }
       return { ok: false, error: hint.join('\n') };
@@ -98,7 +98,7 @@ export const codeSearchTool: Tool<
     await walk(root, async (abs) => {
       if (exts && !exts.has(path.extname(abs))) return;
       // 跳过常见非源码目录
-      if (/(?:^|\/)(node_modules|\.git|\.sandbox|\.toaa|dist|__pycache__)\//.test(abs)) return;
+      if (/(?:^|\/)(node_modules|\.git|\.sandbox|\.xcompiler|dist|__pycache__)\//.test(abs)) return;
       let content: string;
       try {
         const stat = await fs.stat(abs);

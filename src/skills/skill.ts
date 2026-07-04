@@ -73,12 +73,12 @@ export function buildDefaultSkills(): SkillRegistry {
   reg.register({
     name: 'author',
     prompt: SK.author,
-    tools: ['read_file', 'list_dir', 'write_file'],
+    tools: ['read_file', 'list_dir', 'write_file', 'append_file'],
   });
   reg.register({
     name: 'tester',
     prompt: SK.tester,
-    tools: ['read_file', 'list_dir', 'write_file', 'run_tests', 'analyze_error', 'http_fetch'],
+    tools: ['read_file', 'list_dir', 'write_file', 'append_file', 'run_tests', 'analyze_error', 'http_fetch'],
   });
   reg.register({
     name: 'dep_resolver',
@@ -97,6 +97,7 @@ export function buildDefaultSkills(): SkillRegistry {
       'apply_patch',
       'replace_in_file',
       'write_file',
+      'append_file',
       'add_dependency',
       'http_fetch',
     ],
@@ -104,7 +105,7 @@ export function buildDefaultSkills(): SkillRegistry {
   reg.register({
     name: 'refactorer',
     prompt: SK.refactorer,
-    tools: ['read_file', 'code_search', 'apply_patch', 'replace_in_file', 'run_tests'],
+    tools: ['read_file', 'code_search', 'apply_patch', 'replace_in_file', 'write_file', 'append_file', 'run_tests'],
   });
   return reg;
 }

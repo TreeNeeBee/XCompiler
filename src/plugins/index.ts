@@ -1,7 +1,7 @@
 export { PluginHost } from './host.js';
 export { checkPluginCompatibility, type PluginRuntimeVersion } from './compatibility.js';
 export { loadPluginSources } from './loader.js';
-export { TOAA_VERSION, TOAA_PLUGIN_API_VERSION } from '../version.js';
+export { XCOMPILER_VERSION, XCOMPILER_PLUGIN_API_VERSION } from '../version.js';
 export type {
   EngineRunSummary,
   HookContextMap,
@@ -16,8 +16,8 @@ export type {
   PluginLoadOptions,
   PluginSource,
   StepAttemptOutcome,
-  ToaaPlugin,
-  ToaaPluginManifest,
+  XCompilerPlugin,
+  XCompilerPluginManifest,
 } from './types.js';
 export type { Tool, ToolContext, ToolResult } from '../tools/types.js';
 export type { Skill } from '../skills/skill.js';

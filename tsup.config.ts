@@ -12,7 +12,7 @@ const shared = {
 export default defineConfig([
   {
     ...shared,
-    entry: ['src/cli/toaa.ts', 'src/cli/toaa_c.ts', 'src/cli/toaa_run.ts'],
+    entry: ['src/cli/xcompiler.ts', 'src/cli/xcompiler_build.ts', 'src/cli/xcompiler_run.ts'],
     outDir: 'dist/cli',
     banner: { js: '#!/usr/bin/env node' },
   },

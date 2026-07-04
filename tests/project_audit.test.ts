@@ -8,26 +8,40 @@ import { runProjectAudit, shouldRunProjectAudit } from '../src/core/project_audi
 import type { Plan } from '../src/core/plan.js';
 import type { ExecExtra, ExecResult, Sandbox } from '../src/sandbox/types.js';
 
+type SandboxHandler<TArgs extends unknown[]> = ExecResult | ((...args: TArgs) => ExecResult);
+
 class FakeSandbox implements Sandbox {
   readonly kind = 'subprocess' as const;
   constructor(
-    private readonly handlers: Partial<Record<'exec' | 'runProgram' | 'runTests', ExecResult>>,
+    private readonly handlers: Partial<{
+      exec: SandboxHandler<[string, string[], ExecExtra?]>;
+      runProgram: SandboxHandler<[string[], ExecExtra?]>;
+      runTests: SandboxHandler<[string[]?, ExecExtra?]>;
+    }>,
   ) {}
   async build(): Promise<{ rebuilt: boolean; reason: string }> {
     return { rebuilt: false, reason: 'stubbed' };
   }
-  async exec(_cmd: string, _argv: string[], _extra?: ExecExtra): Promise<ExecResult> {
-    return this.handlers.exec ?? okResult();
+  async exec(cmd: string, argv: string[], extra?: ExecExtra): Promise<ExecResult> {
+    return resolveHandler(this.handlers.exec, [cmd, argv, extra]);
   }
-  async runProgram(_args: string[], _extra?: ExecExtra): Promise<ExecResult> {
-    return this.handlers.runProgram ?? okResult();
+  async runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult> {
+    return resolveHandler(this.handlers.runProgram, [args, extra]);
   }
-  async runTests(_args?: string[], _extra?: ExecExtra): Promise<ExecResult> {
-    return this.handlers.runTests ?? okResult();
+  async runTests(args?: string[], extra?: ExecExtra): Promise<ExecResult> {
+    return resolveHandler(this.handlers.runTests, [args, extra]);
   }
   async installDeps(): Promise<ExecResult> {
     return okResult();
   }
+}
+
+function resolveHandler<TArgs extends unknown[]>(
+  handler: SandboxHandler<TArgs> | undefined,
+  args: TArgs,
+): ExecResult {
+  if (!handler) return okResult();
+  return typeof handler === 'function' ? handler(...args) : handler;
 }
 
 function okResult(overrides: Partial<ExecResult> = {}): ExecResult {
@@ -41,11 +55,18 @@ function okResult(overrides: Partial<ExecResult> = {}): ExecResult {
   };
 }
 
+async function writeBaseDeliveryDocs(ws: Workspace): Promise<void> {
+  await ws.writeFile('README.md', '# Audit app\n');
+  await ws.writeFile('docs/quickstart.md', '# QuickStart\n');
+  await ws.writeFile('docs/05-delivery.md', '# Delivery\n');
+}
+
 function tsPlan(): Plan {
   return {
     version: '1',
     language: 'typescript',
     intent: 'feature',
+    projectType: 'application',
     requirementDigest: 'demo',
     globalPrompt: '',
     baselineSummary: '',
@@ -62,7 +83,7 @@ describe('project quality audit', () => {
       ...tsPlan(),
       steps: [
         { id: 'S001', phase: 'REQUIREMENT', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['docs/01-requirement.md'], dependsOn: [], acceptance: 'ok', status: 'DONE', retries: 0, maxRetries: 3 },
-        { id: 'S002', phase: 'DELIVERY', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['docs/05-delivery.md'], dependsOn: ['S001'], acceptance: 'ok', status: 'SKIPPED', retries: 0, maxRetries: 3 },
+        { id: 'S002', phase: 'DELIVERY', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'], dependsOn: ['S001'], acceptance: 'ok', status: 'SKIPPED', retries: 0, maxRetries: 3 },
       ],
     } as Plan;
     expect(shouldRunProjectAudit(plan, { onlyPhase: 'CODE' })).toBe(false);
@@ -72,9 +93,9 @@ describe('project quality audit', () => {
   });
 
   it('passes when tests, entrypoint, build and lint succeed', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
     const ws = new Workspace(root);
-    await ws.writeFile('docs/05-delivery.md', 'delivery');
+    await writeBaseDeliveryDocs(ws);
     await ws.writeFile('src/main.ts', 'export function main() {}\n');
     await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
     await ws.writeFile('package.json', JSON.stringify({
@@ -85,7 +106,7 @@ describe('project quality audit', () => {
 
     const result = await runProjectAudit({
       ws,
-      sandbox: new FakeSandbox({ exec: okResult(), runProgram: okResult(), runTests: okResult() }),
+      sandbox: new FakeSandbox({ exec: okResult({ stdout: 'usage: app\n' }), runTests: okResult() }),
       plan: tsPlan(),
       profile: getLanguageProfile('typescript'),
     });
@@ -95,10 +116,35 @@ describe('project quality audit', () => {
     expect(result.warnings).toBe(0);
   });
 
-  it('fails a Python project that has no runnable entrypoint', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
+  it('fails a library project whose API guide is missing', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
     const ws = new Workspace(root);
-    await ws.writeFile('docs/05-delivery.md', 'delivery');
+    await writeBaseDeliveryDocs(ws);
+    await ws.writeFile('src/main.ts', 'export function main() {}\n');
+    await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
+    await ws.writeFile('package.json', JSON.stringify({
+      name: 'audit-lib',
+      type: 'module',
+      scripts: { test: 'vitest run', build: 'tsc -p tsconfig.json', lint: 'eslint .' },
+    }, null, 2));
+
+    const result = await runProjectAudit({
+      ws,
+      sandbox: new FakeSandbox({ exec: okResult({ stdout: 'usage: app\n' }), runTests: okResult() }),
+      plan: { ...tsPlan(), projectType: 'library' },
+      profile: getLanguageProfile('typescript'),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      name: 'api-guide', severity: 'error', ok: false,
+    }));
+  });
+
+  it('fails a Python project that has no runnable entrypoint', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
+    const ws = new Workspace(root);
+    await writeBaseDeliveryDocs(ws);
     await ws.writeFile('tests/test_app.py', 'def test_ok(): assert True\n');
     const plan = { ...tsPlan(), language: 'python' as const };
 
@@ -118,10 +164,31 @@ describe('project quality audit', () => {
     }));
   });
 
-  it('warns when TypeScript project has no build or lint script', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
+  it('fails a Python project whose main.py is only imports/comments', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
     const ws = new Workspace(root);
-    await ws.writeFile('docs/05-delivery.md', 'delivery');
+    await writeBaseDeliveryDocs(ws);
+    await ws.writeFile('src/main.py', 'import argparse\nimport logging\n# placeholder\n');
+    await ws.writeFile('tests/test_app.py', 'def test_ok(): assert True\n');
+    const plan = { ...tsPlan(), language: 'python' as const };
+
+    const result = await runProjectAudit({
+      ws,
+      sandbox: new FakeSandbox({ runProgram: okResult({ stdout: '' }), runTests: okResult() }),
+      plan,
+      profile: getLanguageProfile('python'),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      name: 'entrypoint', severity: 'error', ok: false,
+    }));
+  });
+
+  it('warns when TypeScript project has no build or lint script', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
+    const ws = new Workspace(root);
+    await writeBaseDeliveryDocs(ws);
     await ws.writeFile('src/main.ts', 'export function main() {}\n');
     await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
     await ws.writeFile('package.json', JSON.stringify({
@@ -132,7 +199,7 @@ describe('project quality audit', () => {
 
     const result = await runProjectAudit({
       ws,
-      sandbox: new FakeSandbox({ runProgram: okResult(), runTests: okResult() }),
+      sandbox: new FakeSandbox({ exec: okResult({ stdout: 'usage: app\n' }), runTests: okResult() }),
       plan: tsPlan(),
       profile: getLanguageProfile('typescript'),
     });
@@ -144,9 +211,9 @@ describe('project quality audit', () => {
   });
 
   it('fails when the build audit fails after execution', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-audit-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
     const ws = new Workspace(root);
-    await ws.writeFile('docs/05-delivery.md', 'delivery');
+    await writeBaseDeliveryDocs(ws);
     await ws.writeFile('src/main.ts', 'export function main() {}\n');
     await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
     await ws.writeFile('package.json', JSON.stringify({
@@ -158,9 +225,14 @@ describe('project quality audit', () => {
     const result = await runProjectAudit({
       ws,
       sandbox: new FakeSandbox({
-        runProgram: okResult(),
         runTests: okResult(),
-        exec: okResult({ exitCode: 1, stderr: 'build failed' }),
+        exec: (cmd, argv) => {
+          if (cmd === 'node') return okResult({ stdout: 'usage: app\n' });
+          if (cmd === 'npm' && argv.includes('build')) {
+            return okResult({ exitCode: 1, stderr: 'build failed' });
+          }
+          return okResult();
+        },
       }),
       plan: tsPlan(),
       profile: getLanguageProfile('typescript'),

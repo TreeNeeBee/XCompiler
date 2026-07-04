@@ -5,9 +5,11 @@ import type { Language } from './plan.js';
 import {
   autoFixSrcImports,
   ensurePyTestBootstrap,
+  helpOutputLooksMeaningful,
   probeEntrypoint,
   type EntrypointProbe,
 } from './entry_gate.js';
+import { detectNetworkApiFailureInExec } from './network_api_gate.js';
 import { t } from '../i18n/index.js';
 
 /**
@@ -137,7 +139,7 @@ export function getLanguageProfile(language: Language): LanguageProfile {
   return PROFILES[language] ?? pythonProfile;
 }
 
-/** DELIVERY gate（TypeScript）：尝试 `npx tsx src/main.ts --help`，确保入口开箱即用。 */
+/** DELIVERY gate（TypeScript）：优先尝试 `node src/main.ts --help`，确保源码入口开箱即用。 */
 async function probeTsEntrypoint(
   ws: Workspace,
   sandbox: Sandbox,
@@ -167,14 +169,44 @@ async function probeTsEntrypoint(
       stderrTail: (err as Error).message,
     };
   }
-  const ok = r.exitCode === 0 && !r.timedOut;
+  const helpNetworkFailure = detectNetworkApiFailureInExec(r);
+  if (helpNetworkFailure) {
+    return {
+      ok: false,
+      command: entry.command,
+      exitCode: r.exitCode,
+      timedOut: r.timedOut ?? false,
+      stdoutTail: tail(r.stdout),
+      stderrTail: `${helpNetworkFailure.message}\nEvidence: ${helpNetworkFailure.evidence}`,
+    };
+  }
+  const ok = r.exitCode === 0 && !r.timedOut && helpOutputLooksMeaningful(r.stdout, r.stderr);
+  if (ok) {
+    try {
+      const smoke = await runTsEntrySmoke(entry, sandbox);
+      const smokeNetworkFailure = detectNetworkApiFailureInExec(smoke);
+      if (smokeNetworkFailure) {
+        return {
+          ok: false,
+          command: tsSmokeCommand(entry),
+          exitCode: smoke.exitCode,
+          timedOut: smoke.timedOut ?? false,
+          stdoutTail: tail(smoke.stdout),
+          stderrTail: `${smokeNetworkFailure.message}\nEvidence: ${smokeNetworkFailure.evidence}`,
+        };
+      }
+    } catch {
+      // Smoke run is only a network/API failure detector; ordinary no-arg failures
+      // still fall back to the --help entrypoint verdict.
+    }
+  }
   return {
     ok,
     command: entry.command,
     exitCode: r.exitCode,
     timedOut: r.timedOut ?? false,
     stdoutTail: tail(r.stdout),
-    stderrTail: tail(r.stderr),
+    stderrTail: ok ? tail(r.stderr) : tail(r.stderr || t().engine.entrypointHelpOutputMissing(entry.command)),
   };
 }
 
@@ -187,6 +219,16 @@ async function detectTsEntrypoint(
   | null
 > {
   const pkg = await readJsonFile<Record<string, unknown>>(ws, 'package.json');
+
+  for (const cand of ['src/main.ts', 'src/index.ts']) {
+    if (await ws.exists(cand)) {
+      return toTsSourceProbe(cand);
+    }
+  }
+  if (await ws.exists('src/main.tsx')) {
+    return { type: 'run-program', entry: 'src/main.tsx', command: 'npx tsx src/main.tsx --help' };
+  }
+
   const scripts =
     pkg?.scripts && typeof pkg.scripts === 'object' && !Array.isArray(pkg.scripts)
       ? (pkg.scripts as Record<string, unknown>)
@@ -208,15 +250,7 @@ async function detectTsEntrypoint(
 
   const mainValue = typeof pkg?.main === 'string' ? pkg.main.trim() : '';
   if (mainValue && (mainValue.endsWith('.ts') || mainValue.endsWith('.tsx') || mainValue.endsWith('.js'))) {
-    return mainValue.endsWith('.js')
-      ? { type: 'exec', cmd: 'node', argv: [mainValue, '--help'], command: `node ${mainValue} --help` }
-      : { type: 'run-program', entry: mainValue, command: `npx tsx ${mainValue} --help` };
-  }
-
-  for (const cand of ['src/main.ts', 'src/index.ts', 'src/main.tsx']) {
-    if (await ws.exists(cand)) {
-      return { type: 'run-program', entry: cand, command: `npx tsx ${cand} --help` };
-    }
+    return toTsBinProbe(mainValue);
   }
   return null;
 }
@@ -237,13 +271,49 @@ async function runTsEntryProbe(
   return sandbox.runProgram([probe.entry, '--help'], { timeoutMs: 60_000 });
 }
 
+async function runTsEntrySmoke(
+  probe:
+    | { type: 'start-script'; command: string }
+    | { type: 'run-program'; entry: string; command: string }
+    | { type: 'exec'; cmd: string; argv: string[]; command: string },
+  sandbox: Sandbox,
+): Promise<Awaited<ReturnType<Sandbox['runProgram']>>> {
+  if (probe.type === 'start-script') {
+    return sandbox.exec('npm', ['run', '--silent', 'start'], { timeoutMs: 60_000 });
+  }
+  if (probe.type === 'exec') {
+    return sandbox.exec(probe.cmd, probe.argv.filter((arg) => arg !== '--help'), { timeoutMs: 60_000 });
+  }
+  return sandbox.runProgram([probe.entry], { timeoutMs: 60_000 });
+}
+
+function tsSmokeCommand(
+  probe:
+    | { type: 'start-script'; command: string }
+    | { type: 'run-program'; entry: string; command: string }
+    | { type: 'exec'; cmd: string; argv: string[]; command: string },
+): string {
+  if (probe.type === 'start-script') return 'npm run --silent start';
+  if (probe.type === 'exec') {
+    const argv = probe.argv.filter((arg) => arg !== '--help');
+    return [probe.cmd, ...argv].join(' ');
+  }
+  return `npx tsx ${probe.entry}`;
+}
+
 function toTsBinProbe(
   entry: string,
 ): { type: 'run-program'; entry: string; command: string } | { type: 'exec'; cmd: string; argv: string[]; command: string } {
-  if (entry.endsWith('.js')) {
+  if (entry.endsWith('.js') || entry.endsWith('.ts')) {
     return { type: 'exec', cmd: 'node', argv: [entry, '--help'], command: `node ${entry} --help` };
   }
   return { type: 'run-program', entry, command: `npx tsx ${entry} --help` };
+}
+
+function toTsSourceProbe(
+  entry: string,
+): { type: 'exec'; cmd: string; argv: string[]; command: string } {
+  return { type: 'exec', cmd: 'node', argv: [entry, '--help'], command: `node ${entry} --help` };
 }
 
 async function readJsonFile<T>(

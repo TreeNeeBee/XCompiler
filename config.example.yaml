@@ -55,6 +55,12 @@ agent:
   # 出现解析失败/重复 actions/无进展时窗口快速收缩，连续 2 次低质量直接放弃。
   # 默认 = max(max_debug_retries * 4, 10)
   # max_debug_retries_cap: 12
+  # EditGuard 单 Step 累计行数预算。auto 会按 phase/tools/outputs/prompt 上下文自适应；
+  # 如需固定硬上限，可设为数字，例如 400。
+  # max_edit_lines_per_step: auto
+  # write_file / append_file 单次 content 字节预算。auto 会按 phase/tools/outputs/context 自适应；
+  # 大型工程仍应拆成模块/函数/类边界增量写入，而不是单次写巨型文件。
+  # max_write_chunk_bytes: auto
   # subprocess | docker
   # subprocess (默认)：在嬿主机 venv 内直接 spawn，快但无隔离
   # docker: 使用系统 docker daemon，bind-mount 工程目录到容器；debug 时直接修改工程代码即生效

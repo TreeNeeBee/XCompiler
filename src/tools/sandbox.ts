@@ -1,4 +1,5 @@
 import type { Tool } from './types.js';
+import { detectNetworkApiFailureInExec } from '../core/network_api_gate.js';
 
 /** 截取多行文本最后 N 行，用于在 ToolResult.summary 里给 LLM 直接看的失败上下文。
  * 仅在失败时调用——成功路径上 stdout 通常很长且无价值，没必要塞回 prompt。 */
@@ -39,13 +40,16 @@ export const runProgramTool: Tool<
   argsSchema: { args: 'string[]', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
     const r = await ctx.sandbox.runProgram(args.args, { cwd: args.cwd, timeoutMs: args.timeoutMs });
-    const ok = r.exitCode === 0 && !r.timedOut;
+    const networkFailure = detectNetworkApiFailureInExec(r);
+    const ok = r.exitCode === 0 && !r.timedOut && !networkFailure;
     const cmd = ctx.language === 'typescript' ? 'npx tsx' : 'python';
     const base = `${cmd} ${args.args.join(' ')} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
     return {
       ok,
       data: { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut },
-      summary: ok ? base : buildRunSummary(base, r),
+      summary: ok
+        ? base
+        : buildRunSummary(networkFailure ? `${base}\n${networkFailure.message}\nEvidence: ${networkFailure.evidence}` : base, r),
     };
   },
 };
@@ -67,7 +71,8 @@ export const runTestsTool: Tool<
   argsSchema: { args: 'string[]?', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
     const r = await ctx.sandbox.runTests(args.args ?? [], { cwd: args.cwd, timeoutMs: args.timeoutMs });
-    const passed = r.exitCode === 0 && !r.timedOut;
+    const networkFailure = detectNetworkApiFailureInExec(r);
+    const passed = r.exitCode === 0 && !r.timedOut && !networkFailure;
     const cmd = ctx.language === 'typescript' ? 'npm test' : 'pytest';
     const base = `${cmd} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
     return {
@@ -79,7 +84,9 @@ export const runTestsTool: Tool<
         timedOut: r.timedOut,
         passed,
       },
-      summary: passed ? base : buildRunSummary(base, r),
+      summary: passed
+        ? base
+        : buildRunSummary(networkFailure ? `${base}\n${networkFailure.message}\nEvidence: ${networkFailure.evidence}` : base, r),
     };
   },
 };

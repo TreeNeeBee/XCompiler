@@ -10,7 +10,7 @@ let ws: Workspace;
 let git: GitService;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-git-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-git-'));
   ws = new Workspace(tmp);
   git = new GitService(ws);
 });
@@ -33,7 +33,7 @@ describe('GitService', () => {
   it('ensureRepo is idempotent', async () => {
     await git.ensureRepo();
     await git.ensureRepo();
-    const recent = await git.recentToaaCommits();
+    const recent = await git.recentXCompilerCommits();
     expect(recent.some((c) => c.message.includes('init workspace'))).toBe(true);
   });
 });

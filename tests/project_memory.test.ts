@@ -31,7 +31,7 @@ const step = (overrides: Partial<Step> = {}): Step =>
 
 describe('project memory', () => {
   it('captures docs, manifests and implementation snippets', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-memory-'));
     const ws = new Workspace(root);
     await ws.writeFile('docs/topic.md', 'Invoice reporting with CSV export.');
     await ws.writeFile(
@@ -68,7 +68,7 @@ describe('project memory', () => {
   });
 
   it('persists and reloads project memory for later incremental runs', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-memory-'));
     const ws = new Workspace(root);
     await ws.writeFile('docs/topic.md', 'Existing export workflow.');
     await ws.writeFile('src/exporter.ts', 'export function exportData() { return "done"; }\n');
@@ -81,23 +81,23 @@ describe('project memory', () => {
   });
 
   it('loads the stable design contracts when planning a self-bootstrap', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-memory-'));
     const ws = new Workspace(root);
-    await ws.writeFile('docs/TOAA_design.md', 'Stable runtime and V-model architecture.');
+    await ws.writeFile('docs/XCompiler_design.md', 'Stable runtime and V-model architecture.');
     await ws.writeFile('docs/self_bootstrap.md', 'Generation N builds N+1 in an isolated worktree.');
-    await ws.writeFile('package.json', JSON.stringify({ name: '@toaa/cli' }));
+    await ws.writeFile('package.json', JSON.stringify({ name: '@xcompiler/cli' }));
 
     const memory = await buildProjectMemory(ws, { language: 'typescript', intent: 'self' });
 
     expect(memory.summary).toContain('Stable runtime and V-model architecture.');
     expect(memory.summary).toContain('Generation N builds N+1');
     expect(memory.keyFiles.map((file) => file.path)).toEqual(
-      expect.arrayContaining(['docs/TOAA_design.md', 'docs/self_bootstrap.md']),
+      expect.arrayContaining(['docs/XCompiler_design.md', 'docs/self_bootstrap.md']),
     );
   });
 
   it('selects relevant snippets for the current step', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-memory-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-memory-'));
     const ws = new Workspace(root);
     await ws.writeFile('src/reporting/service.ts', 'export class ReportingService { exportCsv() { return "csv"; } }\n');
     await ws.writeFile('src/auth/service.ts', 'export class AuthService { login() { return true; } }\n');

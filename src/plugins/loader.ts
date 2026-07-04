@@ -2,18 +2,18 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { t } from '../i18n/index.js';
-import { TOAA_PLUGIN_API_VERSION, TOAA_VERSION } from '../version.js';
+import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../version.js';
 import { checkPluginCompatibility } from './compatibility.js';
 import type {
   PluginLoadOptions,
   PluginSource,
-  ToaaPlugin,
-  ToaaPluginManifest,
+  XCompilerPlugin,
+  XCompilerPluginManifest,
 } from './types.js';
 
 interface PreflightSource {
   source: PluginSource;
-  manifest: ToaaPluginManifest;
+  manifest: XCompilerPluginManifest;
   manifestPath: string;
   entryPath: string;
 }
@@ -22,20 +22,20 @@ interface PreflightSource {
  * 从磁盘加载插件。全部 manifest 会在任何插件模块 import 之前完成读取、兼容性与
  * 重复 ID 检查，避免不兼容插件借助模块顶层代码绕过宿主版本门禁。
  */
-export async function loadPluginSources(options: PluginLoadOptions): Promise<ToaaPlugin[]> {
+export async function loadPluginSources(options: PluginLoadOptions): Promise<XCompilerPlugin[]> {
   const baseDir = path.resolve(options.baseDir ?? process.cwd());
   const runtime = {
-    toaaVersion: options.toaaVersion ?? TOAA_VERSION,
-    pluginApiVersion: options.pluginApiVersion ?? TOAA_PLUGIN_API_VERSION,
+    xcompilerVersion: options.xcompilerVersion ?? XCOMPILER_VERSION,
+    pluginApiVersion: options.pluginApiVersion ?? XCOMPILER_PLUGIN_API_VERSION,
   };
   const preflight: PreflightSource[] = [];
 
   for (const source of options.sources) {
     const manifestPath = path.resolve(baseDir, source.manifestPath);
     const entryPath = path.resolve(baseDir, source.entryPath);
-    let manifest: ToaaPluginManifest;
+    let manifest: XCompilerPluginManifest;
     try {
-      manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ToaaPluginManifest;
+      manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as XCompilerPluginManifest;
     } catch (error) {
       const message = t().plugins.manifestReadFailed(manifestPath, errorMessage(error));
       await auditRejected(options, '', 'manifest-read', message, { manifestPath, entryPath });
@@ -60,7 +60,7 @@ export async function loadPluginSources(options: PluginLoadOptions): Promise<Toa
     seen.add(item.manifest.id);
   }
 
-  const plugins: ToaaPlugin[] = [];
+  const plugins: XCompilerPlugin[] = [];
   for (const item of preflight) {
     const exportName = item.source.exportName ?? 'default';
     let loaded: Record<string, unknown>;
@@ -87,20 +87,20 @@ export async function loadPluginSources(options: PluginLoadOptions): Promise<Toa
   return plugins;
 }
 
-function isPlugin(value: unknown): value is ToaaPlugin {
+function isPlugin(value: unknown): value is XCompilerPlugin {
   return !!value && typeof value === 'object' &&
     typeof (value as { setup?: unknown }).setup === 'function' &&
     !!(value as { manifest?: unknown }).manifest;
 }
 
-function sameRuntimeManifest(actual: ToaaPluginManifest, expected: ToaaPluginManifest): boolean {
+function sameRuntimeManifest(actual: XCompilerPluginManifest, expected: XCompilerPluginManifest): boolean {
   return actual.id === expected.id &&
     actual.version === expected.version &&
     actual.apiVersion === expected.apiVersion &&
-    actual.minToaaVersion === expected.minToaaVersion;
+    actual.minXCompilerVersion === expected.minXCompilerVersion;
 }
 
-function snapshotManifest(manifest: ToaaPluginManifest): ToaaPluginManifest {
+function snapshotManifest(manifest: XCompilerPluginManifest): XCompilerPluginManifest {
   return { ...manifest, keywords: manifest.keywords ? [...manifest.keywords] : undefined };
 }
 

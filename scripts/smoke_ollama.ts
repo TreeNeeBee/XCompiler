@@ -1,7 +1,7 @@
 import { OllamaClient } from '../src/llm/ollama.js';
 import { setLocale, t } from '../src/i18n/index.js';
 
-setLocale(process.env.TOAA_LANG ?? 'en');
+setLocale(process.env.XC_LANG ?? process.env.XCOMPILER_LANG ?? 'en');
 
 const BASE = process.env.OLLAMA_BASE_URL ?? 'http://10.80.106.160:11434';
 const REQUEST_TIMEOUT_MS = envMs('OLLAMA_REQUEST_TIMEOUT_MS', 15 * 60 * 1000);

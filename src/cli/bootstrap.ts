@@ -58,7 +58,7 @@ export interface BootstrapResult extends BootstrapWorkspace {
 }
 
 /**
- * Generation-based self-bootstrap: the loaded TOAA process (N) edits a linked worktree
+ * Generation-based self-bootstrap: the loaded XCompiler process (N) edits a linked worktree
  * containing candidate N+1. The host checkout is never used as the execution workspace.
  */
 export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapResult> {
@@ -223,11 +223,11 @@ export async function prepareBootstrapWorkspace(
   }
 
   const runId = createRunId();
-  const branch = `toaa/bootstrap/${runId}`;
+  const branch = `xcompiler/bootstrap/${runId}`;
   const baseCommit = (await git.revparse(['HEAD'])).trim();
   const worktree = requestedWorktree
     ? path.resolve(requestedWorktree)
-    : path.join(root, '.toaa', 'bootstrap', 'worktrees', runId);
+    : path.join(root, '.xcompiler', 'bootstrap', 'worktrees', runId);
   await fs.mkdir(path.dirname(worktree), { recursive: true });
   await git.raw(['worktree', 'add', '-b', branch, worktree, baseCommit]);
   return { repository: root, worktree, branch, baseCommit, runId };
@@ -415,7 +415,7 @@ async function finishBootstrap(
   changedFiles: string[],
   opts: BootstrapOptions,
 ): Promise<BootstrapResult> {
-  const reportDir = path.join(prepared.repository, '.toaa', 'bootstrap', 'reports');
+  const reportDir = path.join(prepared.repository, '.xcompiler', 'bootstrap', 'reports');
   const reportPath = path.join(reportDir, `${prepared.runId}.md`);
   const candidateGit = simpleGit({ baseDir: prepared.worktree });
   const candidateCommit = prepared.candidateCommit ?? (await candidateGit.revparse(['HEAD'])).trim();

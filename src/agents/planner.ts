@@ -1,10 +1,16 @@
 import {
   ArchitectureModuleSchema,
+  ComplexityAssessmentSchema,
+  ImplementationPhaseSchema,
+  REQUIRED_V_MODEL_PHASES,
   type ArchitectureModule,
+  type ComplexityAssessment,
+  type ImplementationPhase,
   type Plan,
   type Step,
   type Language,
   type PlanIntent,
+  type ProjectType,
 } from '../core/plan.js';
 import { getLanguageProfile } from '../core/language.js';
 import {
@@ -70,6 +76,9 @@ export interface PlannerInput {
 export interface DraftPlan {
   requirementDigest: string;
   globalPrompt: string;
+  projectType?: ProjectType;
+  complexityAssessment?: ComplexityAssessment;
+  implementationPhases?: ImplementationPhase[];
   dependencies: string[];
   architectureModules?: ArchitectureModule[];
   steps: Step[];
@@ -90,10 +99,12 @@ export class Planner {
       { requirementDigest: rawRequirement, intent: opts.intent ?? 'greenfield' },
       this.language,
     );
+    const projectShapeAmbiguous = isProjectShapeAmbiguous(rawRequirement);
     const prompt = t().prompts.plannerClarify(rawRequirement, {
       intent: opts.intent ?? 'greenfield',
       hasBaseline: !!opts.hasBaseline,
       complex: demand.nonTrivial,
+      projectShapeAmbiguous,
     });
     const rep = makeStreamReporter('Planner.clarify', this.llm.name);
     let provider: string | undefined;
@@ -111,7 +122,7 @@ export class Planner {
           onProvider: (n) => { provider = n; },
           onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
           // 在 provider fallback 层校验问题集质量，避免“只有两三个泛泛问题”直接进入 Gate 1。
-          validate: (t) => validateClarifyJson(t, demand.nonTrivial),
+          validate: (t) => validateClarifyJson(t, demand.nonTrivial, projectShapeAmbiguous),
         },
       );
       rep.done();
@@ -183,7 +194,28 @@ export function buildPlan(
   opts: { userAddenda?: string; language?: Language; intent?: PlanIntent; baselineSummary?: string } = {},
 ): Plan {
   const language = opts.language ?? 'python';
-  const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)));
+  const projectType = draft.projectType ?? inferProjectType([
+    draft.requirementDigest,
+    draft.globalPrompt,
+    opts.userAddenda ?? '',
+    opts.baselineSummary ?? '',
+  ].join('\n'));
+  const complexityAssessment =
+    draft.complexityAssessment ??
+    inferComplexityAssessment({
+      requirementDigest: draft.requirementDigest,
+      globalPrompt: draft.globalPrompt,
+      userAddenda: opts.userAddenda ?? '',
+      baselineSummary: opts.baselineSummary ?? '',
+      intent: opts.intent ?? 'greenfield',
+      language,
+    });
+  const implementationPhases = normalizeImplementationPhases(
+    draft.implementationPhases,
+    complexityAssessment,
+    draft.requirementDigest,
+  );
+  const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)), projectType);
   const mapped = calibrateArchitectureStepMappings(shaped, draft.architectureModules ?? []);
   const contracted = injectArchitectureContractPrompts(mapped, draft.architectureModules ?? []);
   // 兜底：若 LLM 漏写了 TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
@@ -197,7 +229,10 @@ export function buildPlan(
     version: '1',
     language,
     intent: opts.intent ?? 'greenfield',
+    projectType,
     requirementDigest: draft.requirementDigest,
+    complexityAssessment,
+    implementationPhases,
     architectureModules: draft.architectureModules,
     globalPrompt: draft.globalPrompt,
     baselineSummary: opts.baselineSummary ?? '',
@@ -323,7 +358,11 @@ function normalizeClarificationCategory(value: unknown): ClarificationCategory {
   return parseClarificationCategory(value) ?? 'functionality';
 }
 
-function validateClarifyJson(text: string, complex: boolean): ClarifyQuestion[] {
+function validateClarifyJson(
+  text: string,
+  complex: boolean,
+  projectShapeAmbiguous = false,
+): ClarifyQuestion[] {
   const data = safeJson(text);
   const raw = coerceClarifyArray(data);
   if (raw.length === 0) {
@@ -361,6 +400,11 @@ function validateClarifyJson(text: string, complex: boolean): ClarifyQuestion[] 
       throw new Error(`clarify missing required ${required} question`);
     }
   }
+  if (projectShapeAmbiguous && !parsed.some(isProjectShapeClarification)) {
+    throw new Error(
+      'clarify missing required project shape question: ask whether this should be an API library, runnable application, or mixed deliverable',
+    );
+  }
   return parsed;
 }
 
@@ -384,28 +428,41 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     throw new Error('Planner JSON missing requirementDigest or steps.');
   }
   const globalPrompt = typeof obj.globalPrompt === 'string' ? obj.globalPrompt : '';
+  const parsedProjectType = parseProjectType(obj.projectType);
+  if (context && !parsedProjectType) {
+    throw new Error(
+      'Planner JSON missing valid projectType; project shape must be classified by the LLM after clarification.',
+    );
+  }
+  const projectType = parsedProjectType ?? inferProjectType([
+    typeof digest === 'string' ? digest : '',
+    globalPrompt,
+    context?.rawRequirement ?? '',
+    context?.userAddenda ?? '',
+    context?.baselineSummary ?? '',
+  ].join('\n'));
   const rawDeps = Array.isArray(obj.dependencies)
     ? obj.dependencies
     : Array.isArray(obj.pythonRequirements)
       ? obj.pythonRequirements
       : [];
   const dependencies = (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string');
-  // 强制 V 模型骨架完整性：必须同时存在 REQUIREMENT / ARCH / CODE / DELIVERY 阶段，
-  // 至少 4 个 Step。LLM 在 token loop / 截断时常见症状是只输出前 1-2 个 Step（如
-  // 用户回放：仅 REQUIREMENT+ARCH 两步），这种残缺 plan 后续重试也救不回，应在
-  // validate 层直接拒绝，让 FallbackClient 切换 provider 重新生成完整 plan。
+  // 强制 V 模型骨架完整性：必须覆盖核心阶段。LLM 在 token loop / 截断时常见症状
+  // 是只输出前 1-2 个 Step（如用户回放：仅 REQUIREMENT+ARCH 两步），这种残缺 plan
+  // 后续重试也救不回，应在 validate 层直接拒绝，让 FallbackClient 切换 provider
+  // 重新生成完整 plan。
   const phases = new Set<string>();
   for (const s of steps as Array<Record<string, unknown>>) {
     const p = typeof s?.phase === 'string' ? s.phase : '';
     if (p) phases.add(p);
   }
-  const required = ['REQUIREMENT', 'ARCH', 'CODE', 'DELIVERY'];
+  const required = [...REQUIRED_V_MODEL_PHASES];
   const missing = required.filter((p) => !phases.has(p));
-  if (steps.length < 4 || missing.length > 0) {
+  if (steps.length < required.length || missing.length > 0) {
     throw new Error(
       `Planner draft incomplete (likely token-loop / truncation): ` +
       `got ${steps.length} step(s), phases=[${[...phases].join(',') || '(none)'}], ` +
-      `missing=[${missing.join(',') || '(none)'}]. V-model 至少需要 REQUIREMENT/ARCH/CODE/DELIVERY 四阶段。`,
+      `missing=[${missing.join(',') || '(none)'}]. V-model requires core phases: ${required.join('/')}.`,
     );
   }
   const architectureResult = ArchitectureModuleSchema.array().safeParse(obj.architectureModules ?? []);
@@ -413,6 +470,36 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     throw new Error(`Planner architectureModules invalid: ${architectureResult.error.issues.map((i) => i.message).join('; ')}`);
   }
   const architectureModules = architectureResult.data;
+  const parsedComplexityAssessment = parseComplexityAssessment(obj.complexityAssessment);
+  if (context && !parsedComplexityAssessment) {
+    throw new Error('Planner JSON missing valid complexityAssessment; complexity must be assessed during plan decomposition.');
+  }
+  const complexityAssessment =
+    parsedComplexityAssessment ??
+    inferComplexityAssessment({
+      requirementDigest: digest,
+      globalPrompt,
+      rawRequirement: context?.rawRequirement ?? '',
+      userAddenda: context?.userAddenda ?? '',
+      baselineSummary: context?.baselineSummary ?? '',
+      intent: context?.intent ?? 'greenfield',
+      language: context?.language ?? 'python',
+    });
+  const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
+  if (context && (!parsedImplementationPhases || parsedImplementationPhases.length === 0)) {
+    throw new Error('Planner JSON missing valid implementationPhases; P1 current phase must be explicit.');
+  }
+  const phaseIssue = parsedImplementationPhases
+    ? validateImplementationPhaseDraft(parsedImplementationPhases, complexityAssessment)
+    : undefined;
+  if (context && phaseIssue) {
+    throw new Error(`Planner implementationPhases invalid: ${phaseIssue}`);
+  }
+  const implementationPhases = normalizeImplementationPhases(
+    parsedImplementationPhases,
+    complexityAssessment,
+    digest,
+  );
   if (context) {
     const demand = analyzeArchitectureDemand(
       {
@@ -425,6 +512,20 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
       },
       context.language,
     );
+    const forcedPhaseSplit = hasForcedPhaseSplit([
+      digest,
+      context.rawRequirement,
+      context.userAddenda,
+    ].join('\n'));
+    if (demand.nonTrivial && !complexityAssessment.splitRecommended) {
+      throw new Error(
+        `Planner complexityAssessment underestimates a non-trivial request (${demand.reasonLabel}); ` +
+        'splitRecommended must be true and deferred implementation phases must be planned.',
+      );
+    }
+    if (forcedPhaseSplit && !complexityAssessment.userForcedPhaseSplit) {
+      throw new Error('Planner complexityAssessment missed the user-forced phase split request.');
+    }
     if (demand.nonTrivial && architectureModules.length === 0) {
       throw new Error(
         `Planner omitted architectureModules for a non-trivial request (${demand.reasonLabel}); ` +
@@ -433,7 +534,7 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     }
     if (architectureModules.length > 0) {
       const normalizedSteps = calibrateArchitectureStepMappings(
-        calibrateDocPaths(calibrateStepShape(calibrateStepIds(steps as Step[]))),
+        calibrateDocPaths(calibrateStepShape(calibrateStepIds(steps as Step[])), projectType),
         architectureModules,
       );
       const contractIssues = validateArchitectureContract(
@@ -450,7 +551,198 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     }
   }
   // Step shape will be validated by zod / lint downstream.
-  return { requirementDigest: digest, globalPrompt, dependencies, architectureModules, steps: steps as Step[] };
+  return {
+    requirementDigest: digest,
+    globalPrompt,
+    projectType,
+    complexityAssessment,
+    implementationPhases,
+    dependencies,
+    architectureModules,
+    steps: steps as Step[],
+  };
+}
+
+function parseComplexityAssessment(value: unknown): ComplexityAssessment | undefined {
+  const result = ComplexityAssessmentSchema.safeParse(value);
+  return result.success ? result.data : undefined;
+}
+
+function parseImplementationPhases(value: unknown): ImplementationPhase[] | undefined {
+  const result = ImplementationPhaseSchema.array().safeParse(value);
+  return result.success ? result.data : undefined;
+}
+
+function validateImplementationPhaseDraft(
+  phases: ImplementationPhase[],
+  assessment: ComplexityAssessment,
+): string | undefined {
+  const requiredCount = requiredImplementationPhaseCount(assessment);
+  if (phases.length < requiredCount) {
+    return `complexityAssessment.level=${assessment.level} requires at least ${requiredCount} implementation phase(s)`;
+  }
+  if (
+    assessment.level === 'simple' &&
+    !assessment.splitRecommended &&
+    !assessment.userForcedPhaseSplit &&
+    phases.length !== 1
+  ) {
+    return 'simple complexity without splitRecommended must use exactly one current implementation phase';
+  }
+  const current = phases.filter((phase) => phase.status === 'current');
+  if (current.length !== 1 || current[0]?.id !== 'P1') {
+    return 'exactly one current phase is required and it must be P1';
+  }
+  if (phases[0]?.id !== 'P1') {
+    return 'P1 must be the first implementation phase';
+  }
+  for (const phase of phases.filter((item) => item.id !== 'P1')) {
+    if (phase.status !== 'deferred') {
+      return `${phase.id} must be deferred; only P1 is executed now`;
+    }
+  }
+  if (assessment.userForcedPhaseSplit && !assessment.splitRecommended) {
+    return 'userForcedPhaseSplit=true requires splitRecommended=true';
+  }
+  if (assessment.level !== 'simple' && !assessment.splitRecommended) {
+    return 'moderate/complex complexity requires splitRecommended=true';
+  }
+  if (assessment.splitRecommended && phases.filter((phase) => phase.status === 'deferred').length === 0) {
+    return 'splitRecommended=true requires at least one deferred enhancement phase';
+  }
+  return undefined;
+}
+
+function parseProjectType(value: unknown): ProjectType | undefined {
+  return value === 'application' || value === 'library' || value === 'mixed'
+    ? value
+    : undefined;
+}
+
+function isProjectShapeAmbiguous(text: string): boolean {
+  const signals = projectShapeSignals(text);
+  if (signals.genericApi && !signals.libraryLike && !signals.appLike) return true;
+  return !signals.libraryLike && !signals.appLike;
+}
+
+function isProjectShapeClarification(question: ClarifyQuestion): boolean {
+  const text = `${question.question}\n${question.why}`.toLowerCase();
+  return (
+    /api[- ]?library|public api|reusable api|client library|sdk|package|library|runnable app|application|cli|service|mixed/u.test(text) ||
+    /api\s*(库|客户端|能力)|公共\s*api|可复用接口|库项目|软件包|开发包|可运行|应用|命令行|服务|混合/u.test(question.question)
+  );
+}
+
+function projectShapeSignals(text: string): { libraryLike: boolean; appLike: boolean; genericApi: boolean } {
+  const lower = text.toLowerCase();
+  const libraryLike =
+    /\b(api[- ]?library|library|sdk|package|npm package|pypi package|client library|api client|reusable module|public api)\b/u.test(lower) ||
+    /api\s*(库|客户端)|公共\s*api|可复用接口|公共库|库项目|软件包|客户端库|开发包/u.test(text);
+  const appLike =
+    /\b(cli|command|command line|web app|server|service|dashboard|script|tool|terminal|application|app|api[- ]?server|api[- ]?service|rest api|http api|web api|api endpoint)\b/u.test(lower) ||
+    /命令行|服务|应用|脚本|工具|控制台|后台|仪表盘/u.test(text);
+  const explicitApiSurface =
+    /\b(api[- ]?server|api[- ]?service|rest api|http api|web api|api endpoint|api client|api[- ]?library)\b/u.test(lower) ||
+    /api\s*(服务|网关|端点|客户端|库)/u.test(text);
+  const genericApi = (/\bapi\b/u.test(lower) || /接口/u.test(text)) && !explicitApiSurface;
+  return { libraryLike, appLike, genericApi };
+}
+
+function inferComplexityAssessment(input: {
+  requirementDigest: string;
+  rawRequirement?: string;
+  globalPrompt?: string;
+  userAddenda?: string;
+  baselineSummary?: string;
+  intent: PlanIntent;
+  language: Language;
+}): ComplexityAssessment {
+  const text = [
+    input.requirementDigest,
+    input.rawRequirement ?? '',
+    input.userAddenda ?? '',
+    input.baselineSummary ?? '',
+  ].join('\n');
+  const demand = analyzeArchitectureDemand(input, input.language);
+  const forced = hasForcedPhaseSplit(text);
+  const level: ComplexityAssessment['level'] =
+    demand.nonTrivial || forced
+      ? 'complex'
+      : demand.surfaces.length > 0 || demand.baselineModules > 0
+        ? 'moderate'
+        : 'simple';
+  return {
+    level,
+    rationale: demand.reasonLabel,
+    splitRecommended: forced || level !== 'simple',
+    userForcedPhaseSplit: forced,
+  };
+}
+
+function normalizeImplementationPhases(
+  phases: ImplementationPhase[] | undefined,
+  assessment: ComplexityAssessment,
+  requirementDigest: string,
+): ImplementationPhase[] {
+  const requiredCount = requiredImplementationPhaseCount(assessment);
+  const sanitized = (phases ?? [])
+    .filter((phase) => phase.id && phase.title && phase.objective)
+    .map((phase, index) => ({
+      ...phase,
+      id: phase.id || `P${index + 1}`,
+      status: index === 0 ? 'current' as const : 'deferred' as const,
+      dependsOn: index === 0 ? [] : phase.dependsOn.length > 0 ? phase.dependsOn : [`P${index}`],
+    }));
+  if (sanitized.length > 0) {
+    while (sanitized.length < requiredCount) {
+      sanitized.push(deferredEnhancementPhase(requirementDigest, sanitized.length + 1));
+    }
+    return sanitized;
+  }
+  const p1: ImplementationPhase = {
+    id: 'P1',
+    title: 'Core functionality',
+    objective: `Deliver the smallest complete core slice for: ${requirementDigest}`,
+    status: 'current',
+    scope: ['Core domain behaviour', 'Runnable entrypoint', 'Primary tests', 'Delivery documentation'],
+    deliverables: ['Current V-model steps execute only this phase.'],
+    dependsOn: [],
+  };
+  const out = [p1];
+  while (out.length < requiredCount) {
+    out.push(deferredEnhancementPhase(requirementDigest, out.length + 1));
+  }
+  return out;
+}
+
+function requiredImplementationPhaseCount(assessment: ComplexityAssessment): number {
+  if (assessment.level === 'complex') return 3;
+  if (assessment.level === 'moderate') return 2;
+  if (assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
+  return 1;
+}
+
+function deferredEnhancementPhase(requirementDigest: string, index: number): ImplementationPhase {
+  return {
+    id: `P${index}`,
+    title: 'Deferred enhancements',
+    objective: `Plan follow-up enhancements after the Phase 1 core is stable: ${requirementDigest}`,
+    status: 'deferred',
+    scope: ['Additional workflows', 'Extended integrations', 'Scale/performance hardening', 'Operational polish'],
+    deliverables: ['Deferred plan only; not executed by the current V-model run.'],
+    dependsOn: [`P${Math.max(1, index - 1)}`],
+  };
+}
+
+function hasForcedPhaseSplit(text: string): boolean {
+  return /\b(?:phase\s*\d+|multi[- ]phase|phase split|staged rollout)\b|分阶段|多阶段|分期|阶段拆分|一期|二期|第一阶段|第二阶段|后续阶段/iu.test(text);
+}
+
+function inferProjectType(text: string): ProjectType {
+  const { libraryLike, appLike } = projectShapeSignals(text);
+  if (libraryLike && appLike) return 'mixed';
+  if (libraryLike) return 'library';
+  return 'application';
 }
 
 function safeJson(text: string): unknown {

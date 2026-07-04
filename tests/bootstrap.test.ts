@@ -18,13 +18,13 @@ afterEach(async () => {
 });
 
 async function createRepository(): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-repo-'));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-repo-'));
   cleanup.push(root);
   await fs.writeFile(path.join(root, 'README.md'), '# test\n');
   const git = simpleGit({ baseDir: root });
   await git.init();
-  await git.addConfig('user.email', 'test@toaa.local');
-  await git.addConfig('user.name', 'TOAA Test');
+  await git.addConfig('user.email', 'test@xcompiler.local');
+  await git.addConfig('user.name', 'XCompiler Test');
   await git.add(['.']);
   await git.commit('initial');
   return root;
@@ -33,13 +33,13 @@ async function createRepository(): Promise<string> {
 describe('self-bootstrap worktree', () => {
   it('creates an isolated candidate and promotes only by fast-forward', async () => {
     const repository = await createRepository();
-    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-candidate-'));
+    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-candidate-'));
     await fs.rm(worktree, { recursive: true, force: true });
     cleanup.push(worktree);
     const prepared = await prepareBootstrapWorkspace(repository, worktree);
 
     expect(prepared.worktree).not.toBe(repository);
-    expect(prepared.branch).toMatch(/^toaa\/bootstrap\//u);
+    expect(prepared.branch).toMatch(/^xcompiler\/bootstrap\//u);
     await fs.writeFile(path.join(worktree, 'candidate.txt'), 'N+1\n');
     const candidateGit = simpleGit({ baseDir: worktree });
     await candidateGit.add(['candidate.txt']);
@@ -52,7 +52,7 @@ describe('self-bootstrap worktree', () => {
 
   it('rejects promotion when the candidate branch moved after qualification', async () => {
     const repository = await createRepository();
-    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-candidate-'));
+    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-candidate-'));
     await fs.rm(worktree, { recursive: true, force: true });
     cleanup.push(worktree);
     const prepared = await prepareBootstrapWorkspace(repository, worktree);
@@ -72,7 +72,7 @@ describe('self-bootstrap worktree', () => {
 
   it('rejects promotion from a dirty candidate worktree', async () => {
     const repository = await createRepository();
-    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-candidate-'));
+    const worktree = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-candidate-'));
     await fs.rm(worktree, { recursive: true, force: true });
     cleanup.push(worktree);
     const prepared = await prepareBootstrapWorkspace(repository, worktree);
@@ -92,7 +92,7 @@ describe('self-bootstrap worktree', () => {
 
 describe('bootstrap qualification', () => {
   it('runs every gate as required in the default subprocess sandbox', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-gates-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-gates-'));
     cleanup.push(root);
     await fs.mkdir(path.join(root, 'dist'), { recursive: true });
     await fs.writeFile(path.join(root, 'dist', 'cli.js'), 'console.log("ok")\n');
@@ -103,19 +103,19 @@ describe('bootstrap qualification', () => {
       bin: { fixture: './dist/cli.js' },
       scripts: {
         'version:check': 'node -e "process.exit(0)"',
-        typecheck: 'node -e "process.exit(process.env.TOAA_BOOTSTRAP_TEST_SECRET ? 1 : 0)"',
+        typecheck: 'node -e "process.exit(process.env.XCOMPILER_BOOTSTRAP_TEST_SECRET ? 1 : 0)"',
         test: 'node -e "process.exit(0)"',
         build: 'node -e "process.exit(0)"',
         lint: 'node -e "process.exit(0)"',
       },
     }));
 
-    process.env.TOAA_BOOTSTRAP_TEST_SECRET = 'must-not-leak';
+    process.env.XCOMPILER_BOOTSTRAP_TEST_SECRET = 'must-not-leak';
     let checks: Awaited<ReturnType<typeof qualifyBootstrapCandidate>>;
     try {
       checks = await qualifyBootstrapCandidate(root);
     } finally {
-      delete process.env.TOAA_BOOTSTRAP_TEST_SECRET;
+      delete process.env.XCOMPILER_BOOTSTRAP_TEST_SECRET;
     }
     expect(checks.filter((check) => check.required && !check.ok)).toEqual([]);
     expect(checks.find((check) => check.name === 'lint')).toMatchObject({ required: true, ok: true });
@@ -124,7 +124,7 @@ describe('bootstrap qualification', () => {
   });
 
   it('uses a network-disabled Docker sandbox only when explicitly requested', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-docker-gates-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-docker-gates-'));
     cleanup.push(root);
     const fakeDocker = path.join(root, 'fake-docker');
     await fs.writeFile(fakeDocker, [
@@ -163,18 +163,18 @@ describe('bootstrap qualification', () => {
 
   it('renders a reproducible report', () => {
     const result: BootstrapResult = {
-      repository: '/repo', worktree: '/candidate', branch: 'toaa/bootstrap/x',
+      repository: '/repo', worktree: '/candidate', branch: 'xcompiler/bootstrap/x',
       baseCommit: 'abc', candidateCommit: 'def', runId: 'x', status: 'qualified',
-      reportPath: '/repo/.toaa/bootstrap/reports/x.md', changedFiles: ['src/a.ts'], checks: [],
+      reportPath: '/repo/.xcompiler/bootstrap/reports/x.md', changedFiles: ['src/a.ts'], checks: [],
     };
     const report = renderBootstrapReport(result);
-    expect(report).toContain('toaa/bootstrap/x');
+    expect(report).toContain('xcompiler/bootstrap/x');
     expect(report).toContain('src/a.ts');
     expect(report).toContain('def');
   });
 
   it('treats missing scripts and CLI entry as failed required gates', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-bootstrap-gates-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-bootstrap-gates-'));
     cleanup.push(root);
     await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({
       name: 'incomplete-bootstrap-fixture',

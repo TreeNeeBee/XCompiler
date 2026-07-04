@@ -42,13 +42,13 @@ interface CacheShape {
 const EMPTY: CacheShape = { version: 1, steps: {} };
 
 /**
- * 跨 `toaa run` 的 debug 历史持久化。
+ * 跨 `xcompiler run` 的 debug 历史持久化。
  *
- * 落盘位置：`<workspace>/.toaa/debug_cache.json`。
+ * 落盘位置：`<workspace>/.xcompiler/debug_cache.json`。
  *
  * 设计原则：
  * 1. 只在 workspace 内，**不污染 plan.json**——plan.json 是用户/Planner 的契约，不应混入运行期日志。
- * 2. 一次 `toaa run` 内的多次 retry → append；单步 DONE → clear；单步 FAILED → 保留，下一次 `toaa run`
+ * 2. 一次 `xcompiler run` 内的多次 retry → append；单步 DONE → clear；单步 FAILED → 保留，下一次 `xcompiler run`
  *    可读到这些尝试，作为 Debugger 的 prior context，让模型不要再走死路。
  * 3. 单步保留 attempts 数量上限 `maxAttemptsPerStep`（默认 12），超出按 FIFO 丢弃；每条 failureLog 按
  *    `maxFailureLogLines`（默认 80）截断尾部。
@@ -171,7 +171,7 @@ export class DebugCache {
       return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${sugg}`;
     });
     return [
-      '## 历史 DEBUG 尝试（来自上一次/本次 toaa run，请勿重复同样的修复思路）',
+      '## 历史 DEBUG 尝试（来自上一次/本次 xcompiler run，请勿重复同样的修复思路）',
       ...lines,
       '请基于以上历史，提出**新的诊断假设**与**新的修改方向**；优先 read_file 看真实代码，再做最小修改。',
     ].join('\n');

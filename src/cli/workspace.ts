@@ -10,7 +10,7 @@ export interface WorkspaceOptions {
 
 export function defaultProjectName(now: Date = new Date()): string {
   const pad = (n: number) => n.toString().padStart(2, '0');
-  return `toaa-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `xcompiler-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
 export async function resolveCompileWorkspace(opts: WorkspaceOptions): Promise<string> {

@@ -124,6 +124,8 @@ export interface Messages {
     rootDescription: string;
     compileDescription: string;
     runDescription: string;
+    loadDescription: string;
+    appendDescription: string;
     lsDescription: string;
     showDescription: string;
     optWorkspace: string;
@@ -146,7 +148,9 @@ export interface Messages {
     optLang: string;
     optIntent: string;
     optBaselinePlan: string;
+    optProjectFile: string;
     argPlan: string;
+    argProjectFile: string;
     argStepId: string;
     evolveDescription: string;
     bootstrapDescription: string;
@@ -213,7 +217,7 @@ export interface Messages {
     };
   };
 
-  // ───────── compile (toaa c) ─────────
+  // ───────── compile (xcompiler build) ─────────
   compile: {
     workspaceReady: (path: string) => string;
     forceOverride: string;
@@ -227,6 +231,7 @@ export interface Messages {
     lintIssue: (stepId: string, message: string) => string;
     planPreviewTruncated: string;
     auditPlanPersisted: (path: string) => string;
+    projectFileWritten: (path: string) => string;
     nextCommand: (command: string) => string;
     topicEmptyExit: string;
     topicLoaded: (path: string) => string;
@@ -274,13 +279,14 @@ export interface Messages {
     topicSecBaseline: string;
   };
 
-  // ───────── inspect (toaa ls / show) ─────────
+  // ───────── inspect (xcompiler ls / show) ─────────
   inspect: {
     noPlanFound: string;
     digestLabel: string;
     stepNotFound: (id: string) => string;
     secDescription: string;
     secAcceptance: string;
+    secSubtasks: string;
     secSystemPrompt: string;
     secOutputs: string;
     secRecentAudit: (n: number) => string;
@@ -294,7 +300,7 @@ export interface Messages {
     auditEntry: (ts: string, kind: string, message: string) => string;
   };
 
-  // ───────── execute (toaa run) ─────────
+  // ───────── execute (xcompiler run) ─────────
   execute: {
     forceReset: string;
     manifestRecalibrated: (path: string) => string;
@@ -311,6 +317,8 @@ export interface Messages {
     projectAuditSummary: (errors: number, warnings: number) => string;
     projectMemoryRefreshFailed: (message: string) => string;
     projectAuditCheck: (name: string, summary: string) => string;
+    auditDocPresent: (path: string) => string;
+    auditDocMissing: (path: string) => string;
     auditDeliveryDocPresent: string;
     auditDeliveryDocMissing: string;
     auditTestFilesFound: (count: number) => string;
@@ -325,10 +333,10 @@ export interface Messages {
 
   // ───────── engine ─────────
   engine: {
-    spinSandboxBuild: string;
+    spinSandboxBuild: (profile: LanguageProfile) => string;
     sandboxReady: (reason: string) => string;
     stepSkipDone: (id: string, phase: string) => string;
-    spinSandboxRebuild: (id: string) => string;
+    spinSandboxRebuild: (id: string, profile: LanguageProfile) => string;
     sandboxStatus: (reason: string) => string;
     autoFixedSrcImports: (n: number, files: string) => string;
     debugResumeNotice: (id: string, n: number) => string;
@@ -360,6 +368,8 @@ export interface Messages {
     deliveryGateReason: (command: string, exitCode: number, timedOut: boolean) => string;
     missingPythonEntrypoint: string;
     missingTypeScriptEntrypoint: string;
+    invalidPythonEntrypointSource: (path: string) => string;
+    entrypointHelpOutputMissing: (command: string) => string;
     reasonLine: (reason: string) => string;
     roundsLine: (rounds: number) => string;
     commandLine: (command: string) => string;
@@ -389,7 +399,12 @@ export interface Messages {
     plannerSystem: (profile: LanguageProfile) => string;
     plannerClarify: (
       rawRequirement: string,
-      opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; hasBaseline?: boolean; complex?: boolean },
+      opts?: {
+        intent?: 'greenfield' | 'feature' | 'refactor' | 'self';
+        hasBaseline?: boolean;
+        complex?: boolean;
+        projectShapeAmbiguous?: boolean;
+      },
     ) => string;
     plannerDecompose: (
       rawRequirement: string,
@@ -412,7 +427,7 @@ export interface Messages {
   // ───────── Skill prompts ─────────
   skills: SkillPrompt;
 
-  // ───────── doctor (toaa doctor / startup env-check) ─────────
+  // ───────── doctor (xcompiler doctor / startup env-check) ─────────
   doctor: {
     cliDescription: string;
     optStrict: string;
