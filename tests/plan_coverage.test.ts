@@ -3,6 +3,8 @@ import { calibratePlanCoverage } from '../src/agents/calibration.js';
 import { lintPlan } from '../src/core/lint.js';
 import type { Step, Plan } from '../src/core/plan.js';
 
+const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'];
+
 function mkStep(over: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
   return {
     id: over.id,
@@ -38,6 +40,8 @@ describe('calibratePlanCoverage', () => {
     expect(test.role).toBe('Tester');
     expect(test.id).toBe('S006');
     expect(test.dependsOn).toEqual(['S004', 'S005']);
+    expect(test.outputs).toEqual(['tests/test_auto_s006.py']);
+    expect(test.tools).toEqual(['skill:tester']);
   });
 
   it('is idempotent / no-op when every CODE step is already transitively covered', () => {
@@ -78,13 +82,35 @@ describe('calibratePlanCoverage', () => {
       mkStep({ id: 'S004', phase: 'CODE', outputs: ['src/dbc_parser.py'], dependsOn: ['S003'] }),
       mkStep({ id: 'S005', phase: 'CODE', outputs: ['src/excel_exporter.py'], dependsOn: ['S004'] }),
       mkStep({ id: 'S006', phase: 'REFACTOR', outputs: ['docs/04-refactor.md'], dependsOn: ['S005'] }),
-      mkStep({ id: 'S007', phase: 'DELIVERY', role: 'Planner', outputs: ['docs/05-delivery.md'], dependsOn: ['S006'] }),
+      mkStep({ id: 'S007', phase: 'DELIVERY', role: 'Planner', outputs: [...baseDeliveryDocs], dependsOn: ['S006'] }),
     ];
     const calibrated = calibratePlanCoverage(steps);
     const plan: Plan = {
       version: '1',
       language: 'python',
+      intent: 'greenfield',
+      projectType: 'application',
       requirementDigest: 'd',
+      complexityAssessment: {
+        level: 'simple',
+        rationale: 'coverage calibration fixture',
+        splitRecommended: false,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core functionality',
+          objective: 'Exercise synthetic test coverage calibration.',
+          status: 'current',
+          scope: ['Coverage fixture'],
+          deliverables: ['Lint-clean calibrated plan'],
+          dependsOn: [],
+        },
+      ],
+      globalPrompt: '',
+      baselineSummary: '',
+      userAddenda: '',
       dependencies: ['pytest'],
       createdAt: '2026-01-01T00:00:00.000Z',
       steps: calibrated,
@@ -104,7 +130,8 @@ describe('calibratePlanCoverage', () => {
     const test = out[1]!;
     expect(test.phase).toBe('TEST');
     expect(test.description).toContain('Vitest');
-    expect(test.systemPrompt).toContain('tests/**/*.test.ts');
+    expect(test.outputs).toEqual(['tests/auto_s002.test.ts']);
+    expect(test.systemPrompt).toContain('tests/auto_s002.test.ts');
     expect(test.acceptance).toContain('npm test');
   });
 });

@@ -2,12 +2,13 @@ import { promises as fs, appendFileSync, mkdirSync, existsSync, writeFileSync } 
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { t } from '../i18n/index.js';
+import { xcEnv } from '../config/env.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
  *
  *  - `docs/process_log.md` —— 人类可读的过程记录，用于交付时汇总。
- *  - `.toaa/audit.jsonl`   —— 机器可读的逐行 JSON，便于后续分析与回放。
+ *  - `.xcompiler/audit.jsonl`   —— 机器可读的逐行 JSON，便于后续分析与回放。
  *
  * 设计原则：
  *  - 追加写入，永不删除。
@@ -47,11 +48,11 @@ export interface AuditEvent {
 export interface AuditLoggerOptions {
   /** workspace 根目录（绝对路径） */
   root: string;
-  /** 命令名，例如 `toaa_c` / `toaa_run` */
+  /** 命令名，例如 `xcompiler_build` / `xcompiler_run` */
   command: string;
   /** markdown 文件相对路径，默认 docs/process_log.md */
   mdRelPath?: string;
-  /** jsonl 文件相对路径，默认 .toaa/audit.jsonl */
+  /** jsonl 文件相对路径，默认 .xcompiler/audit.jsonl */
   jsonlRelPath?: string;
   /** full=完整内容；redacted=保留内容但遮蔽凭据（默认）；metadata=仅保留长度与摘要。 */
   contentMode?: AuditContentMode;
@@ -70,9 +71,11 @@ export class AuditLogger {
 
   constructor(opts: AuditLoggerOptions) {
     this.command = opts.command;
-    this.contentMode = resolveContentMode(opts.contentMode ?? process.env.TOAA_AUDIT_CONTENT_MODE);
+    this.contentMode = resolveContentMode(
+      opts.contentMode ?? xcEnv('AUDIT_CONTENT_MODE'),
+    );
     this.mdAbs = path.resolve(opts.root, opts.mdRelPath ?? 'docs/process_log.md');
-    this.jsonlAbs = path.resolve(opts.root, opts.jsonlRelPath ?? '.toaa/audit.jsonl');
+    this.jsonlAbs = path.resolve(opts.root, opts.jsonlRelPath ?? '.xcompiler/audit.jsonl');
   }
 
   async start(meta: Record<string, unknown> = {}): Promise<void> {
@@ -318,9 +321,9 @@ export class AuditLogger {
     } catch (err) {
       console.warn(t().audit.jsonlAppendFailed((err as Error).message));
     }
-    // 可选 stderr 镜像（TOAA_AUDIT_TRACE=1）：如果文件被外部覆盖丢失，
+    // 可选 stderr 镜像（XC_AUDIT_TRACE=1）：如果文件被外部覆盖丢失，
     // 还能从终端输出交叉验证实际发生了哪些事件。
-    if (process.env.TOAA_AUDIT_TRACE === '1') {
+    if (xcEnv('AUDIT_TRACE') === '1') {
       try {
         process.stderr.write(t().audit.traceLine(ev.kind, ev.message) + '\n');
       } catch {

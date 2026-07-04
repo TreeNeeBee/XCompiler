@@ -1,11 +1,11 @@
-# TOAA 版本管理
+# XCompiler 版本管理
 
-`package.json` 是 TOAA 核心版本和 Plugin API 版本的唯一真源：
+`package.json` 是 XCompiler 核心版本和 Plugin API 版本的唯一真源：
 
 ```json
 {
   "version": "0.1.3",
-  "toaa": { "pluginApiVersion": 1 }
+  "xcompiler": { "pluginApiVersion": 1 }
 }
 ```
 
@@ -28,6 +28,6 @@ npm run version:set -- 0.1.4
 
 核心版本遵循 SemVer。发布 tag 必须是 `v<package version>`，例如 `v0.1.3`；Release workflow 会在测试和打包前强制校验，版本不一致时停止发布。二进制分发包内包含 `VERSION` 文件，CLI 的 `--version` 也读取同一个生成常量。
 
-Plugin API 版本独立于核心版本，只在插件公共接口出现不兼容修改时递增整数主版本。插件自身使用 SemVer，并在 manifest 中强制声明 `apiVersion` 和 `minToaaVersion`；详细规则见 [plugin_api.md](plugin_api.md)。
+Plugin API 版本独立于核心版本，只在插件公共接口出现不兼容修改时递增整数主版本。插件自身使用 SemVer，并在 manifest 中强制声明 `apiVersion` 和 `minXCompilerVersion`；详细规则见 [plugin_api.md](plugin_api.md)。
 
-审计内容默认使用 `redacted` 模式遮蔽 API key、token、密码等凭据。需要最小化留存时设置 `TOAA_AUDIT_CONTENT_MODE=metadata`（只保留长度和 SHA-256）；只有在受控环境确实需要完整回放时才使用 `full`。
+审计内容默认使用 `redacted` 模式遮蔽 API key、token、密码等凭据。需要最小化留存时设置 `XC_AUDIT_CONTENT_MODE=metadata`（只保留长度和 SHA-256）；只有在受控环境确实需要完整回放时才使用 `full`。

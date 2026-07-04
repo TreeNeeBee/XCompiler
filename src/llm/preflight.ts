@@ -1,4 +1,4 @@
-import type { ToaaConfig } from '../config/config.js';
+import type { XCompilerConfig } from '../config/config.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import { getJson } from './ollama.js';
@@ -40,7 +40,7 @@ export interface PreflightResult {
  * 该函数会**就地修改** cfg.llm.providers 与 cfg.llm.roles（保留旧字段不动）。
  */
 export async function preflightProviders(
-  cfg: ToaaConfig,
+  cfg: XCompilerConfig,
   scores: ScoreStore,
   audit?: AuditLogger,
   options: PreflightOptions = {},
@@ -154,7 +154,7 @@ export async function preflightProviders(
 }
 
 /** 角色 → 候选 provider 数组（roles[role] 为空则用 default + fallbacks）。 */
-function candidatesForRole(cfg: ToaaConfig, role: string): string[] {
+function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
   const explicit = cfg.llm.role_fallbacks?.[role];
   if (explicit && explicit.length > 0) return explicit;
   const fromRoles = cfg.llm.roles?.[role] ?? [];
@@ -163,7 +163,7 @@ function candidatesForRole(cfg: ToaaConfig, role: string): string[] {
 }
 
 function listRolesWithoutLiveProvider(
-  cfg: ToaaConfig,
+  cfg: XCompilerConfig,
   scores: ScoreStore,
   unavailable: ReadonlySet<string> = new Set(),
 ): string[] {

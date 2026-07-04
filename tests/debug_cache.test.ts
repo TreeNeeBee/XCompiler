@@ -5,13 +5,13 @@ import os from 'node:os';
 import { DebugCache } from '../src/core/debug_cache.js';
 
 async function tmp(): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), 'toaa-dbgcache-'));
+  return fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-dbgcache-'));
 }
 
 describe('DebugCache', () => {
   it('round-trips attempts to disk and survives reload', async () => {
     const dir = await tmp();
-    const file = path.join(dir, '.toaa', 'debug_cache.json');
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
     const c1 = new DebugCache(file);
     await c1.load();
     expect(c1.attempts('S005')).toEqual([]);
@@ -38,7 +38,7 @@ describe('DebugCache', () => {
 
   it('truncates long failure logs and caps stored attempts', async () => {
     const dir = await tmp();
-    const file = path.join(dir, '.toaa', 'debug_cache.json');
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
     const c = new DebugCache(file, { maxAttemptsPerStep: 3, maxFailureLogLines: 5 });
     await c.load();
     const longLog = Array.from({ length: 50 }, (_, i) => `line${i}`).join('\n');
@@ -53,7 +53,7 @@ describe('DebugCache', () => {
 
   it('markDone clears the step entry so next run starts fresh', async () => {
     const dir = await tmp();
-    const file = path.join(dir, '.toaa', 'debug_cache.json');
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
     const c = new DebugCache(file);
     await c.load();
     await c.recordAttempt('S002', { attempt: 1, reason: 'x', failureLogTail: 'log' });

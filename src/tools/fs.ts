@@ -24,35 +24,80 @@ export const readFileTool: Tool<{ path: string; maxBytes?: number }, { content: 
   },
 };
 
-/** 单次写入字节硬上限——超出强制要求模型拆分为 write_file（首段） + append_file（追加段）。
- *  目的：防止一个 JSON 字符串里塞 5K~20K 字符代码，触发 LLM 流式 token 失稳 / JSON 转义错乱 / 单轮超时。
- */
-export const MAX_WRITE_CHUNK_BYTES = 6000;
+export type WriteChunkBytes = number | 'auto';
+
+export interface WriteChunkBudgetContext {
+  phase?: string;
+  role?: string;
+  debug?: boolean;
+  tools?: string[];
+  outputs?: string[];
+  allowedWrites?: string[];
+  contextChars?: number;
+}
+
+/** 单次写入默认字节预算：保护 JSON 工具调用稳定性；大工程应靠模块/函数边界增量写入。 */
+export const DEFAULT_WRITE_CHUNK_BYTES = 6000;
+const AUTO_WRITE_CHUNK_HARD_CAP_BYTES = 18_000;
+
+export function resolveWriteChunkBytes(
+  configured: WriteChunkBytes | undefined,
+  ctx: WriteChunkBudgetContext = {},
+): number {
+  if (typeof configured === 'number') return configured;
+
+  const phaseBonus: Record<string, number> = {
+    REQUIREMENT: 0,
+    ARCH: 1000,
+    TASK: 1000,
+    CODE: 2500,
+    TEST: 2000,
+    DEBUG: 2500,
+    REFACTOR: 3000,
+    DELIVERY: 1000,
+  };
+  const tools = new Set(ctx.tools ?? []);
+  const outputBonus = Math.min((ctx.outputs?.length ?? 0) * 500, 3000);
+  const contextBonus = Math.min(Math.ceil((ctx.contextChars ?? 0) / 6000) * 1000, 4000);
+  const appendBonus = tools.has('append_file') ? 1500 : 0;
+  const debugBonus = ctx.debug ? 1500 : 0;
+
+  const dynamic =
+    DEFAULT_WRITE_CHUNK_BYTES +
+    (phaseBonus[ctx.phase ?? ''] ?? 0) +
+    outputBonus +
+    contextBonus +
+    appendBonus +
+    debugBonus;
+
+  return Math.min(dynamic, AUTO_WRITE_CHUNK_HARD_CAP_BYTES);
+}
 
 export const writeFileTool: Tool<{ path: string; content: string }, { bytes: number }> = {
   name: 'write_file',
   description:
-    '在 outputs 白名单内创建或覆盖文件（单次最多 6000 字节，超出请改用 write_file 写首段 + 多次 append_file 续写）。注意：runtime 管理的依赖清单请用 add_dependency 维护。',
+    '在当前 Step writable allowlist 内创建或覆盖文件（单次 content 受运行时 chunk limit 限制；大文件按模块/函数/类边界用 write_file 首段 + append_file 续写）。注意：runtime 管理的依赖清单请用 add_dependency 维护。',
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return {
         ok: false,
         error:
-          'write denied: requirements.txt 由 plan.dependencies 在 toaa_run 启动时种入并由 add_dependency 工具维护；请改用 add_dependency 工具新增依赖（一行一包，不要再 write_file 直接覆盖）。',
+          'write denied: requirements.txt 由 plan.dependencies 在 xcompiler run 启动时种入并由 add_dependency 工具维护；请改用 add_dependency 工具新增依赖（一行一包，不要再 write_file 直接覆盖）。',
       };
     }
     if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
-      return { ok: false, error: `write denied: ${args.path} not in step outputs whitelist` };
+      return { ok: false, error: `write denied: ${args.path} not in step writable allowlist` };
     }
     const size = Buffer.byteLength(args.content);
-    if (size > MAX_WRITE_CHUNK_BYTES) {
+    const limit = resolveWriteChunkBytes(ctx.writeChunkBytes);
+    if (size > limit) {
       return {
         ok: false,
         error:
-          `write_file 单次内容 ${size}B 超过上限 ${MAX_WRITE_CHUNK_BYTES}B。请将大文件拆分写入：` +
-          `第 1 个 action 用 write_file 写头部 (≤${MAX_WRITE_CHUNK_BYTES}B，覆盖现有文件)，` +
-          `后续 action 用 append_file 逐段追加（每段 ≤${MAX_WRITE_CHUNK_BYTES}B）。同一轮可放多个 actions。`,
+          `write_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B。请将大文件拆分写入：` +
+          `第 1 个 action 用 write_file 写头部（≤${limit}B，覆盖现有文件），` +
+          `后续 action 用 append_file 按模块/函数/类边界逐段追加（每段 ≤${limit}B）。同一轮可放多个 actions。`,
       };
     }
     try {
@@ -71,28 +116,29 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
 };
 
 /**
- * append_file：把一段内容追加到 outputs 白名单内的文件末尾。
- * - 单次同样受 MAX_WRITE_CHUNK_BYTES 限制，鼓励按逻辑段（一个函数 / 一个类）切分。
+ * append_file：把一段内容追加到当前 Step writable allowlist 内的文件末尾。
+ * - 单次同样受运行时 chunk limit 限制，鼓励按逻辑段（一个函数 / 一个类）切分。
  * - 文件不存在时自动创建（等价于 write_file 写第一段，便于鲁棒续写）。
  * - 注意：append_file 不会自动添加换行；若调用者忘了在 content 末尾收尾换行，下一段会拼接在同一行。
  */
 export const appendFileTool: Tool<{ path: string; content: string }, { bytes: number; total: number }> = {
   name: 'append_file',
   description:
-    '把一段内容追加到 outputs 白名单内文件末尾（单次最多 6000 字节，用于配合 write_file 分块写出大文件）。',
+    '把一段内容追加到当前 Step writable allowlist 内文件末尾（单次 content 受运行时 chunk limit 限制，用于配合 write_file 分块写出大文件）。',
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return { ok: false, error: 'append denied: requirements.txt 由 add_dependency 维护。' };
     }
     if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
-      return { ok: false, error: `append denied: ${args.path} not in step outputs whitelist` };
+      return { ok: false, error: `append denied: ${args.path} not in step writable allowlist` };
     }
     const size = Buffer.byteLength(args.content);
-    if (size > MAX_WRITE_CHUNK_BYTES) {
+    const limit = resolveWriteChunkBytes(ctx.writeChunkBytes);
+    if (size > limit) {
       return {
         ok: false,
-        error: `append_file 单次内容 ${size}B 超过上限 ${MAX_WRITE_CHUNK_BYTES}B；请进一步拆分。`,
+        error: `append_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B；请按模块/函数/类边界进一步拆分。`,
       };
     }
     try {

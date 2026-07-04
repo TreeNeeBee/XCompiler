@@ -3,8 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
-import { writeFileTool, readFileTool } from '../src/tools/fs.js';
-import { EditGuard } from '../src/tools/guard.js';
+import { writeFileTool, appendFileTool, readFileTool } from '../src/tools/fs.js';
+import { EditGuard, resolveEditGuardMaxLines } from '../src/tools/guard.js';
 import type { ToolContext } from '../src/tools/types.js';
 import { SkillRegistry, buildDefaultSkills } from '../src/skills/skill.js';
 
@@ -13,7 +13,7 @@ let ws: Workspace;
 let ctx: ToolContext;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-guard-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-guard-'));
   ws = new Workspace(tmp);
   ctx = {
     ws,
@@ -43,6 +43,20 @@ describe('EditGuard', () => {
     expect(lines[0].ok).toBe(true);
   });
 
+  it('guards append_file writes as audited line-counted edits', async () => {
+    const g = new EditGuard({ ws, stepId: 'S010', maxLines: 100 });
+    const wrappedWrite = g.wrap(writeFileTool);
+    const wrappedAppend = g.wrap(appendFileTool);
+    await wrappedWrite.run({ path: 'src/a.py', content: 'a\n' }, ctx);
+    const r = await wrappedAppend.run({ path: 'src/a.py', content: 'b\nc\n' }, ctx);
+    expect(r.ok).toBe(true);
+    expect(g.totalLines).toBe(5);
+    const log = await ws.readFile(`logs/edits-S010.jsonl`);
+    const lines = log.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.map((x) => x.tool)).toEqual(['write_file', 'append_file']);
+    expect(lines[1].approxLines).toBe(3);
+  });
+
   it('rejects write once line cap exceeded', async () => {
     const g = new EditGuard({ ws, stepId: 'S010', maxLines: 3 });
     const wrapped = g.wrap(writeFileTool);
@@ -52,6 +66,32 @@ describe('EditGuard', () => {
     const r2 = await wrapped.run({ path: 'src/b.py', content: 'y\n' }, ctx);
     expect(r2.ok).toBe(false);
     expect(r2.error).toMatch(/max .* lines per step exceeded/);
+  });
+
+  it('keeps explicit numeric caps strict', async () => {
+    expect(resolveEditGuardMaxLines(12, { phase: 'DEBUG', tools: ['write_file'] })).toBe(12);
+  });
+
+  it('auto-scales line budget from step context', async () => {
+    const g = new EditGuard({
+      ws,
+      stepId: 'S010',
+      maxLines: 'auto',
+      budgetContext: {
+        phase: 'TEST',
+        role: 'Tester',
+        tools: ['write_file', 'replace_in_file'],
+        outputs: ['tests/test_weather.py'],
+        allowedWrites: ['tests/'],
+        contextChars: 5333,
+      },
+    });
+    const wrapped = g.wrap(writeFileTool);
+    const manyShortLines = 'x\n'.repeat(457);
+    const r1 = await wrapped.run({ path: 'src/a.py', content: manyShortLines }, ctx);
+    expect(r1.ok).toBe(true);
+    const r2 = await wrapped.run({ path: 'src/b.py', content: 'y\n' }, ctx);
+    expect(r2.ok).toBe(true);
   });
 });
 
@@ -63,6 +103,15 @@ describe('SkillRegistry', () => {
     expect(resolvedToolNames).toContain('replace_in_file');
     expect(resolvedToolNames).toContain('run_tests');
     expect(hints[0]).toMatch(/patcher/);
+  });
+
+  it('exposes chunked write tools in author tester debugger and refactorer skills', () => {
+    const reg = buildDefaultSkills();
+    for (const skill of ['skill:author', 'skill:tester', 'skill:debugger', 'skill:refactorer']) {
+      const tools = reg.resolve([skill]).resolvedToolNames;
+      expect(tools).toContain('write_file');
+      expect(tools).toContain('append_file');
+    }
   });
 
   it('ignores unknown skill but keeps bare tools', () => {

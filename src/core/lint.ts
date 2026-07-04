@@ -1,5 +1,5 @@
-import { PHASE_ORDER, type Plan, type Step } from './plan.js';
-import { DOC_NAMES, PHASE_DOC } from './docs.js';
+import { PHASE_ORDER, REQUIRED_V_MODEL_PHASES, type ComplexityAssessment, type Plan, type Step } from './plan.js';
+import { DOC_NAMES, PHASE_DOC, deliveryDocsForProjectType } from './docs.js';
 import { getLanguageProfile } from './language.js';
 import { analyzeArchitectureDemand, validateArchitectureContract } from './architecture.js';
 
@@ -34,6 +34,18 @@ export function lintPlan(plan: Plan): LintIssue[] {
       if (!ids.has(dep)) {
         issues.push({ level: 'error', stepId: s.id, message: `dependsOn ${dep} not found` });
       }
+    }
+  }
+
+  const phases = new Set(plan.steps.map((s) => s.phase));
+  for (const phase of REQUIRED_V_MODEL_PHASES) {
+    if (!phases.has(phase)) {
+      issues.push({
+        level: 'error',
+        message:
+          `Plan must include a ${phase} macro Step. Required V-model phases are ` +
+          `${REQUIRED_V_MODEL_PHASES.join(' -> ')}; DEBUG is optional when explicit remediation work is planned.`,
+      });
     }
   }
 
@@ -178,13 +190,21 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 8. 每个 Step 必须带 systemPrompt（schema 已强制非空，这里再校验长度避免 toaa_c 偷懒）
+  // 8. 每个 Step 必须带 systemPrompt（schema 已强制非空，这里再校验长度避免 xcompiler_build 偷懒）
   for (const s of plan.steps) {
     if (s.systemPrompt.trim().length < 20) {
       issues.push({
         level: 'error',
         stepId: s.id,
-        message: 'systemPrompt too short — toaa_c must specify scope/inputs/outputs/forbidden',
+        message: 'systemPrompt too short — xcompiler_build must specify scope/inputs/outputs/forbidden',
+      });
+    }
+    const subTaskDepth = maxSubTaskDepth(s.subTasks ?? []);
+    if (subTaskDepth > 2) {
+      issues.push({
+        level: 'error',
+        stepId: s.id,
+        message: `Step subTasks may be nested at most 2 levels; got depth ${subTaskDepth}`,
       });
     }
   }
@@ -215,14 +235,17 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 10. DELIVERY 阶段：每个 DELIVERY Step outputs 必须包含 docs/05-delivery.md
+  // 10. DELIVERY 阶段：每个 DELIVERY Step outputs 必须包含完整交付文档包
   for (const d of plan.steps.filter((s) => s.phase === 'DELIVERY')) {
-    if (!d.outputs.includes(DOC_NAMES.delivery)) {
-      issues.push({
-        level: 'error',
-        stepId: d.id,
-        message: `DELIVERY step outputs must include ${DOC_NAMES.delivery}`,
-      });
+    const requiredDocs = deliveryDocsForProjectType(plan.projectType ?? 'application');
+    for (const doc of requiredDocs) {
+      if (!d.outputs.includes(doc)) {
+        issues.push({
+          level: 'error',
+          stepId: d.id,
+          message: `DELIVERY step outputs must include ${doc}`,
+        });
+      }
     }
   }
 
@@ -241,13 +264,13 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 10c. 任何 Step 都不允许在 outputs 里多名习寫 topic.md（仅由 toaa c 写入）
+  // 10c. 任何 Step 都不允许在 outputs 里多名习寫 topic.md（仅由 xcompiler build 写入）
   for (const s of plan.steps) {
     if (s.outputs.includes(DOC_NAMES.topic)) {
       issues.push({
         level: 'error',
         stepId: s.id,
-        message: `${DOC_NAMES.topic} 是 toaa c 专属产物，不得列为 Step 输出。`,
+        message: `${DOC_NAMES.topic} 是 xcompiler build 专属产物，不得列为 Step 输出。`,
       });
     }
   }
@@ -272,15 +295,6 @@ export function lintPlan(plan: Plan): LintIssue[] {
         s.outputs.filter((out) => out.startsWith('src/') && profile.codeExtensions.some((ext) => out.endsWith(ext))),
       ),
     );
-    if (codeSteps.length < demand.minCodeSteps) {
-      issues.push({
-        level: 'error',
-        stepId: codeSteps[0]?.id,
-        message:
-          `Non-trivial request detected (${demand.reasonLabel}). ` +
-          `Plan must contain at least ${demand.minCodeSteps} CODE steps so every architecture module is independently verifiable.`,
-      });
-    }
     if (sourceOutputs.length < demand.minModules) {
       issues.push({
         level: 'error',
@@ -292,13 +306,13 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 13. V 模型可追踪性：ARCH 模块必须逐一落到独立 CODE Step，并被对应 TEST Step 验证。
+  // 13. V 模型可追踪性：ARCH 模块必须落到 CODE 宏 Step，并被对应 TEST 宏 Step 验证。
   const architectureModules = plan.architectureModules ?? [];
   if (demand.nonTrivial && architectureModules.length === 0) {
     issues.push({
       level: 'warn',
       message:
-        'Legacy plan has no architectureModules contract; regenerate with `toaa c` to enable ARCH → CODE → TEST traceability.',
+        'Legacy plan has no architectureModules contract; regenerate with `xcompiler build` to enable ARCH → CODE → TEST traceability.',
     });
   }
   if (architectureModules.length > 0) {
@@ -312,7 +326,78 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
+  if (!plan.complexityAssessment) {
+    issues.push({
+      level: 'error',
+      message: 'Plan must include complexityAssessment from the planning phase.',
+    });
+  }
+  const implementationPhases = plan.implementationPhases ?? [];
+  if (implementationPhases.length === 0) {
+    issues.push({
+      level: 'error',
+      message: 'Plan must include implementationPhases with P1 current.',
+    });
+  } else {
+    const current = implementationPhases.filter((phase) => phase.status === 'current');
+    if (current.length !== 1 || current[0]?.id !== 'P1') {
+      issues.push({
+        level: 'error',
+        message: 'implementationPhases must have exactly one current phase and it must be P1.',
+      });
+    }
+    for (const phase of implementationPhases.filter((item) => item.id !== 'P1')) {
+      if (phase.status !== 'deferred') {
+        issues.push({
+          level: 'error',
+          message: `Implementation phase ${phase.id} must be deferred; only P1 is executed by the current V-model plan.`,
+        });
+      }
+    }
+  }
+  if (plan.complexityAssessment) {
+    const requiredPhaseCount = requiredImplementationPhaseCount(plan.complexityAssessment);
+    if (implementationPhases.length > 0 && implementationPhases.length < requiredPhaseCount) {
+      issues.push({
+        level: 'error',
+        message:
+          `complexityAssessment.level=${plan.complexityAssessment.level} requires at least ` +
+          `${requiredPhaseCount} implementation phase(s).`,
+      });
+    }
+    if (plan.complexityAssessment.level !== 'simple' && !plan.complexityAssessment.splitRecommended) {
+      issues.push({
+        level: 'error',
+        message: 'moderate/complex complexityAssessment requires splitRecommended=true.',
+      });
+    }
+    if (plan.complexityAssessment?.splitRecommended && implementationPhases.length < 2) {
+      issues.push({
+        level: 'error',
+        message: 'complexityAssessment.splitRecommended requires implementationPhases with P1 current and at least one deferred enhancement phase.',
+      });
+    }
+    if (
+      plan.complexityAssessment.level === 'simple' &&
+      !plan.complexityAssessment.splitRecommended &&
+      !plan.complexityAssessment.userForcedPhaseSplit &&
+      implementationPhases.length > 1
+    ) {
+      issues.push({
+        level: 'error',
+        message: 'simple complexity without splitRecommended must use exactly one current implementation phase.',
+      });
+    }
+  }
+
   return issues;
+}
+
+function requiredImplementationPhaseCount(assessment: ComplexityAssessment): number {
+  if (assessment.level === 'complex') return 3;
+  if (assessment.level === 'moderate') return 2;
+  if (assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
+  return 1;
 }
 
 export function assertPlanValid(plan: Plan): void {
@@ -372,6 +457,16 @@ function nextStepId(steps: Step[]): string {
 
 function dedup<T>(values: T[]): T[] {
   return [...new Set(values)];
+}
+
+function maxSubTaskDepth(tasks: NonNullable<Step['subTasks']>): number {
+  if (tasks.length === 0) return 0;
+  return Math.max(
+    ...tasks.map((task) => {
+      const children = task.subTasks ?? [];
+      return 1 + maxSubTaskDepth(children);
+    }),
+  );
 }
 
 export function topoSort(steps: Step[]): Step[] {

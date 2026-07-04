@@ -1,6 +1,6 @@
-# TOAA 实施计划（Implementation Plan）
+# XCompiler 实施计划（Implementation Plan）
 
-> 本文件配套 [`TOAA_design.md`](./TOAA_design.md)，给出从 0 到 1 的落地步骤。
+> 本文件配套 [`XCompiler_design.md`](./XCompiler_design.md)，给出从 0 到 1 的落地步骤。
 > 全部用 TypeScript + Node.js ≥ 20 实现；当前目标产物语言：Python、TypeScript。
 
 ---
@@ -9,8 +9,8 @@
 
 | 里程碑 | 名称              | 范围                                              | 验收标准                                          |
 | --- | --------------- | ----------------------------------------------- | --------------------------------------------- |
-| M1  | 骨架 + `toaa_c` MVP | 项目脚手架、CLI、单 LLM、需求 → plan.json（含双确认门）            | 输入一段需求 → 落盘合法 `plan.json` + 规范化阶段文档 |
-| M2  | `toaa_run` 顺序执行 | Phase Engine、原子 Tool、Sandbox(subprocess)、断点续跑   | 给定 M1 的 plan，可生成可运行 Python 工程并通过自带 `pytest`   |
+| M1  | 骨架 + `xcompiler_build` MVP | 项目脚手架、CLI、单 LLM、需求 → plan.json（含双确认门）            | 输入一段需求 → 落盘合法 `plan.json` + 规范化阶段文档 |
+| M2  | `xcompiler_run` 顺序执行 | Phase Engine、原子 Tool、Sandbox(subprocess)、断点续跑   | 给定 M1 的 plan，可生成可运行 Python 工程并通过自带 `pytest`   |
 | M3  | DEBUG 闭环 + Skill | Skill 集合、git 快照、`logs/edits-*.jsonl`、≤3 次重试    | 故意注入 bug 的 plan，能在 ≤3 次内自动修复并回归通过             |
 | M4  | 多 LLM 角色 + Docker Sandbox | 按角色路由 provider；docker 模式；网络与资源限制                | 同一 plan 在 docker sandbox 内端到端跑通                |
 | M5  | 完整 V 模型 + 交付    | TASK / REFACTOR / DELIVERY 阶段、`docs/history/` | 输出 `docs/05-delivery.md` 与可分发产物                  |
@@ -18,7 +18,7 @@
 
 ---
 
-## M1 — 骨架与 `toaa_c` MVP
+## M1 — 骨架与 `xcompiler_build` MVP
 
 ### S1.1 项目脚手架
 
@@ -26,9 +26,9 @@
 - 目录约定：
 
   ```text
-  toaa/
+  xcompiler/
   ├── src/
-  │   ├── cli/           # toaa, toaa_c, toaa_run 入口
+  │   ├── cli/           # xcompiler, xcompiler_build, xcompiler_run 入口
   │   ├── core/          # Plan、Step、Phase、Orchestrator
   │   ├── llm/           # LLMClient + providers
   │   ├── tools/         # 原子 Tool
@@ -41,7 +41,7 @@
   ```
 
 - 基础依赖：`commander`、`@inquirer/prompts`、`chalk`、`ora`、`zod`、`yaml`、`dotenv`、`simple-git`、`vitest`。
-- 输出 bin：`toaa`、`toaa_c`、`toaa_run`（后两者为 `toaa c|run` 的薄封装）。
+- 输出 bin：`xcompiler`、`xcompiler_build`、`xcompiler_run`（后两者为 `xcompiler build|run` 的薄封装）。
 
 ### S1.2 类型与 schema
 
@@ -53,9 +53,9 @@
 - 定义 `LLMClient` 接口；先实现 `OllamaClient` 与 `OpenAIClient`。
 - `LLMRouter`：按 `config.yaml` 的 `roles` 选择 provider。
 
-### S1.4 `toaa_c` 流程
+### S1.4 `xcompiler_build` 流程
 
-1. CLI 入口：`toaa c [-i <file>] [-o <plan.json>] [--yes]`。
+1. CLI 入口：`xcompiler build [-i <file>] [-o <plan.json>] [--yes]`。
 2. Intake：读文件或 `readline` 多行输入。
 3. Clarify：Planner LLM 反问 N 个问题，用户逐条回答。
 4. 生成 `docs/.draft/topic.md` → 预览 → **确认门 1**，确认后写入 `docs/topic.md`。
@@ -70,15 +70,15 @@
 
 ### S1.6 验收
 
-- 用例：「写一个 CLI 待办事项工具」→ `toaa_c` 落盘 `plan.json`，通过 `validatePlan`；Python 依赖保存在 Plan 顶层并由运行期生成 `requirements.txt`，CODE/TEST 分别产出源码与测试。
+- 用例：「写一个 CLI 待办事项工具」→ `xcompiler_build` 落盘 `plan.json`，通过 `validatePlan`；Python 依赖保存在 Plan 顶层并由运行期生成 `requirements.txt`，CODE/TEST 分别产出源码与测试。
 
 ---
 
-## M2 — `toaa_run` 顺序执行 + Sandbox(subprocess)
+## M2 — `xcompiler_run` 顺序执行 + Sandbox(subprocess)
 
 ### S2.1 Workspace / Git 服务
 
-- `WorkspaceService`：创建目录、读写文档；首次 `toaa_run` 自动 `git init`。
+- `WorkspaceService`：创建目录、读写文档；首次 `xcompiler_run` 自动 `git init`。
 - `git_snapshot(stepId, retry)` / `git_revert(toRef)` 基于 `simple-git`。
 
 ### S2.2 原子 Tool
@@ -101,12 +101,12 @@
 
 ### S2.5 CLI
 
-- `toaa run <plan.json> [--from S00x] [--phase CODE] [--dry-run]`。
+- `xcompiler run <plan.json> [--from S00x] [--phase CODE] [--dry-run]`。
 - `--dry-run` 仅打印拓扑顺序与每步 `outputs`。
 
 ### S2.6 验收
 
-- 跑通 M1 的 plan：自动生成 `src/`、`tests/`，`pytest` 在 sandbox 内全绿；中断后 `toaa_run` 续跑可恢复。
+- 跑通 M1 的 plan：自动生成 `src/`、`tests/`，`pytest` 在 sandbox 内全绿；中断后 `xcompiler_run` 续跑可恢复。
 
 ---
 
@@ -120,7 +120,8 @@
 
 ### S3.2 编辑约束守门
 
-- `EditGuard`：拒绝 `outputs` 白名单外的写入；统计行数，超 400 行报错。
+- `EditGuard`：拒绝 `outputs` 白名单外的写入；统计行数，默认按当前 Step 上下文自适应预算，显式配置数字时超限报错。
+- `write_file` / `append_file`：单次 content 字节预算默认按当前 Step 上下文自适应；大型文件必须按模块 / 函数 / 类边界分块，避免单轮 JSON payload 失稳。
 - 每次底层写 Tool 调用产生一条 `EditRecord` 追加到 `logs/edits-<step-id>.jsonl`；Skill 不另建可绕过 Tool 审计的执行通道。
 
 ### S3.3 Debugger 闭环
@@ -173,7 +174,7 @@
 
 - 每次阶段产物写入前，把上一版本移动到 `docs/history/<phase>-<ts>.md`。
 
-### S5.3 `toaa ls` / `toaa show`
+### S5.3 `xcompiler ls` / `xcompiler show`
 
 - `ls`：扫描 workspace 列出所有 plan 状态摘要。
 - `show <step-id>`：打印 Step 定义、状态、产物路径与最近一次审计记录。
@@ -199,7 +200,7 @@
 
 ### S6.3 代际执行与隔离
 
-- `toaa bootstrap` 从稳定版本 N 创建 `toaa/bootstrap/<run-id>` 分支和隔离 worktree。
+- `xcompiler bootstrap` 从稳定版本 N 创建 `xcompiler/bootstrap/<run-id>` 分支和隔离 worktree。
 - N 仅在候选 worktree 中执行 compile / run；Step 快照与硬回滚不得作用于宿主 checkout。
 - 宿主仓库非 clean 或自举期间 HEAD 变化时，禁止晋级。
 - qualification 默认使用最小环境变量的 subprocess 沙箱；Docker 未完成环境验证前仅显式启用。
@@ -207,14 +208,14 @@
 ### S6.4 质量门与晋级
 
 - 必选门：version check、typecheck、test、build、lint、CLI smoke、`bootstrap --help` smoke、`npm pack --dry-run`。
-- 默认产出 `.toaa/bootstrap/reports/<run-id>.md` 和候选分支，不修改当前分支。
+- 默认产出 `.xcompiler/bootstrap/reports/<run-id>.md` 和候选分支，不修改当前分支。
 - 质量门前后必须保持候选 HEAD 不变且 worktree clean；报告与晋级绑定已验证 commit SHA。
 - 只有显式 `--promote` 且全部必选门通过时，才允许按该 SHA `--ff-only` 晋级为 N+1。
 
 ### S6.5 验收
 
 - N 能在隔离 worktree 中构建 N+1，失败不会改变宿主 HEAD 或未跟踪文件。
-- N+1 通过全部确定性门禁并保留下一轮 `toaa bootstrap` 入口；真实 provider 驱动的连续两代演练仍需发布前人工验收，不能用 CLI smoke 冒充。
+- N+1 通过全部确定性门禁并保留下一轮 `xcompiler bootstrap` 入口；真实 provider 驱动的连续两代演练仍需发布前人工验收，不能用 CLI smoke 冒充。
 - 报告可追溯 base commit、candidate commit、候选分支、变更文件和各质量门结果。
 
 ---
@@ -230,7 +231,7 @@
 ### CI/CD
 
 - GitHub Release：`version:check → typecheck → lint → test → pkg build`，上传 Linux / macOS / Windows 二进制与校验和。
-- npm 包保留 `@toaa/cli` 元数据与 `npm pack` 质量门；当前没有自动 `npm publish`，不得在文档中声称已发布。
+- npm 包保留 `@xcompiler/cli` 元数据与 `npm pack` 质量门；当前没有自动 `npm publish`，不得在文档中声称已发布。
 
 ### 安全
 
@@ -240,5 +241,5 @@
 
 ### 文档
 
-- 仓库 `README.md` 含 quick start：`npm i -g @toaa/cli` → `toaa c` → `toaa run`。
-- 设计文档：本目录 `TOAA_design.md` + 本实施计划。
+- 仓库 `README.md` 含 quick start：`npm i -g @xcompiler/cli` → `xcompiler build` → `xcompiler run`。
+- 设计文档：本目录 `XCompiler_design.md` + 本实施计划。

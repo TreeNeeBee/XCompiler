@@ -18,12 +18,14 @@ import { lintPlan } from '../core/lint.js';
 import { refreshProjectMemory } from '../core/project_memory.js';
 import { renderPlanMarkdown } from '../core/render.js';
 import { savePlan } from '../core/storage.js';
+import { updateProjectFile } from '../core/project_file.js';
 import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
 import { setLocale, t } from '../i18n/index.js';
 import type { Language, PlanIntent } from '../core/plan.js';
 import { PluginHost } from '../plugins/host.js';
-import type { ToaaPlugin } from '../plugins/types.js';
+import type { XCompilerPlugin } from '../plugins/types.js';
+import { hasXcEnv, xcEnv } from '../config/env.js';
 
 export interface CompileOptions {
   workspace: string;
@@ -42,8 +44,12 @@ export interface CompileOptions {
   baselinePlanFile?: string;
   yes?: boolean;
   force?: boolean;
+  /** Optional XXX.xc project file to create/update with config, plan, and progress. */
+  projectFilePath?: string;
+  /** Project-file history command label; defaults to build. */
+  projectCommand?: string;
   /** 程序化插件入口；动态插件加载将在后续版本基于它实现。 */
-  plugins?: ToaaPlugin[];
+  plugins?: XCompilerPlugin[];
   pluginStrict?: boolean;
 }
 
@@ -67,12 +73,12 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const ws = new Workspace(path.resolve(opts.workspace));
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
   // Locale 必须在第一条输出之前生效，确保终端与审计文件从头到尾使用同一语言。
-  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
+  if (!hasXcEnv('LANG')) setLocale(cfg.locale);
   console.log(chalk.green('✔'), t().compile.workspaceReady(ws.root));
 
   let lock;
   try {
-    lock = await acquireLock(ws.root, 'toaa_c', { force: !!opts.force });
+    lock = await acquireLock(ws.root, 'xcompiler_build', { force: !!opts.force });
   } catch (err) {
     if (err instanceof LockError) {
       console.error(chalk.red('✖'), t().system.unhandledError(err.message));
@@ -87,7 +93,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   let scoreStore: ScoreStore | undefined;
   try {
   const M = t();
-  const audit = new AuditLogger({ root: ws.root, command: 'toaa_c' });
+  const audit = new AuditLogger({ root: ws.root, command: 'xcompiler_build' });
   await audit.start({
     workspace: ws.root,
     config: opts.configPath ?? '(default)',
@@ -157,7 +163,9 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const planner = new Planner(router.for('Planner'), audit, language);
 
   const trace = (msg: string) => {
-    if (process.env.TOAA_TRACE === '1') process.stderr.write(t().audit.traceLine('toaa-trace', msg) + '\n');
+    if (xcEnv('TRACE') === '1') {
+      process.stderr.write(t().audit.traceLine('xcompiler-trace', msg) + '\n');
+    }
   };
 
   // 1. Intake — topic 模式下读取已有 topic.md 直接当作 raw
@@ -297,7 +305,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
 
   // 3.5 立即把 topic.md 写到最终位置（docs/topic.md），不再等到第 7 步。
   //   这样即使后续 decompose / lint 失败，已澄清的 topic 仍然落盘，
-  //   下次可用 `toaa c --topic docs/topic.md` 直接重跑而不必再澄清一次。
+  //   下次可用 `xcompiler build --topic docs/topic.md` 直接重跑而不必再澄清一次。
   trace('ws.readFile.finalTopic');
   const finalTopicMd = await ws.readFile(draftTopic);
   await archiveIfExists(ws, DOC_NAMES.topic, audit);
@@ -407,9 +415,22 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     planPath,
     steps: parsed.data.steps.length,
   });
+  const projectFile = await updateProjectFile({
+    workspace: ws.root,
+    planPath,
+    configPath: cfgPath,
+    projectFilePath: opts.projectFilePath,
+    command: opts.projectCommand ?? 'build',
+    intent,
+    plan: parsed.data,
+    requirementFile: opts.inputFile,
+    topicFile: opts.topicFile,
+    recordHistory: true,
+  });
 
   console.log(chalk.green('✔'), M.compile.planWritten(planPath));
-  console.log(M.compile.nextCommand(chalk.cyan(`toaa run ${path.relative(process.cwd(), planPath)}`)));
+  console.log(chalk.green('✔'), M.compile.projectFileWritten(projectFile));
+  console.log(M.compile.nextCommand(chalk.cyan(`xcompiler run ${path.relative(process.cwd(), planPath)}`)));
   await pluginHost.emit('compile.finish', { plan: parsed.data, planPath });
   await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
   return { planPath };

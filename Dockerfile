@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 # ---------------------------------------------------------------------------
-# TOAA — multi-stage image
+# XCompiler — multi-stage image
 #   stage 1 (build):  install dev deps, compile TS -> dist/
 #   stage 2 (runtime): node20-slim + python3/venv/git，仅装 production deps，体积更小。
 #                      容器内强制 sandbox=subprocess（运行时检测到容器即拒绝 docker 沙盒）。
@@ -29,8 +29,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # 创建非 root 账号
-RUN useradd -m -u 1000 -s /bin/bash toaa
-WORKDIR /home/toaa/app
+RUN useradd -m -u 1000 -s /bin/bash xcompiler
+WORKDIR /home/xcompiler/app
 
 # 仅复制运行时必需文件
 COPY package.json package-lock.json* ./
@@ -40,19 +40,19 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 COPY --from=build /app/dist ./dist
 COPY config.example.yaml .env.example README.md ./
 
-# 软链 toaa 命令到 /usr/local/bin，便于直接调用
-RUN ln -sf /home/toaa/app/dist/cli/toaa.js     /usr/local/bin/toaa     && chmod +x /home/toaa/app/dist/cli/toaa.js \
- && ln -sf /home/toaa/app/dist/cli/toaa_c.js   /usr/local/bin/toaa_c   && chmod +x /home/toaa/app/dist/cli/toaa_c.js \
- && ln -sf /home/toaa/app/dist/cli/toaa_run.js /usr/local/bin/toaa_run && chmod +x /home/toaa/app/dist/cli/toaa_run.js
+# 软链 xcompiler 命令到 /usr/local/bin，便于直接调用
+RUN ln -sf /home/xcompiler/app/dist/cli/xcompiler.js       /usr/local/bin/xcompiler       && chmod +x /home/xcompiler/app/dist/cli/xcompiler.js \
+ && ln -sf /home/xcompiler/app/dist/cli/xcompiler_build.js /usr/local/bin/xcompiler_build && chmod +x /home/xcompiler/app/dist/cli/xcompiler_build.js \
+ && ln -sf /home/xcompiler/app/dist/cli/xcompiler_run.js   /usr/local/bin/xcompiler_run   && chmod +x /home/xcompiler/app/dist/cli/xcompiler_run.js
 
 # 工作区挂载点：宿主 ./workspace -> /workspace
-RUN mkdir -p /workspace && chown -R toaa:toaa /workspace /home/toaa
+RUN mkdir -p /workspace && chown -R xcompiler:xcompiler /workspace /home/xcompiler
 VOLUME ["/workspace"]
 
-USER toaa
+USER xcompiler
 ENV NODE_ENV=production \
-    TOAA_DEFAULT_BASE_DIR=/workspace \
-    TOAA_IN_CONTAINER=1
+    XC_DEFAULT_BASE_DIR=/workspace \
+    XC_IN_CONTAINER=1
 
-ENTRYPOINT ["/usr/bin/tini", "--", "toaa"]
+ENTRYPOINT ["/usr/bin/tini", "--", "xcompiler"]
 CMD ["--help"]

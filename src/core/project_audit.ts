@@ -3,9 +3,11 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox, ExecResult } from '../sandbox/types.js';
-import type { Plan } from './plan.js';
+import type { Plan, ProjectType } from './plan.js';
 import type { LanguageProfile } from './language.js';
+import { deliveryDocsForProjectType } from './docs.js';
 import { t } from '../i18n/index.js';
+import { detectNetworkApiFailureInExec } from './network_api_gate.js';
 
 export interface ProjectAuditCheck {
   name: string;
@@ -20,6 +22,20 @@ export interface ProjectAuditResult {
   warnings: number;
   errors: number;
   checks: ProjectAuditCheck[];
+}
+
+export function renderProjectAuditFailureLog(result: ProjectAuditResult): string {
+  const failed = result.checks.filter((check) => !check.ok);
+  const interesting = failed.length > 0 ? failed : result.checks;
+  return [
+    `Project audit failed: ${result.errors} error(s), ${result.warnings} warning(s).`,
+    ...interesting.map((check) =>
+      [
+        `[${check.severity}] ${check.name}: ${check.summary}`,
+        check.detail ? `detail:\n${check.detail}` : '',
+      ].filter(Boolean).join('\n'),
+    ),
+  ].join('\n\n');
 }
 
 export function shouldRunProjectAudit(
@@ -38,7 +54,7 @@ export async function runProjectAudit(opts: {
 }): Promise<ProjectAuditResult> {
   const checks: ProjectAuditCheck[] = [];
 
-  checks.push(await checkDeliveryDoc(opts.ws));
+  checks.push(...await checkDocumentationBundle(opts.ws, opts.plan.projectType ?? 'application'));
   checks.push(await checkTestFiles(opts.ws));
   checks.push(await runTestAudit(opts.sandbox));
 
@@ -53,11 +69,27 @@ export async function runProjectAudit(opts: {
   return { ok: errors === 0, warnings, errors, checks };
 }
 
-async function checkDeliveryDoc(ws: Workspace): Promise<ProjectAuditCheck> {
-  const exists = await ws.exists('docs/05-delivery.md');
-  return exists
-    ? { name: 'delivery-doc', severity: 'info', ok: true, summary: t().execute.auditDeliveryDocPresent }
-    : { name: 'delivery-doc', severity: 'error', ok: false, summary: t().execute.auditDeliveryDocMissing };
+async function checkDocumentationBundle(ws: Workspace, projectType: ProjectType): Promise<ProjectAuditCheck[]> {
+  const docs = deliveryDocsForProjectType(projectType);
+  const checks: ProjectAuditCheck[] = [];
+  for (const doc of docs) {
+    const exists = await ws.exists(doc);
+    checks.push({
+      name: docCheckName(doc),
+      severity: exists ? 'info' : 'error',
+      ok: exists,
+      summary: exists ? t().execute.auditDocPresent(doc) : t().execute.auditDocMissing(doc),
+    });
+  }
+  return checks;
+}
+
+function docCheckName(pathName: string): string {
+  if (pathName === 'README.md') return 'readme';
+  if (pathName === 'docs/quickstart.md') return 'quickstart';
+  if (pathName === 'docs/api-guide.md') return 'api-guide';
+  if (pathName === 'docs/05-delivery.md') return 'delivery-doc';
+  return `doc:${pathName}`;
 }
 
 async function checkTestFiles(ws: Workspace): Promise<ProjectAuditCheck> {
@@ -149,7 +181,8 @@ function toExecCheck(
   result: ExecResult,
   severity: 'error' | 'warn',
 ): ProjectAuditCheck {
-  if (result.exitCode === 0 && !result.timedOut) {
+  const networkFailure = detectNetworkApiFailureInExec(result);
+  if (result.exitCode === 0 && !result.timedOut && !networkFailure) {
     return {
       name,
       severity: 'info',
@@ -161,8 +194,12 @@ function toExecCheck(
     name,
     severity,
     ok: false,
-    summary: t().execute.auditCommandFailed(name, result.exitCode, result.timedOut),
-    detail: tailText(result.stderr || result.stdout),
+    summary: networkFailure
+      ? `${name} failed: ${networkFailure.message}`
+      : t().execute.auditCommandFailed(name, result.exitCode, result.timedOut),
+    detail: networkFailure
+      ? tailText(`${networkFailure.evidence}\n${result.stderr}\n${result.stdout}`)
+      : tailText(result.stderr || result.stdout),
   };
 }
 

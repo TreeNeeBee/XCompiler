@@ -9,7 +9,15 @@ import type { Workspace } from '../workspace/workspace.js';
 import type { GitService } from '../workspace/git.js';
 import type { Sandbox } from '../sandbox/types.js';
 import type { AuditLogger } from '../audit/audit.js';
-import { buildDefaultRegistry, EditGuard, type ToolRegistry, type ToolContext, type Tool } from '../tools/index.js';
+import {
+  buildDefaultRegistry,
+  EditGuard,
+  resolveWriteChunkBytes,
+  type WriteChunkBytes,
+  type ToolRegistry,
+  type ToolContext,
+  type Tool,
+} from '../tools/index.js';
 import { StepExecutor, verifyOutputs } from '../agents/executor.js';
 import type { ExecutorRunMetrics } from '../agents/executor.js';
 import {
@@ -24,6 +32,10 @@ import { DebugCache } from './debug_cache.js';
 import { getLanguageProfile, type LanguageProfile } from './language.js';
 import { missingArchitectureDocumentTokens } from './architecture.js';
 import { DOC_NAMES } from './docs.js';
+import {
+  renderProjectAuditFailureLog,
+  type ProjectAuditResult,
+} from './project_audit.js';
 import {
   loadProjectMemory,
   PROJECT_MEMORY_PATH,
@@ -59,8 +71,12 @@ export interface EngineOptions {
   maxDebugRetries?: number;
   /** Debugger 重试的硬上限（滑动窗口最大值）。默认 = max(maxDebugRetries*4, 10)。 */
   maxDebugRetriesCap?: number;
-  /** EditGuard 单 Step 累计行数上限。 */
-  maxEditLinesPerStep?: number;
+  /** EditGuard 单 Step 累计行数上限；auto 按 Step 上下文动态估算。 */
+  maxEditLinesPerStep?: number | 'auto';
+  /** write_file / append_file 单次 content 字节预算；auto 按 Step 上下文动态估算。 */
+  maxWriteChunkBytes?: WriteChunkBytes;
+  /** Called whenever the engine persists Step progress to plan.json. */
+  onPlanProgress?: (plan: Plan) => Promise<void>;
 }
 
 export interface EngineResult {
@@ -72,13 +88,22 @@ export interface EngineResult {
   failureReason?: string;
 }
 
+type DebugAttemptContext = {
+  asDebugger: true;
+  failureLog: string;
+  reason: string;
+  priorAttemptsPrompt?: string;
+  contextPaths?: string[];
+  contextMode?: 'audit-repair';
+};
+
 /** Phase Engine：拓扑顺序执行 Plan 的每个 Step；失败时自动调用 Debugger 重试。 */
 export class PhaseEngine {
   private readonly registry: ToolRegistry;
   private readonly skills: SkillRegistry;
   private readonly plugins: PluginHost;
   private pluginExtensionsApplied = false;
-  /** 跨 toaa run 持久化的 debug 历史（`<workspace>/.toaa/debug_cache.json`）。 */
+  /** 跨 xcompiler run 持久化的 debug 历史（`<workspace>/.xcompiler/debug_cache.json`）。 */
   private readonly debugCache: DebugCache;
   /** 当前 Plan 的语言 profile（在 run() 起始处按 plan.language 解析）。 */
   private profile: LanguageProfile = getLanguageProfile('python');
@@ -91,7 +116,7 @@ export class PhaseEngine {
     this.registry = opts.registry ?? buildDefaultRegistry();
     this.skills = opts.skills ?? buildDefaultSkills();
     this.plugins = opts.plugins ?? new PluginHost();
-    this.debugCache = new DebugCache(opts.ws.abs('.toaa/debug_cache.json'));
+    this.debugCache = new DebugCache(opts.ws.abs('.xcompiler/debug_cache.json'));
   }
 
   async run(plan: Plan): Promise<EngineResult> {
@@ -111,6 +136,56 @@ export class PhaseEngine {
     }
   }
 
+  async repairProjectAuditFailure(
+    plan: Plan,
+    auditResult: ProjectAuditResult,
+  ): Promise<EngineResult> {
+    const order = topoSort(plan.steps);
+    const step = this.selectAuditRepairStep(order, auditResult);
+    const failureLog = renderProjectAuditFailureLog(auditResult);
+    const reason = `project audit failed (${auditResult.errors} error(s), ${auditResult.warnings} warning(s))`;
+    if (!step) {
+      this.lastFailure = { reason, failureLog };
+      return {
+        totalSteps: order.length,
+        executedSteps: 0,
+        failedStepId: 'PROJECT_AUDIT',
+        failureReason: reason,
+        failureLog,
+      };
+    }
+
+    await this.plugins.emit('step.before', { plan, step });
+    let ok: boolean;
+    try {
+      ok = await this.executeStepWithDebug(plan, step, {
+        initialDebug: {
+          reason,
+          failureLog,
+          contextPaths: this.auditRepairContextPaths(plan, step, auditResult),
+          contextMode: 'audit-repair',
+        },
+        skipOutputArchive: true,
+      });
+    } catch (error) {
+      await this.plugins.emit('step.error', { plan, step, error });
+      throw error;
+    }
+    await this.plugins.emit('step.after', { plan, step, ok });
+    await this.persistPlan(plan);
+
+    if (ok) {
+      return { totalSteps: order.length, executedSteps: 1 };
+    }
+    return {
+      totalSteps: order.length,
+      executedSteps: 1,
+      failedStepId: step.id,
+      failureLog: this.lastFailure?.failureLog,
+      failureReason: this.lastFailure?.reason,
+    };
+  }
+
   private async runCore(plan: Plan): Promise<EngineResult> {
     this.profile = getLanguageProfile(plan.language);
     await this.refreshCurrentProjectMemory(plan);
@@ -124,7 +199,7 @@ export class PhaseEngine {
 
     await this.opts.git.ensureRepo();
     if (await this.opts.ws.exists(this.profile.manifestFile)) {
-      const spin = ora(t().engine.spinSandboxBuild).start();
+      const spin = ora(t().engine.spinSandboxBuild(this.profile)).start();
       try {
         const r = await this.opts.sandbox.build(this.profile.manifestFile);
         spin.succeed(t().engine.sandboxReady(r.reason));
@@ -158,7 +233,7 @@ export class PhaseEngine {
       }
       await this.plugins.emit('step.after', { plan, step, ok });
       executed++;
-      await savePlan(this.opts.planPath, plan);
+      await this.persistPlan(plan);
       if (!ok) {
         return {
           totalSteps: order.length,
@@ -170,7 +245,7 @@ export class PhaseEngine {
       }
 
       if (step.phase === 'ARCH' && step.outputs.includes(this.profile.manifestFile)) {
-        const spin = ora(t().engine.spinSandboxRebuild(step.id)).start();
+        const spin = ora(t().engine.spinSandboxRebuild(step.id, this.profile)).start();
         try {
           const r = await this.opts.sandbox.build(this.profile.manifestFile);
           spin.succeed(t().engine.sandboxStatus(r.reason));
@@ -184,13 +259,22 @@ export class PhaseEngine {
   }
 
   /** 主入口：先正常执行；若失败则进入 Debugger 重试循环（滑动窗口式自适应）。
-   *  跨 toaa run 记忆：若 .toaa/debug_cache.json 里该 step 上次以 FAILED 结束，本次
+   *  跨 xcompiler run 记忆：若 .xcompiler/debug_cache.json 里该 step 上次以 FAILED 结束，本次
    *  首轮直接进入 Debugger 模式并把历史 attempts 挑明告诉 LLM，避免重走弯路。 */
-  private async executeStepWithDebug(plan: Plan, step: Step): Promise<boolean> {
+  private async executeStepWithDebug(
+    plan: Plan,
+    step: Step,
+    opts: {
+      initialDebug?: Omit<DebugAttemptContext, 'asDebugger'>;
+      skipOutputArchive?: boolean;
+    } = {},
+  ): Promise<boolean> {
     await this.debugCache.load();
     // 阶段产物归档：在首次尝试前，将本 Step outputs 中已存在的 docs/* 文件移至 docs/history/
-    for (const out of step.outputs) {
-      await archiveIfExists(this.opts.ws, out, this.opts.audit);
+    if (!opts.skipOutputArchive) {
+      for (const out of step.outputs) {
+        await archiveIfExists(this.opts.ws, out, this.opts.audit);
+      }
     }
     // TEST / DEBUG 阶段：语言相关的测试前置（Python 写 tests/conftest.py 注入 sys.path；
     // TypeScript 无需）。解决 LLM 反复生成无法被测试框架解析的 import 问题。
@@ -207,14 +291,23 @@ export class PhaseEngine {
         );
       }
     }
-    // 每轮新 toaa run 都重置本 Step 的 retries 计数，避免历史失败累计后显示成 "retry 31/3" 这种误导。
+    // 每轮新 xcompiler run 都重置本 Step 的 retries 计数，避免历史失败累计后显示成 "retry 31/3" 这种误导。
     step.retries = 0;
 
     // 跨会话记忆：上次以 FAILED 结束 → 首轮直接用 Debugger 模式，告诉它历史尝试
     const hadUnresolved = this.debugCache.hasUnresolvedFailure(step.id);
     let priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
     let initial: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
-    if (hadUnresolved) {
+    if (opts.initialDebug) {
+      initial = await this.runOneAttempt(plan, step, {
+        asDebugger: true,
+        failureLog: opts.initialDebug.failureLog,
+        reason: opts.initialDebug.reason,
+        priorAttemptsPrompt: priorPrompt,
+        contextPaths: opts.initialDebug.contextPaths,
+        contextMode: opts.initialDebug.contextMode,
+      });
+    } else if (hadUnresolved) {
       const last = this.debugCache.attempts(step.id).slice(-1)[0]!;
       console.log(
         chalk.yellow(
@@ -270,7 +363,7 @@ export class PhaseEngine {
     while (attempt < budget) {
       attempt++;
       step.retries = attempt;
-      await savePlan(this.opts.planPath, plan);
+      await this.persistPlan(plan);
       const spin = ora(
         t().engine.spinDebugRetry(step.id, attempt, budget, absoluteCap, lastReason),
         { animate: false },
@@ -438,11 +531,59 @@ export class PhaseEngine {
     console.log(bar);
   }
 
+  private selectAuditRepairStep(
+    order: Step[],
+    auditResult: ProjectAuditResult,
+  ): Step | undefined {
+    const failedNames = new Set(
+      auditResult.checks
+        .filter((check) => !check.ok && check.severity === 'error')
+        .map((check) => check.name),
+    );
+    const done = order.filter((step) => step.status === 'DONE');
+    const latest = (phases: Step['phase'][]): Step | undefined =>
+      [...done].reverse().find((step) => phases.includes(step.phase));
+
+    if ([...failedNames].some((name) => name === 'entrypoint' || name.startsWith('doc:') || name.endsWith('-doc') || name === 'readme' || name === 'quickstart' || name === 'api-guide')) {
+      return latest(['DELIVERY', 'REFACTOR', 'TEST', 'CODE']);
+    }
+    if (failedNames.has('tests') || failedNames.has('test-files')) {
+      return latest(['TEST', 'REFACTOR', 'DELIVERY', 'CODE']);
+    }
+    if (failedNames.has('build') || failedNames.has('lint') || failedNames.has('package-json')) {
+      return latest(['DELIVERY', 'REFACTOR', 'TEST', 'CODE', 'ARCH']);
+    }
+    return latest(['DELIVERY', 'REFACTOR', 'TEST', 'CODE', 'DEBUG']);
+  }
+
+  private auditRepairContextPaths(
+    plan: Plan,
+    step: Step,
+    auditResult: ProjectAuditResult,
+  ): string[] {
+    const failedNames = new Set(
+      auditResult.checks
+        .filter((check) => !check.ok)
+        .map((check) => check.name),
+    );
+    const writable = this.computeDebugAllowedWrites(plan, step);
+    const codeAndTests = writable.filter((rel) =>
+      rel.startsWith('src/') ||
+      rel.startsWith('tests/') ||
+      rel === this.profile.manifestFile ||
+      rel === 'package.json',
+    );
+    const docs = ['docs/topic.md', 'docs/01-requirement.md', 'docs/02-architecture.md', 'docs/03-tasks.md'];
+    if (failedNames.has('entrypoint')) return dedup([...codeAndTests, ...docs]);
+    if (failedNames.has('tests') || failedNames.has('test-files')) return dedup([...codeAndTests, ...docs]);
+    return dedup([...codeAndTests, ...step.inputs, ...docs]);
+  }
+
   /** 一次执行尝试：可选 debug 模式（使用 Debugger 角色 + 注入失败日志）。 */
   private async runOneAttempt(
     plan: Plan,
     step: Step,
-    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
+    debug?: DebugAttemptContext,
   ): Promise<{ ok: boolean; failureLog: string; reason?: string; metrics?: ExecutorRunMetrics }> {
     const role = debug ? 'Debugger' : step.role;
     await this.plugins.emit('step.attempt.before', {
@@ -484,7 +625,7 @@ export class PhaseEngine {
   private async runOneAttemptCore(
     plan: Plan,
     step: Step,
-    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
+    debug?: DebugAttemptContext,
   ): Promise<{ ok: boolean; failureLog: string; reason?: string; metrics?: ExecutorRunMetrics }> {
     const role = debug ? 'Debugger' : step.role;
     // 解析 step.tools 中的 skill: 引用为底层工具名
@@ -502,8 +643,9 @@ export class PhaseEngine {
     const allNames = dedup([...resolvedToolNames, ...extraNames]);
     const baseTools: Tool[] = this.registry.pick(allNames);
 
-    // DEBUG 模式：允许 Debugger 修改依赖链上游 Step 的 outputs（实现文件可能才是真凶）。
-    const allowedWrites = debug ? this.computeDebugAllowedWrites(plan, step) : step.outputs;
+    const allowedWrites = debug
+      ? this.computeDebugAllowedWrites(plan, step)
+      : this.computeStepAllowedWrites(plan, step);
     // TEST / DEBUG 阶段始终额外放开 tests/fixtures/ —— 测试 fixture 不必逐文件登记到 outputs，
     // 否则 LLM 想 write_file 创建 sample.dbc 之类样例只能死循环。
     const augmentedWrites = ['TEST', 'DEBUG'].includes(step.phase) || debug
@@ -511,11 +653,22 @@ export class PhaseEngine {
       : allowedWrites;
 
     // EditGuard 包裹写工具
+    const budgetContext = {
+      phase: step.phase,
+      role,
+      debug: !!debug,
+      tools: allNames,
+      outputs: step.outputs,
+      allowedWrites: augmentedWrites,
+      contextChars: this.stepContextChars(plan, step),
+    };
     const guard = new EditGuard({
       ws: this.opts.ws,
       stepId: step.id,
-      maxLines: this.opts.maxEditLinesPerStep ?? 400,
+      maxLines: this.opts.maxEditLinesPerStep ?? 'auto',
+      budgetContext,
     });
+    const writeChunkBytes = resolveWriteChunkBytes(this.opts.maxWriteChunkBytes ?? 'auto', budgetContext);
     const guardedTools = baseTools.map((tool) => {
       const guarded = guard.wrap(tool);
       return this.plugins.size > 0 ? this.plugins.wrapTool(guarded) : guarded;
@@ -528,6 +681,7 @@ export class PhaseEngine {
       allowedWrites: augmentedWrites,
       stepId: step.id,
       language: plan.language,
+      writeChunkBytes,
     };
 
     const llm = this.opts.router.for(role);
@@ -544,7 +698,7 @@ export class PhaseEngine {
     const ctxSnippets = await this.buildContextSnippets(plan, step, debug);
 
     step.status = 'RUNNING';
-    await savePlan(this.opts.planPath, plan);
+    await this.persistPlan(plan);
     const sha = await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug retry' : 'before');
     await this.opts.audit.event('phase.start', t().engine.phaseStart(step.id, debug ? 'DEBUG' : step.phase, step.title), {
       messageId: 'engine.phase_start',
@@ -718,16 +872,16 @@ export class PhaseEngine {
   private async buildContextSnippets(
     plan: Plan,
     step: Step,
-    debug?: { asDebugger: true; failureLog: string; reason: string; priorAttemptsPrompt?: string },
+    debug?: DebugAttemptContext,
   ): Promise<Array<{ path: string; content: string }>> {
     const out = new Map<string, string>();
     if ((plan.architectureModules?.length ?? 0) > 0) {
       out.set(
-        '.toaa/architecture-contract.json',
+        '.xcompiler/architecture-contract.json',
         JSON.stringify({ architectureModules: plan.architectureModules }, null, 2),
       );
     }
-    const interesting = debug ? [...step.inputs, ...step.outputs] : step.inputs;
+    const interesting = debug?.contextPaths ?? (debug ? [...step.inputs, ...step.outputs] : step.inputs);
     for (const p of interesting) {
       await this.pushWorkspaceSnippet(out, p);
     }
@@ -737,7 +891,7 @@ export class PhaseEngine {
       await this.pushWorkspaceSnippet(out, rel);
     }
 
-    if (this.projectMemory?.summary) {
+    if (this.projectMemory?.summary && debug?.contextMode !== 'audit-repair') {
       out.set(`${PROJECT_MEMORY_PATH}#summary`, this.projectMemory.summary);
       for (const snippet of selectMemorySnippetsForStep(this.projectMemory, step, debug ? 6 : 4)) {
         if (!out.has(snippet.path)) out.set(snippet.path, snippet.content);
@@ -758,9 +912,14 @@ export class PhaseEngine {
 
     const downstream = this.buildDownstreamContextSnippet(plan, step);
     if (downstream) {
-      out.set(`.toaa/downstream/${step.id}.md`, downstream);
+      out.set(`.xcompiler/downstream/${step.id}.md`, downstream);
     }
     return [...out.entries()].map(([path, content]) => ({ path, content }));
+  }
+
+  private async persistPlan(plan: Plan): Promise<void> {
+    await savePlan(this.opts.planPath, plan);
+    await this.opts.onPlanProgress?.(plan);
   }
 
   private async pushWorkspaceSnippet(target: Map<string, string>, rel: string): Promise<void> {
@@ -846,6 +1005,61 @@ export class PhaseEngine {
       }
     }
     return [...out];
+  }
+
+  /**
+   * Normal Step write scope.
+   *
+   * Most phases may only write declared outputs. REFACTOR is different by design:
+   * it may make behaviour-preserving edits to existing src/tests artifacts from
+   * its inputs or dependency chain, while docs/04-refactor.md remains the
+   * required output checked by verifyOutputs().
+   */
+  private computeStepAllowedWrites(plan: Plan, step: Step): string[] {
+    const out = new Set<string>(step.outputs);
+    if (step.phase !== 'REFACTOR') return [...out];
+    for (const input of step.inputs) {
+      if (this.isRefactorWritablePath(input)) out.add(input);
+    }
+    const byId = new Map(plan.steps.map((s) => [s.id, s]));
+    const seen = new Set<string>();
+    const stack = [...step.dependsOn];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const dep = byId.get(id);
+      if (dep) stack.push(...dep.dependsOn);
+    }
+    for (const id of seen) {
+      const dep = byId.get(id);
+      if (!dep || !['CODE', 'TEST', 'REFACTOR', 'DEBUG'].includes(dep.phase)) continue;
+      for (const output of dep.outputs) {
+        if (this.isRefactorWritablePath(output)) out.add(output);
+      }
+    }
+    return [...out];
+  }
+
+  private isRefactorWritablePath(rel: string): boolean {
+    const normalized = rel.replace(/\\/g, '/');
+    if (!this.profile.codeExtensions.some((ext) => normalized.endsWith(ext))) return false;
+    return normalized.startsWith('src/') || normalized.startsWith('tests/');
+  }
+
+  private stepContextChars(plan: Plan, step: Step): number {
+    return [
+      plan.requirementDigest,
+      plan.globalPrompt,
+      plan.baselineSummary,
+      plan.userAddenda,
+      step.title,
+      step.description,
+      step.systemPrompt,
+      step.acceptance,
+      step.inputs.join('\n'),
+      step.outputs.join('\n'),
+    ].join('\n').length;
   }
 }
 

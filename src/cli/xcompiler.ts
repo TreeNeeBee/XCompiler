@@ -7,7 +7,9 @@ import { runDoctorCli } from './doctor.js';
 import { resolveCompileWorkspace, resolveEvolveWorkspace } from './workspace.js';
 import { runBootstrap } from './bootstrap.js';
 import { setLocale, t } from '../i18n/index.js';
-import { TOAA_VERSION } from '../version.js';
+import { XCOMPILER_VERSION } from '../version.js';
+import { loadXCompilerProject } from '../core/project_file.js';
+import { xcEnv } from '../config/env.js';
 import {
   localeFromArgv,
   configureLocalizedHelp,
@@ -18,30 +20,31 @@ import {
   parseStepId,
 } from './arguments.js';
 
-// Resolve UI locale early — env var TOAA_LANG and the global --lang flag both work.
+// Resolve UI locale early — env var XC_LANG and the global --lang flag both work.
 // CLI flag wins (parsed below by Commander preAction).
-setLocale(localeFromArgv(process.argv) ?? process.env.TOAA_LANG ?? 'en');
+setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
+const defaultBaseDir = xcEnv('DEFAULT_BASE_DIR') ?? '/tmp';
 
 const program = new Command();
 configureLocalizedHelp(program);
 program
-  .name('toaa')
+  .name('xcompiler')
   .description(t().cli.rootDescription)
   .option('--lang <code>', t().cli.optLang, parseLocale)
   .hook('preAction', (thisCmd) => {
     const lang = thisCmd.opts().lang as string | undefined;
     if (lang) setLocale(lang);
   })
-  .version(TOAA_VERSION, '-V, --version', t().cli.versionOption);
+  .version(XCOMPILER_VERSION, '-V, --version', t().cli.versionOption);
 program.addHelpCommand('help [command]', t().cli.helpOption);
 
 program
-  .command('c')
+  .command('build')
   .alias('compile')
   .description(t().cli.compileDescription)
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
-  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--base-dir <dir>', t().cli.optBaseDir, defaultBaseDir)
   .option('--name <name>', t().cli.optName)
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
@@ -49,6 +52,7 @@ program
   .option('--intent <kind>', t().cli.optIntent, parseIntent, 'greenfield')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--project-file <file>', t().cli.optProjectFile)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
@@ -66,6 +70,8 @@ program
       intent: opts.intent,
       baselinePlanFile: opts.baselinePlan,
       outputFile: opts.planOut,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'build',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
     });
@@ -76,7 +82,7 @@ program
   .description(t().cli.evolveDescription)
   .option('-o, --output <dir>', t().cli.optOutput)
   .option('-w, --workspace <dir>', t().cli.optWorkspace)
-  .option('--base-dir <dir>', t().cli.optBaseDir, '/tmp')
+  .option('--base-dir <dir>', t().cli.optBaseDir, defaultBaseDir)
   .option('--name <name>', t().cli.optName)
   .option('-c, --config <file>', t().cli.optConfig)
   .option('-i, --input <file>', t().cli.optInput)
@@ -84,6 +90,7 @@ program
   .option('--intent <kind>', t().cli.optIntent, parseIntent, 'feature')
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--project-file <file>', t().cli.optProjectFile)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
@@ -102,6 +109,8 @@ program
       intent: opts.intent,
       baselinePlanFile: opts.baselinePlan,
       outputFile: resolvedPlanPath,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'evolve',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
     });
@@ -111,6 +120,75 @@ program
       workspace: ws,
       configPath: opts.config,
       force: !!opts.force,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'evolve',
+      recordProjectHistory: false,
+    });
+  });
+
+program
+  .command('load')
+  .description(t().cli.loadDescription)
+  .argument('<project>', t().cli.argProjectFile)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('--dry-run', t().cli.optDryRun, false)
+  .option('--from <stepId>', t().cli.optFrom, parseStepId)
+  .option('--phase <phase>', t().cli.optPhase, parsePhase)
+  .option('--reset', t().cli.optReset, false)
+  .option('--force', t().cli.optForce, false)
+  .action(async (projectArg, opts) => {
+    const project = await loadXCompilerProject(projectArg);
+    await runExecute({
+      planPath: project.planPath,
+      workspace: project.workspace,
+      configPath: opts.config ? path.resolve(opts.config) : project.configPath,
+      dryRun: !!opts.dryRun,
+      fromStepId: opts.from,
+      onlyPhase: opts.phase,
+      resetStatus: !!opts.reset,
+      force: !!opts.force,
+      projectFilePath: project.filePath,
+      projectCommand: 'load',
+    });
+  });
+
+program
+  .command('append')
+  .description(t().cli.appendDescription)
+  .argument('<project>', t().cli.argProjectFile)
+  .option('-c, --config <file>', t().cli.optConfig)
+  .option('-i, --input <file>', t().cli.optInput)
+  .option('-t, --topic <file>', t().cli.optTopic)
+  .option('--intent <kind>', t().cli.optIntent, parseIntent, 'feature')
+  .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--yes', t().cli.optYes, false)
+  .option('--force', t().cli.optForce, false)
+  .action(async (projectArg, opts) => {
+    const project = await loadXCompilerProject(projectArg);
+    const configPath = opts.config ? path.resolve(opts.config) : project.configPath;
+    const planPath = opts.planOut ? path.resolve(opts.planOut) : project.planPath;
+    const compiled = await runCompile({
+      workspace: project.workspace,
+      configPath,
+      inputFile: opts.input,
+      topicFile: opts.topic,
+      intent: opts.intent,
+      baselinePlanFile: project.planPath,
+      outputFile: planPath,
+      projectFilePath: project.filePath,
+      projectCommand: 'append',
+      yes: !!opts.yes && (!!opts.input || !!opts.topic),
+      force: !!opts.force,
+    });
+    if (!compiled.planPath) return;
+    await runExecute({
+      planPath: compiled.planPath,
+      workspace: project.workspace,
+      configPath,
+      force: !!opts.force,
+      projectFilePath: project.filePath,
+      projectCommand: 'append',
+      recordProjectHistory: false,
     });
   });
 
@@ -153,11 +231,12 @@ program
   .option('--phase <phase>', t().cli.optPhase, parsePhase)
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
+  .option('--project-file <file>', t().cli.optProjectFile)
   .action(async (planArg, opts) => {
     const explicit = opts.output ?? opts.workspace;
     // workspace 推断优先级：
     //  1. 显式 -o / -w
-    //  2. 给了 [plan] → 取 plan 所在目录（避免在 toaa 源码目录里 run 别人的项目）
+    //  2. 给了 [plan] → 取 plan 所在目录（避免在 XCompiler 源码目录里 run 别人的项目）
     //  3. 都没给 → process.cwd()
     const ws = explicit
       ? path.resolve(explicit)
@@ -174,6 +253,8 @@ program
       onlyPhase: opts.phase,
       resetStatus: !!opts.reset,
       force: !!opts.force,
+      projectFilePath: opts.projectFile,
+      projectCommand: 'run',
     });
   });
 

@@ -17,10 +17,12 @@ import { normalizePythonRequirements } from '../agents/planner.js';
 import { getLanguageProfile } from '../core/language.js';
 import { runProjectAudit, shouldRunProjectAudit } from '../core/project_audit.js';
 import { refreshProjectMemory } from '../core/project_memory.js';
+import { updateProjectFile } from '../core/project_file.js';
 import type { Language, PlanIntent } from '../core/plan.js';
 import { setLocale, t } from '../i18n/index.js';
 import { PluginHost } from '../plugins/host.js';
-import type { ToaaPlugin } from '../plugins/types.js';
+import type { XCompilerPlugin } from '../plugins/types.js';
+import { hasXcEnv } from '../config/env.js';
 import type { EngineResult } from '../core/engine.js';
 import type { ProjectAuditResult } from '../core/project_audit.js';
 
@@ -33,10 +35,16 @@ export interface ExecuteOptions {
   onlyPhase?: string;
   resetStatus?: boolean;
   force?: boolean;
+  /** Optional XXX.xc project file to keep in sync with execution progress. */
+  projectFilePath?: string;
+  /** Project-file history command label; defaults to run. */
+  projectCommand?: string;
+  /** Whether to append a history row when execution starts; defaults to true. */
+  recordProjectHistory?: boolean;
   /** CLI 默认设置 process.exitCode；嵌入式宿主可关闭并仅检查 ExecuteResult。 */
   setProcessExitCode?: boolean;
   /** 程序化插件入口；CLI 文件加载器后续基于该入口实现。 */
-  plugins?: ToaaPlugin[];
+  plugins?: XCompilerPlugin[];
   pluginStrict?: boolean;
 }
 
@@ -48,7 +56,7 @@ export interface ExecuteResult {
 }
 
 export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
-  // 非交互式守则：toaa_run 不读任何 stdin。
+  // 非交互式守则：xcompiler_run 不读任何 stdin。
   try {
     if ((process.stdin as { isTTY?: boolean }).isTTY) {
       // 如果是 TTY，强制不进入 raw / 不 resume，避免依赖者误用 inquirer 等库交互。
@@ -60,10 +68,10 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   const ws = new Workspace(path.resolve(opts.workspace));
   const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
   // AuditLogger 会立即创建过程日志，因此必须先应用配置语言。
-  if (!process.env.TOAA_LANG) setLocale(cfg.locale);
+  if (!hasXcEnv('LANG')) setLocale(cfg.locale);
   let lock;
   try {
-    lock = await acquireLock(ws.root, 'toaa_run', { force: !!opts.force });
+    lock = await acquireLock(ws.root, 'xcompiler_run', { force: !!opts.force });
   } catch (err) {
     if (err instanceof LockError) {
       console.error(chalk.red('✖'), t().system.unhandledError(err.message));
@@ -72,7 +80,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     }
     throw err;
   }
-  const audit = new AuditLogger({ root: ws.root, command: 'toaa_run' });
+  const audit = new AuditLogger({ root: ws.root, command: 'xcompiler_run' });
   await audit.start({
     workspace: ws.root,
     plan: opts.planPath,
@@ -89,6 +97,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
 
   const planAbs = path.resolve(opts.planPath);
   const plan = await loadPlan(planAbs);
+  const projectCommand = opts.projectCommand ?? 'run';
 
   // --force 隐含重置所有 Step 状态、覆写锁，让整个 Plan 从头执行。
   if (opts.force) {
@@ -103,12 +112,22 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     }
     await savePlan(planAbs, plan);
   }
+  let projectFilePath = await updateProjectFile({
+    workspace: ws.root,
+    planPath: planAbs,
+    configPath: cfgPath,
+    projectFilePath: opts.projectFilePath,
+    command: projectCommand,
+    intent: plan.intent,
+    plan,
+    recordHistory: opts.recordProjectHistory ?? true,
+  });
 
-  // 将 toaa_c 沉淀的依赖预写入依赖清单（仅当语言 profile 要求 runtime seeding 时，如 Python）。
+  // 将 xcompiler build 沉淀的依赖预写入依赖清单（仅当语言 profile 要求 runtime seeding 时，如 Python）。
   // Python 需要 calibration（剥离版本锁 / 重写幻觉包名）后再与现有内容对比：
   //  - 不存在 → 写入。
   //  - 已存在但内容与校准后不一致（例如 老运行遗留了 `cantools==4.3.*`）→ 重写为校准后版本。
-  // 这能防止升级 toaa 后旧 sandbox 仍卡在幻觉依赖上。
+  // 这能防止升级 XCompiler 后旧 sandbox 仍卡在幻觉依赖上。
   // TypeScript 等语言的 package.json 由 ARCH 步骤撰写，不在此 seeding。
   const profile = getLanguageProfile(plan.language);
   if (profile.seedManifestFromDeps && plan.dependencies && plan.dependencies.length > 0) {
@@ -193,10 +212,22 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     maxDebugRetries: cfg.agent.max_debug_retries,
     maxDebugRetriesCap: cfg.agent.max_debug_retries_cap,
     maxEditLinesPerStep: cfg.agent.max_edit_lines_per_step,
+    maxWriteChunkBytes: cfg.agent.max_write_chunk_bytes,
+    onPlanProgress: async (progressPlan) => {
+      projectFilePath = await updateProjectFile({
+        workspace: ws.root,
+        planPath: planAbs,
+        configPath: cfgPath,
+        projectFilePath,
+        command: projectCommand,
+        intent: progressPlan.intent,
+        plan: progressPlan,
+      });
+    },
   });
 
   try {
-    const r = await engine.run(plan);
+    let r = await engine.run(plan);
     await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
     if (r.failedStepId) {
       console.log(
@@ -223,12 +254,66 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     }
     let auditWarnings = 0;
     if (shouldRunProjectAudit(plan, { onlyPhase: opts.onlyPhase })) {
-      const auditResult = await runProjectAudit({ ws, sandbox, plan, profile });
+      let auditResult = await runProjectAudit({ ws, sandbox, plan, profile });
       printProjectAudit(auditResult);
       await audit.event('note', t().execute.projectAuditSummary(auditResult.errors, auditResult.warnings), {
         messageId: 'execute.project_audit_summary',
         checks: auditResult.checks,
       });
+      if (!auditResult.ok) {
+        console.log(chalk.yellow('!'), 'project audit failed; entering Debugger repair before final verdict');
+        await audit.event('note', 'project audit failed; entering Debugger repair', {
+          messageId: 'execute.project_audit_repair_start',
+          checks: auditResult.checks,
+        });
+        const repair = await engine.repairProjectAuditFailure(plan, auditResult);
+        await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
+        if (repair.failedStepId) {
+          console.log(
+            chalk.red('✖'),
+            t().execute.runInterrupted(repair.failedStepId, r.executedSteps + repair.executedSteps, r.totalSteps),
+          );
+          if (repair.failureReason) {
+            console.log(chalk.red(t().execute.runReasonLabel) + repair.failureReason);
+          }
+          if (repair.failureLog) {
+            const tail = repair.failureLog.split('\n').slice(-40).join('\n');
+            console.log(chalk.gray(t().execute.runFailureLogHeader));
+            console.log(tail);
+          }
+          await audit.end({
+            status: 'failed',
+            executedSteps: r.executedSteps + repair.executedSteps,
+            totalSteps: r.totalSteps,
+            failedStepId: repair.failedStepId,
+            failureReason: repair.failureReason,
+            qualityAuditErrors: auditResult.errors,
+            qualityAuditWarnings: auditResult.warnings,
+          });
+          await updateProjectFile({
+            workspace: ws.root,
+            planPath: planAbs,
+            configPath: cfgPath,
+            projectFilePath,
+            command: projectCommand,
+            intent: plan.intent,
+            plan,
+          });
+          if (opts.setProcessExitCode !== false) process.exitCode = 4;
+          return { status: 'failed', engine: repair, audit: auditResult, message: repair.failureReason };
+        }
+        r = {
+          totalSteps: r.totalSteps,
+          executedSteps: r.executedSteps + repair.executedSteps,
+        };
+        auditResult = await runProjectAudit({ ws, sandbox, plan, profile });
+        printProjectAudit(auditResult);
+        await audit.event('note', t().execute.projectAuditSummary(auditResult.errors, auditResult.warnings), {
+          messageId: 'execute.project_audit_summary',
+          checks: auditResult.checks,
+          afterRepair: true,
+        });
+      }
       if (!auditResult.ok) {
         await audit.end({
           status: 'failed',
@@ -236,6 +321,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           totalSteps: r.totalSteps,
           qualityAuditErrors: auditResult.errors,
           qualityAuditWarnings: auditResult.warnings,
+        });
+        await updateProjectFile({
+          workspace: ws.root,
+          planPath: planAbs,
+          configPath: cfgPath,
+          projectFilePath,
+          command: projectCommand,
+          intent: plan.intent,
+          plan,
         });
         if (opts.setProcessExitCode !== false) process.exitCode = 4;
         return { status: 'failed', engine: r, audit: auditResult };
@@ -249,6 +343,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       totalSteps: r.totalSteps,
       qualityAuditWarnings: auditWarnings,
     });
+    await updateProjectFile({
+      workspace: ws.root,
+      planPath: planAbs,
+      configPath: cfgPath,
+      projectFilePath,
+      command: projectCommand,
+      intent: plan.intent,
+      plan,
+    });
     return { status: 'ok', engine: r };
   } catch (err) {
     const msg = (err as Error).message;
@@ -259,6 +362,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     }
     await persistProjectMemory(ws, audit, planAbs, plan.language, plan.intent);
     await audit.end({ status: 'error', message: msg, stack });
+    await updateProjectFile({
+      workspace: ws.root,
+      planPath: planAbs,
+      configPath: cfgPath,
+      projectFilePath,
+      command: projectCommand,
+      intent: plan.intent,
+      plan,
+    });
     if (opts.setProcessExitCode !== false) process.exitCode = 5;
     return { status: 'error', message: msg };
   } finally {

@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -130,6 +131,7 @@ export class OpenAIClient implements LLMClient {
       let aggregate = '';
       let done = false;
       let cancelled = false;
+      const repeatDetector = new RepeatTokenDetector();
       const cancelReader = () => {
         if (cancelled) return;
         cancelled = true;
@@ -174,6 +176,12 @@ export class OpenAIClient implements LLMClient {
           if (!piece) continue;
           aggregate += piece;
           options.onToken?.(piece);
+          if (repeatDetector.feed(piece)) {
+            throw new Error('detected token loop in OpenAI stream (repeated identical token); aborting');
+          }
+          if (detectCyclicTokenLoop(aggregate)) {
+            throw new Error('detected cyclic token loop in OpenAI stream (periodic tail); aborting');
+          }
           if (maxOutputChars > 0 && aggregate.length > maxOutputChars) {
             throw new Error(
               `OpenAI stream output exceeded ${maxOutputChars} chars (likely token loop); aborting`,

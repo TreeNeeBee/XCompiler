@@ -15,7 +15,7 @@ let server: http.Server;
 let baseUrl: string;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-net-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-net-'));
   ws = new Workspace(tmp);
   ctx = {
     ws,

@@ -10,7 +10,7 @@
  *  - skills: build the default skill registry and verify every referenced tool
  *            is registered in the default tool registry.
  */
-import { loadConfigWithPath, type ToaaConfig } from '../config/config.js';
+import { loadConfigWithPath, type XCompilerConfig } from '../config/config.js';
 import { isOllamaProvider, isOpenAICompatibleProvider, normalizeBaseUrl } from '../llm/router.js';
 import { getJson } from '../llm/ollama.js';
 import { execRaw } from '../sandbox/subprocess.js';
@@ -59,7 +59,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
   // 1) config
   const cfgSection: CheckSection = { title: M.sectionConfig, items: [] };
-  let cfg: ToaaConfig | null = null;
+  let cfg: XCompilerConfig | null = null;
   let cfgPath = '';
   try {
     const loaded = await loadConfigWithPath(opts.configPath);
@@ -102,7 +102,7 @@ function finalize(sections: CheckSection[]): DoctorReport {
 }
 
 async function checkLlm(
-  cfg: ToaaConfig,
+  cfg: XCompilerConfig,
   scores: ScoreStore,
   probeTimeoutMs: number,
   skipNetwork: boolean,
@@ -236,7 +236,7 @@ async function checkLlm(
   return sec;
 }
 
-function candidatesForRole(cfg: ToaaConfig, role: string): string[] {
+function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
   const explicit = cfg.llm.role_fallbacks?.[role];
   if (explicit && explicit.length > 0) return explicit;
   const fromRoles = cfg.llm.roles?.[role] ?? [];
@@ -282,7 +282,7 @@ function isOpenAICloudEndpoint(baseUrl: string): boolean {
   }
 }
 
-async function checkSandbox(cfg: ToaaConfig, skipNetwork: boolean): Promise<CheckSection> {
+async function checkSandbox(cfg: XCompilerConfig, skipNetwork: boolean): Promise<CheckSection> {
   const M = t().doctor;
   const kind = cfg.agent.sandbox;
   const sec: CheckSection = { title: M.sectionSandbox, items: [] };

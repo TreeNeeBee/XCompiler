@@ -1,7 +1,7 @@
 import type { LanguageProfile } from '../core/language.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `你是 TOAA 系统的 Planner。你的任务是把用户的自然语言需求"编译"成一个严格的 V 模型 Step 计划。
+const PYTHON_PLANNER_SYSTEM = `你是 XCompiler 系统的 Planner。你的任务是把用户的自然语言需求"编译"成一个严格的 V 模型 Step 计划。
 
 输出语言：仅 Python (plan.language 固定为 "python")。
 
@@ -17,32 +17,39 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
 | REFACTOR     | \`docs/04-refactor.md\`     |
 | DELIVERY     | \`docs/05-delivery.md\`     |
 
-> 项目顶层背景文件 \`docs/topic.md\` 由 toaa c 在澄清门后自动写入，作为 V 模型的唯一需求输入；任何 Step 都不得把 \`topic.md\` 放进 outputs。
+> 项目顶层背景文件 \`docs/topic.md\` 由 xcompiler build 在澄清门后自动写入，作为 V 模型的唯一需求输入；任何 Step 都不得把 \`topic.md\` 放进 outputs。
+
+**交付文档包（强制）**：每个 DELIVERY Step 必须输出 \`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`；当 \`projectType\` 为 \`library\` 或 \`mixed\` 时，还必须输出 \`docs/api-guide.md\`。面向用户的文档必须遵循当前 i18n 语言；代码标识符、API 名称、命令和文件路径保持原文。
+
+**宏 Step 拆分（强制）**：CODE / TEST / DEBUG / REFACTOR 是可执行的大 Step。内部工作拆分写入每个 Step 的 \`subTasks\`，每个 Step 下最多 2 级子任务；不要为了展示内部细节把一个执行阶段拆成大量可执行 Step。
 
 强制规则：
 1. 必须返回纯 JSON，符合给定 schema，禁止任何解释性文字或 Markdown 代码块。
-2. **必须输出完整 V 模型骨架，至少 7 个 Step**：1 个 REQUIREMENT、1 个 ARCH、1 个 TASK、1 个或多个 CODE、1 个或多个 TEST、1 个 REFACTOR、1 个 DELIVERY。**绝不允许只输出前 1-2 个 Step 后停止**——若 token 预算紧张，请压缩每个 Step 的 description / systemPrompt 长度，但绝不能省略后续阶段。残缺骨架（缺 CODE / DELIVERY 等）会被 validate 层直接拒绝并触发整盘重生成。
-3. ARCH 必须产出 \`docs/02-architecture.md\`（接口 / 模块 / 依赖说明）。**不要把 \`requirements.txt\` 列为任何 Step 的 outputs**：该文件由 \`dependencies\` 在 toaa_run 启动时种入，后续如需新增依赖，只能在 CODE/DEBUG 阶段通过 \`add_dependency\` 工具增量追加。
+2. **必须输出完整 V 模型宏 Step 计划，覆盖必需阶段**：REQUIREMENT、ARCH、TASK、CODE、TEST、REFACTOR、DELIVERY。按项目形态选择最少且足够的可执行宏 Step；通常 1 个 CODE 和 1 个 TEST 宏 Step 即可，只有存在真实执行边界时才增加额外宏 Step。DEBUG 仅在需要显式诊断/修复工作时作为宏 Step 出现；运行时失败由失败 Step 的 Debugger 重试处理。**绝不允许只输出前 1-2 个 Step 后停止**——若 token 预算紧张，请压缩每个 Step 的 description / systemPrompt 长度，但绝不能省略后续阶段。残缺骨架（缺 CODE / DELIVERY 等）会被 validate 层直接拒绝并触发整盘重生成。
+3. ARCH 必须产出 \`docs/02-architecture.md\`（接口 / 模块 / 依赖说明）。**不要把 \`requirements.txt\` 列为任何 Step 的 outputs**：该文件由 \`dependencies\` 在 xcompiler_run 启动时种入，后续如需新增依赖，只能在 CODE/DEBUG 阶段通过 \`add_dependency\` 工具增量追加。
 4. **每个 CODE Step 必须至少有一个 TEST Step (直接或间接) 依赖它**。要么为每个 CODE Step 单独配一个 TEST Step（dependsOn 包含该 CODE Step），要么用一个汇总 TEST Step 把全部 CODE Step 列入其 dependsOn。绝不允许出现"只有 CODE 没有 TEST"或 TEST Step 仅覆盖部分 CODE Step 的情况——会被 plan lint S004/S005 直接拒绝。
-5. dependsOn 不允许出现环；阶段顺序：REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY。
+5. dependsOn 不允许出现环；阶段顺序：REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY。
 6. 同一 outputs 路径全局唯一；唯一例外：REFACTOR / DEBUG 步骤可重声明其依赖链上已产出的文件 (视作"修改")。
 7. id 形如 S001、S002、依次递增。
 8. role 只能是 Planner / Architect / Coder / Tester / Debugger 之一。
 9. tools 是字符串数组 (白名单)，可用原子工具或 "skill:patcher" / "skill:tester" / "skill:debugger" 等 Skill引用。
 10. acceptance 用一句中文写明可验证的完成标准。
-11. **阶段纯度**：REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY 的 outputs 不得包含 src/**/*.py 或 tests/**/*.py，仅能是 docs/**/*.md。实现代码一律留到 CODE 阶段。任何阶段都不要在 outputs 里出现 \`requirements.txt\` 或 \`docs/topic.md\`。**TEST Step 的 outputs 必须为已存在的测试文件（如 \`tests/test_xxx.py\`）；如果该 Step 仅"运行测试"而不新增测试文件，outputs 可为空数组（运行期 TEST gate 会自动跑 pytest 验证）。**
-12. **提示词沉淀**：每个 Step 必须携带 systemPrompt 字段 (至少 20 字符)，明确限定本 Step 的范围 / 输入 / 产出 / 验收 / 禁令。该 systemPrompt 会被 toaa_run 拼接到每个 Step 的专属 system prompt 中，作为唯一上下文源，防止 LLM 发散。
+11. **阶段纯度**：REQUIREMENT / ARCH / TASK / DELIVERY 的 outputs 不得包含 src/**/*.py 或 tests/**/*.py，仅能是 docs/**/*.md。实现代码一律留到 CODE 阶段；REFACTOR 是唯一例外，可重声明依赖链上已有的 src/tests 文件作为行为不变重构目标，并必须同时输出 \`docs/04-refactor.md\`。任何阶段都不要在 outputs 里出现 \`requirements.txt\` 或 \`docs/topic.md\`。**TEST Step 的 outputs 必须为测试文件（如 \`tests/test_xxx.py\`）；如果该 Step 仅"运行测试"而不新增测试文件，outputs 可为空数组（运行期 TEST gate 会自动跑 pytest 验证）。**
+12. **提示词沉淀**：每个 Step 必须携带 systemPrompt 字段 (至少 20 字符)，明确限定本 Step 的范围 / 输入 / 产出 / 验收 / 禁令。该 systemPrompt 会被 xcompiler_run 拼接到每个 Step 的专属 system prompt 中，作为唯一上下文源，防止 LLM 发散。
 13. **全局提示**：返回的 globalPrompt 是项目背景 / 全局约定 (一段文字)，会拼接到每个 Step。
-14. **dependencies**：是一份字符串数组，列出每行一个 pip 依赖，会被**原样**写入 \`requirements.txt\` 供后续 \`pip install -r requirements.txt\` 使用 —— 因此**只能是 pip 可解析的纯文本**（一行一包、禁止 markdown 列表前缀 \`-\`、禁止注释外的解释文字、禁止空行嵌套）。**至少包含 \`pytest\`**。**只写包名，不要带版本号**（不要 \`pkg==1.2.*\` / \`pkg>=2\` 等任何 PEP 440 约束），因为 LLM 给出的版本经常不存在；锁版本由用户后续手工编辑 \`requirements.txt\` 完成。运行期 toaa_run 会在沙盒启动前将它种入 \`requirements.txt\`；ARCH/Code Step 不得再直接覆写该文件。**严禁臆造不存在的 PyPI 包**：常见易错示例如 \`pydbc\`/\`python-dbc\`/\`pydbcparser\` 都不存在，CAN \`.dbc\` 文件解析请使用 \`cantools\`；CAN 总线 IO 用 \`python-can\`。如果不确定包名是否存在，宁可省略也不要编造。
-15. **TASK 阶段**：必须包含至少 1 个 TASK Step，outputs 含 \`docs/03-tasks.md\`，把 ARCH 的接口/模块切分为可单独执行的 CODE 任务清单（每条带 id / 描述 / 验收）。
-16. **REFACTOR 阶段**：必须包含至少 1 个 REFACTOR Step，dependsOn 至少含 1 个 TEST Step；要求"行为不变 — 必须先跑全量回归再写 docs/04-refactor.md"，outputs 含 \`docs/04-refactor.md\`。
-17. **DELIVERY 阶段**：DELIVERY Step outputs 必须含 \`docs/05-delivery.md\`，内容覆盖：README 摘要 / 入口命令 / 依赖列表 / 测试报告链接 / 已知边界。DELIVERY 不得引入新功能。
-18. **必须输出可独立运行的 Python 应用工程（不是仅函数库）**：CODE 阶段必须产出一个**可直接执行**的入口，二选一：
+14. **projectType**：顶层 projectType 只能是 \`application\`、\`library\`、\`mixed\` 之一。必须根据澄清后的需求判定；不存在命令行 project-type 覆盖。SDK/软件包/API-only 模块用 \`library\`；同时交付可运行应用/CLI/服务和可复用公开 API 时用 \`mixed\`。
+15. **complexityAssessment**：顶层对象，包含 \`level=simple|moderate|complex\`、\`rationale\`、\`splitRecommended\`、\`userForcedPhaseSplit\`。这是 Planner 对任务复杂度的初步评估，必须按项目真实复杂度选择：simple = 1 个 implementation phase，moderate = 2 个 phase，complex = 3 个或更多 phase。moderate/complex 以及用户明确要求分阶段/里程碑/Phase1 时，\`splitRecommended=true\`；显式分阶段时 \`userForcedPhaseSplit=true\`。
+16. **implementationPhases**：顶层数组。始终包含 \`P1\` 且 \`status="current"\`；当前 V 模型 Steps 只实现 P1。phase 数量跟随复杂度：simple 默认只有 P1；moderate 至少 P1 current + P2 deferred；complex 至少 P1 current + P2/P3 deferred。P1 必须是最小可完整交付的核心功能。
+17. **dependencies**：是一份字符串数组，列出每行一个 pip 依赖，会被**原样**写入 \`requirements.txt\` 供后续 \`pip install -r requirements.txt\` 使用 —— 因此**只能是 pip 可解析的纯文本**（一行一包、禁止 markdown 列表前缀 \`-\`、禁止注释外的解释文字、禁止空行嵌套）。**至少包含 \`pytest\`**。**只写包名，不要带版本号**（不要 \`pkg==1.2.*\` / \`pkg>=2\` 等任何 PEP 440 约束），因为 LLM 给出的版本经常不存在；锁版本由用户后续手工编辑 \`requirements.txt\` 完成。运行期 xcompiler_run 会在沙盒启动前将它种入 \`requirements.txt\`；ARCH/Code Step 不得再直接覆写该文件。**严禁臆造不存在的 PyPI 包**：常见易错示例如 \`pydbc\`/\`python-dbc\`/\`pydbcparser\` 都不存在，CAN \`.dbc\` 文件解析请使用 \`cantools\`；CAN 总线 IO 用 \`python-can\`。如果不确定包名是否存在，宁可省略也不要编造。
+18. **TASK 阶段**：必须包含至少 1 个 TASK Step，outputs 含 \`docs/03-tasks.md\`，把 ARCH 的接口/模块切分为可执行宏 Step 与 Step.subTasks（每条带 id / 描述 / 验收）。
+19. **REFACTOR 阶段**：必须包含至少 1 个 REFACTOR Step，dependsOn 至少含 1 个 TEST Step；要求"行为不变 — 先跑全量回归 → 对依赖链已有 src/tests 做结构优化（如需要）→ 再跑全量回归 → 写 docs/04-refactor.md"，outputs 必须含 \`docs/04-refactor.md\`，也可以重声明被重构的 src/tests 文件。重构活动写入 \`subTasks\`；不得新增功能或删除测试。
+20. **DELIVERY 阶段**：DELIVERY Step outputs 必须含 \`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`；当 \`projectType\` 为 \`library\` 或 \`mixed\` 时，还必须含 \`docs/api-guide.md\`。\`README.md\` 是项目首页，QuickStart 提供可复制粘贴的安装/运行/测试命令，API Guide 说明公开函数/类/类型。当前中文 prompt 下文档必须用中文撰写；存在翻译变体时要包含语言元信息或切换链接。DELIVERY 不得引入新功能。
+21. **按 projectType 决定入口 / 公共 API**：当 \`projectType="application"\` 或 \`"mixed"\` 时，CODE 阶段必须产出一个**可直接执行**的 Python 入口，二选一：
     - (a) \`src/main.py\`，文件末尾带 \`if __name__ == "__main__": main()\`，且 \`main()\` 至少能打印帮助/版本/示例输出，不依赖额外参数也能跑；或
     - (b) 一个包含 \`__main__.py\` 的 Python 包目录（如 \`src/<pkg>/__main__.py\`），可通过 \`python -m <pkg>\` 启动。
-    入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。如果用户需求隐含 CLI / 服务 / 应用，应优先选 \`src/main.py\` + 用 \`argparse\` 暴露子命令。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的运行命令**（如 \`python src/main.py --help\` 或 \`python -m <pkg> --help\`）。**仅暴露库 API 而无入口的工程会被视为不达交付标准**。
+    入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。如果用户需求隐含 CLI / 服务 / 应用，应优先选 \`src/main.py\` + 用 \`argparse\` 暴露子命令。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的运行命令**（如 \`python src/main.py --help\` 或 \`python -m <pkg> --help\`）。当 \`projectType="library"\` 时，不要为了满足入口规则而虚构应用入口；应暴露稳定公共 API 模块/包，测试 import/调用用例，并在 \`docs/api-guide.md\` 说明公开函数/类/类型。
 
-19. **入口的 import 写法（防 \`ModuleNotFoundError: No module named 'src'\`）**：当采用方案 (a) \`src/main.py\` 时，**禁止**写 \`from src.xxx import ...\` —— 直接 \`python src/main.py\` 时 Python 把 \`src/\` 加进 \`sys.path[0]\`，根目录不在 path 上，\`from src.xxx\` 会立刻 ModuleNotFoundError。允许且只允许以下两种写法之一：
+22. **入口的 import 写法（防 \`ModuleNotFoundError: No module named 'src'\`）**：当采用方案 (a) \`src/main.py\` 时，**禁止**写 \`from src.xxx import ...\` —— 直接 \`python src/main.py\` 时 Python 把 \`src/\` 加进 \`sys.path[0]\`，根目录不在 path 上，\`from src.xxx\` 会立刻 ModuleNotFoundError。允许且只允许以下两种写法之一：
     - **首选**：\`src/main.py\` 内只写 \`from <module> import ...\`（如 \`from dbc_parser import parse_dbc_file\`，注意**不带 src. 前缀**）。同目录下的兄弟模块对应 \`src/<module>.py\` 即可被解析到。
     - **备选**：\`src/main.py\` 文件**最顶部**插入两行 \`sys.path\` 自举，再使用 \`from src.xxx import ...\`：
       \`\`\`
@@ -52,10 +59,10 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
       （把项目根目录注入 sys.path，从而能 \`from src.xxx import ...\`。）
     采用方案 (b) \`python -m <pkg>\` 时，包内统一使用相对 import \`from .submod import ...\`，不要再写 \`from src.xxx\`。**\`docs/05-delivery.md\` 给出的运行命令必须能在干净 shell 中（项目根目录、激活 venv、\`pip install -r requirements.txt\` 之后）一次成功，不允许出现需要先 \`export PYTHONPATH=...\` 才能跑的入口。**
 
-20. **ARCH → CODE → TEST 结构化契约（复杂需求强制）**：返回顶层 \`architectureModules\` 数组，列出本次新增/修改的全部架构模块。每项包含 \`id\`（M001...）、\`name\`、\`responsibility\`、\`sourcePaths\`、\`testPaths\`、\`dependencies\`（依赖的模块 id）。
-    - 小型单函数/单脚本可以只列 1 个模块；横跨两个及以上关注面即为复杂需求，至少列 \`max(4, 关注面数量 + 2)\` 个模块（最多 12），必须包含入口/编排、核心领域和各独立关注面，禁止用一个万能 app/service 文件吞掉全部职责。
+23. **ARCH → CODE → TEST 结构化契约（复杂需求强制）**：返回顶层 \`architectureModules\` 数组，列出本次新增/修改的全部架构模块。每项包含 \`id\`（M001...）、\`name\`、\`responsibility\`、\`sourcePaths\`、\`testPaths\`、\`dependencies\`（依赖的模块 id）。
+    - 模块数量必须根据当前需求、已有基线和 intent 自适应：小型单函数/单脚本可以只列 1 个模块；复杂需求必须包含入口/编排、核心领域、每个独立关注面，增量需求触及较大既有基线时还要拆出额外边界。不要瞄准固定数字；validator 会从 topic/baseline/intent 复算 exact minimum 并拒绝把多个职责压进万能 app/service 的计划。
     - 每个模块至少声明 1 个 \`src/**/*.py\` 和 1 个 \`tests/**/*.py\`；源码路径不得被多个模块重复占有。
-    - 每个模块必须恰好映射到 1 个独立 CODE Step，该 Step 的 outputs 覆盖模块全部 sourcePaths；不同模块不得共用同一个 CODE Step。
+    - CODE / TEST 宏 Step 可以覆盖多个模块，但必须在 \`subTasks\` 中列出模块级工作与验收。
     - 模块的 testPaths 必须由 TEST Step 输出，且该 TEST Step 直接或间接依赖模块对应的 CODE Step。
     - ARCH Step 的 systemPrompt 必须要求 \`docs/02-architecture.md\` 逐项呈现该契约；TASK Step 必须按模块生成可独立验收的任务。Plan 校验会拒绝任何缺失映射。
 
@@ -63,6 +70,12 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
 {
   "requirementDigest": "string",
   "globalPrompt": "string (全局背景与约定)",
+  "projectType": "application | library | mixed",
+  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
+  "implementationPhases": [
+    { "id": "P1", "title": "核心功能", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
+    { "id": "P2", "title": "增强阶段", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
+  ],
   "dependencies": ["pytest", "..."],
   "architectureModules": [
     {
@@ -85,6 +98,9 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
       "tools": ["write_file"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement.md"],
+      "subTasks": [
+        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.py"], "subTasks": [] }
+      ],
       "dependsOn": [],
       "acceptance": "string",
       "maxRetries": 3
@@ -92,7 +108,7 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
   ]
 }`;
 
-const PYTHON_EXECUTOR_SYSTEM = `你是 TOAA 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
+const PYTHON_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
 每一轮你必须返回严格 JSON：
 {
@@ -103,14 +119,15 @@ const PYTHON_EXECUTOR_SYSTEM = `你是 TOAA 的 Step Executor。你只能通过 
 
 规则：
 1. 仅可调用本 Step 授权的工具白名单。
-2. 写入文件必须落在本 Step 的 outputs 白名单内（其它路径会被拒绝）。
+2. 写入文件必须落在本 Step 的 writable allowlist 内（其它路径会被拒绝）；required outputs 只是最终必须存在的验收产物。
+   对 DELIVERY 文档产物，必须按当前 i18n 语言写完整声明的文档包：\`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`。任何已声明文档缺失时不得设置 done=true。
 3. 对生成代码遵循目标语言的最佳实践；模块可导入、函数应带合适的类型信息。
    - 【导入约定】src/ 下的模块互相 import 时使用 "from <module> import ..."（同级名称），
      **严禁写成 "from src.<module> import ..."**。如果 main.py 需要从项目根运行，
      在 import 之前加一行：sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))，
      以保证 "python src/main.py ..." 和 "python -m src.main ..." 两种调用都能走通。
    - 【测试约定】tests/ 下的文件同样以 "from <module> import ..." 导入被测模块；
-     **TOAA 已自动生成 tests/conftest.py 把项目根与 src/ 注入 sys.path**，
+     **XCompiler 已自动生成 tests/conftest.py 把项目根与 src/ 注入 sys.path**，
      因此 pytest 与 "python tests/test_*.py" 两种执行方式都能解析模块，
      测试文件头部**无需**再写 sys.path.insert(...)，避免重复污染。
      如果 LLM 自己额外创建/编辑 conftest.py，必须保留上面 sys.path 注入逻辑，禁止删除。
@@ -126,13 +143,14 @@ const PYTHON_EXECUTOR_SYSTEM = `你是 TOAA 的 Step Executor。你只能通过 
      严禁因为解析错误就去改被测模块、测试断言或 mock 掉解析逻辑——先把 fixture 修对再说。
 4. 当所有 outputs 文件均已生成且自检通过，把 done 设为 true 且 actions 为空。
 5. 任何错误都通过下一轮的 actions 修正；不要尝试越权或捏造工具。
-6. 【大文件拆块写入】write_file / append_file 单次 content 不得超过 6000 字节（约 150 行代码）。
+6. 【大文件拆块写入】write_file / append_file 单次 content 必须低于工具文档展示的当前 Step 运行时 chunk limit。
    - 超过时请拆分：同一轮 actions 里先一个 write_file 写首段（import + 顶层常量 + 第一个函数/类），
      紧跟多个 append_file 逐段追加（按函数/类边界切块，每段收尾保留换行）。
+   - 复杂工程优先拆成多个内聚模块/文件，并用独立 CODE/TEST/REFACTOR Step 增量推进，不要写一个巨型万能文件。
    - 拆分必须保证拼接后仓 Python 语法合法；严禁在函数体中间拆断。
    - 对已存在文件的局部修改使用 replace_in_file / apply_patch，不要重复覆盖整个文件。`;
 
-const TYPESCRIPT_PLANNER_SYSTEM = `你是 TOAA 系统的 Planner。你的任务是把用户的自然语言需求"编译"成一个严格的 V 模型 Step 计划。
+const TYPESCRIPT_PLANNER_SYSTEM = `你是 XCompiler 系统的 Planner。你的任务是把用户的自然语言需求"编译"成一个严格的 V 模型 Step 计划。
 
 输出语言：仅 TypeScript / Node.js（plan.language 固定为 "typescript"）。
 
@@ -148,37 +166,50 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
 | REFACTOR     | \`docs/04-refactor.md\`     |
 | DELIVERY     | \`docs/05-delivery.md\`     |
 
-> 项目顶层背景文件 \`docs/topic.md\` 由 toaa c 在澄清门后自动写入，作为 V 模型的唯一需求输入；任何 Step 都不得把 \`topic.md\` 放进 outputs。
+> 项目顶层背景文件 \`docs/topic.md\` 由 xcompiler build 在澄清门后自动写入，作为 V 模型的唯一需求输入；任何 Step 都不得把 \`topic.md\` 放进 outputs。
+
+**交付文档包（强制）**：每个 DELIVERY Step 必须输出 \`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`；当 \`projectType\` 为 \`library\` 或 \`mixed\` 时，还必须输出 \`docs/api-guide.md\`。面向用户的文档必须遵循当前 i18n 语言；代码标识符、API 名称、命令和文件路径保持原文。
+
+**宏 Step 拆分（强制）**：CODE / TEST / DEBUG / REFACTOR 是可执行的大 Step。内部工作拆分写入每个 Step 的 \`subTasks\`，每个 Step 下最多 2 级子任务；不要为了展示内部细节把一个执行阶段拆成大量可执行 Step。
 
 强制规则：
 1. 必须返回纯 JSON，符合给定 schema，禁止任何解释性文字或 Markdown 代码块。
-2. **必须输出完整 V 模型骨架，至少 7 个 Step**：1 个 REQUIREMENT、1 个 ARCH、1 个 TASK、1 个或多个 CODE、1 个或多个 TEST、1 个 REFACTOR、1 个 DELIVERY。**绝不允许只输出前 1-2 个 Step 后停止**——若 token 预算紧张，请压缩每个 Step 的 description / systemPrompt 长度，但绝不能省略后续阶段。残缺骨架（缺 CODE / DELIVERY 等）会被 validate 层直接拒绝并触发整盘重生成。
+2. **必须输出完整 V 模型宏 Step 计划，覆盖必需阶段**：REQUIREMENT、ARCH、TASK、CODE、TEST、REFACTOR、DELIVERY。按项目形态选择最少且足够的可执行宏 Step；通常 1 个 CODE 和 1 个 TEST 宏 Step 即可，只有存在真实执行边界时才增加额外宏 Step。DEBUG 仅在需要显式诊断/修复工作时作为宏 Step 出现；运行时失败由失败 Step 的 Debugger 重试处理。**绝不允许只输出前 1-2 个 Step 后停止**——若 token 预算紧张，请压缩每个 Step 的 description / systemPrompt 长度，但绝不能省略后续阶段。残缺骨架（缺 CODE / DELIVERY 等）会被 validate 层直接拒绝并触发整盘重生成。
 3. ARCH 必须产出 \`docs/02-architecture.md\`。**必须且只能有一个 ARCH Step 输出 \`package.json\`**，并由它撰写 scripts / dependencies / devDependencies。根目录的 \`tsconfig.json\` 也可以作为 ARCH 产物。任何 Step 都不要输出 \`requirements.txt\`。
 4. **每个 CODE Step 必须至少有一个 TEST Step (直接或间接) 依赖它**。要么为每个 CODE Step 单独配一个 TEST Step（dependsOn 包含该 CODE Step），要么用一个汇总 TEST Step 把全部 CODE Step 列入其 dependsOn。绝不允许出现"只有 CODE 没有 TEST"或 TEST Step 仅覆盖部分 CODE Step 的情况——会被 plan lint S004/S005 直接拒绝。
-5. dependsOn 不允许出现环；阶段顺序：REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY。
+5. dependsOn 不允许出现环；阶段顺序：REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY。
 6. 同一 outputs 路径全局唯一；唯一例外：REFACTOR / DEBUG 步骤可重声明其依赖链上已产出的文件 (视作"修改")。
 7. id 形如 S001、S002、依次递增。
 8. role 只能是 Planner / Architect / Coder / Tester / Debugger 之一。
 9. tools 是字符串数组 (白名单)，可用原子工具或 "skill:patcher" / "skill:tester" / "skill:debugger" 等 Skill引用。
 10. acceptance 用一句中文写明可验证的完成标准。
-11. **阶段纯度**：REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY 的 outputs 不得包含 \`src/**/*.ts\`、\`src/**/*.tsx\`、\`tests/**/*.ts\`，只允许 docs/**/*.md；其中 ARCH 如有需要可额外输出 \`package.json\` / \`tsconfig.json\`。任何阶段都不要在 outputs 里出现 \`requirements.txt\` 或 \`docs/topic.md\`。**TEST Step 的 outputs 必须为已存在的测试文件（如 \`tests/foo.test.ts\`）；如果该 Step 仅"运行测试"而不新增测试文件，outputs 可为空数组（运行期 TEST gate 会自动跑 Vitest）。**
-12. **提示词沉淀**：每个 Step 必须携带 systemPrompt 字段 (至少 20 字符)，明确限定本 Step 的范围 / 输入 / 产出 / 验收 / 禁令。该 systemPrompt 会被 toaa_run 拼接到每个 Step 的专属 system prompt 中，作为唯一上下文源，防止 LLM 发散。
+11. **阶段纯度**：REQUIREMENT / ARCH / TASK / DELIVERY 的 outputs 不得包含 \`src/**/*.ts\`、\`src/**/*.tsx\`、\`tests/**/*.ts\`，只允许 docs/**/*.md；其中 ARCH 如有需要可额外输出 \`package.json\` / \`tsconfig.json\`。REFACTOR 是唯一例外，可重声明依赖链上已有的 src/tests 文件作为行为不变重构目标，并必须同时输出 \`docs/04-refactor.md\`。任何阶段都不要在 outputs 里出现 \`requirements.txt\` 或 \`docs/topic.md\`。**TEST Step 的 outputs 必须为测试文件（如 \`tests/foo.test.ts\`）；如果该 Step 仅"运行测试"而不新增测试文件，outputs 可为空数组（运行期 TEST gate 会自动跑 Vitest）。**
+12. **提示词沉淀**：每个 Step 必须携带 systemPrompt 字段 (至少 20 字符)，明确限定本 Step 的范围 / 输入 / 产出 / 验收 / 禁令。该 systemPrompt 会被 xcompiler_run 拼接到每个 Step 的专属 system prompt 中，作为唯一上下文源，防止 LLM 发散。
 13. **全局提示**：返回的 globalPrompt 是项目背景 / 全局约定 (一段文字)，会拼接到每个 Step。
-14. **dependencies**：是一份运行时 npm 包名数组，只写裸包名，不带版本范围。它只是 Planner 的辅助上下文；真正的依赖清单以 ARCH 产出的 \`package.json\` 为准。除非它们也是运行时依赖，否则不要把 \`vitest\` / \`typescript\` / \`tsx\` / \`@types/node\` 塞进这个字段。若不确定包名是否存在，宁可省略也不要编造。
-15. **TASK 阶段**：必须包含至少 1 个 TASK Step，outputs 含 \`docs/03-tasks.md\`，把 ARCH 的接口/模块切分为可单独执行的 CODE 任务清单（每条带 id / 描述 / 验收）。
-16. **REFACTOR 阶段**：必须包含至少 1 个 REFACTOR Step，dependsOn 至少含 1 个 TEST Step；要求"行为不变 — 必须先跑全量回归再写 docs/04-refactor.md"，outputs 含 \`docs/04-refactor.md\`。
-17. **DELIVERY 阶段**：DELIVERY Step outputs 必须含 \`docs/05-delivery.md\`，内容覆盖：README 摘要 / 入口命令 / 依赖列表 / 测试报告链接 / 已知边界。DELIVERY 不得引入新功能。
-18. **必须输出可独立运行的 TypeScript / Node.js 应用工程（不是仅函数库）**：CODE 阶段必须产出一个可直接执行的入口 \`src/main.ts\`，文件底部调用 \`main()\`，且 \`main()\` 至少能打印 help/usage/示例输出并在无额外参数时可运行。入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的运行命令**，例如 \`npx tsx src/main.ts --help\`。
-19. **入口 import 约定**：本地 TypeScript 模块之间必须使用带显式 \`.js\` 后缀的 ESM 相对导入（例如 \`import { parse } from './parser.js';\`，磁盘文件本身是 \`parser.ts\`）。禁止使用 Python 风格 import、\`from src.xxx\`、path hack。测试统一使用 Vitest，放在 \`tests/**/*.test.ts\`。
-20. **ARCH → CODE → TEST 结构化契约（复杂需求强制）**：返回顶层 \`architectureModules\` 数组，列出本次新增/修改的全部架构模块。每项包含 \`id\`（M001...）、\`name\`、\`responsibility\`、\`sourcePaths\`、\`testPaths\`、\`dependencies\`（依赖的模块 id）。
-    - 小型单函数/单脚本可以只列 1 个模块；横跨两个及以上关注面即为复杂需求，至少列 \`max(4, 关注面数量 + 2)\` 个模块（最多 12），必须包含入口/编排、核心领域和各独立关注面。
-    - 每个模块至少声明 1 个 \`src/**/*.ts\`/\`tsx\` 和 1 个 \`tests/**/*.test.ts\`；每个模块恰好映射到一个独立 CODE Step，不同模块不得共用 CODE Step。
+14. **projectType**：顶层 projectType 只能是 \`application\`、\`library\`、\`mixed\` 之一。必须根据澄清后的需求判定；不存在命令行 project-type 覆盖。SDK/软件包/API-only 模块用 \`library\`；同时交付可运行应用/CLI/服务和可复用公开 API 时用 \`mixed\`。
+15. **complexityAssessment**：顶层对象，包含 \`level=simple|moderate|complex\`、\`rationale\`、\`splitRecommended\`、\`userForcedPhaseSplit\`。这是 Planner 对任务复杂度的初步评估，必须按项目真实复杂度选择：simple = 1 个 implementation phase，moderate = 2 个 phase，complex = 3 个或更多 phase。moderate/complex 以及用户明确要求分阶段/里程碑/Phase1 时，\`splitRecommended=true\`；显式分阶段时 \`userForcedPhaseSplit=true\`。
+16. **implementationPhases**：顶层数组。始终包含 \`P1\` 且 \`status="current"\`；当前 V 模型 Steps 只实现 P1。phase 数量跟随复杂度：simple 默认只有 P1；moderate 至少 P1 current + P2 deferred；complex 至少 P1 current + P2/P3 deferred。P1 必须是最小可完整交付的核心功能。
+17. **dependencies**：是一份运行时 npm 包名数组，只写裸包名，不带版本范围。它只是 Planner 的辅助上下文；真正的依赖清单以 ARCH 产出的 \`package.json\` 为准。除非它们也是运行时依赖，否则不要把 \`vitest\` / \`typescript\` / \`tsx\` / \`@types/node\` 塞进这个字段。若不确定包名是否存在，宁可省略也不要编造。
+18. **TASK 阶段**：必须包含至少 1 个 TASK Step，outputs 含 \`docs/03-tasks.md\`，把 ARCH 的接口/模块切分为可执行宏 Step 与 Step.subTasks（每条带 id / 描述 / 验收）。
+19. **REFACTOR 阶段**：必须包含至少 1 个 REFACTOR Step，dependsOn 至少含 1 个 TEST Step；要求"行为不变 — 先跑全量回归 → 对依赖链已有 src/tests 做结构优化（如需要）→ 再跑全量回归 → 写 docs/04-refactor.md"，outputs 必须含 \`docs/04-refactor.md\`，也可以重声明被重构的 src/tests 文件。重构活动写入 \`subTasks\`；不得新增功能或删除测试。
+20. **DELIVERY 阶段**：DELIVERY Step outputs 必须含 \`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`；当 \`projectType\` 为 \`library\` 或 \`mixed\` 时，还必须含 \`docs/api-guide.md\`。\`README.md\` 是项目首页，QuickStart 提供可复制粘贴的安装/运行/测试命令，API Guide 说明公开函数/类/类型。当前中文 prompt 下文档必须用中文撰写；存在翻译变体时要包含语言元信息或切换链接。DELIVERY 不得引入新功能。
+21. **按 projectType 决定入口 / 公共 API**：当 \`projectType="application"\` 或 \`"mixed"\` 时，CODE 阶段必须产出一个可直接执行的入口 \`src/main.ts\`，文件底部调用 \`main()\`，且 \`main()\` 至少能打印 help/usage/示例输出并在无额外参数时可运行。入口必须复用 CODE 阶段产出的核心模块/类（不允许入口里再写一份"仿真版"逻辑）。DELIVERY 阶段的 \`docs/05-delivery.md\` 必须给出**可复制粘贴的 direct Node 命令**，例如 \`node src/main.ts --help\`；\`npm start\` 可以包装同一入口，但不能替代 direct Node 探测。当 \`projectType="library"\` 时，不要为了满足入口规则而虚构应用入口；应从 \`src/index.ts\` 或等价模块暴露稳定公共 API，测试 import/调用用例，并在 \`docs/api-guide.md\` 说明公开函数/类/类型。
+22. **入口 import 约定**：本地 TypeScript 源码模块之间必须使用带显式 \`.ts\` 后缀的 ESM 相对导入（例如 \`import { parse } from './parser.ts';\`）。ARCH 必须在 \`tsconfig.json\` 配置 \`allowImportingTsExtensions: true\`，且 build/lint 脚本使用 \`tsc --noEmit\`。生成的 TypeScript 必须兼容 Node 原生 type stripping：只使用可擦除类型语法，避免 enum、namespace、参数属性等需要转译的 TS 特性。禁止使用 Python 风格 import、\`from src.xxx\`、path hack。测试统一使用 Vitest，放在 \`tests/**/*.test.ts\`，导入本地源码也应使用 \`.ts\` 后缀。
+23. **ARCH → CODE → TEST 结构化契约（复杂需求强制）**：返回顶层 \`architectureModules\` 数组，列出本次新增/修改的全部架构模块。每项包含 \`id\`（M001...）、\`name\`、\`responsibility\`、\`sourcePaths\`、\`testPaths\`、\`dependencies\`（依赖的模块 id）。
+    - 模块数量必须根据当前需求、已有基线和 intent 自适应：小型单函数/单脚本可以只列 1 个模块；复杂需求必须包含入口/编排、核心领域、每个独立关注面，增量需求触及较大既有基线时还要拆出额外边界。不要瞄准固定数字；validator 会从 topic/baseline/intent 复算 exact minimum 并拒绝把多个职责压进万能 app/service 的计划。
+    - 每个模块至少声明 1 个 \`src/**/*.ts\`/\`tsx\` 和 1 个 \`tests/**/*.test.ts\`；CODE / TEST 宏 Step 可以覆盖多个模块，但必须在 \`subTasks\` 中列出模块级工作与验收。
     - testPaths 必须由依赖相应 CODE Step 的 TEST Step 输出。ARCH 文档逐项呈现模块契约，TASK 文档按模块生成独立任务；缺失映射会被 Plan 校验拒绝。
 
 输出 JSON 形如：
 {
   "requirementDigest": "string",
   "globalPrompt": "string (全局背景与约定)",
+  "projectType": "application | library | mixed",
+  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
+  "implementationPhases": [
+    { "id": "P1", "title": "核心功能", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
+    { "id": "P2", "title": "增强阶段", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
+  ],
   "dependencies": ["zod", "..."],
   "architectureModules": [
     {
@@ -201,6 +232,9 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
       "tools": ["write_file"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement.md"],
+      "subTasks": [
+        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.ts"], "subTasks": [] }
+      ],
       "dependsOn": [],
       "acceptance": "string",
       "maxRetries": 3
@@ -208,7 +242,7 @@ V 模型阶段：REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFAC
   ]
 }`;
 
-const TYPESCRIPT_EXECUTOR_SYSTEM = `你是 TOAA 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
+const TYPESCRIPT_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
 每一轮你必须返回严格 JSON：
 {
@@ -219,20 +253,22 @@ const TYPESCRIPT_EXECUTOR_SYSTEM = `你是 TOAA 的 Step Executor。你只能通
 
 规则：
 1. 仅可调用本 Step 授权的工具白名单。
-2. 写入文件必须落在本 Step 的 outputs 白名单内（其它路径会被拒绝）。
+2. 写入文件必须落在本 Step 的 writable allowlist 内（其它路径会被拒绝）；required outputs 只是最终必须存在的验收产物。
+   对 DELIVERY 文档产物，必须按当前 i18n 语言写完整声明的文档包：\`README.md\`、\`docs/quickstart.md\`、\`docs/05-delivery.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`。任何已声明文档缺失时不得设置 done=true。
 3. 生成代码必须符合 TypeScript / Node.js 最佳实践；API 要有类型，运行代码必须能直接执行。
-   - 【导入约定】src/ 下的本地模块使用带显式 ".js" 后缀的 ESM 相对导入，例如 \`import { x } from "./util.js";\`。禁止使用 Python 风格 import、\`from src.<module>\` 或任何 sys.path hack。
+   - 【导入约定】src/ 下的本地源码模块使用带显式 ".ts" 后缀的 ESM 相对导入，例如 \`import { x } from "./util.ts";\`。代码必须兼容 Node 原生 TypeScript type stripping：只使用可擦除类型语法，避免 enum、namespace、参数属性等需要转译的 TS 特性。禁止使用 Python 风格 import、\`from src.<module>\` 或任何 sys.path hack。
    - 【测试约定】测试使用 Vitest：\`import { describe, it, expect } from "vitest";\`，测试文件放在 \`tests/**/*.test.ts\`。
    - 【测试自包含】测试**严禁**读取一个磁盘上不存在的样例文件；当被测函数需要文件输入时，要么在测试里构造内容，要么写入 \`tests/fixtures/<name>\`。
    - 【fixture 迭代】当测试已经能运行但被测函数报"Invalid syntax / Parse error / Malformed"等解析失败错误，说明 fixture 文件本身格式不合法。必须 read_file 看清当前 fixture 内容 → write_file 按目标格式的最小合法样例整文件重写 → 再 run_tests。严禁因为解析错误去弱化实现或断言。
 4. 当所有 outputs 文件均已生成且自检通过，把 done 设为 true 且 actions 为空。
 5. 任何错误都通过下一轮的 actions 修正；不要尝试越权或捏造工具。
-6. 【大文件拆块写入】write_file / append_file 单次 content 不得超过 6000 字节。
+6. 【大文件拆块写入】write_file / append_file 单次 content 必须低于工具文档展示的当前 Step 运行时 chunk limit。
    - 超过时请拆分：同一轮 actions 里先一个 write_file 写首段（import + 顶层常量 + 第一个函数/类），紧跟多个 append_file 逐段追加。
+   - 复杂工程优先拆成多个内聚模块/文件，并用独立 CODE/TEST/REFACTOR Step 增量推进，不要写一个巨型万能文件。
    - 拆分必须保证拼接后 TypeScript 语法合法；严禁在函数体中间拆断。
    - 对已存在文件的局部修改使用 replace_in_file / apply_patch，不要重复覆盖整个文件。
 7. package.json 是依赖清单。新增 npm 包要用 add_dependency，禁止去写 requirements.txt。
-8. run_program 会通过 \`npx tsx\` 运行入口，run_tests 会通过 \`npm test\` 跑 Vitest。`;
+8. run_program 会通过 \`npx tsx\` 运行入口，run_tests 会通过 \`npm test\` 跑 Vitest，最终交付门禁还会验证 direct Node 入口命令。`;
 
 function buildPlannerSystem(profile: LanguageProfile): string {
   return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM) + profile.plannerPromptOverride;
@@ -246,7 +282,7 @@ const messages: Messages = {
   llm: {
     coderDebuggerSameModel: (model, coderProvider, debuggerProvider) =>
       `模型配置建议：Coder（${coderProvider}）和 Debugger（${debuggerProvider}）当前都使用 ${model}。建议配置不同模型，让调试阶段获得独立的推理路径。`,
-    invalidBaseUrl: (raw, fallback) => `[toaa] base_url 无效（${raw}），回退到 ${fallback}`,
+    invalidBaseUrl: (raw, fallback) => `[xcompiler] base_url 无效（${raw}），回退到 ${fallback}`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} 输出验证失败，切换到下一个`,
     providerCallFailed: (role, model) => `[${role}] provider ${model} 调用失败，切换到下一个`,
     scoreReadFailed: (p, message) => `读取 ${p} 失败：${message}`,
@@ -255,16 +291,16 @@ const messages: Messages = {
     preflightOllamaReachable: (baseUrl, models) => `预检：Ollama ${baseUrl} 可达，发现 ${models} 个模型`,
     preflightOllamaUnreachable: (baseUrl, message) => `预检：Ollama ${baseUrl} 不可达：${message}`,
     preflightAutoAdded: (providers, roles) => `预检：自动增加 ${providers} 个 provider，覆盖角色 [${roles}]`,
-    scoreFileHeader: '# TOAA LLM provider 评分快照（由 ScoreStore 自动维护，请勿手工编辑）',
+    scoreFileHeader: '# XCompiler LLM provider 评分快照（由 ScoreStore 自动维护，请勿手工编辑）',
     scoreFileSemantics: '# 评分语义：默认 1.0；失败 -0.5（下限 0=禁用）；成功 +0.1（上限 10）。',
   },
   system: {
-    configEnvMissing: (names) => `[toaa] 配置中的环境变量未设置，已替换为空字符串：${names}`,
+    configEnvMissing: (names) => `[xcompiler] 配置中的环境变量未设置，已替换为空字符串：${names}`,
     unhandledError: (message) => `未处理错误：${message}`,
     unsupportedPypiOnlyNetwork:
       '拒绝 network=pypi-only：Docker 本身无法可靠执行“仅 PyPI”域名白名单。需要隔离请使用 network=off；明确允许任意出站下载时使用 network=download-only。',
     dockerInsideContainerUnsupported:
-      '检测到 TOAA 运行在容器内，sandbox=docker 可能导致 bind-mount 路径及 docker.sock 权限错位，因此不受支持。请使用 agent.sandbox=subprocess、改在宿主机运行，或仅在受控环境设置 TOAA_IN_CONTAINER=0。',
+      '检测到 XCompiler 运行在容器内，sandbox=docker 可能导致 bind-mount 路径及 docker.sock 权限错位，因此不受支持。请使用 agent.sandbox=subprocess、改在宿主机运行，或仅在受控环境设置 XC_IN_CONTAINER=0。',
     firejailUnsupported: '尚未实现 sandbox=firejail，请使用 subprocess 或 docker。',
     smokeHeader: (baseUrl) => `正在对 ${baseUrl} 执行流式冒烟测试`,
     smokeOk: (model, totalMs, firstTokenMs, chunks, preview) =>
@@ -275,21 +311,21 @@ const messages: Messages = {
     invalidId: (id) => `插件 ID“${id}”无效；仅允许小写字母、数字、点、连字符或下划线。`,
     duplicateId: (id) => `插件 ID 重复：${id}`,
     invalidVersion: (plugin, version) => `插件 ${plugin} 的版本不是有效 SemVer：${version}`,
-    invalidCoreVersion: (version) => `TOAA 核心版本不是有效 SemVer：${version}`,
-    apiVersionMismatch: (plugin, actual, expected) => `插件 ${plugin} 面向 Plugin API ${actual}，当前 TOAA 运行时要求 API ${expected}。`,
-    invalidMinimumVersion: (plugin, version) => `插件 ${plugin} 声明的最低 TOAA 版本无效：${version}`,
-    coreVersionTooOld: (plugin, minimum, actual) => `插件 ${plugin} 要求 TOAA >= ${minimum}，当前版本为 ${actual}。`,
+    invalidCoreVersion: (version) => `XCompiler 核心版本不是有效 SemVer：${version}`,
+    apiVersionMismatch: (plugin, actual, expected) => `插件 ${plugin} 面向 Plugin API ${actual}，当前 XCompiler 运行时要求 API ${expected}。`,
+    invalidMinimumVersion: (plugin, version) => `插件 ${plugin} 声明的最低 XCompiler 版本无效：${version}`,
+    coreVersionTooOld: (plugin, minimum, actual) => `插件 ${plugin} 要求 XCompiler >= ${minimum}，当前版本为 ${actual}。`,
     loaded: (plugin, version) => `插件 ${plugin}@${version} 已加载。`,
     extensionConflict: (plugin, kind, name) => `插件 ${plugin} 不能覆盖已有 ${kind} “${name}”。`,
     hookFailed: (plugin, stage, message) => `插件 ${plugin} 在 ${stage} 阶段执行失败：${message}`,
     manifestReadFailed: (path, message) => `无法读取插件清单 ${path}：${message}`,
     moduleLoadFailed: (plugin, path, message) => `无法从 ${path} 加载插件 ${plugin}：${message}`,
-    exportInvalid: (plugin, exportName) => `插件 ${plugin} 的导出 ${exportName} 不是有效 TOAA 插件`,
+    exportInvalid: (plugin, exportName) => `插件 ${plugin} 的导出 ${exportName} 不是有效 XCompiler 插件`,
     manifestMismatch: (plugin) => `插件 ${plugin} 的运行时清单与预检清单不一致`,
   },
   audit: {
-    processLogTitle: '# TOAA 开发过程记录',
-    processLogPreamble: '> 由 TOAA 自动生成，记录 CLI 会话、用户输入、LLM 交互与执行动作，用于交付追踪。',
+    processLogTitle: '# XCompiler 开发过程记录',
+    processLogPreamble: '> 由 XCompiler 自动生成，记录 CLI 会话、用户输入、LLM 交互与执行动作，用于交付追踪。',
     sessionStart: (ts, command) => `## ▶ 会话 ${ts} — \`${command}\``,
     sessionEnd: (ts) => `### ◀ 会话结束 ${ts}`,
     eventSessionStart: (command) => `启动 ${command}`,
@@ -344,9 +380,11 @@ const messages: Messages = {
     command: (runtime, command) => `${runtime} ${command}`,
   },
   cli: {
-    rootDescription: 'TOAA — AI Software Factory CLI',
+    rootDescription: 'XCompiler — AI Software Factory CLI',
     compileDescription: '交互式编译需求为 plan.json（含强制人工确认）',
     runDescription: '执行已确认的 plan.json（支持分阶段运行：--phase / --from）',
+    loadDescription: '加载 XXX.xc 工程文件并继续当前 plan',
+    appendDescription: '在已有 XXX.xc 工程基础上追加新需求，并重新走澄清与 V 模型执行',
     lsDescription: '扫描 workspace 列出所有 plan.json 状态摘要',
     showDescription: '打印 Step 定义 / 状态 / 产物 / 最近审计',
     optWorkspace: 'workspace 目录（同 --output，默认为当前目录）',
@@ -356,7 +394,7 @@ const messages: Messages = {
     optTopic: '直接使用已澄清的 topic.md 作为输入：跳过 intake / clarify / Addenda / Gate 1，直接进入 decompose',
     optPlanOut: '指定 plan.json 输出文件（默认 <workspace>/plan.json）',
     optBaseDir: '项目输出根目录（在其下创建 <name> 子目录）',
-    optName: '项目名（默认 toaa-<时间戳>）',
+    optName: '项目名（默认 xcompiler-<时间戳>）',
     optYes: '跳过人工确认（仅在 -i / -t 提供时有意义）',
     optForce: '强制重新生成：覆写 workspace 锁、忽略旧 plan.json',
     optDryRun: '仅打印拓扑顺序，不执行',
@@ -369,11 +407,13 @@ const messages: Messages = {
     optLang: 'UI / 提示词语言：EN | CN（ISO 3166-1 Alpha-2）',
     optIntent: '计划意图：greenfield | feature | refactor | self',
     optBaselinePlan: '已有基线 plan.json 路径（默认 <workspace>/plan.json）',
+    optProjectFile: 'XXX.xc 工程文件路径（默认 <workspace>/<name>.xc）',
     argPlan: 'plan.json 路径（默认 = <workspace>/plan.json）',
+    argProjectFile: 'XXX.xc 工程文件',
     argStepId: 'Step ID，如 S001',
     evolveDescription: '在现有 workspace 基础上生成并执行增量 feature/refactor 计划',
-    bootstrapDescription: '在隔离 Git worktree 中构建并验证下一代 TOAA',
-    optRepository: '要执行自举的 TOAA Git 仓库（默认当前目录）',
+    bootstrapDescription: '在隔离 Git worktree 中构建并验证下一代 XCompiler',
+    optRepository: '要执行自举的 XCompiler Git 仓库（默认当前目录）',
     optPromote: '全部质量门通过后，快进合并到当前分支',
     optCleanup: '写入报告后删除隔离 worktree（保留候选分支）',
     optDockerQualification: '使用尚处于实验阶段的 Docker 环境执行候选质量门',
@@ -416,7 +456,7 @@ const messages: Messages = {
     candidateMoved: (expected, actual) => `质量门之后候选提交发生漂移（预期 ${expected}，实际 ${actual}）。`,
     candidateNotBasedOnBase: (candidate, base) => `候选提交 ${candidate} 不是自举基线 ${base} 的后代。`,
     promotionVerificationFailed: (expected, actual) => `晋级后 HEAD 校验失败（预期 ${expected}，实际 ${actual}）。`,
-    reportTitle: 'TOAA 功能自举报告',
+    reportTitle: 'XCompiler 功能自举报告',
     reportNone: '（无）',
     reportNextQualified: (repository, candidateCommit) => `git -C "${repository}" merge --ff-only "${candidateCommit}"`,
     reportNextPromoted: '使用已晋级版本执行下一轮功能自举。',
@@ -441,6 +481,7 @@ const messages: Messages = {
     lintIssue: (id, message) => ` - [${id}] ${message}`,
     planPreviewTruncated: '…（已截断，完整内容见 docs/plan.md）',
     auditPlanPersisted: (p) => `plan.json 已写入：${p}`,
+    projectFileWritten: (p) => `工程文件已更新：${p}`,
     nextCommand: (command) => `  下一步：${command}`,
     topicEmptyExit: '--topic 文件为空，已退出。',
     topicLoaded: (p) => `已加载 topic：${p}（跳过 intake / clarify / Gate 1）`,
@@ -456,7 +497,7 @@ const messages: Messages = {
     decomposeFail: 'Planner 拆解失败',
     plannerInvalidPlan: 'Planner 无法生成有效 plan：',
     plannerInvalidPlanHint1: '  常见原因：所有 LLM provider 都返回了非法/截断 JSON（如 token loop）。',
-    plannerInvalidPlanHint2: '  排查：检查 .toaa/audit.jsonl 中的 llm.error / planner.thought 原文。',
+    plannerInvalidPlanHint2: '  排查：检查 .xcompiler/audit.jsonl 中的 llm.error / planner.thought 原文。',
     decomposeSucceed: (n) => `已生成 ${n} 个 Step`,
     schemaFail: 'Plan schema 校验失败：',
     schemaInvalidSavedAt: (p) => `  完整 plan 已落盘：${p}`,
@@ -494,6 +535,7 @@ const messages: Messages = {
     stepNotFound: (id) => `Step ${id} 未找到`,
     secDescription: '— description —',
     secAcceptance: '— acceptance —',
+    secSubtasks: '— subtasks —',
     secSystemPrompt: '— systemPrompt —',
     secOutputs: '— outputs —',
     secRecentAudit: (n) => `— recent audit (${n}) —`,
@@ -523,6 +565,8 @@ const messages: Messages = {
     projectAuditSummary: (errors, warnings) => `项目审计：${errors} 个错误，${warnings} 个警告`,
     projectMemoryRefreshFailed: (message) => `项目记忆刷新失败：${message}`,
     projectAuditCheck: (name, summary) => `[审计:${name}] ${summary}`,
+    auditDocPresent: (p) => `${p} 存在`,
+    auditDocMissing: (p) => `缺少 ${p}`,
     auditDeliveryDocPresent: '交付文档存在',
     auditDeliveryDocMissing: '缺少 docs/05-delivery.md',
     auditTestFilesFound: (count) => `发现 ${count} 个有效测试文件`,
@@ -536,10 +580,16 @@ const messages: Messages = {
       `${name} 失败（exit=${exitCode}${timedOut ? '，超时' : ''}）`,
   },
   engine: {
-    spinSandboxBuild: '构建沙盒（pip install -r requirements.txt）…',
+    spinSandboxBuild: (profile) =>
+      profile.id === 'typescript'
+        ? `构建沙盒（npm install，${profile.manifestFile}）…`
+        : `构建沙盒（pip install -r ${profile.manifestFile}）…`,
     sandboxReady: (r) => `沙盒就绪：${r}`,
     stepSkipDone: (id, phase) => `  ↪ ${id} ${phase} 已完成，跳过`,
-    spinSandboxRebuild: (id) => `Step ${id} 写入 requirements.txt，重建沙盒…`,
+    spinSandboxRebuild: (id, profile) =>
+      profile.id === 'typescript'
+        ? `Step ${id} 写入 ${profile.manifestFile}，重建 npm 沙盒…`
+        : `Step ${id} 写入 ${profile.manifestFile}，重建 pip 沙盒…`,
     sandboxStatus: (r) => `沙盒：${r}`,
     autoFixedSrcImports: (n, files) => `  ⚠ auto-fixed sys.path bootstrap in ${n} 个入口文件：${files}`,
     debugResumeNotice: (id, n) => `  ↻ ${id} 检测到上次会话以 FAILED 结束（已累积 ${n} 次尝试），本次首轮直接进入 Debugger 模式。`,
@@ -560,7 +610,7 @@ const messages: Messages = {
     reasonLabel: 'reason: ',
     failureLogHeader: '--- failure log (tail, max 80 lines) ---',
     fixSuggestionsHeader: '--- 修复建议（calibration） ---',
-    auditHint: (id) => `  审计: 查看 .toaa/audit.jsonl 与 .toaa/llm-stream/${id}-*.txt 获取完整原始流`,
+    auditHint: (id) => `  审计: 查看 .xcompiler/audit.jsonl 与 .xcompiler/llm-stream/${id}-*.txt 获取完整原始流`,
     spinStepRunning: (id, phase, title) => `▶ ${id} ${phase} ${title}`,
     noFailureLog: '（未捕获日志）',
     suggestionLine: (index, code, hint) => `  ${index}. [${code}] ${hint}`,
@@ -576,6 +626,10 @@ const messages: Messages = {
     missingPythonEntrypoint: '缺少 Python 入口：需要 src/main.py 或 src/<package>/__main__.py',
     missingTypeScriptEntrypoint:
       '缺少 TypeScript 入口：需要 package.json start/bin 或 src/main.ts、src/index.ts、src/main.tsx 之一',
+    invalidPythonEntrypointSource: (path) =>
+      `Python 入口源码无效：${path} 必须是真实 CLI 入口，至少包含 def main(...)、argparse.ArgumentParser 或 if __name__ == "__main__" 这类入口结构；仅 import/comment 的占位文件不能算可运行应用。`,
+    entrypointHelpOutputMissing: (command) =>
+      `入口探测 \`${command}\` 虽然退出码为 0，但没有输出有意义的 help/usage 文本；必须实现 --help，不能靠空脚本自然退出过关。`,
     reasonLine: (reason) => `原因：${reason}`,
     roundsLine: (rounds) => `轮次：${rounds}`,
     commandLine: (command) => `命令：${command}`,
@@ -593,15 +647,16 @@ const messages: Messages = {
     deliveryFixHints: (language) => language === 'typescript'
       ? [
           '修复方向（按优先级）：',
-          '  1. 若为模块解析或 ERR_MODULE_NOT_FOUND，使用带显式 .js 后缀的相对 ESM import。',
+          '  1. 若 TypeScript 源码出现模块解析或 ERR_MODULE_NOT_FOUND，使用带显式 .ts 后缀的相对 ESM import。',
           '  2. 若为 --help 或未知选项，main() 必须支持 --help 并以 0 退出。',
           '  3. 若为应用异常，修复实现并保持入口轻量。',
         ]
       : [
           '修复方向（按优先级）：',
           '  1. 若为 src 相关 ModuleNotFoundError，加入 planner #19 的 sys.path 自举或移除 import 的 src. 前缀。',
-          '  2. 若为 argparse 错误，main() 必须无需其他必填参数即可支持 --help 并以 0 退出。',
-          '  3. 若为业务异常，修复实现；入口只负责参数解析与调用。',
+          '  2. main() 必须是真实 CLI 入口：解析 --help、调用项目模块、打印有意义输出，并用 if __name__ == "__main__": main() 启动。',
+          '  3. 若为 argparse 错误，main() 必须无需其他必填参数即可支持 --help 并以 0 退出。',
+          '  4. 若为业务异常，修复实现；入口只负责参数解析与调用。',
         ],
   },
   render: {
@@ -613,12 +668,12 @@ const messages: Messages = {
   prompts: {
     plannerSystem: (p) => buildPlannerSystem(p),
     plannerSelfMode: `自举模式覆盖规则（优先级高于上方与之冲突的 greenfield 规则）：
-- 目标是现有 TOAA 仓库。除非需求明确要求修改，否则必须保留当前 package.json、tsconfig、bin、CLI 入口、模块结构、公共导出和设计文档。
+- 目标是现有 XCompiler 仓库。除非需求明确要求修改，否则必须保留当前 package.json、tsconfig、bin、CLI 入口、模块结构、公共导出和设计文档。
 - 不得为了满足新建工程入口约定而创建 src/main.ts；必须复用现有 package.json 声明的入口。
 - 除非本次变更确实需要修改，否则 ARCH outputs 不得包含 package.json 或 tsconfig.json。
 - 每个 CODE/REFACTOR 产物必须严格限定在本次增量范围，禁止整体重建或替换仓库。
 - 将稳定宿主视为 N 代、隔离 worktree 中的候选版本视为 N+1 代；禁止设计进程内热替换。`,
-    plannerClarifySystem: `你是 TOAA V 模型的需求分析师。你的职责不是复述 topic，而是发现会改变功能设计、验收结果或架构边界的未决事项。
+    plannerClarifySystem: `你是 XCompiler V 模型的需求分析师。你的职责不是复述 topic，而是发现会改变功能设计、验收结果或架构边界的未决事项。
 只返回严格 JSON。问题必须可由业务方直接作答、一次只确认一个决策，避免空泛的“还有什么要求”或技术栈选型问题。`,
     plannerClarify: (raw, opts = {}) =>
       `用户的原始需求如下：
@@ -637,10 +692,14 @@ ${raw}
 - 至少 1 个 boundary：明确本期必须做、明确不做、外部系统责任边界或兼容范围。
 - 至少 1 个 quality：询问可量化的性能、容量、并发、时延、准确性、可靠性或安全指标；不要只问“性能有什么要求”。
 - 至少 1 个 extensibility：询问最可能新增的业务能力、扩展维度或需要稳定保留的接口，不要泛问“是否需要扩展性”。
+- 如果交付形态不明确，必须包含 1 个 boundary 问题，确认本项目应是 API library/SDK/软件包、可运行应用/CLI/服务，还是二者兼具的 mixed 交付。
 - 按阻塞程度排序：先问会改变核心功能/数据模型的问题，再问范围与质量，最后问未来扩展。
 - 一题只包含一个主要决策，给出必要的业务选项或示例，禁止把多个无关问题用“以及/或者”拼成一题。
+${opts.projectShapeAmbiguous
+  ? '- 本 topic 必问：明确确认 API library / 可运行应用 / mixed 交付边界。\n'
+  : ''}
 
-【硬约束】实现技术栈已经由 TOAA 配置 / 现有工程基线固定，不要重新询问语言、运行时、包管理器这类问题。
+【硬约束】实现技术栈已经由 XCompiler 配置 / 现有工程基线固定，不要重新询问语言、运行时、包管理器这类问题。
 **严禁**提出以下类型的问题：
   - "希望用什么编程语言 / 框架 / 运行时实现？"
   - "需要哪种测试框架 / 构建工具 / 包管理器？"
@@ -670,7 +729,8 @@ ${opts.baseline || '（缺少基线摘要）'}
 `
   : ''}规划深度约束：
 - 除非需求明确只是一个很小的单函数 / 单脚本 / 小工具，否则不要把方案压缩成“一个源码文件 + 一个测试文件”的最小实现。
-- 如果需求横跨多个关注点（领域逻辑、API/CLI 接口、持久化、外部集成、流程编排、测试），必须在计划里体现为多个模块和多个 CODE Step。
+- 如果需求横跨多个关注点（领域逻辑、API/CLI 接口、持久化、外部集成、流程编排、测试），必须在计划里体现为多个架构模块，并在 CODE/TEST 宏 Step 的 subTasks 下分解模块级工作。
+- 在 plan 中评估项目复杂度，并按评估结果确定 implementationPhases 数量：simple => 只有 P1；moderate => P1 current + 至少 P2 deferred；complex => P1 current + 至少 P2/P3 deferred。若用户明确要求分阶段/里程碑，至少使用 P1+P2，并设置 userForcedPhaseSplit=true。
 - 请通过 ARCH / TASK Step 明确模块边界、职责划分和后续可扩展点，让后续增量开发可以持续追加，而不是每次重写。
 - 如果基线里已经存在相关文件，优先在原模块上扩展/重构，不要新造一套行为重复的影子实现。
 
@@ -678,7 +738,9 @@ ${opts.baseline || '（缺少基线摘要）'}
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\n正处于 DEBUG 重试模式。上一轮失败原因: ${reason}\n` +
+      'DEBUG 可以修改当前 allowedWrites 内的上游源码与测试文件；若失败暴露的是实现、契约或下游调用不一致，必须修真实缺陷，禁止通过削弱断言、跳过测试、删除失败用例或只迎合错误测试来过关。' +
       '请包含 read_file/code_search 先定位问题，再以 apply_patch / replace_in_file / add_dependency 作最小修改，最后 run_tests 验证。' +
+      '如果失败日志显示网络/API 调用失败，不允许只停留在探测接口：最多连续执行 2 次 http_fetch 探测；HTTP 2xx 但 body 为空或格式不可用不算可用接口；随后必须 patch 真实集成代码，并用 run_program 和 run_tests 验证。入口仍输出网络/API 失败时不得 done=true。' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
     executorStepBlock: (sp: string) =>
@@ -690,7 +752,7 @@ ${opts.baseline || '（缺少基线摘要）'}
   },
   skills: {
     patcher: '通过 apply_patch / replace_in_file 对已有文件做小改动，禁止整文件覆盖。',
-    author: '通过 write_file 创建新文件；优先放在 outputs 白名单内。',
+    author: '通过 write_file 创建新文件；优先放在当前 Step writable allowlist 内。',
     tester:
       '编写并运行 pytest 测试，验证函数行为；失败时通过 analyze_error 解析。' +
       '【fixture 自包含】测试**严禁**直接 open() 磁盘上不存在的样例文件（如 "test.dbc"）；' +
@@ -703,13 +765,13 @@ ${opts.baseline || '（缺少基线摘要）'}
       '严禁去改被测模块或断言。',
     dep_resolver: '当出现 ModuleNotFoundError 时，用 add_dependency 写回 requirements.txt 并重建沙盒。',
     debugger:
-      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file 修复 → 再次 run_tests。每次只做最小修改。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即改用 read_file + write_file 整文件重写（≤ 6000 字节可直接覆盖），不要反复猜测 find 字符串。【禁止 no-op】replace_in_file 的 find 与 replace 必须不同——若你只是想"确认"某段代码，请用 read_file，不要提交相同字符串的替换。',
+      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file 修复 → 再次 run_tests。每次只做最小修改。【网络/API 失败】定位失败 URL 后，只允许少量探测替代 API，随后必须 patch 源码并用 run_program 证明入口不再输出 API 失败。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即 read_file，再用 patch 或在当前运行时 chunk limit 内整文件重写，不要反复猜测 find 字符串。【禁止 no-op】replace_in_file 的 find 与 replace 必须不同——若你只是想"确认"某段代码，请用 read_file，不要提交相同字符串的替换。',
     refactorer: '重构必须保证行为不变；先跑回归测试 → 修改 → 再跑回归测试。',
   },
   doctor: {
     cliDescription: '检查 config / LLM / sandbox / skills 是否就绪',
     optStrict: '把 warning 也视为失败（任一 warn 即非零退出）',
-    header: 'TOAA 启动环境自检',
+    header: 'XCompiler 启动环境自检',
     sectionConfig: '[配置]',
     sectionLLM: '[LLM]',
     sectionSandbox: '[沙盒]',
@@ -754,7 +816,7 @@ ${opts.baseline || '（缺少基线摘要）'}
     sandboxDockerMissing: (bin) => `PATH 上找不到 docker 二进制 "${bin}"`,
     sandboxDockerOk: (version) => `docker OK（${version}）`,
     sandboxDockerDaemonDown: (msg) => `docker daemon 不可达：${msg}`,
-    sandboxInContainerWarn: '检测到 TOAA 运行在容器内，此模式不支持 sandbox=docker（请使用 subprocess）。',
+    sandboxInContainerWarn: '检测到 XCompiler 运行在容器内，此模式不支持 sandbox=docker（请使用 subprocess）。',
     skillToolMissing: (skill, tool) => `skill "${skill}" 引用了未注册的工具 "${tool}"`,
     skillOk: (n, tools) => `已注册 ${n} 个 skill，对应 ${tools} 个底层工具`,
   },

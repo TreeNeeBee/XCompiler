@@ -1,4 +1,4 @@
-# TOAA (The One Above All) — AI Software Factory 设计
+# XCompiler (Extensible Compiler) — AI Software Factory 设计
 
 > 多 LLM 协同 + V 模型驱动 + 全流程自动化的 AI 软件开发流水线
 
@@ -9,7 +9,7 @@
 - [1. 目标与定位](#1-目标与定位)
 - [2. 设计原则](#2-设计原则)
 - [3. 整体架构](#3-整体架构)
-- [4. 核心命令：`toaa_c` 与 `toaa_run`](#4-核心命令toaa_c-与-toaa_run)
+- [4. 核心命令：`xcompiler_build` 与 `xcompiler_run`](#4-核心命令xcompiler_build-与-xcompiler_run)
 - [5. V 模型阶段与产物](#5-v-模型阶段与产物)
 - [6. LLM 与角色](#6-llm-与角色)
 - [7. Tool 与 Skill](#7-tool-与-skill)
@@ -39,9 +39,9 @@
 ## 2. 设计原则
 
 - **工程优先**：可执行、可验证、可交付。
-- **编译 / 执行分离**：`toaa_c` 把需求"编译"为计划；`toaa_run` 按计划执行产出代码。计划是可审阅、可缓存的中间产物。
-- **交互纯度**：**所有与用户的交互、澄清、确认都发生在 `toaa_c` 阶段**；`toaa_run` 是纯后台进程，**一旦启动即不再与用户交互**，仅读 `plan.json` 驱动 LLM 与 Tool。
-- **占位唯一**：`toaa_c` 为每个 Step 生成一段**专属系统提示词 `systemPrompt`**，明确该 Step 的开发内容 / 输入 / 产出 / 验收，以防止 LLM 发散。
+- **编译 / 执行分离**：`xcompiler_build` 把需求"编译"为计划；`xcompiler_run` 按计划执行产出代码。计划是可审阅、可缓存的中间产物。
+- **交互纯度**：**所有与用户的交互、澄清、确认都发生在 `xcompiler_build` 阶段**；`xcompiler_run` 是纯后台进程，**一旦启动即不再与用户交互**，仅读 `plan.json` 驱动 LLM 与 Tool。
+- **占位唯一**：`xcompiler_build` 为每个 Step 生成一段**专属系统提示词 `systemPrompt`**，明确该 Step 的开发内容 / 输入 / 产出 / 验收，以防止 LLM 发散。
 - **阶段纯度**：需求阶段与系统设计阶段产物中禁止出现实现代码，仅允许出现接口定义、数据结构、依赖声明。
 - **可追溯**：全程 Markdown 文档 + Step 级审计日志。
 - **可扩展**：LLM、Tool、Skill、语言均可插拔。
@@ -51,7 +51,7 @@
 ## 3. 整体架构
 
 ```text
-CLI (toaa_c / toaa_run)
+CLI (xcompiler_build / xcompiler_run)
         │
         ▼
 Agent Orchestrator（状态机）
@@ -80,16 +80,16 @@ V 模型流程：
 
 ---
 
-## 4. 核心命令：`toaa_c` 与 `toaa_run`
+## 4. 核心命令：`xcompiler_build` 与 `xcompiler_run`
 
 | 命令         | 角色  | 输入            | 输出                       | 类比         |
 | ---------- | --- | ------------- | ------------------------ | ---------- |
-| `toaa_c`   | 编译器 | 用户自然语言需求      | `plan.json`（V 模型步骤计划）    | `gcc`      |
-| `toaa_run` | 执行器 | `plan.json`   | `src/`、`tests/`、`docs/` | `./a.out`  |
+| `xcompiler_build`   | 编译器 | 用户自然语言需求      | `plan.json`（V 模型步骤计划）    | `gcc`      |
+| `xcompiler_run` | 执行器 | `plan.json`   | `src/`、`tests/`、`docs/` | `./a.out`  |
 
-二者通过 `plan.json` 解耦：`toaa_c` 不写业务代码，`toaa_run` 不再追问需求。
+二者通过 `plan.json` 解耦：`xcompiler_build` 不写业务代码，`xcompiler_run` 不再追问需求。
 
-### 4.1 `toaa_c`：需求 → 计划
+### 4.1 `xcompiler_build`：需求 → 计划
 
 处理流程：
 
@@ -120,9 +120,9 @@ export interface Step {
   title: string;
   description: string;           // 喂给 LLM 的详细说明
   /**
-   * 本 Step 专属的系统提示词，由 toaa_c 生成。
+   * 本 Step 专属的系统提示词，由 xcompiler_build 生成。
    * 要求明确限定本 Step 的范围、入参、产出、禁止事项，
-   * toaa_run 会把它拼接到 Executor 的通用 system prompt 后，以防止 LLM 发散。
+   * xcompiler_run 会把它拼接到 Executor 的通用 system prompt 后，以防止 LLM 发散。
    */
   systemPrompt: string;
   role: 'Planner' | 'Architect' | 'Coder' | 'Tester' | 'Debugger';
@@ -131,7 +131,7 @@ export interface Step {
   outputs: string[];             // 预期产出路径
   dependsOn: string[];           // 前置 Step id
   acceptance: string;            // 验收标准
-  status: StepStatus;            // 由 toaa_run 写回
+  status: StepStatus;            // 由 xcompiler_run 写回
   retries: number;
   maxRetries: number;            // 默认 3
 }
@@ -140,7 +140,7 @@ export interface Plan {
   version: '1';
   language: 'python' | 'typescript';
   requirementDigest: string;
-  /** toaa_c 沉淀出的全局开发约束（项目背景、全局约定、语言与依赖策略），所有 Step 共享。 */
+  /** xcompiler_build 沉淀出的全局开发约束（项目背景、全局约定、语言与依赖策略），所有 Step 共享。 */
   globalPrompt: string;
   /** 计划级依赖；Python 在运行前生成 requirements.txt，TS 由 ARCH 同步 package.json。 */
   dependencies: string[];
@@ -156,16 +156,16 @@ Plan Lint 规则：
 - 阶段顺序：`REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY`。
 - 每个 CODE Step 至少有一个对应 TEST Step。
 - **每个 Step 必须携带非空 `systemPrompt`**；`REQUIREMENT` / `ARCH` Step 的 outputs 不得包含 `src/**/*.py` 或 `tests/**/*.py`（阶段纯度）。
-- Python 依赖由 Plan 顶层 `dependencies` 声明，`toaa_run` 在执行前统一生成 `requirements.txt`；任何 Step 都不得把它声明为输出。TypeScript 的 `package.json` 由 ARCH 阶段维护。
+- Python 依赖由 Plan 顶层 `dependencies` 声明，`xcompiler_run` 在执行前统一生成 `requirements.txt`；任何 Step 都不得把它声明为输出。TypeScript 的 `package.json` 由 ARCH 阶段维护。
 
-### 4.2 `toaa_run`：计划 → 代码
+### 4.2 `xcompiler_run`：计划 → 代码
 
-> **非交互式守则**：`toaa_run` 启动后不读取 stdin、不弹出 prompt。所有需求 / 架构 / 依赖决策都应在 `toaa_c` 阶段出鬼，并随 `plan.json` / `Step.systemPrompt` 传递。
+> **非交互式守则**：`xcompiler_run` 启动后不读取 stdin、不弹出 prompt。所有需求 / 架构 / 依赖决策都应在 `xcompiler_build` 阶段出鬼，并随 `plan.json` / `Step.systemPrompt` 传递。
 >
 > **提示词拼接**：每个 Step 执行时，Executor 的 system prompt = 通用协议提示 + `plan.globalPrompt` + `step.systemPrompt` + Skill hints。该 `step.systemPrompt` 在 Plan Lint 阶段已验证非空，是本 Step 唯一上下文源，以防止 LLM 跨 Step 发散。
 
 ```ts
-async function toaaRun(planPath: string) {
+async function xcompilerRun(planPath: string) {
   const plan = await loadPlan(planPath);
   for (const step of topoSort(plan.steps)) {
     if (step.status === 'DONE') continue;     // 断点续跑
@@ -222,7 +222,7 @@ async function toaaRun(planPath: string) {
 
 ### 5.1 依赖清单约定
 
-- Python 的 `plan.dependencies` 使用可由 pip 解析的裸包名，运行前由 TOAA 统一校准并种入
+- Python 的 `plan.dependencies` 使用可由 pip 解析的裸包名，运行前由 XCompiler 统一校准并种入
   `requirements.txt`；Step 不得直接把该文件列为输出，新增依赖通过 `add_dependency`。
 - TypeScript greenfield 由 ARCH 创建 `package.json`；feature / refactor / self 默认复用现有
   manifest，只有需求确实涉及依赖或脚本时才修改。
@@ -245,11 +245,11 @@ export interface LLMClient {
 
 | 角色        | 职责        | 服务命令       |
 | --------- | --------- | ---------- |
-| Planner   | 需求澄清与计划生成 | `toaa_c`   |
-| Architect | 架构设计 + 依赖推导 | `toaa_run` |
-| Coder     | 代码生成      | `toaa_run` |
-| Tester    | 测试生成与执行   | `toaa_run` |
-| Debugger  | 错误分析与自动修复 | `toaa_run` |
+| Planner   | 需求澄清与计划生成 | `xcompiler_build`   |
+| Architect | 架构设计 + 依赖推导 | `xcompiler_run` |
+| Coder     | 代码生成      | `xcompiler_run` |
+| Tester    | 测试生成与执行   | `xcompiler_run` |
+| Debugger  | 错误分析与自动修复 | `xcompiler_run` |
 
 ---
 
@@ -259,7 +259,7 @@ export interface LLMClient {
 
 | 类别       | 工具                                    |
 | -------- | ------------------------------------- |
-| 文件       | `read_file`、`write_file`、`apply_patch` |
+| 文件       | `read_file`、`write_file`、`append_file`、`apply_patch` |
 | 代码       | `code_search`、`symbol_search`          |
 | 执行       | `run_python`、`run_tests`（Sandbox 内）   |
 | 包管理      | `pip_install`                          |
@@ -287,7 +287,8 @@ Skill 是若干 Tool 的命名编排，对 LLM 暴露更高层语义，Coder / D
 约束：
 
 - 改动只能落在当前 Step `outputs` 白名单（`add_dependency` 例外，可写 `requirements.txt`）。
-- 单 Step 改动行数上限默认 400 行，超出需拆分。
+- 单 Step 改动行数默认按当前 Step 上下文自适应预算；显式配置数字时作为固定硬上限。
+- `write_file` / `append_file` 单次 content 字节预算默认按当前 Step 上下文自适应；复杂工程应按模块 / 函数 / 类边界拆分，而不是一次写入巨型文件。
 - 每次 Skill 调用产出一条审计记录（who / why / diff / 测试结果）写入 `logs/edits-<step-id>.jsonl`。
 - 每个 Step 开始前自动 `git commit` 快照，失败可 `revert_change`。
 
@@ -338,7 +339,8 @@ Sandbox 失败 → 捕获错误 → Debugger LLM
 
 ```text
 workspace/
-├── plan.json                  # toaa_c 产出，toaa_run 回写
+├── <name>.xc                 # 工程索引：workspace/config/plan/current progress/history
+├── plan.json                  # xcompiler_build 产出，xcompiler_run 回写
 ├── requirements.txt | package.json
 ├── docs/
 │   ├── topic.md
@@ -352,7 +354,7 @@ workspace/
 │   └── history/               # 阶段 + 时间戳归档
 ├── src/                       # Python / TypeScript 源码
 ├── tests/                     # pytest / Vitest
-├── .toaa/                     # 锁、审计、项目记忆、debug cache、自举报告
+├── .xcompiler/                     # 锁、审计、项目记忆、debug cache、自举报告
 ├── .sandbox/                  # venv / docker 缓存（gitignore）
 └── node_modules/              # TypeScript subprocess sandbox（按需）
 ```
@@ -363,7 +365,7 @@ workspace/
 
 ## 10. CLI 交互设计
 
-参考 `ollama` 的对话式 REPL，单一入口 `toaa`，下设 `toaa c` / `toaa run`（同时提供别名 `toaa_c` / `toaa_run`）。
+参考 `ollama` 的对话式 REPL，单一入口 `xcompiler`，下设 `xcompiler build` / `xcompiler run`（同时提供别名 `xcompiler_build` / `xcompiler_run`）。
 
 ### 10.1 Node.js 技术栈
 
@@ -376,10 +378,10 @@ workspace/
 | 表格 / 进度   | `cli-table3`、`listr2`                                  |
 | 打包        | `tsup`（npm 包），可选 `pkg` 输出独立二进制                          |
 
-### 10.2 `toaa c` 交互（含强制确认）
+### 10.2 `xcompiler build` 交互（含强制确认）
 
 ```text
-$ toaa c
+$ xcompiler build
 [Phase: REQUIREMENT]
 ? 请描述你的需求（多行，Ctrl+D 结束）:
 > 命令行待办事项管理工具，CRUD + JSON 持久化
@@ -398,10 +400,10 @@ Q3 是否需要 TUI？                    > 否
 ✔ 已写入 workspace/plan.json
 ```
 
-### 10.3 `toaa run` 交互
+### 10.3 `xcompiler run` 交互
 
 ```text
-$ toaa run workspace/plan.json
+$ xcompiler run workspace/plan.json
 [S001 REQUIREMENT] ✔ DONE  (0.4s)
 [S002 ARCH       ] ✔ DONE  (3.1s)   → docs/02-architecture.md
 [S009 CODE       ] ✖ FAILED → DEBUG (1/3)
@@ -412,18 +414,20 @@ $ toaa run workspace/plan.json
 ✔ 入口: python -m todo_cli --help
 ```
 
-`toaa_run` 保持非交互：不读取 stdin，也不提供 `p`/`s` 运行时快捷键。可使用 `Ctrl+C` 发送进程中断信号；恢复时依据已持久化的 Step 状态继续执行。
+`xcompiler_run` 保持非交互：不读取 stdin，也不提供 `p`/`s` 运行时快捷键。可使用 `Ctrl+C` 发送进程中断信号；恢复时依据已持久化的 Step 状态继续执行。
 
 ### 10.4 全局命令
 
 ```text
-toaa c | compile           交互式编译需求 → plan.json
-toaa evolve                在现有工程中编译并执行增量计划
-toaa bootstrap             在隔离 worktree 中构建并验证下一代 TOAA
-toaa run <plan.json>       执行计划
-toaa ls                    列出 workspace 中的 plan
-toaa show <step-id>        查看 Step 定义与产物
-toaa resume                从最近中断处续跑
+xcompiler build | compile           交互式编译需求 → plan.json
+xcompiler evolve                在现有工程中编译并执行增量计划
+xcompiler load <xxx.xc>       加载工程文件并继续当前 plan
+xcompiler append <xxx.xc>     在已有工程基础上追加需求，重新走澄清与 V 模型
+xcompiler bootstrap             在隔离 worktree 中构建并验证下一代 XCompiler
+xcompiler run <plan.json>       执行计划
+xcompiler ls                    列出 workspace 中的 plan
+xcompiler show <step-id>        查看 Step 定义与产物
+xcompiler resume                从最近中断处续跑
 
 -w, --workspace <dir>      指定 workspace（默认 cwd）
 -c, --config <file>        指定 config.yaml
@@ -433,7 +437,7 @@ toaa resume                从最近中断处续跑
 
 ### 10.5 功能自举
 
-TOAA 采用代际自举，不允许正在运行的进程热替换自身。稳定版本 N 在独立 Git worktree
+XCompiler 采用代际自举，不允许正在运行的进程热替换自身。稳定版本 N 在独立 Git worktree
 中生成候选版本 N+1，完整执行 V 模型，再通过 typecheck、测试、构建、CLI smoke 与
 打包预检。默认只保留候选分支和自举报告；只有显式 `--promote` 才允许在宿主仓库
 仍然干净且 HEAD 未变化时执行快进合并。完整协议见 [self_bootstrap.md](self_bootstrap.md)。

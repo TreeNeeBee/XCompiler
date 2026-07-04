@@ -2,6 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { URL } from 'node:url';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export interface OllamaConfig {
   baseUrl: string;
@@ -94,58 +95,6 @@ export interface StreamWatchdog {
   idleTimeoutMs: number;
   /** 输出字符上限。0 关闭。 */
   maxOutputChars: number;
-}
-
-/**
- * 在 NDJSON 流上检测真正的 token-loop（模型陷入死循环输出同一短串）。
- *
- * 启发式：扫描周期 p∈[2,256]，如果 aggregate 末尾连续 REPEATS 个长度为 p 的子串完全相同，
- * 则判定为 loop。阈值 LOOP_REPEATS=12 足够过滤合法的列表/表格/正则模式重复。
- * 阅例：模型输出 `\s+(\d+)` 循环拼接，周期 ≈8，重复几十次即可被捕获。
- */
-const LOOP_REPEATS = 12;
-const LOOP_MIN_LEN = 1_500;
-const LOOP_MAX_PERIOD = 256;
-function detectLoop(agg: string): boolean {
-  if (agg.length < LOOP_MIN_LEN) return false;
-  const maxP = Math.min(LOOP_MAX_PERIOD, Math.floor(agg.length / LOOP_REPEATS));
-  for (let p = 2; p <= maxP; p++) {
-    const need = p * LOOP_REPEATS;
-    const tail = agg.slice(-need);
-    const ref = tail.slice(0, p);
-    let ok = true;
-    for (let i = 1; i < LOOP_REPEATS; i++) {
-      if (tail.slice(i * p, (i + 1) * p) !== ref) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) return true;
-  }
-  return false;
-}
-
-/**
- * “同一 token 连续出现”检测：记录连续重复的 NDJSON message.content 片段。
- * 这是 Ollama / vLLM 本地模型陷入死循环的最直接信号：模型会以完全一致的
- * token 块（例如单字符、换行、同一中文词）不停重复。合法代码几乎不可能让连续 >=40 个 NDJSON
- * frame 的 content 字节完全一致。
- */
-class RepeatTokenDetector {
-  private last: string | null = null;
-  private streak = 0;
-  /** 返回 true 表示已陈述为 token-loop。 */
-  feed(piece: string): boolean {
-    if (!piece) return false;
-    if (piece === this.last) {
-      this.streak++;
-      if (this.streak >= 40) return true;
-    } else {
-      this.last = piece;
-      this.streak = 1;
-    }
-    return false;
-  }
 }
 
 /**
@@ -249,7 +198,7 @@ export function streamPostNdjson(
                   );
                   return;
                 }
-                if (detectLoop(aggregate)) {
+                if (detectCyclicTokenLoop(aggregate)) {
                   fail(
                     new Error('detected cyclic token loop in stream (periodic tail); aborting'),
                   );
@@ -291,7 +240,7 @@ export function streamPostNdjson(
               return;
             }
             // watchdog: token loop
-            if (detectLoop(aggregate)) {
+            if (detectCyclicTokenLoop(aggregate)) {
               fail(new Error('detected token loop in stream; aborting'));
               return;
             }

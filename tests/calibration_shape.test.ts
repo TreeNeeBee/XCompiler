@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calibrateStepShape } from '../src/agents/calibration.js';
+import { calibrateDocPaths, calibrateStepShape } from '../src/agents/calibration.js';
 import type { Step } from '../src/core/plan.js';
 
 describe('calibrateStepShape', () => {
@@ -81,5 +81,22 @@ describe('calibrateStepShape', () => {
     const out = calibrateStepShape(raw);
     expect(out[0]!.phase).toBe('CODE');
     expect(out[1]!.phase).toBe('TEST');
+  });
+
+  it('adds delivery documentation bundle paths based on project type', () => {
+    const raw = [
+      { id: 'S001', phase: 'DELIVERY', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: ['docs/05-delivery.md'] },
+    ] as unknown as Step[];
+    expect(calibrateDocPaths(raw, 'application')[0]!.outputs).toEqual([
+      'README.md',
+      'docs/quickstart.md',
+      'docs/05-delivery.md',
+    ]);
+    expect(calibrateDocPaths(raw, 'library')[0]!.outputs).toEqual([
+      'README.md',
+      'docs/quickstart.md',
+      'docs/05-delivery.md',
+      'docs/api-guide.md',
+    ]);
   });
 });

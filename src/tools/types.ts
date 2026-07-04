@@ -14,6 +14,8 @@ export interface ToolContext {
   stepId: string;
   /** 目标语言（决定依赖清单文件等）。默认 python。 */
   language?: Language;
+  /** 当前 Step 的 write_file / append_file 单次 content 字节预算。 */
+  writeChunkBytes?: number;
 }
 
 /** 单次工具调用的结果统一结构。 */

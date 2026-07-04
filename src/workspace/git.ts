@@ -3,8 +3,8 @@ import { simpleGit, type SimpleGit } from 'simple-git';
 import type { Workspace } from './workspace.js';
 
 /**
- * GitService 基于 simple-git 提供 TOAA 运行时所需的最小集：init / snapshot / revert / log。
- * 所有操作都局限在 workspace.root 内，提交带 [toaa] 前缀便于审计。
+ * GitService 基于 simple-git 提供 XCompiler 运行时所需的最小集：init / snapshot / revert / log。
+ * 所有操作都局限在 workspace.root 内，提交带 [xcompiler] 前缀便于审计。
  */
 export class GitService {
   private readonly git: SimpleGit;
@@ -21,12 +21,12 @@ export class GitService {
     // 配置最小 user 以便能 commit；仅在缺省时设置
     const local = await this.git.listConfig('local').catch(() => null);
     const has = (k: string) => !!local?.all?.[k];
-    if (!has('user.email')) await this.git.addConfig('user.email', 'toaa@local');
-    if (!has('user.name')) await this.git.addConfig('user.name', 'TOAA');
+    if (!has('user.email')) await this.git.addConfig('user.email', 'xcompiler@local');
+    if (!has('user.name')) await this.git.addConfig('user.name', 'XCompiler');
     // 创建一个 .gitkeep 让初次 commit 不为空
-    await this.ws.writeFile('.toaa/.gitkeep', '');
+    await this.ws.writeFile('.xcompiler/.gitkeep', '');
     await this.git.add(['.']);
-    await this.git.commit('[toaa] init workspace');
+    await this.git.commit('[xcompiler] init workspace');
   }
 
   /** 在某个 Step 的某次重试前打快照；返回 commit sha。 */
@@ -34,7 +34,7 @@ export class GitService {
     await this.ensureRepo();
     await this.git.add(['.']);
     const status = await this.git.status();
-    const tag = `[toaa] ${stepId}#${retry}${message ? ` ${message}` : ''}`;
+    const tag = `[xcompiler] ${stepId}#${retry}${message ? ` ${message}` : ''}`;
     if (status.files.length === 0) {
       // 没有变化也产生一个空 commit，便于精准 revert
       const r = await this.git.commit(tag, undefined, { '--allow-empty': null });
@@ -49,11 +49,11 @@ export class GitService {
     await this.git.reset(['--hard', ref]);
   }
 
-  /** 返回最近 N 条 [toaa] 提交。 */
-  async recentToaaCommits(n = 20): Promise<Array<{ sha: string; message: string; date: string }>> {
+  /** 返回最近 N 条 [xcompiler] 提交。 */
+  async recentXCompilerCommits(n = 20): Promise<Array<{ sha: string; message: string; date: string }>> {
     const log = await this.git.log({ n });
     return log.all
-      .filter((c) => c.message.startsWith('[toaa]'))
+      .filter((c) => c.message.startsWith('[xcompiler]'))
       .map((c) => ({ sha: c.hash, message: c.message, date: c.date }));
   }
 

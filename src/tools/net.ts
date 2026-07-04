@@ -6,7 +6,7 @@ import { t } from '../i18n/index.js';
 /**
  * Network access tools.
  *
- * `http_fetch` is performed from the **TOAA host** (Node side), so it works
+ * `http_fetch` is performed from the **XCompiler host** (Node side), so it works
  * regardless of the sandbox's network policy — useful when:
  *   - the LLM needs to look up a web page / JSON API while planning or coding;
  *   - python tests inside a `network=off` sandbox still need a small piece of
@@ -50,7 +50,7 @@ const DEFAULT_MAX_BYTES = 256 * 1024;
 export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
   name: 'http_fetch',
   description:
-    'Fetch a URL from the TOAA host (HTTP/HTTPS only). Returns status, headers and body text. ' +
+    'Fetch a URL from the XCompiler host (HTTP/HTTPS only). Returns status, headers and body text. ' +
     'Use this to look up web pages, REST/JSON APIs, or to download a small fixture. ' +
     'For binary or larger downloads, pass `saveAs: "<rel-path>"` to stream the body to a workspace file ' +
     '(must be inside the current step\'s allowedWrites).',

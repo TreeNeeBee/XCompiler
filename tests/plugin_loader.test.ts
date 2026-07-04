@@ -4,13 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadPluginSources } from '../src/plugins/loader.js';
 
-async function fixture(minToaaVersion: string): Promise<{
+async function fixture(minXCompilerVersion: string): Promise<{
   root: string;
   manifestPath: string;
   entryPath: string;
   markerPath: string;
 }> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-plugin-loader-'));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-plugin-loader-'));
   const manifestPath = path.join(root, 'plugin.json');
   const entryPath = path.join(root, 'plugin.mjs');
   const markerPath = path.join(root, 'executed');
@@ -18,7 +18,7 @@ async function fixture(minToaaVersion: string): Promise<{
     id: 'fixture.loader',
     version: '1.0.0',
     apiVersion: 1,
-    minToaaVersion,
+    minXCompilerVersion,
   };
   await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf8');
   await fs.writeFile(entryPath, [

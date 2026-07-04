@@ -108,6 +108,29 @@ describe('calibrateDebugSuggestions', () => {
     expect(sugs.find((s) => s.code === 'replace-no-op')).toBeTruthy();
   });
 
+  it('requires patch and run_program verification for network API failures', () => {
+    const sugs = calibrateDebugSuggestions(
+      `Network API failure detected. Evidence: 403 Client Error: Forbidden for url: https://timor.tech/api/holiday/`,
+    );
+    const fix = sugs.find((s) => s.code === 'network-api-failure')!;
+    expect(fix).toBeTruthy();
+    expect(fix.hint).toMatch(/http_fetch/);
+    expect(fix.hint).toMatch(/apply_patch|replace_in_file/);
+    expect(fix.hint).toMatch(/run_program/);
+  });
+
+  it('detects network API probe loops and stops endpoint enumeration', () => {
+    const sugs = calibrateDebugSuggestions(
+      `tool calls:\n` +
+        `  - http_fetch FAIL fetch failed\n` +
+        `  - http_fetch OK http_fetch GET https://example.test → 200 (0B)\n`,
+    );
+    const fix = sugs.find((s) => s.code === 'network-api-probe-loop')!;
+    expect(fix).toBeTruthy();
+    expect(fix.hint).toMatch(/停止继续枚举接口/);
+    expect(fix.hint).toMatch(/run_program/);
+  });
+
   it('returns empty when log is blank', () => {
     expect(calibrateDebugSuggestions('', '')).toEqual([]);
   });

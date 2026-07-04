@@ -13,7 +13,7 @@ import { isAllowedWrite, type Tool } from './types.js';
  */
 export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }> = {
   name: 'apply_patch',
-  description: '应用 unified diff 补丁；目标文件必须在 step outputs 白名单内。',
+  description: '应用 unified diff 补丁；目标文件必须在当前 Step writable allowlist 内。',
   argsSchema: { patch: 'string' },
   async run(args, ctx) {
     const fileDiffs = parseUnifiedDiff(args.patch);
@@ -21,7 +21,7 @@ export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }>
     const changed: string[] = [];
     for (const fd of fileDiffs) {
       if (!isAllowedWrite(fd.target, ctx.allowedWrites)) {
-        return { ok: false, error: `write denied: ${fd.target} not in step outputs whitelist` };
+        return { ok: false, error: `write denied: ${fd.target} not in step writable allowlist` };
       }
       const abs = ctx.ws.abs(fd.target);
       let original = '';

@@ -11,9 +11,9 @@ let scriptDir: string;
 let fakeDocker: string;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-docker-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-docker-'));
   ws = new Workspace(tmp);
-  scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-fakedocker-'));
+  scriptDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-fakedocker-'));
   // Fake docker bin: just record argv into a file and exit 0
   fakeDocker = path.join(scriptDir, 'docker');
   await fs.writeFile(

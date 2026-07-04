@@ -1,5 +1,5 @@
-import type { ArchitectureModule, Language, Step } from '../core/plan.js';
-import { DOC_NAMES, PHASE_DOC } from '../core/docs.js';
+import type { ArchitectureModule, Language, ProjectType, Step, StepSubtask } from '../core/plan.js';
+import { DOC_NAMES, PHASE_DOC, deliveryDocsForProjectType } from '../core/docs.js';
 import { pathCoveredByOutputs } from '../core/architecture.js';
 
 /**
@@ -15,7 +15,7 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
  *  - calibrateStepIds:            Step id → S### 形式（同步 dependsOn）
  *  - calibrateStepShape:          补齐 schema 必填项（role/acceptance/systemPrompt/title/description）
  *  - calibrateArchitectureStepMappings:
- *                                   按 architectureModules 拆分被 LLM 合并的 CODE / TEST Step
+ *                                   将 architectureModules 映射到 CODE / TEST 宏 Step 的 subTasks
  */
 
 // =============================================================================
@@ -129,14 +129,20 @@ export const DOC_PATH_ALIASES: Record<string, string> = {
   'docs/refactor.md': DOC_NAMES.refactor,
   'docs/delivery.md': DOC_NAMES.delivery,
   'docs/deliverables.md': DOC_NAMES.delivery,
+  'docs/quick-start.md': DOC_NAMES.quickstart,
+  'docs/quick_start.md': DOC_NAMES.quickstart,
+  'docs/quickstart.md': DOC_NAMES.quickstart,
+  'docs/api.md': DOC_NAMES.apiGuide,
+  'docs/api_guide.md': DOC_NAMES.apiGuide,
+  'docs/api-guide.md': DOC_NAMES.apiGuide,
 };
 
 /**
  * 把 LLM 容易写歪的常见旧文档名规整为 V 模型规范化命名。同时：
  *  - 各阶段（REQUIREMENT/ARCH/TASK/REFACTOR/DELIVERY）若 outputs 缺失对应规范文档，自动追加；
- *  - 若有 Step 把 docs/topic.md 列为 outputs，则移除（topic.md 仅由 toaa c 写入）。
+ *  - 若有 Step 把 docs/topic.md 列为 outputs，则移除（topic.md 仅由 xcompiler build 写入）。
  */
-export function calibrateDocPaths(steps: Step[]): Step[] {
+export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'application'): Step[] {
   const remap = (p: string): string => DOC_PATH_ALIASES[p] ?? p;
   const dropTopic = (p: string): boolean => p !== DOC_NAMES.topic;
   return steps.map((s) => {
@@ -146,6 +152,10 @@ export function calibrateDocPaths(steps: Step[]): Step[] {
     if (expected && !outputs.includes(expected)) {
       // 仅在该阶段允许有"主验收文档"时自动补齐（CODE/TEST/DEBUG 不在表内）。
       outputs = [expected, ...outputs];
+    }
+    if (s.phase === 'DELIVERY') {
+      const requiredDocs = [...deliveryDocsForProjectType(projectType)];
+      outputs = [...requiredDocs, ...outputs.filter((out) => !requiredDocs.includes(out))];
     }
     return { ...s, inputs, outputs };
   });
@@ -350,7 +360,7 @@ export function calibrateStepShape(steps: Step[]): Step[] {
       acceptance = `${title} 完成，所有声明的 outputs 文件存在且内容非空。`;
     }
 
-    // systemPrompt 兜底（schema 仅要求 min(1)，但 toaa_run 期望真实有效的提示词）
+    // systemPrompt 兜底（schema 仅要求 min(1)，但 xcompiler_run 期望真实有效的提示词）
     let systemPrompt = typeof s.systemPrompt === 'string' ? s.systemPrompt.trim() : '';
     if (systemPrompt.length < 20) {
       systemPrompt =
@@ -373,6 +383,7 @@ export function calibrateStepShape(steps: Step[]): Step[] {
       }),
       inputs: Array.isArray(s.inputs) ? (s.inputs as string[]) : [],
       outputs,
+      subTasks: calibrateSubTasks(s.subTasks),
       dependsOn: Array.isArray(s.dependsOn) ? (s.dependsOn as string[]) : [],
       acceptance,
       status: (typeof s.status === 'string' ? s.status : 'PENDING') as Step['status'],
@@ -385,6 +396,38 @@ export function calibrateStepShape(steps: Step[]): Step[] {
   });
 }
 
+function calibrateSubTasks(raw: unknown): StepSubtask[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const tasks = raw
+    .map((item, index): StepSubtask | null => {
+      if (!item || typeof item !== 'object') return null;
+      const record = item as Record<string, unknown>;
+      const title =
+        (typeof record.title === 'string' && record.title.trim()) ||
+        (typeof record.id === 'string' && record.id.trim()) ||
+        `Subtask ${index + 1}`;
+      const description =
+        (typeof record.description === 'string' && record.description.trim()) ||
+        title;
+      const subTask: StepSubtask = {
+        id: (typeof record.id === 'string' && record.id.trim()) || `T${index + 1}`,
+        title,
+        description,
+      };
+      if (typeof record.acceptance === 'string' && record.acceptance.trim()) {
+        subTask.acceptance = record.acceptance.trim();
+      }
+      if (Array.isArray(record.outputs)) {
+        subTask.outputs = record.outputs.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+      }
+      const children = calibrateSubTasks(record.subTasks);
+      if (children && children.length > 0) subTask.subTasks = children;
+      return subTask;
+    })
+    .filter((task): task is StepSubtask => task !== null);
+  return tasks.length > 0 ? tasks : undefined;
+}
+
 function dedup<T>(arr: T[]): T[] {
   return [...new Set(arr)];
 }
@@ -394,17 +437,9 @@ function dedup<T>(arr: T[]): T[] {
 // =============================================================================
 
 /**
- * LLM 经常能正确列出 architectureModules，却在 steps 里把多个模块塞进同一个 CODE / TEST Step
- * （例如 models.py + holiday_service.py 一起实现，或一个 TEST Step 写 3 个测试文件）。
- * 严格拒绝会导致整盘 fallback；测试文件过大还会撞上 write_file 尺寸限制。
- * 这里按结构化 ARCH 契约做机械、安全的拆分：
- *  - 一个覆盖多个 module.sourcePaths 的 CODE Step，被拆成多个相邻 CODE Step；
- *  - 每个拆出的 CODE Step 只保留自己模块的 sourcePaths；
- *  - 一个覆盖多个 module.testPaths 的 TEST Step，被拆成多个相邻 TEST Step；
- *  - 每个拆出的 TEST Step 只保留自己模块的 testPaths；
- *  - TEST Step 若产出某模块 testPaths，会自动 dependsOn 对应 CODE Step；
- *  - 模块 dependency 会同步成 CODE Step dependsOn；
- *  - 最后重新编号为 S###，保持 V 模型原有顺序。
+ * LLM 经常能正确列出 architectureModules，却在 steps 里把多个模块塞进同一个 CODE / TEST Step。
+ * 新版计划模型保留“大 Step”执行语义，不再把这些 Step 机械拆碎；模块级细分写入 subTasks。
+ * 这样执行器仍按大 Step 运行，但 Step 内有可审计的二级任务清单。
  */
 export function calibrateArchitectureStepMappings(
   steps: Step[],
@@ -412,115 +447,79 @@ export function calibrateArchitectureStepMappings(
 ): Step[] {
   if (!modules || modules.length === 0) return steps;
 
-  const replacementByOriginalStep = new Map<string, string[]>();
   const ownerByModule = new Map<string, string>();
-  const expanded: Step[] = [];
-
-  for (const step of steps) {
-    if (step.phase !== 'CODE' && step.phase !== 'TEST') {
-      expanded.push(step);
-      continue;
-    }
-
-    const coveredModules = step.phase === 'CODE'
-      ? modules.filter((module) =>
-          module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
-        )
-      : modules.filter((module) =>
-          module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
-        );
-
-    if (coveredModules.length <= 1) {
-      if (step.phase === 'CODE' && coveredModules.length === 1) {
-        ownerByModule.set(coveredModules[0]!.id, step.id);
-      }
-      expanded.push(step);
-      continue;
-    }
-
-    const replacementIds: string[] = [];
-    for (const [index, module] of coveredModules.entries()) {
-      const id = index === 0 ? step.id : makeSyntheticStepId(step.id, module.id);
-      replacementIds.push(id);
-      if (step.phase === 'CODE') ownerByModule.set(module.id, id);
-      const outputs = step.phase === 'CODE'
-        ? module.sourcePaths
-        : module.testPaths.filter((testPath) => pathCoveredByOutputs(testPath, step.outputs));
-      expanded.push({
-        ...step,
-        id,
-        title: step.title + '（' + module.id + ' ' + module.name + '）',
-        description: module.responsibility,
-        systemPrompt:
-          step.systemPrompt + '\n\n' +
-          (step.phase === 'CODE'
-            ? '校准约束：本 CODE Step 只能实现架构模块 '
-            : '校准约束：本 TEST Step 只能验证架构模块 ') +
-          module.id + ' ' + module.name + '。' +
-          (step.phase === 'CODE'
-            ? '只写这些源码路径：' + module.sourcePaths.join(', ') + '。不得修改其它架构模块的源码。'
-            : '只写这些测试路径：' + outputs.join(', ') + '。不得把多个架构模块的测试合并到同一个文件。'),
-        outputs: [...outputs],
-      });
-    }
-    replacementByOriginalStep.set(step.id, replacementIds);
+  for (const step of steps.filter((item) => item.phase === 'CODE')) {
+    const ownedModules = modules.filter((module) =>
+      module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
+    );
+    for (const module of ownedModules) ownerByModule.set(module.id, step.id);
   }
 
-  const rewired = expanded.map((step) => {
-    let dependsOn = expandStepDependencies(step.dependsOn, replacementByOriginalStep, step.id);
-
+  return steps.map((step) => {
+    let dependsOn = step.dependsOn;
     if (step.phase === 'CODE') {
-      const owned = modules.find((module) =>
+      const ownedModules = modules.filter((module) =>
         module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
       );
-      if (owned) {
-        const moduleDependencyOwners = owned.dependencies
-          .map((moduleId) => ownerByModule.get(moduleId))
-          .filter((owner): owner is string => Boolean(owner) && owner !== step.id);
-        dependsOn = dedup([...dependsOn, ...moduleDependencyOwners]);
-      }
+      const moduleDependencyOwners = ownedModules
+        .flatMap((module) => module.dependencies)
+        .map((moduleId) => ownerByModule.get(moduleId))
+        .filter((owner): owner is string => Boolean(owner) && owner !== step.id);
+      dependsOn = dedup([...dependsOn, ...moduleDependencyOwners]);
+      return withModuleSubTasks({ ...step, dependsOn }, ownedModules, 'CODE');
     }
 
     if (step.phase === 'TEST') {
-      const testedOwners = modules
-        .filter((module) => module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)))
+      const testedModules = modules.filter((module) =>
+        module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
+      );
+      const testedOwners = testedModules
         .map((module) => ownerByModule.get(module.id))
         .filter((owner): owner is string => Boolean(owner));
       dependsOn = dedup([...dependsOn, ...testedOwners]);
+      return withModuleSubTasks({ ...step, dependsOn }, testedModules, 'TEST');
     }
 
     return { ...step, dependsOn };
   });
-
-  return renumberSteps(rewired);
 }
 
-function makeSyntheticStepId(originalStepId: string, moduleId: string): string {
-  return originalStepId + '__' + moduleId;
+function withModuleSubTasks(
+  step: Step,
+  modules: ArchitectureModule[],
+  kind: 'CODE' | 'TEST',
+): Step {
+  if (modules.length === 0) return step;
+  const existing = step.subTasks ?? [];
+  const existingKeys = new Set(flattenSubTaskTexts(existing));
+  const generated = modules
+    .filter((module) => !existingKeys.has(module.id))
+    .map((module): StepSubtask => ({
+      id: module.id,
+      title: `${kind} ${module.name}`,
+      description:
+        kind === 'CODE'
+          ? `${module.responsibility} Source paths: ${module.sourcePaths.join(', ')}.`
+          : `${module.responsibility} Test paths: ${module.testPaths.join(', ')}.`,
+      acceptance:
+        kind === 'CODE'
+          ? `All source paths for ${module.id} are implemented and importable.`
+          : `Tests for ${module.id} cover the declared module behaviour and pass.`,
+      outputs: kind === 'CODE' ? [...module.sourcePaths] : [...module.testPaths],
+    }));
+  if (generated.length === 0) return step;
+  return { ...step, subTasks: [...existing, ...generated] };
 }
 
-function expandStepDependencies(
-  dependsOn: string[],
-  replacementByOriginalStep: Map<string, string[]>,
-  selfId: string,
-): string[] {
-  return dedup(
-    dependsOn
-      .flatMap((depId) => replacementByOriginalStep.get(depId) ?? [depId])
-      .filter((depId) => depId !== selfId),
-  );
-}
-
-function renumberSteps(steps: Step[]): Step[] {
-  const idMap = new Map<string, string>();
-  for (const [index, step] of steps.entries()) {
-    idMap.set(step.id, 'S' + String(index + 1).padStart(3, '0'));
-  }
-  return steps.map((step, index) => ({
-    ...step,
-    id: 'S' + String(index + 1).padStart(3, '0'),
-    dependsOn: dedup(step.dependsOn.map((depId) => idMap.get(depId) ?? depId)),
-  }));
+function flattenSubTaskTexts(tasks: StepSubtask[]): string[] {
+  return tasks.flatMap((task) => [
+    task.id,
+    task.title,
+    task.description,
+    task.acceptance ?? '',
+    ...(task.outputs ?? []),
+    ...flattenSubTaskTexts(task.subTasks ?? []),
+  ]);
 }
 
 // =============================================================================
@@ -572,6 +571,9 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
   }, 0);
   const newId = 'S' + String(maxNum + 1).padStart(3, '0');
+  const testOutput = language === 'typescript'
+    ? `tests/auto_${newId.toLowerCase()}.test.ts`
+    : `tests/test_auto_${newId.toLowerCase()}.py`;
 
   const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join('、');
   const tsMode = language === 'typescript';
@@ -587,19 +589,19 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     systemPrompt:
       `本 Step 是 calibration 自动追加的 TEST 兜底，覆盖以下 CODE Step：${targetTitles}。\n` +
       (tsMode
-        ? `范围：仅写 / 调试 tests/ 下的 Vitest 测试文件（tests/**/*.test.ts），不得修改 src/ 实现。\n`
-        : `范围：仅写 / 调试 tests/ 下的 pytest 测试文件，不得修改 src/ 实现。\n`) +
+        ? `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`
+        : `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`) +
       `输入：上述 CODE Step 产出的 src/ 文件 + docs/。\n` +
       (tsMode
-        ? `产出：tests/**/*.test.ts（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 npm test / Vitest 自动验证。\n`
-        : `产出：tests/test_*.py（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 pytest 自动验证。\n`) +
+        ? `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 npm test / Vitest 自动验证。\n`
+        : `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 pytest 自动验证。\n`) +
       (tsMode
         ? `验收：所有新增测试在 npm test / Vitest 下通过；任一目标 CODE 的核心 API 至少有一条断言。`
         : `验收：所有新增测试 pytest 通过；任一目标 CODE 的核心 API 至少有一条断言。`),
     role: 'Tester',
-    tools: ['write_file', 'replace_in_file', 'read_file', 'list_dir', 'code_search', 'run_tests'],
+    tools: ['skill:tester'],
     inputs: uncovered.flatMap((c) => c.outputs),
-    outputs: [],
+    outputs: [testOutput],
     dependsOn: uncovered.map((c) => c.id),
     acceptance: tsMode
       ? `npm test / Vitest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`
@@ -676,7 +678,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
       const mod = m[1] ?? '<module>';
       return (
         `[直接 python 脚本执行测试导致 ModuleNotFoundError: ${mod}] ` +
-        `**首选**改用 \`run_tests\`（pytest）执行——TOAA 已自动写入 tests/conftest.py 注入 src/ 到 sys.path，pytest 模式下能直接解析。` +
+        `**首选**改用 \`run_tests\`（pytest）执行——XCompiler 已自动写入 tests/conftest.py 注入 src/ 到 sys.path，pytest 模式下能直接解析。` +
         `如确需保留 \`python tests/test_X.py\` 直接运行，则用 \`read_file\` 打开测试文件，` +
         `在 import 之前插入：\`import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))\`，` +
         `再 \`replace_in_file\` 提交修改。**严禁**把 import 改成 "from src.${mod} import ..." 形式。`
@@ -738,8 +740,36 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
     severity: 1,
     patterns: [/from\s+src\.[A-Za-z0-9_]+\s+import/],
     build: (m) =>
-      `[检测到 "from src.X import" 形式] TOAA 约定 src/ 内模块互相 import 必须用 \`from <module> import\`（不带 src. 前缀）；` +
+      `[检测到 "from src.X import" 形式] XCompiler 约定 src/ 内模块互相 import 必须用 \`from <module> import\`（不带 src. 前缀）；` +
       `tests/ 也一样。请 \`read_file\` 确认 import 行，再 \`replace_in_file\` 把 "from src." 改为 "from "。证据: ${m[0]}`,
+  },
+  {
+    code: 'network-api-failure',
+    severity: 1,
+    patterns: [
+      /Network API failure detected/i,
+      /\b(?:api|http|request|fetch|network|connection|timeout|timed out)\b[^\n]{0,120}\b(?:failed|error|timeout|unreachable|unavailable|404|429|5\d\d)\b/i,
+      /(?:网络|接口|API|HTTP|请求|连接|超时|限流|不可用)[^\n]{0,120}(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)/,
+    ],
+    build: () =>
+      `[网络 API 调用失败] 本任务必须判定失败，禁止用静态假数据、吞异常或仅展示“降级成功”来过关。` +
+      `请先定位失败的 API URL 与响应/异常；若接口不可达、格式不符、限流或返回错误状态，必须更换为当前可用且适合需求的 API，` +
+      `并补充测试覆盖成功路径与失败路径。最多连续做 2 次 \`http_fetch\` 探测；一旦确认候选接口可用且 body 非空/格式可解析，` +
+      `必须立刻 \`read_file\` 定位源码并用 \`apply_patch\` / \`replace_in_file\` 修改真实集成，随后 \`run_program\` 验证入口不再输出 API 失败。`,
+  },
+  {
+    code: 'network-api-probe-loop',
+    severity: 1,
+    patterns: [
+      /tool calls:[\s\S]*(?:http_fetch).*(?:http_fetch)/i,
+      /http_fetch[\s\S]{0,400}(?:FAIL|失败)[\s\S]{0,400}http_fetch/i,
+      /http_fetch[\s\S]{0,400}(?:200|OK|成功)[\s\S]{0,200}(?:0B|0 字节|body 为空)/i,
+    ],
+    build: () =>
+      `[网络 API 探测循环] 已经出现多次 \`http_fetch\`，下一轮必须停止继续枚举接口。` +
+      `先 \`read_file\` / \`code_search\` 找到失败 URL 所在源码；选择最近一次非空、格式可解析且适合需求的候选 API，` +
+      `或换一个明确有文档的无 Key API；然后 patch 源码并用 \`run_program\` 运行入口验证。` +
+      `HTTP 200 但 0B/空 body 不是可用 API，不能据此 done=true。`,
   },
 
   // —— 名称/属性 ——————————————————————————————
@@ -777,7 +807,8 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
     patterns: [/SyntaxError:[^\n]+/, /IndentationError:[^\n]+/, /TabError:[^\n]+/],
     build: (m) =>
       `[${m[0].split(':')[0]}] 用 \`read_file\` 把整段函数读出来核对缩进/括号配对；` +
-      `若是分块 \`append_file\` 拆断了函数体，立即用 \`write_file\` 整文件覆盖（≤6KB 直接覆盖）。`,
+      `若是分块 \`append_file\` 拆断了函数体，优先用 \`apply_patch\` / \`replace_in_file\` 修复；` +
+      `需要整文件重写时必须低于当前运行时 chunk limit，或按函数/类边界重新分块。`,
   },
 
   // —— 文件 IO ——————————————————————————————

@@ -3,8 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 /**
- * 工程级文件锁，防止多个 toaa 进程并发改同一个 workspace。
- * 锁文件：<workspace>/.toaa/.lock，内容为 JSON：{pid, host, command, startedAt}。
+ * 工程级文件锁，防止多个 XCompiler 进程并发改同一个 workspace。
+ * 锁文件：<workspace>/.xcompiler/.lock，内容为 JSON：{pid, host, command, startedAt}。
  *
  * 语义：
  *   - 优先 O_EXCL 创建，成功即获锁；
@@ -26,7 +26,7 @@ export class LockError extends Error {
   }
 }
 
-const LOCK_REL = '.toaa/.lock';
+const LOCK_REL = '.xcompiler/.lock';
 
 function lockPath(workspace: string): string {
   return path.join(workspace, LOCK_REL);
@@ -103,7 +103,7 @@ export async function acquireLock(
       return makeReleaser(file);
     }
     throw new LockError(
-      `workspace 已被其它 toaa 进程占用 (pid=${existing.pid}, host=${existing.host}, cmd=${existing.command}, since=${existing.startedAt}).\n` +
+      `workspace 已被其它 XCompiler 进程占用 (pid=${existing.pid}, host=${existing.host}, cmd=${existing.command}, since=${existing.startedAt}).\n` +
         `如确信该进程已退出，请删除 ${file} 后重试。`,
       existing,
     );

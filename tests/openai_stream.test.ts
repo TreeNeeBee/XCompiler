@@ -238,4 +238,63 @@ describe('OpenAI-compatible streaming', () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+
+  it('aborts repeated OpenAI-compatible token loops before output limit', async () => {
+    let stop = false;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const tick = () => {
+        if (stop || res.writableEnded) return;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '0' } }] })}\n\n`);
+        setImmediate(tick);
+      };
+      tick();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'mlx-model',
+        requestTimeoutMs: 5000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/token loop/);
+    } finally {
+      stop = true;
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('does not treat ordinary indentation as an OpenAI-compatible token loop', async () => {
+    const prefix = Array.from({ length: 120 }, (_, i) => `module ${i}: architecture text\n`).join('');
+    const content = `${prefix}                `;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'mlx-model',
+        requestTimeoutMs: 5000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).resolves.toBe(content);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
 });

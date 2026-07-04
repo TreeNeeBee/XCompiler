@@ -1,7 +1,7 @@
 import type { LanguageProfile } from '../core/language.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `You are the Planner of the TOAA system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
+const PYTHON_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
 
 Output language: Python only (plan.language is fixed to "python").
 
@@ -17,32 +17,39 @@ V-model phases: REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFACT
 | REFACTOR     | \`docs/04-refactor.md\`     |
 | DELIVERY     | \`docs/05-delivery.md\`     |
 
-> The top-level project context file \`docs/topic.md\` is written automatically by toaa c after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
+> The top-level project context file \`docs/topic.md\` is written automatically by xcompiler build after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
+
+**Delivery documentation bundle**: every DELIVERY Step must output \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`. For \`projectType\` = \`library\` or \`mixed\`, it must also output \`docs/api-guide.md\`. User-facing documentation must follow the active i18n language; code identifiers, API names, commands, and file paths stay literal.
+
+**Macro Step decomposition**: CODE / TEST / DEBUG / REFACTOR are executable macro Steps. Put internal work decomposition in each Step's \`subTasks\` (maximum 2 nested levels below the parent Step) instead of exploding every internal task into many executable Steps.
 
 Mandatory rules:
 1. Return pure JSON that matches the given schema. No explanatory text and no Markdown code fences.
-2. **You must emit a complete V-model skeleton with at least 7 Steps**: 1 REQUIREMENT, 1 ARCH, 1 TASK, 1+ CODE, 1+ TEST, 1 REFACTOR, 1 DELIVERY. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
-3. ARCH must produce \`docs/02-architecture.md\` (interfaces / modules / dependency notes). **Do NOT list \`requirements.txt\` in any Step's outputs**: that file is seeded from \`dependencies\` when toaa_run starts; later additions must go through the \`add_dependency\` tool in CODE/DEBUG phases.
+2. **You must emit a complete V-model macro plan covering the required phases**: REQUIREMENT, ARCH, TASK, CODE, TEST, REFACTOR, and DELIVERY. Use the smallest number of executable macro Steps that matches the project shape; normally one CODE and one TEST macro Step is enough, and extra macro Steps are added only when they represent real execution boundaries. DEBUG may appear as an explicit macro Step only for planned remediation or diagnostic work; runtime failures are handled by debugger retries for the failed Step. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
+3. ARCH must produce \`docs/02-architecture.md\` (interfaces / modules / dependency notes). **Do NOT list \`requirements.txt\` in any Step's outputs**: that file is seeded from \`dependencies\` when xcompiler_run starts; later additions must go through the \`add_dependency\` tool in CODE/DEBUG phases.
 4. **Every CODE Step must have at least one TEST Step (directly or transitively) depending on it.** Either give each CODE Step its own TEST Step (whose dependsOn includes that CODE Step), or use one aggregate TEST Step whose dependsOn lists all CODE Steps. "CODE without TEST" or partial TEST coverage is rejected by plan-lint S004/S005.
-5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY.
+5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY.
 6. The same outputs path is globally unique. Sole exception: REFACTOR / DEBUG steps may re-declare a file already produced by their dependency chain (treated as a "modify").
 7. id has the form S001, S002, … sequential.
 8. role must be one of Planner / Architect / Coder / Tester / Debugger.
 9. tools is a string array (whitelist) — atomic tools or Skill refs like "skill:patcher" / "skill:tester" / "skill:debugger".
 10. acceptance is one English sentence stating the verifiable completion criterion.
-11. **Phase purity**: REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY outputs must NOT contain src/**/*.py or tests/**/*.py — only docs/**/*.md. All implementation code lives in CODE. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list existing test files (e.g. \`tests/test_xxx.py\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs pytest automatically).**
-12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. toaa_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
+11. **Phase purity**: REQUIREMENT / ARCH / TASK / DELIVERY outputs must NOT contain src/**/*.py or tests/**/*.py — only docs/**/*.md. All implementation code lives in CODE. REFACTOR is the sole exception: it may re-declare existing src/tests files from its dependency chain as behaviour-preserving refactor targets, and it must also output \`docs/04-refactor.md\`. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list test files (e.g. \`tests/test_xxx.py\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs pytest automatically).**
+12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. xcompiler_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
 13. **Global prompt**: globalPrompt is one paragraph of project background / cross-cutting conventions; it is concatenated into every Step.
-14. **dependencies**: a string array with one pip dependency per line; written **verbatim** to \`requirements.txt\` for \`pip install -r requirements.txt\`. Therefore: pip-parseable plain text only — one package per line, no Markdown list \`-\` prefix, no comments other than \`# ...\`, no nested blanks. **Must include \`pytest\`.** **Use bare package names — no version constraints** (no \`pkg==1.2.*\` / \`pkg>=2\` / any PEP 440 form), because LLM-suggested versions are often invalid; the user pins versions later by editing \`requirements.txt\`. toaa_run seeds this into \`requirements.txt\` before sandbox start; ARCH/CODE Steps must not overwrite that file directly. **Never invent non-existent PyPI packages** — common traps such as \`pydbc\`/\`python-dbc\`/\`pydbcparser\` do not exist; for CAN \`.dbc\` parsing use \`cantools\`; for CAN bus IO use \`python-can\`. When in doubt, omit rather than fabricate.
-15. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into a list of independently-executable CODE tasks (each with id / description / acceptance).
-16. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — must run the full regression before writing docs/04-refactor.md". outputs must include \`docs/04-refactor.md\`.
-17. **DELIVERY phase**: the DELIVERY Step's outputs must include \`docs/05-delivery.md\`, covering: README summary / entry command / dependency list / link to test report / known limitations. DELIVERY must not introduce new functionality.
-18. **Must produce a standalone runnable Python application (not just a function library).** The CODE phase must produce a **directly executable** entry point — pick one:
+14. **projectType**: top-level projectType must be one of \`application\`, \`library\`, or \`mixed\`. Classify it from the clarified requirement; there is no CLI project-type override. Use \`library\` for SDK/package/API-only modules; use \`mixed\` when the deliverable contains both a runnable app/CLI/service and a reusable public API.
+15. **complexityAssessment**: top-level object with \`level\` = \`simple | moderate | complex\`, \`rationale\`, \`splitRecommended\`, and \`userForcedPhaseSplit\`. This is your first-pass planning assessment. Choose from actual project complexity: simple = one implementation phase, moderate = two phases, complex = three or more phases. Set \`splitRecommended=true\` for moderate/complex work and when the user asks for phases/stages/milestones; set \`userForcedPhaseSplit=true\` for explicit phase requests.
+16. **implementationPhases**: top-level array. Always include \`P1\` with \`status="current"\`; current V-model Steps implement only P1. The phase count follows complexity: simple => P1 only unless forced; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. P1 must be the smallest complete core slice.
+17. **dependencies**: a string array with one pip dependency per line; written **verbatim** to \`requirements.txt\` for \`pip install -r requirements.txt\`. Therefore: pip-parseable plain text only — one package per line, no Markdown list \`-\` prefix, no comments other than \`# ...\`, no nested blanks. **Must include \`pytest\`.** **Use bare package names — no version constraints** (no \`pkg==1.2.*\` / \`pkg>=2\` / any PEP 440 form), because LLM-suggested versions are often invalid; the user pins versions later by editing \`requirements.txt\`. xcompiler_run seeds this into \`requirements.txt\` before sandbox start; ARCH/CODE Steps must not overwrite that file directly. **Never invent non-existent PyPI packages** — common traps such as \`pydbc\`/\`python-dbc\`/\`pydbcparser\` do not exist; for CAN \`.dbc\` parsing use \`cantools\`; for CAN bus IO use \`python-can\`. When in doubt, omit rather than fabricate.
+18. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into executable macro Steps and Step.subTasks (each with id / description / acceptance).
+19. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — run the full regression → structurally improve existing src/tests from the dependency chain if needed → run the full regression again → write docs/04-refactor.md". outputs must include \`docs/04-refactor.md\` and may also re-declare refactored src/tests files. Put refactor activities in \`subTasks\`; do not add features or delete tests.
+20. **DELIVERY phase**: the DELIVERY Step's outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`; for \`projectType\` = \`library\` or \`mixed\`, it must also include \`docs/api-guide.md\`. \`README.md\` is the project landing page, QuickStart gives copy-paste install/run/test commands, and API Guide documents public functions/classes/types. Documentation must be written in English for this prompt and include language metadata/switch links when translated variants exist. DELIVERY must not introduce new functionality.
+21. **Entrypoint / public API by projectType**: for \`projectType="application"\` or \`"mixed"\`, the CODE phase must produce a **directly executable** Python entry point — pick one:
     - (a) \`src/main.py\` with \`if __name__ == "__main__": main()\` at the bottom; \`main()\` must at minimum print help / version / sample output and run with no extra arguments; or
     - (b) a Python package directory containing \`__main__.py\` (e.g. \`src/<pkg>/__main__.py\`), launchable via \`python -m <pkg>\`.
-    The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). If the requirement implies a CLI / service / app, prefer \`src/main.py\` + \`argparse\` for subcommands. The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable run command** (e.g. \`python src/main.py --help\` or \`python -m <pkg> --help\`). **A library-API-only project with no entry point is treated as not meeting the delivery bar.**
+    The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). If the requirement implies a CLI / service / app, prefer \`src/main.py\` + \`argparse\` for subcommands. The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable run command** (e.g. \`python src/main.py --help\` or \`python -m <pkg> --help\`). For \`projectType="library"\`, do not invent an application entrypoint merely to satisfy this rule; instead expose a stable public API module/package, test import/use cases, and document the public functions/classes/types in \`docs/api-guide.md\`.
 
-19. **Entry-point import conventions (to prevent \`ModuleNotFoundError: No module named 'src'\`)**: when using option (a) \`src/main.py\`, **do NOT** write \`from src.xxx import ...\` — running \`python src/main.py\` puts \`src/\` (not the project root) on \`sys.path[0]\`, so \`from src.xxx\` immediately raises ModuleNotFoundError. Allowed forms (pick one):
+22. **Entry-point import conventions (to prevent \`ModuleNotFoundError: No module named 'src'\`)**: when using option (a) \`src/main.py\`, **do NOT** write \`from src.xxx import ...\` — running \`python src/main.py\` puts \`src/\` (not the project root) on \`sys.path[0]\`, so \`from src.xxx\` immediately raises ModuleNotFoundError. Allowed forms (pick one):
     - **Preferred**: inside \`src/main.py\` use only \`from <module> import ...\` (e.g. \`from dbc_parser import parse_dbc_file\` — **no src. prefix**). Sibling modules at \`src/<module>.py\` resolve directly.
     - **Alternative**: insert these two lines at the **very top** of \`src/main.py\`, then \`from src.xxx import ...\` works:
       \`\`\`
@@ -52,12 +59,18 @@ Mandatory rules:
       (injects the project root into sys.path so \`from src.xxx import ...\` resolves.)
 	    With option (b) \`python -m <pkg>\`, use relative imports inside the package (\`from .submod import ...\`); never \`from src.xxx\`. **The run command in \`docs/05-delivery.md\` must succeed in a clean shell (project root, venv activated, after \`pip install -r requirements.txt\`) without requiring \`export PYTHONPATH=...\`.**
 
-20. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). A request spanning two or more concern surfaces must declare at least \`max(4, surface count + 2)\` modules (capped at 12), including entry/orchestration, core domain, and each independent concern. Every module declares at least one \`src/**/*.py\` and one \`tests/**/*.py\`, maps to exactly one dedicated CODE Step, and has its testPaths produced by a TEST Step depending on that CODE Step. ARCH renders this contract module-by-module and TASK creates an independently acceptable task per module; missing mappings are rejected.
+23. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). Size the module count from the actual requirement, existing baseline, and intent: small single-function/script work may use one module; complex work must include entry/orchestration, core domain, each independent concern surface, and extra boundaries when an incremental change touches a larger existing baseline. Do not aim for a fixed number. The validator recomputes the exact minimum from topic/baseline/intent and rejects collapsed plans. Every module declares at least one \`src/**/*.py\` and one \`tests/**/*.py\`. CODE / TEST macro Steps may cover multiple modules, but must list module-level work in \`subTasks\`; missing mappings are rejected.
 
 Output JSON shape:
 {
   "requirementDigest": "string",
   "globalPrompt": "string (global background and conventions)",
+  "projectType": "application | library | mixed",
+  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
+  "implementationPhases": [
+    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
+    { "id": "P2", "title": "Enhancements", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
+  ],
   "dependencies": ["pytest", "..."],
   "architectureModules": [
     { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.py"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
@@ -73,6 +86,9 @@ Output JSON shape:
       "tools": ["write_file"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement.md"],
+      "subTasks": [
+        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.py"], "subTasks": [] }
+      ],
       "dependsOn": [],
       "acceptance": "string",
       "maxRetries": 3
@@ -80,7 +96,7 @@ Output JSON shape:
   ]
 }`;
 
-const PYTHON_EXECUTOR_SYSTEM = `You are TOAA's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
+const PYTHON_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
 Every round you must return strict JSON:
 {
@@ -91,14 +107,15 @@ Every round you must return strict JSON:
 
 Rules:
 1. Only call tools in the Step's authorised whitelist.
-2. File writes must land within the Step's outputs whitelist (other paths are rejected).
+2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
+   For DELIVERY documentation outputs, write the complete declared bundle in the active i18n language: \`README.md\`, \`docs/quickstart.md\`, \`docs/05-delivery.md\`, and \`docs/api-guide.md\` when present. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow the target language's best practice; modules importable, functions typed appropriately.
    - [Import convention] When modules under src/ import each other, use "from <module> import …" (sibling name).
      **Never write "from src.<module> import …".** If main.py needs to run from the project root, prepend
      "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" before any import,
      so that both "python src/main.py …" and "python -m src.main …" work.
    - [Test convention] Files under tests/ also import targets via "from <module> import …".
-     **TOAA auto-generates tests/conftest.py to inject project-root and src/ into sys.path**,
+     **XCompiler auto-generates tests/conftest.py to inject project-root and src/ into sys.path**,
      so both pytest and "python tests/test_*.py" can resolve modules — test files
      **must NOT** add their own sys.path.insert(...). If you create or edit conftest.py yourself,
      keep the existing sys.path injection — do not delete it.
@@ -115,13 +132,14 @@ Rules:
      Never edit the implementation, the assertion, or mock out the parser to "fix" a parse error — fix the fixture first.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
-6. [Large-file chunked writes] write_file / append_file content must not exceed 6000 bytes per call (~150 lines of code).
+6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
    - For larger files: in the same actions array, first write_file the head (imports + top-level constants + first function/class),
      then several append_file calls each adding one function/class block (preserving trailing newlines).
+   - For complex projects, prefer multiple cohesive modules/files and separate CODE/TEST/REFACTOR Steps over one giant file.
    - The concatenated result must be valid Python; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.`;
 
-const TYPESCRIPT_PLANNER_SYSTEM = `You are the Planner of the TOAA system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
+const TYPESCRIPT_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
 
 Output language: TypeScript / Node.js only (plan.language is fixed to "typescript").
 
@@ -137,34 +155,47 @@ V-model phases: REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFACT
 | REFACTOR     | \`docs/04-refactor.md\`     |
 | DELIVERY     | \`docs/05-delivery.md\`     |
 
-> The top-level project context file \`docs/topic.md\` is written automatically by toaa c after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
+> The top-level project context file \`docs/topic.md\` is written automatically by xcompiler build after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
+
+**Delivery documentation bundle**: every DELIVERY Step must output \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`. For \`projectType\` = \`library\` or \`mixed\`, it must also output \`docs/api-guide.md\`. User-facing documentation must follow the active i18n language; code identifiers, API names, commands, and file paths stay literal.
+
+**Macro Step decomposition**: CODE / TEST / DEBUG / REFACTOR are executable macro Steps. Put internal work decomposition in each Step's \`subTasks\` (maximum 2 nested levels below the parent Step) instead of exploding every internal task into many executable Steps.
 
 Mandatory rules:
 1. Return pure JSON that matches the given schema. No explanatory text and no Markdown code fences.
-2. **You must emit a complete V-model skeleton with at least 7 Steps**: 1 REQUIREMENT, 1 ARCH, 1 TASK, 1+ CODE, 1+ TEST, 1 REFACTOR, 1 DELIVERY. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
+2. **You must emit a complete V-model macro plan covering the required phases**: REQUIREMENT, ARCH, TASK, CODE, TEST, REFACTOR, and DELIVERY. Use the smallest number of executable macro Steps that matches the project shape; normally one CODE and one TEST macro Step is enough, and extra macro Steps are added only when they represent real execution boundaries. DEBUG may appear as an explicit macro Step only for planned remediation or diagnostic work; runtime failures are handled by debugger retries for the failed Step. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
 3. ARCH must produce \`docs/02-architecture.md\`. **Exactly one ARCH Step must output \`package.json\`**, and it must author scripts + dependencies + devDependencies for the project. A root \`tsconfig.json\` may also be an ARCH output. Do NOT list \`requirements.txt\` anywhere.
 4. **Every CODE Step must have at least one TEST Step (directly or transitively) depending on it.** Either give each CODE Step its own TEST Step (whose dependsOn includes that CODE Step), or use one aggregate TEST Step whose dependsOn lists all CODE Steps. "CODE without TEST" or partial TEST coverage is rejected by plan-lint S004/S005.
-5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < REFACTOR < DELIVERY.
+5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY.
 6. The same outputs path is globally unique. Sole exception: REFACTOR / DEBUG steps may re-declare a file already produced by their dependency chain (treated as a "modify").
 7. id has the form S001, S002, … sequential.
 8. role must be one of Planner / Architect / Coder / Tester / Debugger.
 9. tools is a string array (whitelist) — atomic tools or Skill refs like "skill:patcher" / "skill:tester" / "skill:debugger".
 10. acceptance is one English sentence stating the verifiable completion criterion.
-11. **Phase purity**: REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY outputs must NOT contain \`src/**/*.ts\`, \`src/**/*.tsx\`, or \`tests/**/*.ts\` — only docs/**/*.md, plus \`package.json\` / \`tsconfig.json\` for ARCH where needed. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list existing test files (e.g. \`tests/foo.test.ts\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs Vitest automatically).**
-12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. toaa_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
+11. **Phase purity**: REQUIREMENT / ARCH / TASK / DELIVERY outputs must NOT contain \`src/**/*.ts\`, \`src/**/*.tsx\`, or \`tests/**/*.ts\` — only docs/**/*.md, plus \`package.json\` / \`tsconfig.json\` for ARCH where needed. REFACTOR is the sole exception: it may re-declare existing src/tests files from its dependency chain as behaviour-preserving refactor targets, and it must also output \`docs/04-refactor.md\`. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list test files (e.g. \`tests/foo.test.ts\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs Vitest automatically).**
+12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. xcompiler_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
 13. **Global prompt**: globalPrompt is one paragraph of project background / cross-cutting conventions; it is concatenated into every Step.
-14. **dependencies**: a string array of runtime npm packages (bare package names only, no version ranges). It is advisory context for the planner; the authoritative dependency manifest is the \`package.json\` authored by ARCH. Do not include dev tooling like \`vitest\` / \`typescript\` / \`tsx\` / \`@types/node\` in this field unless they are also true runtime deps. Never fabricate package names when unsure.
-15. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into a list of independently-executable CODE tasks (each with id / description / acceptance).
-16. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — must run the full regression before writing docs/04-refactor.md". outputs must include \`docs/04-refactor.md\`.
-17. **DELIVERY phase**: the DELIVERY Step's outputs must include \`docs/05-delivery.md\`, covering: README summary / entry command / dependency list / link to test report / known limitations. DELIVERY must not introduce new functionality.
-18. **Must produce a standalone runnable TypeScript / Node.js application (not just a function library).** The CODE phase must produce a directly executable entry \`src/main.ts\` whose bottom calls a \`main()\` that can print help / usage / sample output and run with no extra arguments. The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable run command** such as \`npx tsx src/main.ts --help\`.
-19. **Entry-point import conventions**: local TypeScript modules must use ESM relative imports with explicit \`.js\` specifiers (e.g. \`import { parse } from './parser.js';\` while the file on disk is \`parser.ts\`). Never use Python-style imports, \`from src.xxx\`, or path hacks. Tests use Vitest under \`tests/**/*.test.ts\`.
-20. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). A request spanning two or more concern surfaces must declare at least \`max(4, surface count + 2)\` modules (capped at 12). Every module declares source and test paths, maps to exactly one dedicated CODE Step, and has its testPaths produced by a TEST Step depending on that CODE Step. ARCH and TASK must preserve this module mapping; missing mappings are rejected.
+14. **projectType**: top-level projectType must be one of \`application\`, \`library\`, or \`mixed\`. Classify it from the clarified requirement; there is no CLI project-type override. Use \`library\` for SDK/package/API-only modules; use \`mixed\` when the deliverable contains both a runnable app/CLI/service and a reusable public API.
+15. **complexityAssessment**: top-level object with \`level\` = \`simple | moderate | complex\`, \`rationale\`, \`splitRecommended\`, and \`userForcedPhaseSplit\`. This is your first-pass planning assessment. Choose from actual project complexity: simple = one implementation phase, moderate = two phases, complex = three or more phases. Set \`splitRecommended=true\` for moderate/complex work and when the user asks for phases/stages/milestones; set \`userForcedPhaseSplit=true\` for explicit phase requests.
+16. **implementationPhases**: top-level array. Always include \`P1\` with \`status="current"\`; current V-model Steps implement only P1. The phase count follows complexity: simple => P1 only unless forced; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. P1 must be the smallest complete core slice.
+17. **dependencies**: a string array of runtime npm packages (bare package names only, no version ranges). It is advisory context for the planner; the authoritative dependency manifest is the \`package.json\` authored by ARCH. Do not include dev tooling like \`vitest\` / \`typescript\` / \`tsx\` / \`@types/node\` in this field unless they are also true runtime deps. Never fabricate package names when unsure.
+18. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into executable macro Steps and Step.subTasks (each with id / description / acceptance).
+19. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — run the full regression → structurally improve existing src/tests from the dependency chain if needed → run the full regression again → write docs/04-refactor.md". outputs must include \`docs/04-refactor.md\` and may also re-declare refactored src/tests files. Put refactor activities in \`subTasks\`; do not add features or delete tests.
+20. **DELIVERY phase**: the DELIVERY Step's outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`; for \`projectType\` = \`library\` or \`mixed\`, it must also include \`docs/api-guide.md\`. \`README.md\` is the project landing page, QuickStart gives copy-paste install/run/test commands, and API Guide documents public functions/classes/types. Documentation must be written in English for this prompt and include language metadata/switch links when translated variants exist. DELIVERY must not introduce new functionality.
+21. **Entrypoint / public API by projectType**: for \`projectType="application"\` or \`"mixed"\`, the CODE phase must produce a directly executable entry \`src/main.ts\` whose bottom calls a \`main()\` that can print help / usage / sample output and run with no extra arguments. The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable direct Node command** such as \`node src/main.ts --help\`; \`npm start\` may wrap the same entry but is not a substitute for the direct Node probe. For \`projectType="library"\`, do not invent an application entrypoint merely to satisfy this rule; instead expose a stable public API from \`src/index.ts\` or equivalent, test import/use cases, and document public functions/classes/types in \`docs/api-guide.md\`.
+22. **Entry-point import conventions**: local TypeScript source modules must use ESM relative imports with explicit \`.ts\` specifiers (e.g. \`import { parse } from './parser.ts';\`). ARCH must configure \`tsconfig.json\` with \`allowImportingTsExtensions: true\` and build/lint scripts that run \`tsc --noEmit\`. Keep generated TypeScript compatible with Node's native type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.xxx\`, or path hacks. Tests use Vitest under \`tests/**/*.test.ts\` and should import local source with \`.ts\` specifiers.
+23. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). Size the module count from the actual requirement, existing baseline, and intent: small single-function/script work may use one module; complex work must include entry/orchestration, core domain, each independent concern surface, and extra boundaries when an incremental change touches a larger existing baseline. Do not aim for a fixed number. The validator recomputes the exact minimum from topic/baseline/intent and rejects collapsed plans. Every module declares source and test paths. CODE / TEST macro Steps may cover multiple modules, but must list module-level work in \`subTasks\`; missing mappings are rejected.
 
 Output JSON shape:
 {
   "requirementDigest": "string",
   "globalPrompt": "string (global background and conventions)",
+  "projectType": "application | library | mixed",
+  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
+  "implementationPhases": [
+    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
+    { "id": "P2", "title": "Enhancements", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
+  ],
   "dependencies": ["zod", "..."],
   "architectureModules": [
     { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.ts"], "testPaths": ["tests/example.test.ts"], "dependencies": [] }
@@ -180,6 +211,9 @@ Output JSON shape:
       "tools": ["write_file"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement.md"],
+      "subTasks": [
+        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.ts"], "subTasks": [] }
+      ],
       "dependsOn": [],
       "acceptance": "string",
       "maxRetries": 3
@@ -187,7 +221,7 @@ Output JSON shape:
   ]
 }`;
 
-const TYPESCRIPT_EXECUTOR_SYSTEM = `You are TOAA's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
+const TYPESCRIPT_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
 Every round you must return strict JSON:
 {
@@ -198,22 +232,24 @@ Every round you must return strict JSON:
 
 Rules:
 1. Only call tools in the Step's authorised whitelist.
-2. File writes must land within the Step's outputs whitelist (other paths are rejected).
+2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
+   For DELIVERY documentation outputs, write the complete declared bundle in the active i18n language: \`README.md\`, \`docs/quickstart.md\`, \`docs/05-delivery.md\`, and \`docs/api-guide.md\` when present. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow TypeScript / Node.js best practice; modules importable, APIs typed, and runtime code directly runnable.
-   - [Import convention] Local modules under src/ use ESM relative imports with explicit ".js" specifiers, e.g. \`import { x } from "./util.js";\`. Never use Python-style imports, \`from src.<module>\`, or sys.path hacks.
+   - [Import convention] Local source modules under src/ use ESM relative imports with explicit ".ts" specifiers, e.g. \`import { x } from "./util.ts";\`. Keep code compatible with Node's native TypeScript type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.<module>\`, or sys.path hacks.
    - [Test convention] Tests use Vitest: \`import { describe, it, expect } from "vitest";\`. Test files live under \`tests/**/*.test.ts\`.
    - [Self-contained tests] Tests **must NOT** read a sample file that does not exist on disk. When a target function needs file input, either create the content inside the test or write fixtures under \`tests/fixtures/<name>\`.
    - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed", the **fixture itself is malformed**. read_file the fixture → write_file a minimal valid sample → run_tests again. Never "fix" a parse error by weakening the implementation or the assertion.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
-6. [Large-file chunked writes] write_file / append_file content must not exceed 6000 bytes per call.
+6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
    - For larger files: in the same actions array, first write_file the head (imports + top-level constants + first function/class), then several append_file calls each adding one function/class block.
+   - For complex projects, prefer multiple cohesive modules/files and separate CODE/TEST/REFACTOR Steps over one giant file.
    - The concatenated result must be valid TypeScript; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.
 7. package.json is the dependency manifest. Use add_dependency for npm packages; never write requirements.txt.
-8. run_program runs the project entry with \`npx tsx\`, and run_tests runs Vitest via \`npm test\`.`;
+8. run_program runs the project entry with \`npx tsx\`, run_tests runs Vitest via \`npm test\`, and the final delivery gate also verifies the direct Node entry command.`;
 
-const PLANNER_CLARIFY_SYSTEM = `You are the requirements analyst for TOAA's V-model. Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
+const PLANNER_CLARIFY_SYSTEM = `You are the requirements analyst for XCompiler's V-model. Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
 Return strict JSON only. Each question must be directly answerable by a product owner, cover one decision, and avoid vague catch-all or implementation-stack questions.`;
 
 function buildPlannerSystem(profile: LanguageProfile): string {
@@ -227,7 +263,7 @@ const messages: Messages = {
   llm: {
     coderDebuggerSameModel: (model, coderProvider, debuggerProvider) =>
       `Model configuration advice: Coder (${coderProvider}) and Debugger (${debuggerProvider}) both use ${model}. Prefer different models so debugging provides an independent reasoning path.`,
-    invalidBaseUrl: (raw, fallback) => `[toaa] invalid base_url (${raw}); falling back to ${fallback}`,
+    invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); falling back to ${fallback}`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} failed output validation; trying next`,
     providerCallFailed: (role, model) => `[${role}] provider ${model} failed; trying next`,
     scoreReadFailed: (p, message) => `failed to read ${p}: ${message}`,
@@ -236,16 +272,16 @@ const messages: Messages = {
     preflightOllamaReachable: (baseUrl, models) => `preflight: ollama ${baseUrl} reachable; found ${models} model(s)`,
     preflightOllamaUnreachable: (baseUrl, message) => `preflight: ollama ${baseUrl} unreachable: ${message}`,
     preflightAutoAdded: (providers, roles) => `preflight: auto-added ${providers} provider(s) for roles [${roles}]`,
-    scoreFileHeader: '# TOAA LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
+    scoreFileHeader: '# XCompiler LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
     scoreFileSemantics: '# Scores: default 1.0; failure -0.5 (floor 0=disabled); success +0.1 (cap 10).',
   },
   system: {
-    configEnvMissing: (names) => `[toaa] unset config environment variables were replaced with empty strings: ${names}`,
+    configEnvMissing: (names) => `[xcompiler] unset config environment variables were replaced with empty strings: ${names}`,
     unhandledError: (message) => `Unhandled error: ${message}`,
     unsupportedPypiOnlyNetwork:
       'network=pypi-only is rejected because Docker cannot enforce a PyPI-only allowlist by itself. Use network=off for isolation or network=download-only for explicitly unrestricted outbound downloads.',
     dockerInsideContainerUnsupported:
-      'TOAA is running inside a container, so sandbox=docker is unsupported because Docker-outside-of-Docker can mis-map bind mounts and docker.sock permissions. Use agent.sandbox=subprocess, run TOAA on the host, or set TOAA_IN_CONTAINER=0 only in a controlled environment.',
+      'XCompiler is running inside a container, so sandbox=docker is unsupported because Docker-outside-of-Docker can mis-map bind mounts and docker.sock permissions. Use agent.sandbox=subprocess, run XCompiler on the host, or set XC_IN_CONTAINER=0 only in a controlled environment.',
     firejailUnsupported: 'sandbox=firejail is not implemented; use subprocess or docker.',
     smokeHeader: (baseUrl) => `Smoke test against ${baseUrl} (streaming)`,
     smokeOk: (model, totalMs, firstTokenMs, chunks, preview) =>
@@ -256,21 +292,21 @@ const messages: Messages = {
     invalidId: (id) => `Plugin ID "${id}" is invalid; use lowercase letters, digits, dots, hyphens, or underscores.`,
     duplicateId: (id) => `Duplicate plugin ID: ${id}`,
     invalidVersion: (plugin, version) => `Plugin ${plugin} has an invalid SemVer version: ${version}`,
-    invalidCoreVersion: (version) => `TOAA core has an invalid SemVer version: ${version}`,
-    apiVersionMismatch: (plugin, actual, expected) => `Plugin ${plugin} targets Plugin API ${actual}; this TOAA runtime requires API ${expected}.`,
-    invalidMinimumVersion: (plugin, version) => `Plugin ${plugin} has an invalid minimum TOAA version: ${version}`,
-    coreVersionTooOld: (plugin, minimum, actual) => `Plugin ${plugin} requires TOAA >= ${minimum}; current version is ${actual}.`,
+    invalidCoreVersion: (version) => `XCompiler core has an invalid SemVer version: ${version}`,
+    apiVersionMismatch: (plugin, actual, expected) => `Plugin ${plugin} targets Plugin API ${actual}; this XCompiler runtime requires API ${expected}.`,
+    invalidMinimumVersion: (plugin, version) => `Plugin ${plugin} has an invalid minimum XCompiler version: ${version}`,
+    coreVersionTooOld: (plugin, minimum, actual) => `Plugin ${plugin} requires XCompiler >= ${minimum}; current version is ${actual}.`,
     loaded: (plugin, version) => `Plugin ${plugin}@${version} loaded.`,
     extensionConflict: (plugin, kind, name) => `Plugin ${plugin} cannot replace existing ${kind} "${name}".`,
     hookFailed: (plugin, stage, message) => `Plugin ${plugin} failed during ${stage}: ${message}`,
     manifestReadFailed: (path, message) => `Cannot read plugin manifest ${path}: ${message}`,
     moduleLoadFailed: (plugin, path, message) => `Cannot load plugin ${plugin} from ${path}: ${message}`,
-    exportInvalid: (plugin, exportName) => `Plugin ${plugin} export ${exportName} is not a valid TOAA plugin`,
+    exportInvalid: (plugin, exportName) => `Plugin ${plugin} export ${exportName} is not a valid XCompiler plugin`,
     manifestMismatch: (plugin) => `Plugin ${plugin} runtime manifest does not match its preflight manifest`,
   },
   audit: {
-    processLogTitle: '# TOAA Development Process Log',
-    processLogPreamble: '> Generated by TOAA. Records CLI sessions, user input, LLM interactions, and execution actions for delivery traceability.',
+    processLogTitle: '# XCompiler Development Process Log',
+    processLogPreamble: '> Generated by XCompiler. Records CLI sessions, user input, LLM interactions, and execution actions for delivery traceability.',
     sessionStart: (ts, command) => `## ▶ Session ${ts} — \`${command}\``,
     sessionEnd: (ts) => `### ◀ Session end ${ts}`,
     eventSessionStart: (command) => `start ${command}`,
@@ -325,9 +361,11 @@ const messages: Messages = {
     command: (runtime, command) => `${runtime} ${command}`,
   },
   cli: {
-    rootDescription: 'TOAA — AI Software Factory CLI',
+    rootDescription: 'XCompiler — AI Software Factory CLI',
     compileDescription: 'Interactively compile a requirement into plan.json (with mandatory human gates)',
     runDescription: 'Execute a confirmed plan.json (supports phased runs: --phase / --from)',
+    loadDescription: 'Load a XXX.xc project file and continue its current plan',
+    appendDescription: 'Append a new requirement to an existing XXX.xc project through clarification and V-model execution',
     lsDescription: 'Scan workspace and list every plan.json status summary',
     showDescription: 'Print Step definition / status / outputs / recent audit',
     optWorkspace: 'workspace directory (alias of --output, defaults to current directory)',
@@ -337,7 +375,7 @@ const messages: Messages = {
     optTopic: 'reuse an already-clarified topic.md as input: skip intake / clarify / addenda / Gate 1 and go straight to decompose',
     optPlanOut: 'output path for plan.json (default <workspace>/plan.json)',
     optBaseDir: 'project root output directory (creates <name> subdir under it)',
-    optName: 'project name (default toaa-<timestamp>)',
+    optName: 'project name (default xcompiler-<timestamp>)',
     optYes: 'skip human confirmation (only meaningful with -i / -t)',
     optForce: 'force regenerate: override workspace lock and ignore existing plan.json',
     optDryRun: 'print topology only, do not execute',
@@ -350,11 +388,13 @@ const messages: Messages = {
     optLang: 'UI / prompt language: EN | CN (ISO 3166-1 Alpha-2)',
     optIntent: 'plan intent: greenfield | feature | refactor | self',
     optBaselinePlan: 'existing baseline plan.json path (default <workspace>/plan.json)',
+    optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
     argPlan: 'plan.json path (default = <workspace>/plan.json)',
+    argProjectFile: 'XXX.xc project file',
     argStepId: 'Step ID, e.g. S001',
     evolveDescription: 'Generate and execute an incremental feature/refactor plan on top of an existing workspace',
-    bootstrapDescription: 'Build and qualify the next TOAA generation in an isolated Git worktree',
-    optRepository: 'TOAA Git repository to bootstrap (default current directory)',
+    bootstrapDescription: 'Build and qualify the next XCompiler generation in an isolated Git worktree',
+    optRepository: 'XCompiler Git repository to bootstrap (default current directory)',
     optPromote: 'fast-forward the current branch after every qualification gate passes',
     optCleanup: 'remove the isolated worktree after writing the report (branch is retained)',
     optDockerQualification: 'use the experimental Docker runner for candidate qualification',
@@ -397,7 +437,7 @@ const messages: Messages = {
     candidateMoved: (expected, actual) => `Candidate commit changed after qualification (expected ${expected}, got ${actual}).`,
     candidateNotBasedOnBase: (candidate, base) => `Candidate ${candidate} is not descended from bootstrap base ${base}.`,
     promotionVerificationFailed: (expected, actual) => `Promotion verification failed (expected HEAD ${expected}, got ${actual}).`,
-    reportTitle: 'TOAA Self-Bootstrap Report',
+    reportTitle: 'XCompiler Self-Bootstrap Report',
     reportNone: '(none)',
     reportNextQualified: (repository, candidateCommit) => `git -C "${repository}" merge --ff-only "${candidateCommit}"`,
     reportNextPromoted: 'Run the next self-bootstrap request with the promoted generation.',
@@ -422,6 +462,7 @@ const messages: Messages = {
     lintIssue: (id, message) => ` - [${id}] ${message}`,
     planPreviewTruncated: '… (truncated; see docs/plan.md)',
     auditPlanPersisted: (p) => `plan.json written: ${p}`,
+    projectFileWritten: (p) => `project file updated: ${p}`,
     nextCommand: (command) => `  Next: ${command}`,
     topicEmptyExit: '--topic file is empty, aborting.',
     topicLoaded: (p) => `topic loaded: ${p} (skipping intake / clarify / Gate 1)`,
@@ -437,7 +478,7 @@ const messages: Messages = {
     decomposeFail: 'Planner decomposition failed',
     plannerInvalidPlan: 'Planner could not produce a valid plan:',
     plannerInvalidPlanHint1: '  Common cause: every LLM provider returned malformed/truncated JSON (e.g. token loop).',
-    plannerInvalidPlanHint2: '  Investigate: check llm.error / planner.thought entries in .toaa/audit.jsonl.',
+    plannerInvalidPlanHint2: '  Investigate: check llm.error / planner.thought entries in .xcompiler/audit.jsonl.',
     decomposeSucceed: (n) => `generated ${n} Step(s)`,
     schemaFail: 'Plan schema validation failed:',
     schemaInvalidSavedAt: (p) => `  full plan saved to: ${p}`,
@@ -475,6 +516,7 @@ const messages: Messages = {
     stepNotFound: (id) => `Step ${id} not found`,
     secDescription: '— description —',
     secAcceptance: '— acceptance —',
+    secSubtasks: '— subtasks —',
     secSystemPrompt: '— systemPrompt —',
     secOutputs: '— outputs —',
     secRecentAudit: (n) => `— recent audit (${n}) —`,
@@ -504,6 +546,8 @@ const messages: Messages = {
     projectAuditSummary: (errors, warnings) => `project audit: ${errors} error(s), ${warnings} warning(s)`,
     projectMemoryRefreshFailed: (message) => `project memory refresh failed: ${message}`,
     projectAuditCheck: (name, summary) => `[audit:${name}] ${summary}`,
+    auditDocPresent: (p) => `${p} present`,
+    auditDocMissing: (p) => `missing ${p}`,
     auditDeliveryDocPresent: 'delivery documentation present',
     auditDeliveryDocMissing: 'missing docs/05-delivery.md',
     auditTestFilesFound: (count) => `found ${count} concrete test file(s)`,
@@ -517,10 +561,16 @@ const messages: Messages = {
       `${name} failed (exit=${exitCode}${timedOut ? ', timeout' : ''})`,
   },
   engine: {
-    spinSandboxBuild: 'building sandbox (pip install -r requirements.txt)…',
+    spinSandboxBuild: (profile) =>
+      profile.id === 'typescript'
+        ? `building sandbox (npm install, ${profile.manifestFile})…`
+        : `building sandbox (pip install -r ${profile.manifestFile})…`,
     sandboxReady: (r) => `sandbox ready: ${r}`,
     stepSkipDone: (id, phase) => `  ↪ ${id} ${phase} already done, skipping`,
-    spinSandboxRebuild: (id) => `Step ${id} wrote requirements.txt — rebuilding sandbox…`,
+    spinSandboxRebuild: (id, profile) =>
+      profile.id === 'typescript'
+        ? `Step ${id} wrote ${profile.manifestFile} — rebuilding npm sandbox…`
+        : `Step ${id} wrote ${profile.manifestFile} — rebuilding pip sandbox…`,
     sandboxStatus: (r) => `sandbox: ${r}`,
     autoFixedSrcImports: (n, files) => `  ⚠ auto-fixed sys.path bootstrap in ${n} entry file(s): ${files}`,
     debugResumeNotice: (id, n) => `  ↻ ${id} previous session ended FAILED (${n} attempts so far); first round of this run goes straight into Debugger mode.`,
@@ -542,7 +592,7 @@ const messages: Messages = {
     reasonLabel: 'reason: ',
     failureLogHeader: '--- failure log (tail, max 80 lines) ---',
     fixSuggestionsHeader: '--- fix suggestions (calibration) ---',
-    auditHint: (id) => `  audit: see .toaa/audit.jsonl and .toaa/llm-stream/${id}-*.txt for the raw stream`,
+    auditHint: (id) => `  audit: see .xcompiler/audit.jsonl and .xcompiler/llm-stream/${id}-*.txt for the raw stream`,
     spinStepRunning: (id, phase, title) => `▶ ${id} ${phase} ${title}`,
     noFailureLog: '(no log captured)',
     suggestionLine: (index, code, hint) => `  ${index}. [${code}] ${hint}`,
@@ -559,6 +609,10 @@ const messages: Messages = {
       'missing Python entrypoint: expected src/main.py or src/<package>/__main__.py',
     missingTypeScriptEntrypoint:
       'missing TypeScript entrypoint: expected package.json start/bin or one of src/main.ts, src/index.ts, src/main.tsx',
+    invalidPythonEntrypointSource: (path) =>
+      `invalid Python entrypoint source in ${path}: expected a real CLI entry structure such as def main(...), argparse.ArgumentParser, or if __name__ == "__main__"; placeholder/import-only files are not runnable applications.`,
+    entrypointHelpOutputMissing: (command) =>
+      `entrypoint probe \`${command}\` exited 0 but produced no meaningful help/usage text; implement --help instead of relying on an empty script exit.`,
     reasonLine: (reason) => `reason: ${reason}`,
     roundsLine: (rounds) => `rounds: ${rounds}`,
     commandLine: (command) => `command: ${command}`,
@@ -576,15 +630,16 @@ const messages: Messages = {
     deliveryFixHints: (language) => language === 'typescript'
       ? [
           'Fix directions (priority order):',
-          '  1. For module resolution / ERR_MODULE_NOT_FOUND, use relative ESM imports with explicit .js specifiers.',
+          '  1. For module resolution / ERR_MODULE_NOT_FOUND in TypeScript source, use relative ESM imports with explicit .ts specifiers.',
           '  2. For --help / unknown option, main() must support --help and exit 0.',
           '  3. For application exceptions, fix the implementation and keep the entrypoint thin.',
         ]
       : [
           'Fix directions (priority order):',
           '  1. For ModuleNotFoundError involving src, add the planner #19 sys.path bootstrap or remove the src. import prefix.',
-          '  2. For argparse errors, main() must support --help without other required arguments and exit 0.',
-          '  3. For business exceptions, fix the implementation and keep the entrypoint limited to parsing and dispatch.',
+          '  2. main() must be a real CLI entrypoint: parse --help, call the project modules, print meaningful output, and use if __name__ == "__main__": main().',
+          '  3. For argparse errors, main() must support --help without other required arguments and exit 0.',
+          '  4. For business exceptions, fix the implementation and keep the entrypoint limited to parsing and dispatch.',
         ],
   },
   render: {
@@ -596,7 +651,7 @@ const messages: Messages = {
   prompts: {
     plannerSystem: (p) => buildPlannerSystem(p),
     plannerSelfMode: `SELF-BOOTSTRAP OVERRIDE (takes precedence over conflicting greenfield rules above):
-- The target is the existing TOAA repository. Preserve its current package.json, tsconfig, bin entries, CLI entrypoints, module layout, public exports, and documentation unless the requirement explicitly changes them.
+- The target is the existing XCompiler repository. Preserve its current package.json, tsconfig, bin entries, CLI entrypoints, module layout, public exports, and documentation unless the requirement explicitly changes them.
 - Do not create src/main.ts merely to satisfy a greenfield entrypoint convention. Reuse the entrypoints declared by the existing package.json.
 - Do not list package.json or tsconfig.json as ARCH outputs unless this change genuinely needs to modify them.
 - Every CODE/REFACTOR output must be scoped to the requested delta. Never rebuild or replace the repository wholesale.
@@ -619,10 +674,14 @@ Question mix (functionality first):
 - At least one boundary question defining in-scope, explicitly out-of-scope, external-system ownership, or compatibility limits.
 - At least one quality question requesting measurable latency, throughput, volume, concurrency, accuracy, reliability, or security targets. Never ask only “Any performance requirements?”.
 - At least one extensibility question identifying the most likely future business capability, extension axis, or interface that must remain stable. Never ask only “Should it be extensible?”.
+- If the deliverable shape is unclear, include one boundary question asking whether this should be an API library/SDK/package, a runnable application/CLI/service, or a mixed deliverable with both.
 - Order by blocking impact: core functional/data decisions first, then scope and quality, then future evolution.
 - One primary decision per question. Include useful business choices/examples; do not join unrelated questions with “and/or”.
+${opts.projectShapeAmbiguous
+  ? '- Required for this topic: ask the API library vs runnable application vs mixed-deliverable boundary explicitly.\n'
+  : ''}
 
-[Hard constraint] The implementation stack is already fixed by TOAA config / the existing project baseline. Do not reopen language/runtime/package-manager decisions.
+[Hard constraint] The implementation stack is already fixed by XCompiler config / the existing project baseline. Do not reopen language/runtime/package-manager decisions.
 **Do NOT** ask questions of these forms:
   - "Which programming language / framework / runtime should this use?"
   - "Which test framework / build tool / package manager?"
@@ -652,7 +711,8 @@ ${opts.baseline || '(missing baseline)'}
 `
   : ''}Planning depth rules:
 - Unless the request is explicitly tiny (single function / toy script / one-file utility), do not collapse the solution into one source file and one test.
-- If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple modules and multiple CODE steps.
+- If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple architecture modules and Step.subTasks under CODE/TEST macro Steps.
+- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 only; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true.
 - Use ARCH/TASK steps to describe module boundaries, responsibilities, and extension points that future incremental work can build on.
 - When baseline files already exist, prefer editing/extending those modules over creating shadow implementations with duplicate behaviour.
 
@@ -660,7 +720,9 @@ Output a strict JSON plan per the system rules.`,
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
-      'Begin with read_file / code_search to localise the issue, then make the smallest possible fix via apply_patch / replace_in_file / add_dependency, and finally run_tests to verify.' +
+      'DEBUG may edit upstream source files and tests within the current allowedWrites. If the failure reveals a real implementation, contract, or downstream integration mismatch, fix that real defect; do not pass by weakening assertions, skipping tests, deleting failing cases, or merely accommodating an incorrect test. ' +
+      'Begin with read_file / code_search to localise the issue, then make the smallest possible fix via apply_patch / replace_in_file / add_dependency, and finally run_tests to verify. ' +
+      'If the failure log shows a network/API failure, do not stop at probing endpoints: use at most two consecutive http_fetch probes, reject 2xx responses with empty or unusable bodies, then patch the real integration and verify with run_program plus run_tests. Do not set done=true while the entrypoint still reports a network/API failure.' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
     executorStepBlock: (sp: string) =>
@@ -674,7 +736,7 @@ Output a strict JSON plan per the system rules.`,
   },
   skills: {
     patcher: 'Use apply_patch / replace_in_file for small in-place edits to existing files; never overwrite a whole file.',
-    author: 'Use write_file to create new files; prefer paths inside the outputs whitelist.',
+    author: 'Use write_file to create new files; prefer paths inside the current Step writable allowlist.',
     tester:
       'Write and run pytest tests verifying function behaviour; on failure parse with analyze_error. ' +
       '[Self-contained fixtures] Tests **must NOT** open() a sample file that does not exist on disk (e.g. "test.dbc"); ' +
@@ -688,14 +750,15 @@ Output a strict JSON plan per the system rules.`,
     dep_resolver: 'On ModuleNotFoundError, use add_dependency to write the package back into requirements.txt and rebuild the sandbox.',
     debugger:
       'First run_tests / run_python to reproduce the error → analyze_error → patch / replace_in_file to fix → run_tests again. Make the smallest possible change each round. ' +
-      '[Important] If replace_in_file on the same file fails ≥ 2 times in a row, switch immediately to read_file + write_file full-file rewrite (≤ 6000 bytes can overwrite directly); stop guessing the find string. ' +
+      '[Network/API failures] Locate the failing URL, try only a small number of replacement API probes, then patch the source and run_program to prove the entrypoint no longer emits API failure. ' +
+      '[Important] If replace_in_file on the same file fails ≥ 2 times in a row, switch to read_file and then patch or rewrite within the current runtime chunk limit; stop guessing the find string. ' +
       '[No no-ops] replace_in_file find and replace must differ — if you only want to "verify" a snippet, use read_file; do not submit identical-string replacements.',
     refactorer: 'Refactors must preserve behaviour: run regression tests → modify → run regression tests again.',
   },
   doctor: {
     cliDescription: 'check that config / LLM / sandbox / skills are ready',
     optStrict: 'treat warnings as failures (exit non-zero on any warn)',
-    header: 'TOAA environment check',
+    header: 'XCompiler environment check',
     sectionConfig: '[config]',
     sectionLLM: '[LLM]',
     sectionSandbox: '[sandbox]',
@@ -741,7 +804,7 @@ Output a strict JSON plan per the system rules.`,
     sandboxDockerOk: (version) => `docker OK (${version})`,
     sandboxDockerDaemonDown: (msg) => `docker daemon not reachable: ${msg}`,
     sandboxInContainerWarn:
-      'TOAA appears to be running inside a container; sandbox=docker is unsupported in this mode (use subprocess).',
+      'XCompiler appears to be running inside a container; sandbox=docker is unsupported in this mode (use subprocess).',
     skillToolMissing: (skill, tool) => `skill "${skill}" references unknown tool "${tool}"`,
     skillOk: (n, tools) => `${n} skill(s) registered, ${tools} underlying tool(s)`,
   },

@@ -3,9 +3,9 @@ import { Workspace } from '../src/workspace/workspace.js';
 import { createSandbox, isRunningInContainer } from '../src/sandbox/factory.js';
 import { SubprocessSandbox } from '../src/sandbox/subprocess.js';
 import { DockerSandbox } from '../src/sandbox/docker.js';
-import type { ToaaConfig } from '../src/config/config.js';
+import type { XCompilerConfig } from '../src/config/config.js';
 
-const baseCfg = (sandbox: 'subprocess' | 'docker'): ToaaConfig =>
+const baseCfg = (sandbox: 'subprocess' | 'docker'): XCompilerConfig =>
   ({
     llm: { default: 'ollama_code', providers: {}, roles: {}, fallbacks: [] },
     agent: {
@@ -18,59 +18,70 @@ const baseCfg = (sandbox: 'subprocess' | 'docker'): ToaaConfig =>
       sandbox_limits: { cpu: 1, memory_mb: 512, wall_seconds: 60, network: 'download-only' },
       sandbox_docker: { image: 'python:3.11-slim', workdir: '/workspace', pull: false, docker_bin: 'docker', extra_run_args: [] },
     },
-  }) as unknown as ToaaConfig;
+  }) as unknown as XCompilerConfig;
 
 let savedEnv: string | undefined;
+let savedLongEnv: string | undefined;
 
 beforeEach(() => {
-  savedEnv = process.env.TOAA_IN_CONTAINER;
+  savedEnv = process.env.XC_IN_CONTAINER;
+  savedLongEnv = process.env.XCOMPILER_IN_CONTAINER;
+  delete process.env.XC_IN_CONTAINER;
+  delete process.env.XCOMPILER_IN_CONTAINER;
 });
 afterEach(() => {
-  if (savedEnv === undefined) delete process.env.TOAA_IN_CONTAINER;
-  else process.env.TOAA_IN_CONTAINER = savedEnv;
+  if (savedEnv === undefined) delete process.env.XC_IN_CONTAINER;
+  else process.env.XC_IN_CONTAINER = savedEnv;
+  if (savedLongEnv === undefined) delete process.env.XCOMPILER_IN_CONTAINER;
+  else process.env.XCOMPILER_IN_CONTAINER = savedLongEnv;
 });
 
 describe('sandbox factory — container detection', () => {
-  it('TOAA_IN_CONTAINER=1 强制识别为容器', () => {
-    process.env.TOAA_IN_CONTAINER = '1';
+  it('XC_IN_CONTAINER=1 强制识别为容器', () => {
+    process.env.XC_IN_CONTAINER = '1';
     expect(isRunningInContainer()).toBe(true);
   });
 
-  it('TOAA_IN_CONTAINER=0 强制识别为宿主', () => {
-    process.env.TOAA_IN_CONTAINER = '0';
+  it('XC_IN_CONTAINER=0 强制识别为宿主', () => {
+    process.env.XC_IN_CONTAINER = '0';
     expect(isRunningInContainer()).toBe(false);
   });
 
+  it('XCOMPILER_IN_CONTAINER fallback remains supported', () => {
+    process.env.XCOMPILER_IN_CONTAINER = '1';
+    expect(isRunningInContainer()).toBe(true);
+  });
+
   it('容器内创建 sandbox=docker 时抛出引导性错误', () => {
-    process.env.TOAA_IN_CONTAINER = '1';
-    const ws = new Workspace('/tmp/toaa-factory-test');
+    process.env.XC_IN_CONTAINER = '1';
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
     expect(() => createSandbox(baseCfg('docker'), ws)).toThrowError(/sandbox=docker/);
     expect(() => createSandbox(baseCfg('docker'), ws)).toThrowError(/subprocess/);
   });
 
   it('容器内 sandbox=subprocess 正常返回 SubprocessSandbox', () => {
-    process.env.TOAA_IN_CONTAINER = '1';
-    const ws = new Workspace('/tmp/toaa-factory-test');
+    process.env.XC_IN_CONTAINER = '1';
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
     const sb = createSandbox(baseCfg('subprocess'), ws);
     expect(sb).toBeInstanceOf(SubprocessSandbox);
   });
 
   it('宿主上 sandbox=docker 正常实例化（不抛错）', () => {
-    process.env.TOAA_IN_CONTAINER = '0';
-    const ws = new Workspace('/tmp/toaa-factory-test');
+    process.env.XC_IN_CONTAINER = '0';
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
     expect(() => createSandbox(baseCfg('docker'), ws)).not.toThrow();
   });
 
   it('任何 sandbox 都拒绝无法兑现的 pypi-only 策略', () => {
-    const ws = new Workspace('/tmp/toaa-factory-test');
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
     const cfg = baseCfg('subprocess');
     cfg.agent.sandbox_limits.network = 'pypi-only';
     expect(() => createSandbox(cfg, ws)).toThrow(/pypi-only/);
   });
 
   it('跨语言执行时为 TypeScript plan 选择 node 默认镜像，而不是沿用 Python 自定义镜像', () => {
-    process.env.TOAA_IN_CONTAINER = '0';
-    const ws = new Workspace('/tmp/toaa-factory-test');
+    process.env.XC_IN_CONTAINER = '0';
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
     const cfg = baseCfg('docker');
     cfg.agent.sandbox_docker.image = 'python:3.12-slim';
     const sb = createSandbox(cfg, ws, undefined, 'typescript') as DockerSandbox & { image?: string };

@@ -4,7 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
 import { isAllowedWrite } from '../src/tools/types.js';
-import { writeFileTool, readFileTool, listDirTool } from '../src/tools/fs.js';
+import {
+  DEFAULT_WRITE_CHUNK_BYTES,
+  appendFileTool,
+  readFileTool,
+  listDirTool,
+  resolveWriteChunkBytes,
+  writeFileTool,
+} from '../src/tools/fs.js';
 import { applyPatchTool, parseUnifiedDiff } from '../src/tools/patch.js';
 import type { ToolContext } from '../src/tools/types.js';
 
@@ -13,7 +20,7 @@ let ws: Workspace;
 let ctx: ToolContext;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-tools-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-tools-'));
   ws = new Workspace(tmp);
   ctx = {
     ws,
@@ -58,6 +65,31 @@ describe('write_file tool', () => {
     const bad = await writeFileTool.run({ path: 'docs/leak.md', content: 'x' }, ctx);
     expect(bad.ok).toBe(false);
     expect(bad.error).toMatch(/write denied/);
+  });
+
+  it('uses explicit per-step chunk limits for write_file and append_file', async () => {
+    ctx.writeChunkBytes = 16;
+    const tooLarge = await writeFileTool.run({ path: 'src/big.py', content: 'x'.repeat(17) }, ctx);
+    expect(tooLarge.ok).toBe(false);
+    expect(tooLarge.error).toContain('chunk limit 16B');
+
+    const ok = await writeFileTool.run({ path: 'src/big.py', content: 'x'.repeat(16) }, ctx);
+    expect(ok.ok).toBe(true);
+
+    const appendTooLarge = await appendFileTool.run({ path: 'src/big.py', content: 'y'.repeat(17) }, ctx);
+    expect(appendTooLarge.ok).toBe(false);
+    expect(appendTooLarge.error).toContain('chunk limit 16B');
+  });
+
+  it('auto-scales write chunk budget by phase and step context', () => {
+    expect(resolveWriteChunkBytes(1234, { phase: 'CODE' })).toBe(1234);
+    const dynamic = resolveWriteChunkBytes('auto', {
+      phase: 'REFACTOR',
+      tools: ['write_file', 'append_file'],
+      outputs: ['src/a.ts', 'src/b.ts', 'tests/a.test.ts'],
+      contextChars: 20_000,
+    });
+    expect(dynamic).toBeGreaterThan(DEFAULT_WRITE_CHUNK_BYTES);
   });
 });
 
@@ -122,6 +154,33 @@ describe('apply_patch tool', () => {
 });
 
 describe('runTestsTool / runPythonTool summary', () => {
+  it('marks run_program failed when output shows a network API failure despite exit 0', async () => {
+    const { runProgramTool } = await import('../src/tools/sandbox.js');
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runProgram() {
+          return {
+            exitCode: 0,
+            stdout: 'Weather report unavailable\n',
+            stderr: 'Weather API request failed: 503 Service Unavailable\n',
+            timedOut: false,
+            durationMs: 1,
+          };
+        },
+        async runTests() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S001',
+      language: 'python',
+    };
+    const r = await runProgramTool.run({ args: ['src/main.py'] }, fakeCtx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain('Network API failure detected');
+    expect(r.summary).toContain('503 Service Unavailable');
+  });
+
   it('embeds stderr/stdout tail in summary on failure (so LLM can see the real error)', async () => {
     const { runTestsTool } = await import('../src/tools/sandbox.js');
     const fakeCtx: ToolContext = {

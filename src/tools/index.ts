@@ -16,6 +16,8 @@ export { ToolRegistry, isAllowedWrite } from './types.js';
 export type { Tool, ToolContext, ToolResult } from './types.js';
 export { EditGuard } from './guard.js';
 export type { EditRecord } from './guard.js';
+export { resolveWriteChunkBytes, DEFAULT_WRITE_CHUNK_BYTES } from './fs.js';
+export type { WriteChunkBytes, WriteChunkBudgetContext } from './fs.js';
 
 export function buildDefaultRegistry(): ToolRegistry {
   const reg = new ToolRegistry();

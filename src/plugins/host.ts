@@ -2,7 +2,7 @@ import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import type { LLMClient } from '../llm/types.js';
 import type { Tool } from '../tools/types.js';
-import { TOAA_PLUGIN_API_VERSION, TOAA_VERSION } from '../version.js';
+import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../version.js';
 import { checkPluginCompatibility } from './compatibility.js';
 import type {
   HookContextMap,
@@ -12,13 +12,13 @@ import type {
   PluginApi,
   PluginExtensionTarget,
   PluginHostOptions,
-  ToaaPlugin,
-  ToaaPluginManifest,
+  XCompilerPlugin,
+  XCompilerPluginManifest,
 } from './types.js';
 
 interface RegisteredHook {
   hook: HookName;
-  plugin: ToaaPlugin;
+  plugin: XCompilerPlugin;
   handler: (context: unknown) => void | Promise<void>;
   priority: number;
   order: number;
@@ -26,13 +26,13 @@ interface RegisteredHook {
 
 /** 插件注册、扩展能力合并与生命周期 Hook 调度中心。 */
 export class PluginHost {
-  private readonly plugins: ToaaPlugin[];
+  private readonly plugins: XCompilerPlugin[];
   private readonly strict: boolean;
-  private readonly toaaVersion: string;
+  private readonly xcompilerVersion: string;
   private readonly pluginApiVersion: number;
   private readonly hooks = new Map<HookName, RegisteredHook[]>();
-  private readonly contributedTools: Array<{ plugin: ToaaPlugin; tool: Tool }> = [];
-  private readonly contributedSkills: Array<{ plugin: ToaaPlugin; skill: Parameters<PluginApi['registerSkill']>[0] }> = [];
+  private readonly contributedTools: Array<{ plugin: XCompilerPlugin; tool: Tool }> = [];
+  private readonly contributedSkills: Array<{ plugin: XCompilerPlugin; skill: Parameters<PluginApi['registerSkill']>[0] }> = [];
   private audit?: AuditLogger;
   private initialized = false;
   private registrationOrder = 0;
@@ -40,10 +40,10 @@ export class PluginHost {
   constructor(options: PluginHostOptions = {}) {
     this.plugins = (options.plugins ?? []).map(snapshotPlugin);
     this.strict = options.strict ?? false;
-    this.toaaVersion = options.toaaVersion ?? TOAA_VERSION;
-    this.pluginApiVersion = options.pluginApiVersion ?? TOAA_PLUGIN_API_VERSION;
+    this.xcompilerVersion = options.xcompilerVersion ?? XCOMPILER_VERSION;
+    this.pluginApiVersion = options.pluginApiVersion ?? XCOMPILER_PLUGIN_API_VERSION;
     this.audit = options.audit;
-    assertPluginMetadata(this.plugins, this.toaaVersion, this.pluginApiVersion);
+    assertPluginMetadata(this.plugins, this.xcompilerVersion, this.pluginApiVersion);
   }
 
   get size(): number {
@@ -51,7 +51,7 @@ export class PluginHost {
   }
 
   /** 返回只读清单快照，供诊断、插件目录和未来 registry 使用。 */
-  get manifests(): readonly ToaaPluginManifest[] {
+  get manifests(): readonly XCompilerPluginManifest[] {
     return this.plugins.map((plugin) => snapshotManifest(plugin.manifest));
   }
 
@@ -73,7 +73,7 @@ export class PluginHost {
             messageId: 'plugins.loaded',
             pluginId: plugin.manifest.id,
             pluginVersion: plugin.manifest.version,
-            minToaaVersion: plugin.manifest.minToaaVersion,
+            minXCompilerVersion: plugin.manifest.minXCompilerVersion,
             apiVersion: plugin.manifest.apiVersion,
           },
         );
@@ -180,9 +180,9 @@ export class PluginHost {
     };
   }
 
-  private createApi(plugin: ToaaPlugin): PluginApi {
+  private createApi(plugin: XCompilerPlugin): PluginApi {
     return {
-      toaaVersion: this.toaaVersion,
+      xcompilerVersion: this.xcompilerVersion,
       pluginApiVersion: this.pluginApiVersion,
       on: <K extends HookName>(
         hook: K,
@@ -211,7 +211,7 @@ export class PluginHost {
     };
   }
 
-  private async handleFailure(plugin: ToaaPlugin, stage: string, error: unknown): Promise<void> {
+  private async handleFailure(plugin: XCompilerPlugin, stage: string, error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     const rendered = t().plugins.hookFailed(plugin.manifest.id, stage, message);
     await this.audit?.event('note', rendered, {
@@ -226,25 +226,25 @@ export class PluginHost {
 }
 
 function assertPluginMetadata(
-  plugins: ToaaPlugin[],
-  toaaVersion: string,
+  plugins: XCompilerPlugin[],
+  xcompilerVersion: string,
   pluginApiVersion: number,
 ): void {
   const seen = new Set<string>();
   for (const plugin of plugins) {
-    const report = checkPluginCompatibility(plugin.manifest, { toaaVersion, pluginApiVersion });
+    const report = checkPluginCompatibility(plugin.manifest, { xcompilerVersion, pluginApiVersion });
     if (!report.compatible) throw new Error(report.message);
     if (seen.has(report.pluginId)) throw new Error(t().plugins.duplicateId(report.pluginId));
     seen.add(report.pluginId);
   }
 }
 
-function snapshotPlugin(plugin: ToaaPlugin): ToaaPlugin {
+function snapshotPlugin(plugin: XCompilerPlugin): XCompilerPlugin {
   return { ...plugin, manifest: snapshotManifest(plugin.manifest) };
 }
 
-function snapshotManifest(manifest: ToaaPluginManifest | undefined): ToaaPluginManifest {
-  if (!manifest) return {} as ToaaPluginManifest;
+function snapshotManifest(manifest: XCompilerPluginManifest | undefined): XCompilerPluginManifest {
+  if (!manifest) return {} as XCompilerPluginManifest;
   return {
     ...manifest,
     keywords: manifest.keywords ? [...manifest.keywords] : undefined,

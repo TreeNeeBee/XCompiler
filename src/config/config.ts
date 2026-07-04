@@ -4,11 +4,20 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
 import { t } from '../i18n/index.js';
+import { xcEnv } from './env.js';
+
+const ProviderStringScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+const OptionalProviderStringSchema = ProviderStringScalarSchema.nullish().transform((v) =>
+  v == null ? '' : String(v),
+);
+const RequiredProviderStringSchema = ProviderStringScalarSchema.transform((v) => String(v)).pipe(
+  z.string().min(1),
+);
 
 const ProviderSchema = z.object({
-  api_key: z.string().nullish().transform((v) => v ?? ''),
-  base_url: z.string().nullish().transform((v) => v ?? ''),
-  model: z.string().min(1),
+  api_key: OptionalProviderStringSchema,
+  base_url: OptionalProviderStringSchema,
+  model: RequiredProviderStringSchema,
   /** 请求 wall-clock 总超时（毫秒）。默认 10 分钟。0 = 不限制。 */
   request_timeout_ms: z.number().int().nonnegative().optional(),
   /** 流式空闲超时（毫秒）。默认 60s。0 = 不限制。 */
@@ -64,7 +73,8 @@ const ConfigSchema = z.object({
     max_debug_retries_cap: z.number().int().positive().optional(),
     max_rounds_per_step: z.number().int().positive().default(6),
     max_debug_rounds_per_step: z.number().int().positive().optional(),
-    max_edit_lines_per_step: z.number().int().positive().default(400),
+    max_edit_lines_per_step: z.union([z.literal('auto'), z.number().int().positive()]).default('auto'),
+    max_write_chunk_bytes: z.union([z.literal('auto'), z.number().int().positive()]).default('auto'),
     sandbox: z.enum(['subprocess', 'docker', 'firejail']).default('subprocess'),
     sandbox_limits: z
       .object({
@@ -115,40 +125,40 @@ const ConfigSchema = z.object({
   ...rest,
 }));
 
-export type ToaaConfig = z.infer<typeof ConfigSchema>;
+export type XCompilerConfig = z.infer<typeof ConfigSchema>;
 
 /**
  * 配置文件查找顺序（优先级从高到低）：
  *   1. 显式 --config / explicitPath
  *   2. 当前目录 ./config.yaml
- *   3. $TOAA_PATH/config.yaml          （安装/全局配置目录，默认 ~/.toaa）
+ *   3. $XC_PATH/config.yaml            （安装/全局配置目录，默认 ~/.xc）
  *   4. 当前目录 ./config.example.yaml  （仓库 fallback）
- *   5. $TOAA_PATH/config.example.yaml
+ *   5. $XC_PATH/config.example.yaml
  */
-export function getToaaPath(): string {
-  const env = process.env.TOAA_PATH;
+export function getXCompilerPath(): string {
+  const env = xcEnv('PATH');
   if (env && env.trim()) return path.resolve(env.trim());
   const home = process.env.HOME ?? process.env.USERPROFILE ?? '/root';
-  return path.join(home, '.toaa');
+  return path.join(home, '.xc');
 }
 
 function defaultSearchPaths(): string[] {
-  const toaaPath = getToaaPath();
+  const xcompilerPath = getXCompilerPath();
   return [
     path.resolve('config.yaml'),
-    path.join(toaaPath, 'config.yaml'),
+    path.join(xcompilerPath, 'config.yaml'),
     path.resolve('config.example.yaml'),
-    path.join(toaaPath, 'config.example.yaml'),
+    path.join(xcompilerPath, 'config.example.yaml'),
   ];
 }
 
-export async function loadConfig(explicitPath?: string): Promise<ToaaConfig> {
+export async function loadConfig(explicitPath?: string): Promise<XCompilerConfig> {
   const r = await loadConfigWithPath(explicitPath);
   return r.config;
 }
 
 export interface LoadedConfig {
-  config: ToaaConfig;
+  config: XCompilerConfig;
   /** 实际命中的 config 文件绝对路径（供 ScoreStore 在同目录下落盘 sidecar 评分文件）。 */
   path: string;
 }
@@ -170,7 +180,7 @@ export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedC
   }
   throw new Error(
     `No config file found. Tried (in order):\n  ${tried.join('\n  ')}\n` +
-      `\nHint: set TOAA_PATH to point at a directory containing config.yaml, ` +
+      `\nHint: set XC_PATH to point at a directory containing config.yaml, ` +
       `or run from a directory that contains config.yaml.`,
   );
 }

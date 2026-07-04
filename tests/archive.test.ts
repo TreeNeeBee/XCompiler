@@ -9,7 +9,7 @@ let tmp: string;
 let ws: Workspace;
 
 beforeEach(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'toaa-archive-'));
+  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-archive-'));
   ws = new Workspace(tmp);
 });
 

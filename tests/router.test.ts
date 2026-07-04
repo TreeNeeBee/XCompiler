@@ -2,10 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { LLMRouter } from '../src/llm/router.js';
 import { findSharedCoderDebuggerModel, reportRoleModelAdvice } from '../src/llm/role_advice.js';
 import { ScoreStore } from '../src/llm/scores.js';
-import type { ToaaConfig } from '../src/config/config.js';
+import type { XCompilerConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
 
-function mkCfg(partial: Partial<ToaaConfig['llm']>): ToaaConfig {
+function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
   return {
     llm: {
       default: 'ollama_code',
