@@ -73,7 +73,7 @@ jobs:
           PREV_TAG="$(git tag --list 'v*' --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)"
 
           {
-            echo "# TOAA ${TAG}"
+            echo "# XCompiler ${TAG}"
             echo
             if [ -n "${PREV_TAG}" ]; then
               echo "## Changes since ${PREV_TAG}"
@@ -104,9 +104,9 @@ jobs:
             echo "|---|---|---|"
             (
               cd dist/pkg
-              for f in toaa-*.tar.gz toaa-*.zip; do
+              for f in xcompiler-*.tar.gz xcompiler-*.zip; do
                 size=$(du -h "$f" | cut -f1)
-                target="${f#toaa-}"; target="${target%.tar.gz}"; target="${target%.zip}"
+                target="${f#xcompiler-}"; target="${target%.tar.gz}"; target="${target%.zip}"
                 echo "| \`$f\` | $size | $target |"
               done
             )
@@ -122,13 +122,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: TOAA ${{ github.ref_name }}
+          name: XCompiler ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.notes_file }}
           # 含 - 视为 prerelease（v0.1.0-rc1 / v1.0.0-beta 等）；正式版去掉 -
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            dist/pkg/toaa-linux-x64.tar.gz
-            dist/pkg/toaa-linux-arm64.tar.gz
-            dist/pkg/toaa-macos-arm64.tar.gz
-            dist/pkg/toaa-win-x64.zip
+            dist/pkg/xcompiler-linux-x64.tar.gz
+            dist/pkg/xcompiler-linux-arm64.tar.gz
+            dist/pkg/xcompiler-macos-arm64.tar.gz
+            dist/pkg/xcompiler-win-x64.zip
             dist/pkg/SHA256SUMS
