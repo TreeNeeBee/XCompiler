@@ -6,6 +6,7 @@ import type { ArchitectureModule, Step } from '../src/core/plan.js';
 function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
   return {
     id: overrides.id,
+    iterationId: overrides.iterationId ?? 'P1',
     phase: overrides.phase,
     title: overrides.title ?? 'Step ' + overrides.id,
     description: overrides.description ?? 'Execute one bounded task.',
@@ -23,7 +24,7 @@ function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
 }
 
 describe('calibrateArchitectureStepMappings', () => {
-  it('keeps CODE and TEST macro steps while adding module subtasks', () => {
+  it('keeps CODE and MODULE_TEST macro steps while adding module subtasks', () => {
     const modules: ArchitectureModule[] = [
       {
         id: 'M001',
@@ -51,9 +52,9 @@ describe('calibrateArchitectureStepMappings', () => {
       },
     ];
     const rawSteps = [
-      step({ id: 'S001', phase: 'REQUIREMENT', role: 'Planner', outputs: ['docs/01-requirement.md'] }),
-      step({ id: 'S002', phase: 'ARCH', role: 'Architect', outputs: ['docs/02-architecture.md'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'TASK', role: 'Planner', outputs: ['docs/03-tasks.md'], dependsOn: ['S002'] }),
+      step({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md'] }),
+      step({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
+      step({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
       step({
         id: 'S004',
         phase: 'CODE',
@@ -63,12 +64,12 @@ describe('calibrateArchitectureStepMappings', () => {
       step({ id: 'S005', phase: 'CODE', outputs: ['src/main.py'], dependsOn: ['S004'] }),
       step({
         id: 'S006',
-        phase: 'TEST',
+        phase: 'MODULE_TEST',
         role: 'Tester',
         outputs: ['tests/test_holiday_service.py', 'tests/test_models.py'],
         dependsOn: ['S004'],
       }),
-      step({ id: 'S007', phase: 'TEST', role: 'Tester', outputs: ['tests/test_cli.py'], dependsOn: ['S005'] }),
+      step({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_cli.py'], dependsOn: ['S005'] }),
     ];
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
     const codeSteps = calibrated.filter((item) => item.phase === 'CODE');
@@ -81,7 +82,7 @@ describe('calibrateArchitectureStepMappings', () => {
     const cliStep = codeSteps.find((item) => item.outputs.includes('src/main.py'));
     expect(cliStep?.dependsOn).toEqual(expect.arrayContaining(['S004']));
 
-    const testSteps = calibrated.filter((item) => item.phase === 'TEST');
+    const testSteps = calibrated.filter((item) => item.phase === 'MODULE_TEST');
     expect(testSteps.map((item) => item.outputs)).toEqual([
       ['tests/test_holiday_service.py', 'tests/test_models.py'],
       ['tests/test_cli.py'],

@@ -35,6 +35,9 @@ export type AuditKind =
   | 'executor.turn'
   | 'planner.thought'
   | 'conftest.autogen'
+  | 'issue.record'
+  | 'issue.route'
+  | 'issue.resolve'
   | 'note';
 
 export interface AuditEvent {

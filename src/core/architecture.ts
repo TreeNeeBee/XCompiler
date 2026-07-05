@@ -244,7 +244,7 @@ export interface ArchitectureContractIssue {
   message: string;
 }
 
-/** 校验 ARCH 模块契约到 CODE / TEST 两侧的可追踪性。 */
+/** 校验 HIGH_LEVEL_DESIGN 模块契约到 CODE / MODULE_TEST 两侧的可追踪性。 */
 export function validateArchitectureContract(
   modules: ArchitectureModule[],
   steps: Step[],
@@ -254,7 +254,7 @@ export function validateArchitectureContract(
   const issues: ArchitectureContractIssue[] = [];
   const profile = getLanguageProfile(language);
   const codeSteps = steps.filter((step) => step.phase === 'CODE');
-  const testSteps = steps.filter((step) => step.phase === 'TEST');
+  const testSteps = steps.filter((step) => step.phase === 'MODULE_TEST');
   const stepById = new Map(steps.map((step) => [step.id, step]));
 
   if (demand.nonTrivial && modules.length < demand.minModules) {
@@ -311,10 +311,10 @@ export function validateArchitectureContract(
       module.testPaths.some((path) => pathCoveredByOutputs(path, step.outputs)),
     );
     if (matchingTests.length === 0) {
-      issues.push({ message: `${module.id} testPaths are not produced by any TEST step.` });
+      issues.push({ message: `${module.id} testPaths are not produced by any MODULE_TEST step.` });
     } else if (!matchingTests.some((step) => transitivelyDependsOn(step, codeOwner.id, stepById))) {
       issues.push({
-        message: `${module.id} TEST step must depend directly or transitively on its CODE step ${codeOwner.id}.`,
+        message: `${module.id} MODULE_TEST step must depend directly or transitively on its CODE step ${codeOwner.id}.`,
       });
     }
   }
@@ -338,7 +338,7 @@ export function validateArchitectureContract(
     });
   }
 
-  // 复杂计划里的源码必须能回溯到 ARCH，避免 Planner 额外塞入未设计的“万能 app.py”。
+  // 复杂计划里的源码必须能回溯到 HIGH_LEVEL_DESIGN，避免 Planner 额外塞入未设计的“万能 app.py”。
   if (demand.nonTrivial) {
     for (const step of codeSteps) {
       for (const output of step.outputs) {
@@ -382,7 +382,7 @@ export function pathCoveredByOutputs(path: string, outputs: string[]): boolean {
   });
 }
 
-/** ARCH gate：架构文档必须显式保留结构化契约中的模块 id 与全部源码/测试路径。 */
+/** HIGH_LEVEL_DESIGN gate：架构文档必须显式保留结构化契约中的模块 id 与全部源码/测试路径。 */
 export function missingArchitectureDocumentTokens(
   content: string,
   modules: ArchitectureModule[],

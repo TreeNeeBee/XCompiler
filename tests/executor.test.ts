@@ -35,6 +35,7 @@ beforeEach(async () => {
 
 const baseStep: Step = {
   id: 'S010',
+  iterationId: 'P1',
   phase: 'CODE',
   title: 't',
   description: 'd',

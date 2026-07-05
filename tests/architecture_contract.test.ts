@@ -4,7 +4,7 @@ import { lintPlan } from '../src/core/lint.js';
 import { PlanSchema, type ArchitectureModule, type Plan, type Step } from '../src/core/plan.js';
 import { renderPlanMarkdown } from '../src/core/render.js';
 
-const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'];
+const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'];
 
 const moduleSpecs = [
   ['M001', 'entry', 'Application entry and top-level dependency composition.', 'src/main.py', 'tests/test_main.py'],
@@ -18,6 +18,7 @@ const moduleSpecs = [
 function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
   return {
     id: overrides.id,
+    iterationId: overrides.iterationId ?? 'P1',
     phase: overrides.phase,
     title: overrides.title ?? `${overrides.phase} ${overrides.id}`,
     description: overrides.description ?? 'Execute one bounded V-model responsibility.',
@@ -35,7 +36,7 @@ function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
 }
 
 function complexPlan(): Plan {
-  const architectureModules: ArchitectureModule[] = moduleSpecs.map((spec, index) => ({
+  const p1Modules: ArchitectureModule[] = moduleSpecs.map((spec, index) => ({
     id: spec[0],
     name: spec[1],
     responsibility: spec[2],
@@ -43,25 +44,40 @@ function complexPlan(): Plan {
     testPaths: [spec[4]],
     dependencies: index === 0 ? moduleSpecs.slice(1).map((item) => item[0]) : index >= 2 ? ['M002'] : [],
   }));
+  const p2Module: ArchitectureModule = {
+    id: 'M007',
+    name: 'ops',
+    responsibility: 'Operational health checks and runtime diagnostics for the generated application.',
+    sourcePaths: ['src/ops.py'],
+    testPaths: ['tests/test_ops.py'],
+    dependencies: ['M001'],
+  };
+  const p3Module: ArchitectureModule = {
+    id: 'M008',
+    name: 'scale',
+    responsibility: 'Scale-oriented batch execution helpers and performance guardrails.',
+    sourcePaths: ['src/scale.py'],
+    testPaths: ['tests/test_scale.py'],
+    dependencies: ['M001', 'M007'],
+  };
+  const architectureModules: ArchitectureModule[] = [...p1Modules, p2Module, p3Module];
   const codeSteps = moduleSpecs.map((spec, index) =>
     step({
       id: `S${String(index + 4).padStart(3, '0')}`,
       phase: 'CODE',
-      outputs: [spec[3]],
-      inputs: ['docs/02-architecture.md', 'docs/03-tasks.md'],
+      outputs: index === 0 ? [spec[3], 'docs/tests/unit-test-plan.md'] : [spec[3]],
+      inputs: ['docs/02-high-level-design.md', 'docs/03-detailed-design.md'],
       dependsOn: ['S003'],
     }),
   );
-  const testSteps = moduleSpecs.map((spec, index) =>
-    step({
-      id: `S${String(index + 10).padStart(3, '0')}`,
-      phase: 'TEST',
-      role: 'Tester',
-      outputs: [spec[4]],
-      inputs: [spec[3]],
-      dependsOn: [codeSteps[index]!.id],
-    }),
-  );
+  const moduleTestStep = step({
+    id: 'S012',
+    phase: 'MODULE_TEST',
+    role: 'Tester',
+    outputs: ['docs/07-module-test.md', ...moduleSpecs.map((spec) => spec[4])],
+    inputs: moduleSpecs.map((spec) => spec[3]),
+    dependsOn: ['S011', ...codeSteps.map((item) => item.id)],
+  });
   return {
     version: '1',
     language: 'python',
@@ -83,24 +99,39 @@ function complexPlan(): Plan {
         scope: ['Core architecture modules', 'Primary tests', 'Delivery docs'],
         deliverables: ['Runnable core application'],
         dependsOn: [],
+        verificationGate: {
+          summary: 'P1 gate',
+          checks: ['tests pass', 'entrypoint runs', 'delivery docs exist'],
+          failurePolicy: 'Repair P1 before continuing.',
+        },
       },
       {
         id: 'P2',
         title: 'Enhancements',
         objective: 'Extend operational hardening after the core is stable.',
-        status: 'deferred',
+        status: 'planned',
         scope: ['Operational polish'],
         deliverables: ['Deferred enhancement plan'],
         dependsOn: ['P1'],
+        verificationGate: {
+          summary: 'P2 gate',
+          checks: ['tests pass', 'iteration docs exist'],
+          failurePolicy: 'Repair P2 before continuing.',
+        },
       },
       {
         id: 'P3',
         title: 'Scale and operations',
         objective: 'Plan scale and operational hardening after enhancement work.',
-        status: 'deferred',
+        status: 'planned',
         scope: ['Scale testing', 'Operational observability'],
         deliverables: ['Deferred scale and operations plan'],
         dependsOn: ['P2'],
+        verificationGate: {
+          summary: 'P3 gate',
+          checks: ['tests pass', 'iteration docs exist'],
+          failurePolicy: 'Repair P3 before continuing.',
+        },
       },
     ],
     globalPrompt: '',
@@ -110,18 +141,59 @@ function complexPlan(): Plan {
     dependencies: ['pytest'],
     createdAt: '2026-06-22T00:00:00.000Z',
     steps: [
-      step({ id: 'S001', phase: 'REQUIREMENT', role: 'Planner', outputs: ['docs/01-requirement.md'] }),
-      step({ id: 'S002', phase: 'ARCH', role: 'Architect', outputs: ['docs/02-architecture.md'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'TASK', role: 'Planner', outputs: ['docs/03-tasks.md'], dependsOn: ['S002'] }),
-      ...codeSteps,
-      ...testSteps,
       step({
-        id: 'S016',
-        phase: 'REFACTOR',
-        outputs: ['docs/04-refactor.md'],
-        dependsOn: testSteps.map((item) => item.id),
+        id: 'S001',
+        phase: 'REQUIREMENT_ANALYSIS',
+        role: 'Planner',
+        outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'],
       }),
-      step({ id: 'S017', phase: 'DELIVERY', outputs: [...baseDeliveryDocs], dependsOn: ['S016'] }),
+      step({
+        id: 'S002',
+        phase: 'HIGH_LEVEL_DESIGN',
+        role: 'Architect',
+        outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'],
+        dependsOn: ['S001'],
+      }),
+      step({
+        id: 'S003',
+        phase: 'DETAILED_DESIGN',
+        role: 'Architect',
+        outputs: ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'],
+        dependsOn: ['S002'],
+      }),
+      ...codeSteps,
+      step({
+        id: 'S010',
+        phase: 'UNIT_TEST',
+        role: 'Tester',
+        outputs: ['docs/05-unit-test.md', 'tests/test_unit.py'],
+        dependsOn: codeSteps.map((item) => item.id),
+      }),
+      step({
+        id: 'S011',
+        phase: 'INTEGRATION_TEST',
+        role: 'Tester',
+        outputs: ['docs/06-integration-test.md', 'tests/test_integration.py'],
+        dependsOn: ['S010'],
+      }),
+      moduleTestStep,
+      step({ id: 'S013', phase: 'FUNCTIONAL_TEST', outputs: [...baseDeliveryDocs], dependsOn: ['S012'] }),
+      step({ id: 'S014', iterationId: 'P2', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/iterations/P2/01-requirement-analysis.md', 'docs/iterations/P2/tests/functional-test-plan.md'], dependsOn: ['S013'] }),
+      step({ id: 'S015', iterationId: 'P2', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/iterations/P2/02-high-level-design.md', 'docs/iterations/P2/tests/integration-test-plan.md'], dependsOn: ['S014'] }),
+      step({ id: 'S016', iterationId: 'P2', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/iterations/P2/03-detailed-design.md', 'docs/iterations/P2/tests/module-test-plan.md'], dependsOn: ['S015'] }),
+      step({ id: 'S017', iterationId: 'P2', phase: 'CODE', outputs: ['src/ops.py', 'docs/iterations/P2/tests/unit-test-plan.md'], dependsOn: ['S016'] }),
+      step({ id: 'S018', iterationId: 'P2', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/iterations/P2/05-unit-test.md', 'tests/test_ops_unit.py'], dependsOn: ['S017'] }),
+      step({ id: 'S019', iterationId: 'P2', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/iterations/P2/06-integration-test.md', 'tests/test_ops_integration.py'], dependsOn: ['S018'] }),
+      step({ id: 'S020', iterationId: 'P2', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/iterations/P2/07-module-test.md', 'tests/test_ops.py'], dependsOn: ['S019', 'S017'] }),
+      step({ id: 'S021', iterationId: 'P2', phase: 'FUNCTIONAL_TEST', outputs: ['docs/iterations/P2/08-functional-test.md', 'docs/iterations/P2/quickstart.md'], dependsOn: ['S020'] }),
+      step({ id: 'S022', iterationId: 'P3', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/iterations/P3/01-requirement-analysis.md', 'docs/iterations/P3/tests/functional-test-plan.md'], dependsOn: ['S021'] }),
+      step({ id: 'S023', iterationId: 'P3', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/iterations/P3/02-high-level-design.md', 'docs/iterations/P3/tests/integration-test-plan.md'], dependsOn: ['S022'] }),
+      step({ id: 'S024', iterationId: 'P3', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/iterations/P3/03-detailed-design.md', 'docs/iterations/P3/tests/module-test-plan.md'], dependsOn: ['S023'] }),
+      step({ id: 'S025', iterationId: 'P3', phase: 'CODE', outputs: ['src/scale.py', 'docs/iterations/P3/tests/unit-test-plan.md'], dependsOn: ['S024'] }),
+      step({ id: 'S026', iterationId: 'P3', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/iterations/P3/05-unit-test.md', 'tests/test_scale_unit.py'], dependsOn: ['S025'] }),
+      step({ id: 'S027', iterationId: 'P3', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/iterations/P3/06-integration-test.md', 'tests/test_scale_integration.py'], dependsOn: ['S026'] }),
+      step({ id: 'S028', iterationId: 'P3', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/iterations/P3/07-module-test.md', 'tests/test_scale.py'], dependsOn: ['S027', 'S025'] }),
+      step({ id: 'S029', iterationId: 'P3', phase: 'FUNCTIONAL_TEST', outputs: ['docs/iterations/P3/08-functional-test.md', 'docs/iterations/P3/quickstart.md'], dependsOn: ['S028'] }),
     ],
   };
 }
@@ -228,7 +300,7 @@ describe('V-model architecture contract', () => {
     expect(incremental.reasonLabel).toContain('intent:');
   });
 
-  it('accepts a fully traceable ARCH → CODE → TEST plan and renders its contract', () => {
+  it('accepts a fully traceable HIGH_LEVEL_DESIGN → CODE → MODULE_TEST plan and renders its contract', () => {
     const plan = complexPlan();
     expect(() => PlanSchema.parse(plan)).not.toThrow();
     expect(lintPlan(plan).filter((issue) => issue.level === 'error')).toEqual([]);
@@ -246,7 +318,7 @@ describe('V-model architecture contract', () => {
     expect(errors.some((issue) => issue.message.includes('owns 2 architecture modules'))).toBe(true);
   });
 
-  it('detects an ARCH document that silently omits module paths', () => {
+  it('detects a HIGH_LEVEL_DESIGN document that silently omits module paths', () => {
     const modules = complexPlan().architectureModules!;
     const content = modules
       .map((module) => `${module.id} ${module.name}\n${module.sourcePaths.join('\n')}`)

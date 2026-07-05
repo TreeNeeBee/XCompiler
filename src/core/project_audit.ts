@@ -5,7 +5,7 @@ import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox, ExecResult } from '../sandbox/types.js';
 import type { Plan, ProjectType } from './plan.js';
 import type { LanguageProfile } from './language.js';
-import { deliveryDocsForProjectType } from './docs.js';
+import { deliveryDocsForIteration, deliveryDocsForProjectType } from './docs.js';
 import { t } from '../i18n/index.js';
 import { detectNetworkApiFailureInExec } from './network_api_gate.js';
 
@@ -22,13 +22,18 @@ export interface ProjectAuditResult {
   warnings: number;
   errors: number;
   checks: ProjectAuditCheck[];
+  scope?: 'project' | 'iteration';
+  iterationId?: string;
 }
 
 export function renderProjectAuditFailureLog(result: ProjectAuditResult): string {
   const failed = result.checks.filter((check) => !check.ok);
   const interesting = failed.length > 0 ? failed : result.checks;
+  const scope = result.scope === 'iteration' && result.iterationId
+    ? `Iteration gate ${result.iterationId}`
+    : 'Project audit';
   return [
-    `Project audit failed: ${result.errors} error(s), ${result.warnings} warning(s).`,
+    `${scope} failed: ${result.errors} error(s), ${result.warnings} warning(s).`,
     ...interesting.map((check) =>
       [
         `[${check.severity}] ${check.name}: ${check.summary}`,
@@ -52,9 +57,36 @@ export async function runProjectAudit(opts: {
   plan: Plan;
   profile: LanguageProfile;
 }): Promise<ProjectAuditResult> {
+  return runQualityAudit({ ...opts, scope: 'project' });
+}
+
+export async function runIterationGate(opts: {
+  ws: Workspace;
+  sandbox: Sandbox;
+  plan: Plan;
+  profile: LanguageProfile;
+  iterationId: string;
+}): Promise<ProjectAuditResult> {
+  return runQualityAudit({ ...opts, scope: 'iteration', iterationId: opts.iterationId });
+}
+
+async function runQualityAudit(opts: {
+  ws: Workspace;
+  sandbox: Sandbox;
+  plan: Plan;
+  profile: LanguageProfile;
+  scope: 'project' | 'iteration';
+  iterationId?: string;
+}): Promise<ProjectAuditResult> {
   const checks: ProjectAuditCheck[] = [];
 
-  checks.push(...await checkDocumentationBundle(opts.ws, opts.plan.projectType ?? 'application'));
+  checks.push(
+    ...await checkDocumentationBundle(
+      opts.ws,
+      opts.plan.projectType ?? 'application',
+      opts.scope === 'iteration' ? opts.iterationId : undefined,
+    ),
+  );
   checks.push(await checkTestFiles(opts.ws));
   checks.push(await runTestAudit(opts.sandbox));
 
@@ -66,11 +98,17 @@ export async function runProjectAudit(opts: {
 
   const warnings = checks.filter((check) => check.severity === 'warn' && !check.ok).length;
   const errors = checks.filter((check) => check.severity === 'error' && !check.ok).length;
-  return { ok: errors === 0, warnings, errors, checks };
+  return { ok: errors === 0, warnings, errors, checks, scope: opts.scope, iterationId: opts.iterationId };
 }
 
-async function checkDocumentationBundle(ws: Workspace, projectType: ProjectType): Promise<ProjectAuditCheck[]> {
-  const docs = deliveryDocsForProjectType(projectType);
+async function checkDocumentationBundle(
+  ws: Workspace,
+  projectType: ProjectType,
+  iterationId?: string,
+): Promise<ProjectAuditCheck[]> {
+  const docs = iterationId
+    ? deliveryDocsForIteration(projectType, iterationId)
+    : deliveryDocsForProjectType(projectType);
   const checks: ProjectAuditCheck[] = [];
   for (const doc of docs) {
     const exists = await ws.exists(doc);
@@ -88,7 +126,7 @@ function docCheckName(pathName: string): string {
   if (pathName === 'README.md') return 'readme';
   if (pathName === 'docs/quickstart.md') return 'quickstart';
   if (pathName === 'docs/api-guide.md') return 'api-guide';
-  if (pathName === 'docs/05-delivery.md') return 'delivery-doc';
+  if (pathName === 'docs/08-functional-test.md') return 'functional-test-doc';
   return `doc:${pathName}`;
 }
 

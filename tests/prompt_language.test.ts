@@ -9,46 +9,45 @@ describe('language-specific planner/executor prompts', () => {
     const prompt = t().prompts.plannerSystem(getLanguageProfile('typescript'));
     expect(prompt).toContain('TypeScript / Node.js only');
     expect(prompt).not.toContain('Output language: Python only');
-    expect(prompt).toContain('Exactly one ARCH Step must output `package.json`');
+    expect(prompt).toContain('one HIGH_LEVEL_DESIGN Step output `package.json`');
   });
 
-  it('keeps REFACTOR aligned with source/test refactoring instead of docs-only purity', () => {
+  it('uses the canonical V-model phases and rollback semantics', () => {
     const py = t().prompts.plannerSystem(getLanguageProfile('python'));
     const ts = t().prompts.plannerSystem(getLanguageProfile('typescript'));
-    expect(py).toContain('REFACTOR is the sole exception');
-    expect(py).toContain('may also re-declare refactored src/tests files');
-    expect(py).not.toContain('REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY outputs must NOT contain src/**/*.py');
-    expect(ts).toContain('REFACTOR is the sole exception');
-    expect(ts).toContain('may also re-declare refactored src/tests files');
-    expect(ts).not.toContain('REQUIREMENT / ARCH / TASK / REFACTOR / DELIVERY outputs must NOT contain `src/**/*.ts`');
+    for (const prompt of [py, ts]) {
+      expect(prompt).toContain('REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST');
+      expect(prompt).toContain('Never emit the old phases REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY');
+      expect(prompt).toContain('roll back to the paired V-model phase');
+    }
   });
 
-  it('describes architecture sizing as adaptive rather than a fixed module formula', () => {
+  it('describes high-level and detailed design responsibilities', () => {
     const py = t().prompts.plannerSystem(getLanguageProfile('python'));
     const ts = t().prompts.plannerSystem(getLanguageProfile('typescript'));
-    expect(py).toContain('validator recomputes the exact minimum from topic/baseline/intent');
-    expect(ts).toContain('validator recomputes the exact minimum from topic/baseline/intent');
-    expect(py).not.toContain('max(4, surface count + 2)');
-    expect(ts).not.toContain('max(4, surface count + 2)');
+    expect(py).toContain("current development module's position in the whole system");
+    expect(py).toContain('external APIs, third-party library choices, dependency confirmation');
+    expect(py).toContain('module-internal functions, data structures, algorithms');
+    expect(ts).toContain('system-level external interfaces and dependencies');
+    expect(ts).toContain('module-internal functions, types, data structures');
 
     setLocale('zh');
     const zh = t().prompts.plannerSystem(getLanguageProfile('python'));
-    expect(zh).toContain('validator 会从 topic/baseline/intent 复算 exact minimum');
-    expect(zh).not.toContain('max(4, 关注面数量 + 2)');
-    expect(zh).not.toContain('最多 12');
+    expect(zh).toContain('当前开发模块在整体系统中的定位');
+    expect(zh).toContain('外部 API、第三方库选型、依赖确认');
+    expect(zh).toContain('模块内部的具体功能实现和架构');
   });
 
-  it('requires the delivery documentation bundle and project type classification', () => {
+  it('requires the functional documentation bundle and project type classification', () => {
     const py = t().prompts.plannerSystem(getLanguageProfile('python'));
     const ts = t().prompts.plannerSystem(getLanguageProfile('typescript'));
     for (const prompt of [py, ts]) {
       expect(prompt).toContain('"projectType": "application | library | mixed"');
       expect(prompt).toContain('README.md');
       expect(prompt).toContain('docs/quickstart.md');
+      expect(prompt).toContain('docs/08-functional-test.md');
       expect(prompt).toContain('docs/api-guide.md');
-      expect(prompt).toContain('active i18n language');
-      expect(prompt).toContain('there is no CLI project-type override');
-      expect(prompt).toContain('For `projectType="library"`, do not invent an application entrypoint');
+      expect(prompt).toContain('There is no CLI project-type override');
     }
 
     setLocale('zh');
@@ -56,37 +55,35 @@ describe('language-specific planner/executor prompts', () => {
     expect(zh).toContain('"projectType": "application | library | mixed"');
     expect(zh).toContain('README.md');
     expect(zh).toContain('docs/quickstart.md');
+    expect(zh).toContain('docs/08-functional-test.md');
     expect(zh).toContain('docs/api-guide.md');
-    expect(zh).toContain('当前 i18n 语言');
     expect(zh).toContain('不存在命令行 project-type 覆盖');
-    expect(zh).toContain('当 `projectType="library"` 时，不要为了满足入口规则而虚构应用入口');
   });
 
-  it('requires macro Step subtasks and deferred implementation phases', () => {
+  it('requires macro Step subtasks and planned executable implementation iterations', () => {
     const py = t().prompts.plannerSystem(getLanguageProfile('python'));
     const ts = t().prompts.plannerSystem(getLanguageProfile('typescript'));
     for (const prompt of [py, ts]) {
-      expect(prompt).toContain('Macro Step decomposition');
-      expect(prompt).toContain('complete V-model macro plan covering the required phases');
-      expect(prompt).toContain('CODE < TEST < DEBUG < REFACTOR');
       expect(prompt).toContain('subTasks');
       expect(prompt).toContain('complexityAssessment');
       expect(prompt).toContain('implementationPhases');
-      expect(prompt).toContain('moderate => P1 current + at least P2 deferred');
-      expect(prompt).toContain('complex => P1 current + at least P2/P3 deferred');
-      expect(prompt).toContain('"status": "deferred"');
+      expect(prompt).toContain('moderate => at least P1+P2');
+      expect(prompt).toContain('complex => at least P1+P2+P3');
+      expect(prompt).toContain('verificationGate');
+      expect(prompt).toContain('Feed failures to Debugger');
+      expect(prompt).toContain('docs/iterations/<iterationId>/');
       expect(prompt).not.toContain('at least 7 Steps');
     }
 
     setLocale('zh');
     const zh = t().prompts.plannerSystem(getLanguageProfile('python'));
-    expect(zh).toContain('宏 Step 拆分');
-    expect(zh).toContain('完整 V 模型宏 Step 计划');
-    expect(zh).toContain('CODE < TEST < DEBUG < REFACTOR');
     expect(zh).toContain('subTasks');
     expect(zh).toContain('implementationPhases');
-    expect(zh).toContain('moderate 至少 P1 current + P2 deferred');
-    expect(zh).toContain('complex 至少 P1 current + P2/P3 deferred');
+    expect(zh).toContain('moderate => 至少 P1+P2');
+    expect(zh).toContain('complex => 至少 P1+P2+P3');
+    expect(zh).toContain('verificationGate');
+    expect(zh).toContain('把失败日志传给 Debugger');
+    expect(zh).toContain('docs/iterations/<iterationId>/');
     expect(zh).not.toContain('至少 7 个 Step');
   });
 
@@ -110,8 +107,8 @@ describe('language-specific planner/executor prompts', () => {
     const ts = t().prompts.executorSystem(getLanguageProfile('typescript'));
     expect(py).toContain("current Step's runtime chunk limit");
     expect(ts).toContain("current Step's runtime chunk limit");
-    expect(py).toContain('separate CODE/TEST/REFACTOR Steps');
-    expect(ts).toContain('separate CODE/TEST/REFACTOR Steps');
+    expect(py).toContain('separate CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Steps');
+    expect(ts).toContain('separate CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Steps');
     expect(py).not.toContain('6000 bytes');
     expect(ts).not.toContain('6000 bytes');
   });
@@ -130,6 +127,10 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('At least one quality question');
     expect(prompt).toContain('At least one extensibility question');
     expect(prompt).toContain('API library/SDK/package');
+    expect(prompt).toContain('2-5 feasible answer options');
+    expect(prompt).toContain('option count is not fixed');
+    expect(prompt).toContain('A-B, A-C, A-D, or A-E');
+    expect(prompt).toContain('custom free-form answer');
   });
 
   it('adds an explicit project-shape clarification when the topic is ambiguous', () => {
@@ -151,5 +152,9 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('至少 1 个 extensibility');
     expect(prompt).toContain('API library/SDK/软件包');
     expect(prompt).toContain('可运行应用/CLI/服务');
+    expect(prompt).toContain('2-5 个可行回答设定');
+    expect(prompt).toContain('选项数量不是固定值');
+    expect(prompt).toContain('A-B、A-C、A-D 或 A-E');
+    expect(prompt).toContain('自定义回答内容');
   });
 });

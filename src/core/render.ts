@@ -35,11 +35,12 @@ export function renderPlanMarkdown(plan: Plan): string {
   if ((plan.implementationPhases?.length ?? 0) > 0) {
     lines.push('## Implementation phases');
     lines.push('');
-    lines.push('| Phase | Status | Objective | Scope | Deliverables | Depends on |');
-    lines.push('| --- | --- | --- | --- | --- | --- |');
+    lines.push('| Phase | Status | Objective | Verification gate | Scope | Deliverables | Depends on |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- |');
     for (const phase of plan.implementationPhases ?? []) {
       lines.push(
         `| ${phase.id} ${escapePipe(phase.title)} | ${phase.status} | ${escapePipe(phase.objective)} | ` +
+        `${escapePipe(phase.verificationGate?.summary ?? '—')} | ` +
         `${phase.scope.join(', ') || '—'} | ${phase.deliverables.join(', ') || '—'} | ${phase.dependsOn.join(', ') || '—'} |`,
       );
     }
@@ -78,11 +79,11 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push('');
   lines.push('## Steps');
   lines.push('');
-  lines.push('| ID | Phase | Role | Title | Outputs | Depends |');
-  lines.push('| --- | --- | --- | --- | --- | --- |');
+  lines.push('| ID | Iteration | Phase | Role | Title | Outputs | Depends |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const s of plan.steps) {
     lines.push(
-      `| ${s.id} | ${s.phase} | ${s.role} | ${escapePipe(s.title)} | ${s.outputs.join(', ')} | ${
+      `| ${s.id} | ${s.iterationId ?? 'P1'} | ${s.phase} | ${s.role} | ${escapePipe(s.title)} | ${s.outputs.join(', ')} | ${
         s.dependsOn.join(', ') || '—'
       } |`,
     );
@@ -91,7 +92,7 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push('## Detail');
   lines.push('');
   for (const s of plan.steps) {
-    lines.push(`### ${s.id} — ${s.title} (${s.phase} / ${s.role})`);
+    lines.push(`### ${s.id} — ${s.title} (${s.iterationId ?? 'P1'} / ${s.phase} / ${s.role})`);
     lines.push('');
     lines.push(s.description);
     lines.push('');
@@ -121,7 +122,7 @@ function escapePipe(s: string): string {
 function renderMacroWorkflow(plan: Plan): string[] {
   const lines: string[] = [];
   for (const step of plan.steps) {
-    lines.push(`- ${step.id} ${step.phase}: ${step.title} (${step.role})`);
+    lines.push(`- ${step.id} ${step.iterationId ?? 'P1'} ${step.phase}: ${step.title} (${step.role})`);
     if (step.subTasks && step.subTasks.length > 0) {
       lines.push(...renderSubTasks(step.subTasks, 1));
     }

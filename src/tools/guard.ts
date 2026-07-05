@@ -65,14 +65,15 @@ export function resolveEditGuardMaxLines(
     (tools.has('add_dependency') ? 20 : 0);
 
   const phaseBonus: Record<string, number> = {
+    REQUIREMENT_ANALYSIS: 100,
+    HIGH_LEVEL_DESIGN: 220,
+    DETAILED_DESIGN: 180,
     CODE: 300,
-    TEST: 420,
+    UNIT_TEST: 420,
+    INTEGRATION_TEST: 420,
+    MODULE_TEST: 420,
+    FUNCTIONAL_TEST: 360,
     DEBUG: 560,
-    REFACTOR: 360,
-    ARCH: 180,
-    TASK: 120,
-    REQUIREMENT: 80,
-    DELIVERY: 80,
   };
 
   const writeTargets = [...(ctx.outputs ?? []), ...(ctx.allowedWrites ?? [])];

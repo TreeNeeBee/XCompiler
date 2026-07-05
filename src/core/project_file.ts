@@ -20,6 +20,7 @@ export const XCOMPILER_PROJECT_FILE_EXTENSION = '.xc';
 
 const StepProgressSchema = z.object({
   id: z.string(),
+  iterationId: z.string().default('P1'),
   phase: z.enum(PHASES),
   title: z.string(),
   status: z.enum(STEP_STATUSES),
@@ -194,6 +195,7 @@ export function buildProjectProgress(plan: Plan): XCompilerProjectProgress {
     counts[step.status]++;
     return {
       id: step.id,
+      iterationId: step.iterationId ?? 'P1',
       phase: step.phase as Phase,
       title: step.title,
       status: step.status,

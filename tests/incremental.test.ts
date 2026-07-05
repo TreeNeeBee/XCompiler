@@ -14,14 +14,15 @@ import { Workspace } from '../src/workspace/workspace.js';
 const baseStep = (over: Partial<Step> = {}): Step =>
   ({
     id: 'S001',
-    phase: 'REQUIREMENT',
+    iterationId: over.iterationId ?? 'P1',
+    phase: 'REQUIREMENT_ANALYSIS',
     title: 'Requirement',
     description: 'Capture the requirement.',
     systemPrompt: 'Document the requirement clearly.',
     role: 'Planner',
     tools: ['write_file'],
     inputs: [],
-    outputs: ['docs/01-requirement.md'],
+    outputs: ['docs/01-requirement-analysis.md'],
     dependsOn: [],
     acceptance: 'Requirement document is written.',
     maxRetries: 3,

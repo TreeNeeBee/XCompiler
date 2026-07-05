@@ -7,14 +7,15 @@ import type { Step } from '../src/core/plan.js';
 const baseStep = (over: Partial<Step>): Step =>
   ({
     id: 'S001',
-    phase: 'REQUIREMENT',
+    iterationId: over.iterationId ?? 'P1',
+    phase: 'REQUIREMENT_ANALYSIS',
     title: 't',
     description: 'd',
     systemPrompt: 'sp'.repeat(20),
     role: 'Planner',
     tools: ['write_file'],
     inputs: [],
-    outputs: ['docs/01-requirement.md'],
+    outputs: ['docs/01-requirement-analysis.md'],
     dependsOn: [],
     acceptance: 'ok',
     maxRetries: 3,
@@ -29,8 +30,8 @@ describe('buildPlan — Step id 规整', () => {
       dependencies: ['pytest==8.*'],
       steps: [
         baseStep({ id: 'S001' }),
-        baseStep({ id: 'id_S009', phase: 'TEST', outputs: ['tests/x.py'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S010', phase: 'TEST', outputs: ['tests/y.py'], dependsOn: ['id_S009'] }),
+        baseStep({ id: 'id_S009', phase: 'UNIT_TEST', outputs: ['tests/x.py'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S010', phase: 'UNIT_TEST', outputs: ['tests/y.py'], dependsOn: ['id_S009'] }),
       ],
     };
     const plan = buildPlan(draft);
@@ -70,7 +71,7 @@ describe('buildPlan — Step id 规整', () => {
     }
   });
 
-  it('为 TypeScript plan 注入的 TEST 兜底保持 Vitest 语义', () => {
+  it('为 TypeScript plan 注入的 UNIT_TEST 兜底保持 Vitest 语义', () => {
     const draft = {
       requirementDigest: 'r',
       globalPrompt: 'g',
@@ -81,12 +82,12 @@ describe('buildPlan — Step id 规整', () => {
     };
     const plan = buildPlan(draft, { language: 'typescript' });
     const synthetic = plan.steps[1];
-    expect(synthetic?.phase).toBe('TEST');
+    expect(synthetic?.phase).toBe('UNIT_TEST');
     expect(synthetic?.description).toContain('Vitest');
     expect(synthetic?.acceptance).toContain('npm test');
   });
 
-  it('为复杂或强制分阶段需求生成 P1 当前阶段和 deferred 后续阶段', () => {
+  it('为复杂或强制分阶段需求生成 P1 当前迭代和 planned 后续迭代', () => {
     const draft = {
       requirementDigest: 'Build a complex reporting platform. Phase 1 core import, Phase 2 dashboard.',
       globalPrompt: 'g',
@@ -98,7 +99,7 @@ describe('buildPlan — Step id 规整', () => {
     expect(plan.complexityAssessment?.userForcedPhaseSplit).toBe(true);
     expect(plan.implementationPhases?.[0]?.id).toBe('P1');
     expect(plan.implementationPhases?.[0]?.status).toBe('current');
-    expect(plan.implementationPhases?.some((phase) => phase.status === 'deferred')).toBe(true);
+    expect(plan.implementationPhases?.some((phase) => phase.status === 'planned')).toBe(true);
     expect(plan.implementationPhases?.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -135,7 +136,7 @@ describe('buildPlan — Step id 规整', () => {
     }
   });
 
-  it('把结构化 ARCH 契约注入 ARCH/CODE/TEST 的执行提示', () => {
+  it('把结构化 HIGH_LEVEL_DESIGN 契约注入 HIGH_LEVEL_DESIGN/CODE/MODULE_TEST 的执行提示', () => {
     const draft = {
       requirementDigest: 'small API module',
       globalPrompt: 'g',
@@ -151,15 +152,15 @@ describe('buildPlan — Step id 规整', () => {
         },
       ],
       steps: [
-        baseStep({ id: 'S001', phase: 'ARCH', role: 'Architect', outputs: ['docs/02-architecture.md'] }),
+        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
         baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/api.py'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'TEST', role: 'Tester', outputs: ['tests/test_api.py'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_api.py'], dependsOn: ['S002'] }),
       ],
     };
     const plan = buildPlan(draft);
     expect(plan.steps[0]?.systemPrompt).toContain('M001 api');
     expect(plan.steps[1]?.systemPrompt).toContain('本 CODE Step 仅实现架构模块');
-    expect(plan.steps[2]?.systemPrompt).toContain('本 TEST Step 验证架构模块');
+    expect(plan.steps[2]?.systemPrompt).toContain('本 MODULE_TEST Step 验证架构模块');
   });
 
   it('plan markdown 层级展示 V-model macro Step 与两层 subTasks', () => {
@@ -196,7 +197,7 @@ describe('buildPlan — Step id 规整', () => {
     });
     const markdown = renderPlanMarkdown(plan);
     expect(markdown).toContain('## V-model macro workflow');
-    expect(markdown).toContain('- S001 CODE:');
+    expect(markdown).toContain('- S001 P1 CODE:');
     expect(markdown).toContain('  - T1: Core module [src/core.py]');
     expect(markdown).toContain('    - T1.1: Parser [src/parser.py]');
   });

@@ -31,8 +31,8 @@ export interface LanguageProfile {
 
   /**
    * 是否由 runtime（cli/execute）根据 plan.dependencies 生成 manifest。
-   *  - Python：true —— 渲染器把依赖写入 requirements.txt，ARCH 不得直接产出该文件。
-   *  - TypeScript：false —— package.json 由 ARCH 步骤撰写（含 scripts / devDependencies）。
+   *  - Python：true —— 渲染器把依赖写入 requirements.txt，HIGH_LEVEL_DESIGN 不得直接产出该文件。
+   *  - TypeScript：false —— package.json 由 HIGH_LEVEL_DESIGN 步骤撰写（含 scripts / devDependencies）。
    */
   readonly seedManifestFromDeps: boolean;
 
@@ -50,11 +50,11 @@ export interface LanguageProfile {
   /** 追加到 Executor system prompt 末尾的语言专属覆盖块（python 为空串）。 */
   readonly executorPromptOverride: string;
 
-  /** TEST/DEBUG 前置：确保测试可解析到源码（python 写 conftest.py；ts 无需）。 */
+  /** 测试/DEBUG 前置：确保测试可解析到源码（python 写 conftest.py；ts 无需）。 */
   ensureTestBootstrap?(ws: Workspace, audit: AuditLogger): Promise<void>;
   /** 通用兜底：修复入口 import 路径问题（python sys.path；ts 无需）。 */
   autoFixImports?(ws: Workspace, audit: AuditLogger): Promise<string[]>;
-  /** DELIVERY gate：探测入口 `--help` 是否开箱即用；缺失入口必须返回失败。 */
+  /** FUNCTIONAL_TEST gate：探测入口 `--help` 是否开箱即用；缺失入口必须返回失败。 */
   probeEntry(ws: Workspace, sandbox: Sandbox): Promise<EntrypointProbe>;
 }
 
@@ -139,7 +139,7 @@ export function getLanguageProfile(language: Language): LanguageProfile {
   return PROFILES[language] ?? pythonProfile;
 }
 
-/** DELIVERY gate（TypeScript）：优先尝试 `node src/main.ts --help`，确保源码入口开箱即用。 */
+/** FUNCTIONAL_TEST gate（TypeScript）：优先尝试 `node src/main.ts --help`，确保源码入口开箱即用。 */
 async function probeTsEntrypoint(
   ws: Workspace,
   sandbox: Sandbox,

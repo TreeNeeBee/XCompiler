@@ -1,27 +1,61 @@
 import { z } from 'zod';
 
 export const PHASES = [
-  'REQUIREMENT',
-  'ARCH',
-  'TASK',
+  'REQUIREMENT_ANALYSIS',
+  'HIGH_LEVEL_DESIGN',
+  'DETAILED_DESIGN',
   'CODE',
-  'TEST',
+  'UNIT_TEST',
+  'INTEGRATION_TEST',
+  'MODULE_TEST',
+  'FUNCTIONAL_TEST',
   'DEBUG',
-  'REFACTOR',
-  'DELIVERY',
 ] as const;
 export type Phase = (typeof PHASES)[number];
 
-/** Core V-model phases that every executable plan must cover. DEBUG remains optional/planned. */
+/** Core V-model phases that every executable iteration must cover. DEBUG is a rollback/repair mode. */
 export const REQUIRED_V_MODEL_PHASES = [
-  'REQUIREMENT',
-  'ARCH',
-  'TASK',
+  'REQUIREMENT_ANALYSIS',
+  'HIGH_LEVEL_DESIGN',
+  'DETAILED_DESIGN',
   'CODE',
-  'TEST',
-  'REFACTOR',
-  'DELIVERY',
+  'UNIT_TEST',
+  'INTEGRATION_TEST',
+  'MODULE_TEST',
+  'FUNCTIONAL_TEST',
 ] as const satisfies readonly Phase[];
+
+/** Left side of the V model: executable construction phases. */
+export const V_MODEL_DEVELOPMENT_PHASES = [
+  'REQUIREMENT_ANALYSIS',
+  'HIGH_LEVEL_DESIGN',
+  'DETAILED_DESIGN',
+  'CODE',
+] as const satisfies readonly Phase[];
+
+/** Right side of the V model: verification phases. */
+export const V_MODEL_TEST_PHASES = [
+  'UNIT_TEST',
+  'INTEGRATION_TEST',
+  'MODULE_TEST',
+  'FUNCTIONAL_TEST',
+] as const satisfies readonly Phase[];
+
+/** Synchronous test-design mapping generated while executing the corresponding left-side phase. */
+export const V_MODEL_SOURCE_TO_TEST_PHASE = {
+  REQUIREMENT_ANALYSIS: 'FUNCTIONAL_TEST',
+  HIGH_LEVEL_DESIGN: 'INTEGRATION_TEST',
+  DETAILED_DESIGN: 'MODULE_TEST',
+  CODE: 'UNIT_TEST',
+} as const satisfies Record<(typeof V_MODEL_DEVELOPMENT_PHASES)[number], (typeof V_MODEL_TEST_PHASES)[number]>;
+
+/** Test failure rollback target: a failed test phase debugs from its paired source phase. */
+export const V_MODEL_TEST_TO_SOURCE_PHASE = {
+  UNIT_TEST: 'CODE',
+  INTEGRATION_TEST: 'HIGH_LEVEL_DESIGN',
+  MODULE_TEST: 'DETAILED_DESIGN',
+  FUNCTIONAL_TEST: 'REQUIREMENT_ANALYSIS',
+} as const satisfies Record<(typeof V_MODEL_TEST_PHASES)[number], (typeof V_MODEL_DEVELOPMENT_PHASES)[number]>;
 
 /** Supported target languages for generated projects. */
 export const LANGUAGES = ['python', 'typescript'] as const;
@@ -39,19 +73,20 @@ export type ProjectType = (typeof PROJECT_TYPES)[number];
 export const COMPLEXITY_LEVELS = ['simple', 'moderate', 'complex'] as const;
 export type ComplexityLevel = (typeof COMPLEXITY_LEVELS)[number];
 
-/** Implementation phase status. Only `current` phases are executed by the current V-model plan. */
-export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'deferred'] as const;
+/** Implementation phase status. `current` and `planned` phases are executable iteration cycles. */
+export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'planned', 'deferred'] as const;
 export type ImplementationPhaseStatus = (typeof IMPLEMENTATION_PHASE_STATUSES)[number];
 
 export const PHASE_ORDER: Record<Phase, number> = {
-  REQUIREMENT: 0,
-  ARCH: 1,
-  TASK: 2,
+  REQUIREMENT_ANALYSIS: 0,
+  HIGH_LEVEL_DESIGN: 1,
+  DETAILED_DESIGN: 2,
   CODE: 3,
-  TEST: 4,
-  DEBUG: 5,
-  REFACTOR: 6,
-  DELIVERY: 7,
+  UNIT_TEST: 4,
+  INTEGRATION_TEST: 5,
+  MODULE_TEST: 6,
+  FUNCTIONAL_TEST: 7,
+  DEBUG: 8,
 };
 
 export const STEP_STATUSES = [
@@ -73,10 +108,10 @@ export const ROLES = [
 export type Role = (typeof ROLES)[number];
 
 /**
- * ARCH 阶段的结构化模块契约。
+ * HIGH_LEVEL_DESIGN 阶段的结构化模块契约。
  *
- * Planner 在执行 V 模型前先声明本次要新增/修改的架构模块；ARCH Step 将其展开为
- * docs/02-architecture.md，后续 CODE / TEST Step 则必须完整覆盖这里登记的路径。
+ * Planner 在执行 V 模型前先声明本次要新增/修改的架构模块；HIGH_LEVEL_DESIGN Step 将其展开为
+ * docs/02-high-level-design.md，后续 CODE / MODULE_TEST Step 则必须完整覆盖这里登记的路径。
  * 字段保持在 Plan 顶层，是为了让 lint 能在真正执行前发现“架构有模块、实现却漏文件”的问题。
  */
 export const ArchitectureModuleSchema = z.object({
@@ -129,6 +164,14 @@ export const ComplexityAssessmentSchema = z.object({
 
 export type ComplexityAssessment = z.infer<typeof ComplexityAssessmentSchema>;
 
+export const IterationVerificationGateSchema = z.object({
+  summary: z.string().min(1),
+  checks: z.array(z.string().min(1)).min(1),
+  failurePolicy: z.string().min(1),
+});
+
+export type IterationVerificationGate = z.infer<typeof IterationVerificationGateSchema>;
+
 export const ImplementationPhaseSchema = z.object({
   id: z.string().regex(/^P\d{1,3}$/u, 'Implementation phase id must look like P1'),
   title: z.string().min(1),
@@ -137,6 +180,7 @@ export const ImplementationPhaseSchema = z.object({
   scope: z.array(z.string().min(1)).default([]),
   deliverables: z.array(z.string().min(1)).default([]),
   dependsOn: z.array(z.string()).default([]),
+  verificationGate: IterationVerificationGateSchema.optional(),
 });
 
 export type ImplementationPhase = z.infer<typeof ImplementationPhaseSchema>;
@@ -149,6 +193,7 @@ function maxSubtaskDepth(task: StepSubtask): number {
 
 export const StepSchema = z.object({
   id: z.string().regex(/^S\d{3,}$/u, 'Step id must look like S001'),
+  iterationId: z.string().regex(/^P\d{1,3}$/u, 'Step iterationId must look like P1').default('P1'),
   phase: z.enum(PHASES),
   title: z.string().min(1),
   description: z.string().min(1),
@@ -188,7 +233,7 @@ export const PlanSchema = z
     globalPrompt: z.string().default(''),
     /** 增量开发时的基线工程摘要（由 xcompiler_build 从现有 workspace 文档/源码树汇总）。 */
     baselineSummary: z.string().default(''),
-    /** ARCH 阶段决定的依赖初始集（Python 写入 requirements.txt；TypeScript 写入 package.json）。 */
+    /** HIGH_LEVEL_DESIGN 阶段决定的依赖初始集（Python 写入 requirements.txt；TypeScript 写入 package.json）。 */
     dependencies: z.array(z.string()).optional(),
     /** @deprecated 旧字段名，等价于 `dependencies`；保留以兼容历史 plan.json。 */
     pythonRequirements: z.array(z.string()).optional(),

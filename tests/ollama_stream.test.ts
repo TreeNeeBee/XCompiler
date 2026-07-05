@@ -143,7 +143,32 @@ describe('OllamaClient streaming', () => {
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
       res.write(JSON.stringify({ message: { role: 'assistant', content: '{"requirementDigest":"x",' } }) + '\n');
       res.write(JSON.stringify({ message: { role: 'assistant', content: '"globalPrompt":"","dependencies":[],' } }) + '\n');
-      res.write(JSON.stringify({ message: { role: 'assistant', content: '"steps":[{"id":"S001","title":"R","description":"d","systemPrompt":"p","phase":"REQUIREMENT","role":"Planner","tools":[],"inputs":[],"outputs":["docs/01-requirement.md"],"dependsOn":[],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S002","title":"A","description":"d","systemPrompt":"p","phase":"ARCH","role":"Architect","tools":[],"inputs":["docs/01-requirement.md"],"outputs":["docs/02-architecture.md"],"dependsOn":["S001"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S003","title":"C","description":"d","systemPrompt":"p","phase":"CODE","role":"Coder","tools":[],"inputs":["docs/02-architecture.md"],"outputs":["src/main.py"],"dependsOn":["S002"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3},{"id":"S004","title":"D","description":"d","systemPrompt":"p","phase":"DELIVERY","role":"Coder","tools":[],"inputs":["src/main.py"],"outputs":["docs/04-delivery.md"],"dependsOn":["S003"],"acceptance":"a","status":"PENDING","retries":0,"maxRetries":3}]}' } }) + '\n');
+      const steps = [
+        ['S001', 'REQUIREMENT_ANALYSIS', 'Planner', ['docs/01-requirement-analysis.md']],
+        ['S002', 'HIGH_LEVEL_DESIGN', 'Architect', ['docs/02-high-level-design.md']],
+        ['S003', 'DETAILED_DESIGN', 'Architect', ['docs/03-detailed-design.md']],
+        ['S004', 'CODE', 'Coder', ['src/main.py']],
+        ['S005', 'UNIT_TEST', 'Tester', ['docs/05-unit-test.md']],
+        ['S006', 'INTEGRATION_TEST', 'Tester', ['docs/06-integration-test.md']],
+        ['S007', 'MODULE_TEST', 'Tester', ['docs/07-module-test.md']],
+        ['S008', 'FUNCTIONAL_TEST', 'Tester', ['docs/08-functional-test.md']],
+      ].map(([id, phase, role, outputs], index) => ({
+        id,
+        title: String(phase),
+        description: 'd',
+        systemPrompt: 'p',
+        phase,
+        role,
+        tools: [],
+        inputs: [],
+        outputs,
+        dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
+        acceptance: 'a',
+        status: 'PENDING',
+        retries: 0,
+        maxRetries: 3,
+      }));
+      res.write(JSON.stringify({ message: { role: 'assistant', content: `"steps":${JSON.stringify(steps)}}` } }) + '\n');
       open = res; // no done=true, no end
     });
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -162,7 +187,7 @@ describe('OllamaClient streaming', () => {
           responseFormat: 'json',
           validate: (text) => {
             const parsed = JSON.parse(text) as { requirementDigest?: unknown; steps?: unknown[] };
-            if (typeof parsed.requirementDigest !== 'string' || !Array.isArray(parsed.steps) || parsed.steps.length < 4) {
+            if (typeof parsed.requirementDigest !== 'string' || !Array.isArray(parsed.steps) || parsed.steps.length < 8) {
               throw new Error('incomplete planner json');
             }
           },

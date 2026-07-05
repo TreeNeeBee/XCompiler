@@ -5,6 +5,35 @@
 
 ---
 
+## 当前开发进度（2026-07-05）
+
+### 已提交基线
+
+- 最新提交：`290f28c chore: rename TOAA to XCompiler`。
+- 公共品牌、包名、命令、工程文件和运行时状态目录已经切换到 XCompiler / XC / `.xc` / `.xcompiler`。
+- 旧 `.toaa` 工程文件与 `toaa.project` payload 仅作为负向兼容测试保留，确保旧格式不会被继续接受。
+
+### 当前未提交增量
+
+- 需求澄清阶段已扩展为“问题 + 2-5 个候选设定 + 用户最终回答”结构。
+- 候选设定按优先级排序并从 A 连续标号；实际提示范围按选项数量动态显示 A-B、A-C、A-D 或 A-E。
+- 用户输入已展示字母时解析为对应完整候选设定；输入其他内容时作为自定义回答保留。
+- Planner 提示词已明确：不要固定每题 3 个选项，也不要把“其他 / 自定义 / 用户决定”作为候选项。
+
+### 当前验证
+
+- `npm run typecheck`：通过。
+- `npm run build`：通过。
+- `npx vitest run tests/clarify_choices.test.ts tests/prompt_language.test.ts tests/planner_clarify.test.ts`：3 个测试文件、22 个用例通过。
+- 初版候选项机制完成后曾执行 `npm run test`：45 个测试文件、325 个用例通过；动态范围修复后尚未重复全量回归。
+
+### 下一步建议
+
+- 提交前执行一次全量 `npm run test`，确认动态提示范围修复没有影响其它 CLI / Planner 回归。
+- 使用真实 `xcompiler build` 生成一个小型项目计划，观察 LLM 是否能自然输出 2/3/4/5 不同数量的选项，而不是继续偏向 3 个。
+
+---
+
 ## 总体里程碑
 
 | 里程碑 | 名称              | 范围                                              | 验收标准                                          |
@@ -243,3 +272,44 @@
 
 - 仓库 `README.md` 含 quick start：`npm i -g @xcompiler/cli` → `xcompiler build` → `xcompiler run`。
 - 设计文档：本目录 `XCompiler_design.md` + 本实施计划。
+
+---
+
+## 当前进度快照 — 2026-07-05 17:16 CST
+
+### 已完成：迭代模型 + 每迭代 V 模型
+
+- Planner 提示词和 draft 校验已从“只运行首个迭代、后续不可执行”改为“P1 current + P2/P3 planned executable iterations”。
+- `implementationPhases` 中 `current` / `planned` 都被视为可执行迭代周期；每个可执行迭代都必须在 `steps` 中拥有完整 V 模型宏 Step：`REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> REFACTOR -> DELIVERY`，`DEBUG` 保持按需可选。
+- 每个 Step 增加并保留 `iterationId`，Plan lint 按 iteration 分组校验阶段完整性、CODE→TEST 覆盖、REFACTOR→TEST 依赖、阶段文档和 DELIVERY 文档包。
+- P1 继续使用顶层规范文档；P2+ 使用 `docs/iterations/<iterationId>/` 下的迭代文档，避免多个迭代抢写同一路径。
+- `topoSort`、plan markdown 渲染和 `.xc` 进度文件均携带 iteration 维度，运行和审计时能看到层级归属。
+- Calibration 不再丢失 `iterationId`；自动补 TEST 覆盖时按 iteration 分桶补齐，并只重连同迭代的 REFACTOR。
+
+### 反遗漏 / 反规避检查
+
+- 已搜索旧语义残留：旧版“首迭代独占执行、后续不可执行”的提示文本已清理；剩余 `deferred` 仅用于显式非执行 phase 的错误防护。
+- Planner validate 会拒绝 planned iteration 缺少任一核心 V 模型阶段的 draft，不允许用“只做 P1、后续留待以后”的 plan 通过。
+- Complex 测试 fixture 已改为真实 P1/P2/P3 多迭代计划，而不是把 P2/P3 标成 deferred 来绕过执行。
+
+### 验证
+
+- `npm run typecheck`：通过。
+- `npm run build`：通过。
+- `npm run test`：45 个测试文件、326 个用例全部通过。
+
+### 2026-07-05 17:37 CST 补充：迭代结束门禁闭环
+
+- 复检发现：结构层已支持多 iteration V 模型，但运行层此前只在全部 Step 完成后运行最终 project audit，缺少“每个 iteration 结束立即验证”的门禁闭环。
+- 已补齐 `ImplementationPhase.verificationGate`，Planner prompt 要求 LLM 在计划阶段随每个 iteration 目标同步生成门禁目标、检查项和失败策略。
+- 已新增 iteration-scoped quality gate：每个 iteration 的 DELIVERY 完成且该 iteration 所有 Step 为 DONE 后，Engine 立即运行门禁。
+- 门禁检查包括：当前 iteration 交付文档、测试套件、入口/API 探测、TypeScript build/lint（如配置），并继续沿用网络 API 失败 fail-closed 检测。
+- 门禁失败时，Engine 会把完整 gate failure log 传给 Debugger，并限定在同一 iteration 的 V 模型实现/测试/重构/交付链路中选择修复 Step；修复后会重新运行同一 iteration gate，仍失败则停止，不进入下一迭代。
+- 已补充测试覆盖 P2 iteration 文档门禁，以及 P1 gate 失败后回退到 Debugger 修复并重新通过的执行闭环。
+
+验证：
+
+- `npm run typecheck`：通过。
+- `npm run build`：通过。
+- 定向回归：7 个测试文件、80/80 用例通过。
+- `npm run test`：45 个测试文件、328/328 用例通过。

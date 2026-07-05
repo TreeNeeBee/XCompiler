@@ -240,6 +240,7 @@ export interface Messages {
     spinClarify: string;
     clarifySucceed: (n: number) => string;
     clarifyFail: string;
+    clarifyChoiceHint: (range: string) => string;
     addendaConfirm: string;
     addendaEditorMsg: string;
     auditClarifyAnswer: (qid: string, q: string) => string;

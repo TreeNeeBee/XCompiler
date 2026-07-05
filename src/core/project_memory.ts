@@ -84,10 +84,17 @@ export async function buildProjectMemory(
 
   const projectDocs = [
     DOC_NAMES.topic,
-    DOC_NAMES.requirement,
-    DOC_NAMES.architecture,
-    DOC_NAMES.tasks,
-    DOC_NAMES.refactor,
+    DOC_NAMES.requirementAnalysis,
+    DOC_NAMES.highLevelDesign,
+    DOC_NAMES.detailedDesign,
+    DOC_NAMES.functionalTestPlan,
+    DOC_NAMES.integrationTestPlan,
+    DOC_NAMES.moduleTestPlan,
+    DOC_NAMES.unitTestPlan,
+    DOC_NAMES.unitTest,
+    DOC_NAMES.integrationTest,
+    DOC_NAMES.moduleTest,
+    DOC_NAMES.functionalTest,
     DOC_NAMES.delivery,
     ...(intent === 'self'
       ? [
@@ -314,10 +321,10 @@ function scoreMemoryFile(
   for (const token of tokens) {
     if (haystack.includes(token)) score += 4;
   }
-  if (file.kind === 'manifest') score += step.phase === 'ARCH' ? 20 : 4;
-  if (file.kind === 'doc') score += ['REQUIREMENT', 'ARCH', 'TASK', 'DELIVERY'].includes(step.phase) ? 16 : 6;
-  if (file.kind === 'source') score += ['CODE', 'DEBUG', 'REFACTOR', 'TEST', 'DELIVERY'].includes(step.phase) ? 14 : 2;
-  if (file.kind === 'test') score += ['TEST', 'DEBUG', 'REFACTOR'].includes(step.phase) ? 14 : 2;
+  if (file.kind === 'manifest') score += step.phase === 'HIGH_LEVEL_DESIGN' ? 20 : 4;
+  if (file.kind === 'doc') score += ['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'FUNCTIONAL_TEST'].includes(step.phase) ? 16 : 6;
+  if (file.kind === 'source') score += ['CODE', 'DEBUG', 'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'].includes(step.phase) ? 14 : 2;
+  if (file.kind === 'test') score += ['UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST', 'DEBUG'].includes(step.phase) ? 14 : 2;
   if (step.inputs.includes(file.path)) score += 24;
   if (step.outputs.includes(file.path)) score += 20;
   if (module) {
@@ -337,11 +344,11 @@ function scoreContract(
   for (const token of tokens) {
     if (haystack.includes(token)) score += 4;
   }
-  if (contract.kind === 'api') score += ['CODE', 'TEST', 'DELIVERY', 'DEBUG'].includes(step.phase) ? 12 : 4;
-  if (contract.kind === 'invariant') score += ['REFACTOR', 'DEBUG', 'DELIVERY', 'TEST'].includes(step.phase) ? 12 : 6;
-  if (contract.kind === 'extension-point') score += ['ARCH', 'TASK', 'CODE', 'REFACTOR'].includes(step.phase) ? 10 : 4;
-  if (contract.kind === 'limitation') score += ['DELIVERY', 'REFACTOR', 'DEBUG'].includes(step.phase) ? 10 : 3;
-  if (contract.kind === 'integration') score += ['ARCH', 'CODE', 'TEST', 'DELIVERY'].includes(step.phase) ? 10 : 4;
+  if (contract.kind === 'api') score += ['CODE', 'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST', 'DEBUG'].includes(step.phase) ? 12 : 4;
+  if (contract.kind === 'invariant') score += ['DEBUG', 'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'].includes(step.phase) ? 12 : 6;
+  if (contract.kind === 'extension-point') score += ['HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE'].includes(step.phase) ? 10 : 4;
+  if (contract.kind === 'limitation') score += ['FUNCTIONAL_TEST', 'DEBUG'].includes(step.phase) ? 10 : 3;
+  if (contract.kind === 'integration') score += ['HIGH_LEVEL_DESIGN', 'CODE', 'INTEGRATION_TEST', 'FUNCTIONAL_TEST'].includes(step.phase) ? 10 : 4;
   if (contract.path && (step.inputs.includes(contract.path) || step.outputs.includes(contract.path))) score += 16;
   return score;
 }
@@ -436,7 +443,13 @@ async function buildContractFacts(
       });
     }
   }
-  for (const rel of [DOC_NAMES.architecture, DOC_NAMES.tasks, DOC_NAMES.refactor, DOC_NAMES.delivery]) {
+  for (const rel of [
+    DOC_NAMES.highLevelDesign,
+    DOC_NAMES.detailedDesign,
+    DOC_NAMES.integrationTestPlan,
+    DOC_NAMES.moduleTestPlan,
+    DOC_NAMES.functionalTest,
+  ]) {
     const text = await readWorkspaceText(ws, rel, 2200);
     if (!text) continue;
     contracts.push(...extractContractsFromDoc(rel, text));

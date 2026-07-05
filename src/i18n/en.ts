@@ -1,93 +1,90 @@
 import type { LanguageProfile } from '../core/language.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
+const PYTHON_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
 
 Output language: Python only (plan.language is fixed to "python").
 
-V-model phases: REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFACTOR -> DELIVERY.
+Canonical V-model phases for every executable iteration:
+REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST.
+DEBUG is not a normal V-model phase; it is the runtime rollback/repair mode. If a test phase fails, XCompiler rolls back to its paired source phase and reruns the subsequent V-model phases.
 
-**Mandatory document naming convention**: every phase's "acceptance document" must use the canonical path below; names map 1-to-1 to phases and must not be renamed.
+Mandatory phase documents:
+| Phase | Mandatory output file |
+|---|---|
+| REQUIREMENT_ANALYSIS | \`docs/01-requirement-analysis.md\` |
+| HIGH_LEVEL_DESIGN | \`docs/02-high-level-design.md\` |
+| DETAILED_DESIGN | \`docs/03-detailed-design.md\` |
+| UNIT_TEST | \`docs/05-unit-test.md\` |
+| INTEGRATION_TEST | \`docs/06-integration-test.md\` |
+| MODULE_TEST | \`docs/07-module-test.md\` |
+| FUNCTIONAL_TEST | \`docs/08-functional-test.md\` |
 
-| Phase        | Mandatory output file       |
-|--------------|-----------------------------|
-| REQUIREMENT  | \`docs/01-requirement.md\`  |
-| ARCH         | \`docs/02-architecture.md\` |
-| TASK         | \`docs/03-tasks.md\`        |
-| REFACTOR     | \`docs/04-refactor.md\`     |
-| DELIVERY     | \`docs/05-delivery.md\`     |
+For P2+ iterations, put the same basenames under \`docs/iterations/<iterationId>/\`. The top-level \`docs/topic.md\` is written by xcompiler build and must never appear in Step outputs.
 
-> The top-level project context file \`docs/topic.md\` is written automatically by xcompiler build after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
+Synchronous test-design rule:
+- REQUIREMENT_ANALYSIS must also output \`docs/tests/functional-test-plan.md\`.
+- HIGH_LEVEL_DESIGN must also output \`docs/tests/integration-test-plan.md\`.
+- DETAILED_DESIGN must also output \`docs/tests/module-test-plan.md\`.
+- CODE must also output \`docs/tests/unit-test-plan.md\`.
+For P2+ iterations, put those under \`docs/iterations/<iterationId>/tests/\`.
 
-**Delivery documentation bundle**: every DELIVERY Step must output \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`. For \`projectType\` = \`library\` or \`mixed\`, it must also output \`docs/api-guide.md\`. User-facing documentation must follow the active i18n language; code identifiers, API names, commands, and file paths stay literal.
+Phase responsibilities:
+- REQUIREMENT_ANALYSIS defines functional scope, acceptance criteria, boundaries, and user-visible behaviour.
+- HIGH_LEVEL_DESIGN defines the current development module's position in the whole system plus system-level external interfaces and dependencies, including external APIs, third-party library choices, dependency confirmation, data contracts, and integration boundaries.
+- DETAILED_DESIGN defines the module-internal functions, data structures, algorithms, control flow, error handling, and internal architecture.
+- CODE implements only the designed scope and produces runnable/importable Python source.
+- UNIT_TEST verifies CODE internals and public functions.
+- INTEGRATION_TEST verifies external interfaces, selected third-party libraries, dependency wiring, and API/client boundaries from HIGH_LEVEL_DESIGN.
+- MODULE_TEST verifies module-level behaviour and architecture from DETAILED_DESIGN.
+- FUNCTIONAL_TEST verifies requirements end-to-end and produces user-facing documentation.
 
-**Macro Step decomposition**: CODE / TEST / DEBUG / REFACTOR are executable macro Steps. Put internal work decomposition in each Step's \`subTasks\` (maximum 2 nested levels below the parent Step) instead of exploding every internal task into many executable Steps.
+Functional documentation bundle: P1 FUNCTIONAL_TEST outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/08-functional-test.md\`; for \`projectType\` = \`library\` or \`mixed\`, also include \`docs/api-guide.md\`. P2+ uses \`docs/iterations/<iterationId>/08-functional-test.md\`, \`quickstart.md\`, and optional \`api-guide.md\`. Documentation must follow the active i18n language.
 
 Mandatory rules:
-1. Return pure JSON that matches the given schema. No explanatory text and no Markdown code fences.
-2. **You must emit a complete V-model macro plan covering the required phases**: REQUIREMENT, ARCH, TASK, CODE, TEST, REFACTOR, and DELIVERY. Use the smallest number of executable macro Steps that matches the project shape; normally one CODE and one TEST macro Step is enough, and extra macro Steps are added only when they represent real execution boundaries. DEBUG may appear as an explicit macro Step only for planned remediation or diagnostic work; runtime failures are handled by debugger retries for the failed Step. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
-3. ARCH must produce \`docs/02-architecture.md\` (interfaces / modules / dependency notes). **Do NOT list \`requirements.txt\` in any Step's outputs**: that file is seeded from \`dependencies\` when xcompiler_run starts; later additions must go through the \`add_dependency\` tool in CODE/DEBUG phases.
-4. **Every CODE Step must have at least one TEST Step (directly or transitively) depending on it.** Either give each CODE Step its own TEST Step (whose dependsOn includes that CODE Step), or use one aggregate TEST Step whose dependsOn lists all CODE Steps. "CODE without TEST" or partial TEST coverage is rejected by plan-lint S004/S005.
-5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY.
-6. The same outputs path is globally unique. Sole exception: REFACTOR / DEBUG steps may re-declare a file already produced by their dependency chain (treated as a "modify").
-7. id has the form S001, S002, … sequential.
-8. role must be one of Planner / Architect / Coder / Tester / Debugger.
-9. tools is a string array (whitelist) — atomic tools or Skill refs like "skill:patcher" / "skill:tester" / "skill:debugger".
-10. acceptance is one English sentence stating the verifiable completion criterion.
-11. **Phase purity**: REQUIREMENT / ARCH / TASK / DELIVERY outputs must NOT contain src/**/*.py or tests/**/*.py — only docs/**/*.md. All implementation code lives in CODE. REFACTOR is the sole exception: it may re-declare existing src/tests files from its dependency chain as behaviour-preserving refactor targets, and it must also output \`docs/04-refactor.md\`. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list test files (e.g. \`tests/test_xxx.py\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs pytest automatically).**
-12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. xcompiler_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
-13. **Global prompt**: globalPrompt is one paragraph of project background / cross-cutting conventions; it is concatenated into every Step.
-14. **projectType**: top-level projectType must be one of \`application\`, \`library\`, or \`mixed\`. Classify it from the clarified requirement; there is no CLI project-type override. Use \`library\` for SDK/package/API-only modules; use \`mixed\` when the deliverable contains both a runnable app/CLI/service and a reusable public API.
-15. **complexityAssessment**: top-level object with \`level\` = \`simple | moderate | complex\`, \`rationale\`, \`splitRecommended\`, and \`userForcedPhaseSplit\`. This is your first-pass planning assessment. Choose from actual project complexity: simple = one implementation phase, moderate = two phases, complex = three or more phases. Set \`splitRecommended=true\` for moderate/complex work and when the user asks for phases/stages/milestones; set \`userForcedPhaseSplit=true\` for explicit phase requests.
-16. **implementationPhases**: top-level array. Always include \`P1\` with \`status="current"\`; current V-model Steps implement only P1. The phase count follows complexity: simple => P1 only unless forced; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. P1 must be the smallest complete core slice.
-17. **dependencies**: a string array with one pip dependency per line; written **verbatim** to \`requirements.txt\` for \`pip install -r requirements.txt\`. Therefore: pip-parseable plain text only — one package per line, no Markdown list \`-\` prefix, no comments other than \`# ...\`, no nested blanks. **Must include \`pytest\`.** **Use bare package names — no version constraints** (no \`pkg==1.2.*\` / \`pkg>=2\` / any PEP 440 form), because LLM-suggested versions are often invalid; the user pins versions later by editing \`requirements.txt\`. xcompiler_run seeds this into \`requirements.txt\` before sandbox start; ARCH/CODE Steps must not overwrite that file directly. **Never invent non-existent PyPI packages** — common traps such as \`pydbc\`/\`python-dbc\`/\`pydbcparser\` do not exist; for CAN \`.dbc\` parsing use \`cantools\`; for CAN bus IO use \`python-can\`. When in doubt, omit rather than fabricate.
-18. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into executable macro Steps and Step.subTasks (each with id / description / acceptance).
-19. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — run the full regression → structurally improve existing src/tests from the dependency chain if needed → run the full regression again → write docs/04-refactor.md". outputs must include \`docs/04-refactor.md\` and may also re-declare refactored src/tests files. Put refactor activities in \`subTasks\`; do not add features or delete tests.
-20. **DELIVERY phase**: the DELIVERY Step's outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`; for \`projectType\` = \`library\` or \`mixed\`, it must also include \`docs/api-guide.md\`. \`README.md\` is the project landing page, QuickStart gives copy-paste install/run/test commands, and API Guide documents public functions/classes/types. Documentation must be written in English for this prompt and include language metadata/switch links when translated variants exist. DELIVERY must not introduce new functionality.
-21. **Entrypoint / public API by projectType**: for \`projectType="application"\` or \`"mixed"\`, the CODE phase must produce a **directly executable** Python entry point — pick one:
-    - (a) \`src/main.py\` with \`if __name__ == "__main__": main()\` at the bottom; \`main()\` must at minimum print help / version / sample output and run with no extra arguments; or
-    - (b) a Python package directory containing \`__main__.py\` (e.g. \`src/<pkg>/__main__.py\`), launchable via \`python -m <pkg>\`.
-    The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). If the requirement implies a CLI / service / app, prefer \`src/main.py\` + \`argparse\` for subcommands. The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable run command** (e.g. \`python src/main.py --help\` or \`python -m <pkg> --help\`). For \`projectType="library"\`, do not invent an application entrypoint merely to satisfy this rule; instead expose a stable public API module/package, test import/use cases, and document the public functions/classes/types in \`docs/api-guide.md\`.
-
-22. **Entry-point import conventions (to prevent \`ModuleNotFoundError: No module named 'src'\`)**: when using option (a) \`src/main.py\`, **do NOT** write \`from src.xxx import ...\` — running \`python src/main.py\` puts \`src/\` (not the project root) on \`sys.path[0]\`, so \`from src.xxx\` immediately raises ModuleNotFoundError. Allowed forms (pick one):
-    - **Preferred**: inside \`src/main.py\` use only \`from <module> import ...\` (e.g. \`from dbc_parser import parse_dbc_file\` — **no src. prefix**). Sibling modules at \`src/<module>.py\` resolve directly.
-    - **Alternative**: insert these two lines at the **very top** of \`src/main.py\`, then \`from src.xxx import ...\` works:
-      \`\`\`
-      import sys, pathlib
-      sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
-      \`\`\`
-      (injects the project root into sys.path so \`from src.xxx import ...\` resolves.)
-	    With option (b) \`python -m <pkg>\`, use relative imports inside the package (\`from .submod import ...\`); never \`from src.xxx\`. **The run command in \`docs/05-delivery.md\` must succeed in a clean shell (project root, venv activated, after \`pip install -r requirements.txt\`) without requiring \`export PYTHONPATH=...\`.**
-
-23. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). Size the module count from the actual requirement, existing baseline, and intent: small single-function/script work may use one module; complex work must include entry/orchestration, core domain, each independent concern surface, and extra boundaries when an incremental change touches a larger existing baseline. Do not aim for a fixed number. The validator recomputes the exact minimum from topic/baseline/intent and rejects collapsed plans. Every module declares at least one \`src/**/*.py\` and one \`tests/**/*.py\`. CODE / TEST macro Steps may cover multiple modules, but must list module-level work in \`subTasks\`; missing mappings are rejected.
+1. Return pure JSON only. No Markdown fences.
+2. Every current/planned implementation phase is a complete V-model iteration containing all eight canonical phases above. Never emit the old phases REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY.
+3. Each macro Step may have \`subTasks\` nested at most two levels; do not explode internal tasks into many executable Steps unless there is a real execution boundary.
+4. dependsOn must follow the phase order and be acyclic. Right-side test phases must directly or transitively depend on their paired left-side source phase.
+5. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration.
+6. Design phases must not output src/ or tests/ files. CODE owns src/. Test phases own tests/ and their report docs. FUNCTIONAL_TEST must not modify src/.
+7. The same outputs path is globally unique. DEBUG may modify dependency-chain files at runtime; planned Steps should not duplicate outputs.
+8. id has the form S001, S002, ...; role is Planner / Architect / Coder / Tester / Debugger.
+9. Every Step needs a systemPrompt that pins scope, inputs, outputs, acceptance, forbidden actions, and the paired test-design obligation when applicable.
+10. projectType is inferred by the LLM after clarification: application, library, or mixed. There is no CLI project-type override.
+11. complexityAssessment is your plan-stage complexity assessment. simple => P1 only; moderate => at least P1+P2; complex => at least P1+P2+P3. If the user explicitly asks for phases/stages, set userForcedPhaseSplit=true and split.
+12. implementationPhases must include P1 current and any planned executable phases. Each phase has a verificationGate whose failurePolicy says to feed the failure log to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
+13. dependencies is a Python pip dependency list. Include \`pytest\`; use bare package names only; never list \`requirements.txt\` in Step outputs.
+14. Application/mixed projects need a directly executable Python entry point (\`src/main.py\` or package \`__main__.py\`) that reuses CODE modules. Library/mixed projects need a stable public API and \`docs/api-guide.md\`.
+15. Structured HIGH_LEVEL_DESIGN -> CODE -> MODULE_TEST contract: for non-trivial work, return \`architectureModules\` with each module's id, name, responsibility, sourcePaths, testPaths, and dependencies. CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
 
 Output JSON shape:
 {
   "requirementDigest": "string",
-  "globalPrompt": "string (global background and conventions)",
+  "globalPrompt": "string",
   "projectType": "application | library | mixed",
   "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
   "implementationPhases": [
-    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
-    { "id": "P2", "title": "Enhancements", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
+    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["run tests", "probe entrypoint/API", "verify functional docs"], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." } }
   ],
-  "dependencies": ["pytest", "..."],
+  "dependencies": ["pytest"],
   "architectureModules": [
     { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.py"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
   ],
   "steps": [
     {
       "id": "S001",
-      "phase": "REQUIREMENT",
+      "iterationId": "P1",
+      "phase": "REQUIREMENT_ANALYSIS",
       "title": "string",
       "description": "string",
       "systemPrompt": "Step-specific prompt: scope, inputs, outputs, acceptance, forbidden actions",
       "role": "Planner",
       "tools": ["write_file"],
       "inputs": ["docs/topic.md"],
-      "outputs": ["docs/01-requirement.md"],
+      "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md"],
       "subTasks": [
-        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.py"], "subTasks": [] }
+        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["docs/01-requirement-analysis.md"], "subTasks": [] }
       ],
       "dependsOn": [],
       "acceptance": "string",
@@ -108,7 +105,7 @@ Every round you must return strict JSON:
 Rules:
 1. Only call tools in the Step's authorised whitelist.
 2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
-   For DELIVERY documentation outputs, write the complete declared bundle in the active i18n language: \`README.md\`, \`docs/quickstart.md\`, \`docs/05-delivery.md\`, and \`docs/api-guide.md\` when present. Do not set done=true while any declared documentation output is missing.
+   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle in the active i18n language: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow the target language's best practice; modules importable, functions typed appropriately.
    - [Import convention] When modules under src/ import each other, use "from <module> import …" (sibling name).
      **Never write "from src.<module> import …".** If main.py needs to run from the project root, prepend
@@ -122,7 +119,7 @@ Rules:
    - [Self-contained tests] Tests **must NOT** open() a sample file that does not exist on disk
      (e.g. "test.dbc", "sample.csv"). When a target function needs file input, do exactly one of:
        (a) use pytest's tmp_path fixture inside the test, e.g. tmp_path.joinpath("x.dbc").write_text(...);
-       (b) use write_file to put a fixture under tests/fixtures/<name> — TEST/DEBUG phases have
+       (b) use write_file to put a fixture under tests/fixtures/<name> — test/DEBUG phases have
            write permission to tests/fixtures/ by default, sub-directories are auto-mkdir'd, and
            **fixture paths do NOT need to be pre-declared in outputs**.
      A test that references a file nobody created will trap the Debugger in an endless FileNotFoundError loop.
@@ -135,91 +132,47 @@ Rules:
 6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
    - For larger files: in the same actions array, first write_file the head (imports + top-level constants + first function/class),
      then several append_file calls each adding one function/class block (preserving trailing newlines).
-   - For complex projects, prefer multiple cohesive modules/files and separate CODE/TEST/REFACTOR Steps over one giant file.
+   - For complex projects, prefer multiple cohesive modules/files and separate CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Steps over one giant file.
    - The concatenated result must be valid Python; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.`;
 
-const TYPESCRIPT_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to "compile" a user's natural-language requirement into a strict V-model Step plan.
+const TYPESCRIPT_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
 
 Output language: TypeScript / Node.js only (plan.language is fixed to "typescript").
 
-V-model phases: REQUIREMENT -> ARCH -> TASK -> CODE -> TEST -> (DEBUG) -> REFACTOR -> DELIVERY.
+Canonical V-model phases for every executable iteration:
+REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST.
+DEBUG is runtime rollback/repair only. If a test phase fails, XCompiler rolls back to its paired source phase and reruns subsequent phases.
 
-**Mandatory document naming convention**: every phase's "acceptance document" must use the canonical path below; names map 1-to-1 to phases and must not be renamed.
+Use the same phase documents and synchronous test-design rule as the Python planner:
+- REQUIREMENT_ANALYSIS: \`docs/01-requirement-analysis.md\` plus \`docs/tests/functional-test-plan.md\`.
+- HIGH_LEVEL_DESIGN: \`docs/02-high-level-design.md\` plus \`docs/tests/integration-test-plan.md\`.
+- DETAILED_DESIGN: \`docs/03-detailed-design.md\` plus \`docs/tests/module-test-plan.md\`.
+- CODE: implementation outputs plus \`docs/tests/unit-test-plan.md\`.
+- UNIT_TEST: \`docs/05-unit-test.md\`.
+- INTEGRATION_TEST: \`docs/06-integration-test.md\`.
+- MODULE_TEST: \`docs/07-module-test.md\`.
+- FUNCTIONAL_TEST: \`docs/08-functional-test.md\`, \`README.md\`, \`docs/quickstart.md\`, and \`docs/api-guide.md\` for library/mixed projects.
+For P2+ iterations, put phase docs under \`docs/iterations/<iterationId>/\` and test plans under \`docs/iterations/<iterationId>/tests/\`.
 
-| Phase        | Mandatory output file       |
-|--------------|-----------------------------|
-| REQUIREMENT  | \`docs/01-requirement.md\`  |
-| ARCH         | \`docs/02-architecture.md\` |
-| TASK         | \`docs/03-tasks.md\`        |
-| REFACTOR     | \`docs/04-refactor.md\`     |
-| DELIVERY     | \`docs/05-delivery.md\`     |
-
-> The top-level project context file \`docs/topic.md\` is written automatically by xcompiler build after the clarify gate; it is the single requirement input for the V-model. No Step may put \`topic.md\` into its outputs.
-
-**Delivery documentation bundle**: every DELIVERY Step must output \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`. For \`projectType\` = \`library\` or \`mixed\`, it must also output \`docs/api-guide.md\`. User-facing documentation must follow the active i18n language; code identifiers, API names, commands, and file paths stay literal.
-
-**Macro Step decomposition**: CODE / TEST / DEBUG / REFACTOR are executable macro Steps. Put internal work decomposition in each Step's \`subTasks\` (maximum 2 nested levels below the parent Step) instead of exploding every internal task into many executable Steps.
+HIGH_LEVEL_DESIGN must place the current development module in the whole system and define system-level external interfaces and dependencies, including external APIs, third-party library choices, dependency confirmation, package.json scripts, package dependencies/devDependencies, tsconfig, data contracts, and integration boundaries.
+DETAILED_DESIGN must define module-internal functions, types, data structures, algorithms, control flow, error handling, and internal architecture.
 
 Mandatory rules:
-1. Return pure JSON that matches the given schema. No explanatory text and no Markdown code fences.
-2. **You must emit a complete V-model macro plan covering the required phases**: REQUIREMENT, ARCH, TASK, CODE, TEST, REFACTOR, and DELIVERY. Use the smallest number of executable macro Steps that matches the project shape; normally one CODE and one TEST macro Step is enough, and extra macro Steps are added only when they represent real execution boundaries. DEBUG may appear as an explicit macro Step only for planned remediation or diagnostic work; runtime failures are handled by debugger retries for the failed Step. **Never stop after the first 1-2 Steps**. If the token budget is tight, shorten each Step's description / systemPrompt — but never drop later phases. A truncated skeleton (missing CODE / DELIVERY etc.) is rejected by the validator and triggers full regeneration.
-3. ARCH must produce \`docs/02-architecture.md\`. **Exactly one ARCH Step must output \`package.json\`**, and it must author scripts + dependencies + devDependencies for the project. A root \`tsconfig.json\` may also be an ARCH output. Do NOT list \`requirements.txt\` anywhere.
-4. **Every CODE Step must have at least one TEST Step (directly or transitively) depending on it.** Either give each CODE Step its own TEST Step (whose dependsOn includes that CODE Step), or use one aggregate TEST Step whose dependsOn lists all CODE Steps. "CODE without TEST" or partial TEST coverage is rejected by plan-lint S004/S005.
-5. dependsOn must be acyclic; phase order: REQUIREMENT < ARCH < TASK < CODE < TEST < DEBUG < REFACTOR < DELIVERY.
-6. The same outputs path is globally unique. Sole exception: REFACTOR / DEBUG steps may re-declare a file already produced by their dependency chain (treated as a "modify").
-7. id has the form S001, S002, … sequential.
-8. role must be one of Planner / Architect / Coder / Tester / Debugger.
-9. tools is a string array (whitelist) — atomic tools or Skill refs like "skill:patcher" / "skill:tester" / "skill:debugger".
-10. acceptance is one English sentence stating the verifiable completion criterion.
-11. **Phase purity**: REQUIREMENT / ARCH / TASK / DELIVERY outputs must NOT contain \`src/**/*.ts\`, \`src/**/*.tsx\`, or \`tests/**/*.ts\` — only docs/**/*.md, plus \`package.json\` / \`tsconfig.json\` for ARCH where needed. REFACTOR is the sole exception: it may re-declare existing src/tests files from its dependency chain as behaviour-preserving refactor targets, and it must also output \`docs/04-refactor.md\`. No phase may put \`requirements.txt\` or \`docs/topic.md\` in outputs. **A TEST Step's outputs must list test files (e.g. \`tests/foo.test.ts\`); if the Step only "runs tests" without adding new test files, outputs may be an empty array (the runtime TEST gate runs Vitest automatically).**
-12. **Prompt locality**: every Step must carry a systemPrompt field (≥ 20 chars) that pins down its scope / inputs / outputs / acceptance / forbidden actions. xcompiler_run concatenates this into the Step-specific system prompt as the sole context source, preventing LLM drift.
-13. **Global prompt**: globalPrompt is one paragraph of project background / cross-cutting conventions; it is concatenated into every Step.
-14. **projectType**: top-level projectType must be one of \`application\`, \`library\`, or \`mixed\`. Classify it from the clarified requirement; there is no CLI project-type override. Use \`library\` for SDK/package/API-only modules; use \`mixed\` when the deliverable contains both a runnable app/CLI/service and a reusable public API.
-15. **complexityAssessment**: top-level object with \`level\` = \`simple | moderate | complex\`, \`rationale\`, \`splitRecommended\`, and \`userForcedPhaseSplit\`. This is your first-pass planning assessment. Choose from actual project complexity: simple = one implementation phase, moderate = two phases, complex = three or more phases. Set \`splitRecommended=true\` for moderate/complex work and when the user asks for phases/stages/milestones; set \`userForcedPhaseSplit=true\` for explicit phase requests.
-16. **implementationPhases**: top-level array. Always include \`P1\` with \`status="current"\`; current V-model Steps implement only P1. The phase count follows complexity: simple => P1 only unless forced; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. P1 must be the smallest complete core slice.
-17. **dependencies**: a string array of runtime npm packages (bare package names only, no version ranges). It is advisory context for the planner; the authoritative dependency manifest is the \`package.json\` authored by ARCH. Do not include dev tooling like \`vitest\` / \`typescript\` / \`tsx\` / \`@types/node\` in this field unless they are also true runtime deps. Never fabricate package names when unsure.
-18. **TASK phase**: at least 1 TASK Step whose outputs include \`docs/03-tasks.md\`, splitting the ARCH interfaces/modules into executable macro Steps and Step.subTasks (each with id / description / acceptance).
-19. **REFACTOR phase**: at least 1 REFACTOR Step whose dependsOn includes ≥ 1 TEST Step. The brief: "behaviour preserved — run the full regression → structurally improve existing src/tests from the dependency chain if needed → run the full regression again → write docs/04-refactor.md". outputs must include \`docs/04-refactor.md\` and may also re-declare refactored src/tests files. Put refactor activities in \`subTasks\`; do not add features or delete tests.
-20. **DELIVERY phase**: the DELIVERY Step's outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/05-delivery.md\`; for \`projectType\` = \`library\` or \`mixed\`, it must also include \`docs/api-guide.md\`. \`README.md\` is the project landing page, QuickStart gives copy-paste install/run/test commands, and API Guide documents public functions/classes/types. Documentation must be written in English for this prompt and include language metadata/switch links when translated variants exist. DELIVERY must not introduce new functionality.
-21. **Entrypoint / public API by projectType**: for \`projectType="application"\` or \`"mixed"\`, the CODE phase must produce a directly executable entry \`src/main.ts\` whose bottom calls a \`main()\` that can print help / usage / sample output and run with no extra arguments. The entry point must reuse the core modules/classes produced by the CODE phase (no "simulated" duplicate logic inside the entry). The DELIVERY phase's \`docs/05-delivery.md\` must give a **copy-pasteable direct Node command** such as \`node src/main.ts --help\`; \`npm start\` may wrap the same entry but is not a substitute for the direct Node probe. For \`projectType="library"\`, do not invent an application entrypoint merely to satisfy this rule; instead expose a stable public API from \`src/index.ts\` or equivalent, test import/use cases, and document public functions/classes/types in \`docs/api-guide.md\`.
-22. **Entry-point import conventions**: local TypeScript source modules must use ESM relative imports with explicit \`.ts\` specifiers (e.g. \`import { parse } from './parser.ts';\`). ARCH must configure \`tsconfig.json\` with \`allowImportingTsExtensions: true\` and build/lint scripts that run \`tsc --noEmit\`. Keep generated TypeScript compatible with Node's native type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.xxx\`, or path hacks. Tests use Vitest under \`tests/**/*.test.ts\` and should import local source with \`.ts\` specifiers.
-23. **Structured ARCH → CODE → TEST contract (mandatory for complex requests)**: return a top-level \`architectureModules\` array containing every module created or modified by this plan. Each item has \`id\` (M001...), \`name\`, \`responsibility\`, \`sourcePaths\`, \`testPaths\`, and \`dependencies\` (module ids). Size the module count from the actual requirement, existing baseline, and intent: small single-function/script work may use one module; complex work must include entry/orchestration, core domain, each independent concern surface, and extra boundaries when an incremental change touches a larger existing baseline. Do not aim for a fixed number. The validator recomputes the exact minimum from topic/baseline/intent and rejects collapsed plans. Every module declares source and test paths. CODE / TEST macro Steps may cover multiple modules, but must list module-level work in \`subTasks\`; missing mappings are rejected.
+1. Return pure JSON only. Never emit the old phases REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY.
+2. Every current/planned implementation phase is a complete V-model iteration containing all eight canonical phases.
+3. Each macro Step may contain \`subTasks\` nested at most two levels.
+4. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration; module testPaths from architectureModules must be produced by MODULE_TEST.
+5. Design phases must not output src/ or tests/ files. HIGH_LEVEL_DESIGN is the only phase that may output \`package.json\` / \`tsconfig.json\`.
+6. Exactly one HIGH_LEVEL_DESIGN Step must output \`package.json\` for greenfield TypeScript plans; ensure one HIGH_LEVEL_DESIGN Step output \`package.json\`. It must include scripts for \`build\`, \`test\`, and preferably \`lint\`.
+7. Local TypeScript source imports must use explicit \`.ts\` ESM specifiers. Configure \`allowImportingTsExtensions: true\` and use \`tsc --noEmit\`. Generated TypeScript must be compatible with Node native type stripping: avoid enums, namespaces, parameter properties, and transform-required syntax.
+8. dependencies is an advisory runtime npm package list; the authoritative manifest is \`package.json\` from HIGH_LEVEL_DESIGN. Do not invent package names.
+9. Application/mixed projects need \`src/main.ts\` with a directly runnable \`main()\`; library/mixed projects need \`src/index.ts\` or equivalent public API plus API guide.
+10. complexityAssessment and implementationPhases follow the same rules as Python: simple => P1, moderate => at least P1+P2, complex => at least P1+P2+P3, forced phase split => set userForcedPhaseSplit=true.
+11. verificationGate failurePolicy must say: Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
+12. For non-trivial work, return architectureModules with sourcePaths and testPaths; CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
 
-Output JSON shape:
-{
-  "requirementDigest": "string",
-  "globalPrompt": "string (global background and conventions)",
-  "projectType": "application | library | mixed",
-  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
-  "implementationPhases": [
-    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [] },
-    { "id": "P2", "title": "Enhancements", "objective": "string", "status": "deferred", "scope": ["..."], "deliverables": ["..."], "dependsOn": ["P1"] }
-  ],
-  "dependencies": ["zod", "..."],
-  "architectureModules": [
-    { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.ts"], "testPaths": ["tests/example.test.ts"], "dependencies": [] }
-  ],
-  "steps": [
-    {
-      "id": "S001",
-      "phase": "REQUIREMENT",
-      "title": "string",
-      "description": "string",
-      "systemPrompt": "Step-specific prompt: scope, inputs, outputs, acceptance, forbidden actions",
-      "role": "Planner",
-      "tools": ["write_file"],
-      "inputs": ["docs/topic.md"],
-      "outputs": ["docs/01-requirement.md"],
-      "subTasks": [
-        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["src/example.ts"], "subTasks": [] }
-      ],
-      "dependsOn": [],
-      "acceptance": "string",
-      "maxRetries": 3
-    }
-  ]
-}`;
+Output JSON shape is identical to Python and must include \`"projectType": "application | library | mixed"\`, with TypeScript paths such as \`src/example.ts\` and \`tests/example.test.ts\`; the first Step phase must be \`REQUIREMENT_ANALYSIS\`, not \`REQUIREMENT\`. There is no CLI project-type override.`;
 
 const TYPESCRIPT_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
@@ -233,7 +186,7 @@ Every round you must return strict JSON:
 Rules:
 1. Only call tools in the Step's authorised whitelist.
 2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
-   For DELIVERY documentation outputs, write the complete declared bundle in the active i18n language: \`README.md\`, \`docs/quickstart.md\`, \`docs/05-delivery.md\`, and \`docs/api-guide.md\` when present. Do not set done=true while any declared documentation output is missing.
+   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle in the active i18n language: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow TypeScript / Node.js best practice; modules importable, APIs typed, and runtime code directly runnable.
    - [Import convention] Local source modules under src/ use ESM relative imports with explicit ".ts" specifiers, e.g. \`import { x } from "./util.ts";\`. Keep code compatible with Node's native TypeScript type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.<module>\`, or sys.path hacks.
    - [Test convention] Tests use Vitest: \`import { describe, it, expect } from "vitest";\`. Test files live under \`tests/**/*.test.ts\`.
@@ -243,7 +196,7 @@ Rules:
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
 6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
    - For larger files: in the same actions array, first write_file the head (imports + top-level constants + first function/class), then several append_file calls each adding one function/class block.
-   - For complex projects, prefer multiple cohesive modules/files and separate CODE/TEST/REFACTOR Steps over one giant file.
+   - For complex projects, prefer multiple cohesive modules/files and separate CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Steps over one giant file.
    - The concatenated result must be valid TypeScript; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.
 7. package.json is the dependency manifest. Use add_dependency for npm packages; never write requirements.txt.
@@ -380,7 +333,7 @@ const messages: Messages = {
     optForce: 'force regenerate: override workspace lock and ignore existing plan.json',
     optDryRun: 'print topology only, do not execute',
     optFrom: 'start from the given Step (earlier ones are skipped)',
-    optPhase: 'execute only the given phase (REQUIREMENT/ARCH/CODE/TEST/REFACTOR/DELIVERY/...)',
+    optPhase: 'execute only the given phase (REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN/CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST/DEBUG)',
     optReset: 'reset all Step status to PENDING',
     optMaxDepth: 'maximum recursion depth',
     optTail: 'number of recent audit entries',
@@ -471,6 +424,7 @@ const messages: Messages = {
     spinClarify: 'Planner is clarifying the requirement…',
     clarifySucceed: (n) => `clarification questions: ${n}`,
     clarifyFail: 'clarification failed',
+    clarifyChoiceHint: (range) => `Reply with ${range} to choose a shown option, or type a custom answer.`,
     addendaConfirm: 'Any extra requirements to append? (Will be sent to Planner together with the clarification and kept in plan.userAddenda)',
     addendaEditorMsg: 'Enter custom addenda (multi-line, Markdown allowed)',
     auditClarifyAnswer: (qid, q) => `clarify answer ${qid}: ${q}`,
@@ -549,7 +503,7 @@ const messages: Messages = {
     auditDocPresent: (p) => `${p} present`,
     auditDocMissing: (p) => `missing ${p}`,
     auditDeliveryDocPresent: 'delivery documentation present',
-    auditDeliveryDocMissing: 'missing docs/05-delivery.md',
+    auditDeliveryDocMissing: 'missing docs/08-functional-test.md',
     auditTestFilesFound: (count) => `found ${count} concrete test file(s)`,
     auditTestFilesMissing: 'no concrete test files found under tests/',
     auditEntrypointOk: (command) => `entrypoint ok: ${command}`,
@@ -600,11 +554,11 @@ const messages: Messages = {
     phaseFailed: (id, debug, reason) => `${id} ${debug ? 'DEBUG ' : ''}FAILED — ${reason}`,
     phaseDone: (id, rounds) => `${id} DONE (rounds=${rounds})`,
     phaseException: (id, message) => `${id} FAILED (exception) — ${message}`,
-    archGateReason: (missing) => `ARCH gate: architecture contract missing ${missing} token(s)`,
+    archGateReason: (missing) => `HIGH_LEVEL_DESIGN gate: architecture contract missing ${missing} token(s)`,
     archGateMissing: (tokens) => `missing module ids/paths: ${tokens}`,
     archGateInstruction: (p) => `Update ${p} so every architectureModules item is traceable before CODE starts.`,
-    testGateReason: (exitCode, timedOut) => `TEST gate: tests exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
-    deliveryGateReason: (command, exitCode, timedOut) => `DELIVERY gate: \`${command}\` exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
+    testGateReason: (exitCode, timedOut) => `Test gate: tests exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
+    deliveryGateReason: (command, exitCode, timedOut) => `FUNCTIONAL_TEST gate: \`${command}\` exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
     missingPythonEntrypoint:
       'missing Python entrypoint: expected src/main.py or src/<package>/__main__.py',
     missingTypeScriptEntrypoint:
@@ -653,8 +607,8 @@ const messages: Messages = {
     plannerSelfMode: `SELF-BOOTSTRAP OVERRIDE (takes precedence over conflicting greenfield rules above):
 - The target is the existing XCompiler repository. Preserve its current package.json, tsconfig, bin entries, CLI entrypoints, module layout, public exports, and documentation unless the requirement explicitly changes them.
 - Do not create src/main.ts merely to satisfy a greenfield entrypoint convention. Reuse the entrypoints declared by the existing package.json.
-- Do not list package.json or tsconfig.json as ARCH outputs unless this change genuinely needs to modify them.
-- Every CODE/REFACTOR output must be scoped to the requested delta. Never rebuild or replace the repository wholesale.
+- Do not list package.json or tsconfig.json as HIGH_LEVEL_DESIGN outputs unless this change genuinely needs to modify them.
+- Every CODE/test output must be scoped to the requested delta. Never rebuild or replace the repository wholesale.
 - Treat the stable host binary as generation N and the worktree candidate as N+1; do not design in-process hot replacement.`,
     plannerClarifySystem: PLANNER_CLARIFY_SYSTEM,
     plannerClarify: (raw, opts = {}) =>
@@ -667,7 +621,7 @@ ${raw}
 Generate ${opts.complex ? '8-10' : '7-10'} non-duplicate clarification questions about unresolved decisions whose answers materially affect implementation or acceptance. Never return an empty array; when the functional description is already detailed, ask for acceptance examples, failure behaviour, and explicit exclusions.
 
 Return ONLY a JSON array. Every item must be shaped exactly as:
-{"id":"Q1","category":"functionality|data|acceptance|boundary|quality|extensibility","question":"one concrete directly-answerable question","why":"what design or acceptance decision this answer affects"}
+{"id":"Q1","category":"functionality|data|acceptance|boundary|quality|extensibility","question":"one concrete directly-answerable question","why":"what design or acceptance decision this answer affects","options":[{"label":"A","answer":"highest-priority feasible setting"},{"label":"B","answer":"second feasible setting"}]}
 
 Question mix (functionality first):
 - At least ${opts.complex ? '5' : '4'} function-focused questions categorized as functionality / data / acceptance, so functional questions remain the majority. Prioritize actors, core journeys, business rules and state transitions, inputs/outputs, failure behaviour, and verifiable acceptance examples.
@@ -677,6 +631,9 @@ Question mix (functionality first):
 - If the deliverable shape is unclear, include one boundary question asking whether this should be an API library/SDK/package, a runnable application/CLI/service, or a mixed deliverable with both.
 - Order by blocking impact: core functional/data decisions first, then scope and quality, then future evolution.
 - One primary decision per question. Include useful business choices/examples; do not join unrelated questions with “and/or”.
+- For every question, generate 2-5 feasible answer options ordered by priority. The option count is not fixed: use 2 for binary choices, 3 for common defaults, and 4-5 only when there are genuinely distinct viable settings. Do not pad or force every question to exactly 3 options.
+- Label options sequentially from A through the last generated option, for example A-B, A-C, A-D, or A-E. A should be the recommended/default setting when one is apparent. Options must be concrete business/product settings, not vague placeholders.
+- Do not include “Other”, “Custom”, or “Let the user decide” as an option. The CLI already allows the user to reply with one of the shown labels or enter a custom free-form answer.
 ${opts.projectShapeAmbiguous
   ? '- Required for this topic: ask the API library vs runnable application vs mixed-deliverable boundary explicitly.\n'
   : ''}
@@ -711,9 +668,9 @@ ${opts.baseline || '(missing baseline)'}
 `
   : ''}Planning depth rules:
 - Unless the request is explicitly tiny (single function / toy script / one-file utility), do not collapse the solution into one source file and one test.
-- If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple architecture modules and Step.subTasks under CODE/TEST macro Steps.
-- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 only; moderate => P1 current + at least P2 deferred; complex => P1 current + at least P2/P3 deferred. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true.
-- Use ARCH/TASK steps to describe module boundaries, responsibilities, and extension points that future incremental work can build on.
+- If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple architecture modules and Step.subTasks under CODE/MODULE_TEST macro Steps.
+- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 current only; moderate => P1 current + at least P2 planned; complex => P1 current + at least P2/P3 planned. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true. Every current/planned implementation phase must be represented by a full V-model cycle in steps, with Step.iterationId pointing to that phase.
+- Use HIGH_LEVEL_DESIGN/DETAILED_DESIGN steps to describe module boundaries, responsibilities, dependencies, and extension points that future incremental work can build on.
 - When baseline files already exist, prefer editing/extending those modules over creating shadow implementations with duplicate behaviour.
 
 Output a strict JSON plan per the system rules.`,
@@ -741,7 +698,7 @@ Output a strict JSON plan per the system rules.`,
       'Write and run pytest tests verifying function behaviour; on failure parse with analyze_error. ' +
       '[Self-contained fixtures] Tests **must NOT** open() a sample file that does not exist on disk (e.g. "test.dbc"); ' +
       'when the target function needs file input, either use pytest tmp_path to construct content inside the test, ' +
-      'or use write_file to put a fixture under tests/fixtures/<name> — TEST/DEBUG phases already grant write permission ' +
+      'or use write_file to put a fixture under tests/fixtures/<name> — test/DEBUG phases already grant write permission ' +
       'to that directory, sub-dirs are auto-mkdir\'d, and **fixture paths do NOT need to be pre-declared in outputs**. ' +
       'When generating tests, always emit every dependent resource so the Debugger does not loop on FileNotFoundError. ' +
       '[Fixture iteration] If a running test raises "Invalid syntax / Parse error / Malformed" from the target function, ' +

@@ -128,7 +128,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   //  - 不存在 → 写入。
   //  - 已存在但内容与校准后不一致（例如 老运行遗留了 `cantools==4.3.*`）→ 重写为校准后版本。
   // 这能防止升级 XCompiler 后旧 sandbox 仍卡在幻觉依赖上。
-  // TypeScript 等语言的 package.json 由 ARCH 步骤撰写，不在此 seeding。
+  // TypeScript 等语言的 package.json 由 HIGH_LEVEL_DESIGN 步骤撰写，不在此 seeding。
   const profile = getLanguageProfile(plan.language);
   if (profile.seedManifestFromDeps && plan.dependencies && plan.dependencies.length > 0) {
     const reqRel = profile.manifestFile;
