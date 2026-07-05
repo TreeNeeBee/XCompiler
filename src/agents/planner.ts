@@ -2,6 +2,7 @@ import {
   ArchitectureModuleSchema,
   ComplexityAssessmentSchema,
   ImplementationPhaseSchema,
+  PHASES,
   REQUIRED_V_MODEL_PHASES,
   type ArchitectureModule,
   type ComplexityAssessment,
@@ -50,11 +51,20 @@ export const CLARIFICATION_CATEGORIES = [
 ] as const;
 export type ClarificationCategory = (typeof CLARIFICATION_CATEGORIES)[number];
 
+export const CLARIFICATION_OPTION_LABELS = ['A', 'B', 'C', 'D', 'E'] as const;
+export type ClarificationOptionLabel = (typeof CLARIFICATION_OPTION_LABELS)[number];
+
+export interface ClarifyOption {
+  label: ClarificationOptionLabel;
+  answer: string;
+}
+
 export interface ClarifyQuestion {
   id: string;
   category: ClarificationCategory;
   question: string;
   why: string;
+  options: ClarifyOption[];
 }
 
 export interface PlannerInput {
@@ -64,6 +74,7 @@ export interface PlannerInput {
     answer: string;
     category?: ClarificationCategory;
     why?: string;
+    options?: ClarifyOption[];
   }>;
   /** 用户在澄清问答后补充的自定义需求（可为空）。 */
   userAddenda?: string;
@@ -136,10 +147,13 @@ export class Planner {
 
   async decompose(input: PlannerInput): Promise<DraftPlan> {
     const qa = input.clarifications
-      .map((c, i) =>
-        `Q${i + 1}${c.category ? ` [${c.category}]` : ''}: ${c.question}` +
-        `${c.why ? `\n澄清目的: ${c.why}` : ''}\nA${i + 1}: ${c.answer}`,
-      )
+      .map((c, i) => {
+        const optionBlock = c.options && c.options.length > 0
+          ? `\n候选设定:\n${c.options.map((option) => `- ${option.label}. ${option.answer}`).join('\n')}`
+          : '';
+        return `Q${i + 1}${c.category ? ` [${c.category}]` : ''}: ${c.question}` +
+          `${c.why ? `\n澄清目的: ${c.why}` : ''}${optionBlock}\nA${i + 1}: ${c.answer}`;
+      })
       .join('\n\n');
     const addenda = (input.userAddenda ?? '').trim();
     const parseContext = {
@@ -215,10 +229,11 @@ export function buildPlan(
     complexityAssessment,
     draft.requirementDigest,
   );
-  const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(draft.steps)), projectType);
+  const iterated = normalizeStepIterations(draft.steps, implementationPhases);
+  const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType);
   const mapped = calibrateArchitectureStepMappings(shaped, draft.architectureModules ?? []);
   const contracted = injectArchitectureContractPrompts(mapped, draft.architectureModules ?? []);
-  // 兜底：若 LLM 漏写了 TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
+  // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
   const steps = calibratePlanCoverage(contracted, language);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
@@ -256,12 +271,12 @@ function injectArchitectureContractPrompts(
 
   return steps.map((step) => {
     let contractBlock = '';
-    if (step.phase === 'ARCH') {
+    if (step.phase === 'HIGH_LEVEL_DESIGN') {
       contractBlock =
-        `\n\nARCH 契约（强制）：docs/02-architecture.md 必须逐项写明以下模块的职责、接口、源码路径、测试路径和依赖，不得合并或省略：\n${inventory}`;
-    } else if (step.phase === 'TASK') {
+        `\n\nHIGH_LEVEL_DESIGN 契约（强制）：docs/02-high-level-design.md 必须逐项写明本开发模块在整体系统中的定位、系统级对外接口、外部 API、第三方库选型、依赖确认，以及以下模块的职责、源码路径、测试路径和依赖，不得合并或省略：\n${inventory}`;
+    } else if (step.phase === 'DETAILED_DESIGN') {
       contractBlock =
-        `\n\nTASK 契约（强制）：docs/03-tasks.md 必须为以下每个模块保留独立 CODE/TEST 任务及验收映射：\n${inventory}`;
+        `\n\nDETAILED_DESIGN 契约（强制）：docs/03-detailed-design.md 必须定义模块内部具体功能实现、内部架构、数据结构/控制流，并为以下每个模块保留独立 CODE/MODULE_TEST 任务及验收映射：\n${inventory}`;
     } else if (step.phase === 'CODE') {
       const owned = modules.filter((module) =>
         module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
@@ -270,13 +285,13 @@ function injectArchitectureContractPrompts(
         contractBlock =
           `\n\n本 CODE Step 仅实现架构模块：\n${owned.map((module) => `${module.id} ${module.name} — ${module.responsibility}; sourcePaths=${module.sourcePaths.join(', ')}`).join('\n')}`;
       }
-    } else if (step.phase === 'TEST') {
+    } else if (step.phase === 'MODULE_TEST') {
       const covered = modules.filter((module) =>
         module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
       );
       if (covered.length > 0) {
         contractBlock =
-          `\n\n本 TEST Step 验证架构模块：\n${covered.map((module) => `${module.id} ${module.name}; testPaths=${module.testPaths.join(', ')}`).join('\n')}`;
+          `\n\n本 MODULE_TEST Step 验证架构模块：\n${covered.map((module) => `${module.id} ${module.name}; testPaths=${module.testPaths.join(', ')}`).join('\n')}`;
       }
     }
     return contractBlock ? { ...step, systemPrompt: `${step.systemPrompt}${contractBlock}` } : step;
@@ -310,6 +325,7 @@ function parseClarifyJson(text: string): ClarifyQuestion[] {
       category: normalizeClarificationCategory(raw?.category),
       question,
       why: typeof raw?.why === 'string' ? raw.why.trim() : '',
+      options: parseClarifyOptions(raw?.options),
     });
   }
   return questions;
@@ -327,6 +343,7 @@ interface RawClarifyQuestion {
   category?: unknown;
   question?: unknown;
   why?: unknown;
+  options?: unknown;
 }
 
 function coerceClarifyArray(data: unknown): RawClarifyQuestion[] {
@@ -358,6 +375,39 @@ function normalizeClarificationCategory(value: unknown): ClarificationCategory {
   return parseClarificationCategory(value) ?? 'functionality';
 }
 
+function parseClarifyOptions(value: unknown): ClarifyOption[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const options: ClarifyOption[] = [];
+  for (const item of value) {
+    const rawAnswer = extractClarifyOptionAnswer(item);
+    const answer = stripOptionLabel(rawAnswer).trim();
+    if (!answer) continue;
+    const dedupKey = answer.toLowerCase().replace(/[\s?？。.!！,，;；:：]+/gu, '');
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    const label = CLARIFICATION_OPTION_LABELS[options.length];
+    if (!label) break;
+    options.push({ label, answer });
+  }
+  return options;
+}
+
+function extractClarifyOptionAnswer(item: unknown): string {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return '';
+  const obj = item as Record<string, unknown>;
+  for (const key of ['answer', 'text', 'value', 'setting', 'title', 'label']) {
+    const value = obj[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return '';
+}
+
+function stripOptionLabel(value: string): string {
+  return value.replace(/^\s*[A-Ea-e]\s*[\).\]、:：-]\s*/u, '');
+}
+
 function validateClarifyJson(
   text: string,
   complex: boolean,
@@ -377,6 +427,11 @@ function validateClarifyJson(
     }
     if (typeof question.why !== 'string' || question.why.trim().length < 4) {
       throw new Error(`clarify question ${index + 1} is missing a concise why field`);
+    }
+    const rawOptions = Array.isArray(question.options) ? question.options : [];
+    const options = parseClarifyOptions(question.options);
+    if (rawOptions.length < 2 || rawOptions.length > 5 || options.length !== rawOptions.length) {
+      throw new Error(`clarify question ${index + 1} must include 2-5 prioritized answer options`);
     }
   }
 
@@ -447,12 +502,33 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
       ? obj.pythonRequirements
       : [];
   const dependencies = (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string');
+  if (context) {
+    const validPhaseNames = new Set<string>(PHASES);
+    const nonCanonical = (steps as unknown[])
+      .map((rawStep, index) => {
+        const step = rawStep && typeof rawStep === 'object' ? rawStep as Record<string, unknown> : {};
+        return {
+          id: typeof step.id === 'string' ? step.id : `#${index + 1}`,
+          phase: typeof step.phase === 'string' ? step.phase : '',
+        };
+      })
+      .filter((step) => !validPhaseNames.has(step.phase));
+    if (nonCanonical.length > 0) {
+      throw new Error(
+        `Planner draft uses non-canonical phase(s): ` +
+        `${nonCanonical.map((step) => `${step.id}:${step.phase || '(missing)'}`).join(', ')}. ` +
+        `V-model phases must be exactly ${REQUIRED_V_MODEL_PHASES.join(' -> ')} ` +
+        `with DEBUG only for explicit rollback/repair; do not emit legacy REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY.`,
+      );
+    }
+  }
+  const normalizedDraftStepsForValidation = calibrateStepShape(calibrateStepIds(steps as Step[]));
   // 强制 V 模型骨架完整性：必须覆盖核心阶段。LLM 在 token loop / 截断时常见症状
-  // 是只输出前 1-2 个 Step（如用户回放：仅 REQUIREMENT+ARCH 两步），这种残缺 plan
+  // 是只输出前 1-2 个 Step（如用户回放：仅 REQUIREMENT_ANALYSIS+HIGH_LEVEL_DESIGN 两步），这种残缺 plan
   // 后续重试也救不回，应在 validate 层直接拒绝，让 FallbackClient 切换 provider
   // 重新生成完整 plan。
   const phases = new Set<string>();
-  for (const s of steps as Array<Record<string, unknown>>) {
+  for (const s of normalizedDraftStepsForValidation) {
     const p = typeof s?.phase === 'string' ? s.phase : '';
     if (p) phases.add(p);
   }
@@ -500,6 +576,11 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     complexityAssessment,
     digest,
   );
+  const stepsWithIterations = normalizeStepIterations(normalizedDraftStepsForValidation, implementationPhases);
+  const iterationIssue = validateIterationVModelDraft(stepsWithIterations, implementationPhases);
+  if (context && iterationIssue) {
+    throw new Error(`Planner iteration V-model invalid: ${iterationIssue}`);
+  }
   if (context) {
     const demand = analyzeArchitectureDemand(
       {
@@ -520,7 +601,7 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     if (demand.nonTrivial && !complexityAssessment.splitRecommended) {
       throw new Error(
         `Planner complexityAssessment underestimates a non-trivial request (${demand.reasonLabel}); ` +
-        'splitRecommended must be true and deferred implementation phases must be planned.',
+        'splitRecommended must be true and additional executable iterations must be planned.',
       );
     }
     if (forcedPhaseSplit && !complexityAssessment.userForcedPhaseSplit) {
@@ -529,12 +610,12 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     if (demand.nonTrivial && architectureModules.length === 0) {
       throw new Error(
         `Planner omitted architectureModules for a non-trivial request (${demand.reasonLabel}); ` +
-        `expected at least ${demand.minModules} modules with CODE/TEST traceability.`,
+        `expected at least ${demand.minModules} modules with CODE/MODULE_TEST traceability.`,
       );
     }
     if (architectureModules.length > 0) {
       const normalizedSteps = calibrateArchitectureStepMappings(
-        calibrateDocPaths(calibrateStepShape(calibrateStepIds(steps as Step[])), projectType),
+        calibrateDocPaths(calibrateStepShape(calibrateStepIds(stepsWithIterations)), projectType),
         architectureModules,
       );
       const contractIssues = validateArchitectureContract(
@@ -559,7 +640,7 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     implementationPhases,
     dependencies,
     architectureModules,
-    steps: steps as Step[],
+    steps: stepsWithIterations,
   };
 }
 
@@ -578,16 +659,17 @@ function validateImplementationPhaseDraft(
   assessment: ComplexityAssessment,
 ): string | undefined {
   const requiredCount = requiredImplementationPhaseCount(assessment);
-  if (phases.length < requiredCount) {
-    return `complexityAssessment.level=${assessment.level} requires at least ${requiredCount} implementation phase(s)`;
+  const executable = phases.filter((phase) => phase.status !== 'deferred');
+  if (executable.length < requiredCount) {
+    return `complexityAssessment.level=${assessment.level} requires at least ${requiredCount} executable implementation iteration(s)`;
   }
   if (
     assessment.level === 'simple' &&
     !assessment.splitRecommended &&
     !assessment.userForcedPhaseSplit &&
-    phases.length !== 1
+    executable.length !== 1
   ) {
-    return 'simple complexity without splitRecommended must use exactly one current implementation phase';
+    return 'simple complexity without splitRecommended must use exactly one executable implementation iteration';
   }
   const current = phases.filter((phase) => phase.status === 'current');
   if (current.length !== 1 || current[0]?.id !== 'P1') {
@@ -597,8 +679,8 @@ function validateImplementationPhaseDraft(
     return 'P1 must be the first implementation phase';
   }
   for (const phase of phases.filter((item) => item.id !== 'P1')) {
-    if (phase.status !== 'deferred') {
-      return `${phase.id} must be deferred; only P1 is executed now`;
+    if (phase.status === 'current') {
+      return `${phase.id} must not be current; later iterations must be planned or explicitly deferred`;
     }
   }
   if (assessment.userForcedPhaseSplit && !assessment.splitRecommended) {
@@ -607,8 +689,32 @@ function validateImplementationPhaseDraft(
   if (assessment.level !== 'simple' && !assessment.splitRecommended) {
     return 'moderate/complex complexity requires splitRecommended=true';
   }
-  if (assessment.splitRecommended && phases.filter((phase) => phase.status === 'deferred').length === 0) {
-    return 'splitRecommended=true requires at least one deferred enhancement phase';
+  if (assessment.splitRecommended && executable.filter((phase) => phase.id !== 'P1').length === 0) {
+    return 'splitRecommended=true requires at least one planned executable iteration after P1';
+  }
+  return undefined;
+}
+
+function validateIterationVModelDraft(
+  steps: Step[],
+  phases: ImplementationPhase[],
+): string | undefined {
+  const executable = phases.filter((phase) => phase.status !== 'deferred');
+  const executableIds = new Set(executable.map((phase) => phase.id));
+  for (const step of steps) {
+    const iterationId = step.iterationId ?? 'P1';
+    if (!executableIds.has(iterationId)) {
+      return `${step.id} references non-executable iteration ${iterationId}`;
+    }
+  }
+  for (const iteration of executable) {
+    const iterationSteps = steps.filter((step) => (step.iterationId ?? 'P1') === iteration.id);
+    const phaseSet = new Set(iterationSteps.map((step) => step.phase));
+    for (const required of REQUIRED_V_MODEL_PHASES) {
+      if (!phaseSet.has(required)) {
+        return `${iteration.id} is missing ${required}; every iteration must be a complete V-model cycle`;
+      }
+    }
   }
   return undefined;
 }
@@ -685,17 +791,18 @@ function normalizeImplementationPhases(
   requirementDigest: string,
 ): ImplementationPhase[] {
   const requiredCount = requiredImplementationPhaseCount(assessment);
-  const sanitized = (phases ?? [])
+  const sanitized: ImplementationPhase[] = (phases ?? [])
     .filter((phase) => phase.id && phase.title && phase.objective)
     .map((phase, index) => ({
       ...phase,
       id: phase.id || `P${index + 1}`,
-      status: index === 0 ? 'current' as const : 'deferred' as const,
+      status: index === 0 ? 'current' as const : phase.status === 'deferred' ? 'deferred' as const : 'planned' as const,
       dependsOn: index === 0 ? [] : phase.dependsOn.length > 0 ? phase.dependsOn : [`P${index}`],
+      verificationGate: phase.verificationGate ?? defaultVerificationGate(phase.id || `P${index + 1}`),
     }));
   if (sanitized.length > 0) {
-    while (sanitized.length < requiredCount) {
-      sanitized.push(deferredEnhancementPhase(requirementDigest, sanitized.length + 1));
+    while (sanitized.filter((phase) => phase.status !== 'deferred').length < requiredCount) {
+      sanitized.push(plannedIterationPhase(requirementDigest, sanitized.length + 1));
     }
     return sanitized;
   }
@@ -704,13 +811,14 @@ function normalizeImplementationPhases(
     title: 'Core functionality',
     objective: `Deliver the smallest complete core slice for: ${requirementDigest}`,
     status: 'current',
-    scope: ['Core domain behaviour', 'Runnable entrypoint', 'Primary tests', 'Delivery documentation'],
-    deliverables: ['Current V-model steps execute only this phase.'],
+    scope: ['Core domain behaviour', 'Runnable entrypoint', 'Primary tests', 'Functional validation documentation'],
+    deliverables: ['Complete V-model iteration for the highest-priority core slice.'],
     dependsOn: [],
+    verificationGate: defaultVerificationGate('P1'),
   };
   const out = [p1];
   while (out.length < requiredCount) {
-    out.push(deferredEnhancementPhase(requirementDigest, out.length + 1));
+    out.push(plannedIterationPhase(requirementDigest, out.length + 1));
   }
   return out;
 }
@@ -722,16 +830,41 @@ function requiredImplementationPhaseCount(assessment: ComplexityAssessment): num
   return 1;
 }
 
-function deferredEnhancementPhase(requirementDigest: string, index: number): ImplementationPhase {
+function plannedIterationPhase(requirementDigest: string, index: number): ImplementationPhase {
   return {
     id: `P${index}`,
-    title: 'Deferred enhancements',
-    objective: `Plan follow-up enhancements after the Phase 1 core is stable: ${requirementDigest}`,
-    status: 'deferred',
-    scope: ['Additional workflows', 'Extended integrations', 'Scale/performance hardening', 'Operational polish'],
-    deliverables: ['Deferred plan only; not executed by the current V-model run.'],
+    title: `Iteration ${index} enhancements`,
+    objective: `Deliver the next highest-priority iteration after P${index - 1}: ${requirementDigest}`,
+    status: 'planned',
+    scope: ['Next prioritized workflows', 'Extended integrations', 'Quality hardening', 'Functional validation update'],
+    deliverables: ['Complete V-model iteration with requirement analysis, high-level design, detailed design, code, unit test, integration test, module test, and functional test steps.'],
     dependsOn: [`P${Math.max(1, index - 1)}`],
+    verificationGate: defaultVerificationGate(`P${index}`),
   };
+}
+
+function defaultVerificationGate(iterationId: string) {
+  return {
+    summary: `${iterationId} iteration gate: documentation, automated tests, runnable entrypoint, and language quality checks must pass.`,
+    checks: [
+      'Declared functional validation documentation exists for this iteration.',
+      'Automated test suite passes with no detected network API failure.',
+      'Runnable entrypoint or public API probe succeeds.',
+      'Language-specific build/lint checks pass when configured.',
+    ],
+    failurePolicy:
+      'If any check fails, feed the full gate failure log into Debugger and repair the same iteration through the paired V-model rollback phase before rerunning subsequent phases.',
+  };
+}
+
+function normalizeStepIterations(steps: Step[], _phases: ImplementationPhase[]): Step[] {
+  return steps.map((step) => {
+    const iterationId = step.iterationId ?? 'P1';
+    return {
+      ...step,
+      iterationId,
+    };
+  });
 }
 
 function hasForcedPhaseSplit(text: string): boolean {

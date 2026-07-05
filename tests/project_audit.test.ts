@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Workspace } from '../src/workspace/workspace.js';
 import { getLanguageProfile } from '../src/core/language.js';
-import { runProjectAudit, shouldRunProjectAudit } from '../src/core/project_audit.js';
+import { runIterationGate, runProjectAudit, shouldRunProjectAudit } from '../src/core/project_audit.js';
 import type { Plan } from '../src/core/plan.js';
 import type { ExecExtra, ExecResult, Sandbox } from '../src/sandbox/types.js';
 
@@ -58,7 +58,7 @@ function okResult(overrides: Partial<ExecResult> = {}): ExecResult {
 async function writeBaseDeliveryDocs(ws: Workspace): Promise<void> {
   await ws.writeFile('README.md', '# Audit app\n');
   await ws.writeFile('docs/quickstart.md', '# QuickStart\n');
-  await ws.writeFile('docs/05-delivery.md', '# Delivery\n');
+  await ws.writeFile('docs/08-functional-test.md', '# Functional validation\n');
 }
 
 function tsPlan(): Plan {
@@ -82,8 +82,8 @@ describe('project quality audit', () => {
     const plan = {
       ...tsPlan(),
       steps: [
-        { id: 'S001', phase: 'REQUIREMENT', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['docs/01-requirement.md'], dependsOn: [], acceptance: 'ok', status: 'DONE', retries: 0, maxRetries: 3 },
-        { id: 'S002', phase: 'DELIVERY', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['README.md', 'docs/quickstart.md', 'docs/05-delivery.md'], dependsOn: ['S001'], acceptance: 'ok', status: 'SKIPPED', retries: 0, maxRetries: 3 },
+        { id: 'S001', phase: 'REQUIREMENT_ANALYSIS', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Planner', tools: [], inputs: [], outputs: ['docs/01-requirement-analysis.md'], dependsOn: [], acceptance: 'ok', status: 'DONE', retries: 0, maxRetries: 3 },
+        { id: 'S002', phase: 'FUNCTIONAL_TEST', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Tester', tools: [], inputs: [], outputs: ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'], dependsOn: ['S001'], acceptance: 'ok', status: 'SKIPPED', retries: 0, maxRetries: 3 },
       ],
     } as Plan;
     expect(shouldRunProjectAudit(plan, { onlyPhase: 'CODE' })).toBe(false);
@@ -139,6 +139,35 @@ describe('project quality audit', () => {
     expect(result.checks).toContainEqual(expect.objectContaining({
       name: 'api-guide', severity: 'error', ok: false,
     }));
+  });
+
+  it('checks iteration-scoped delivery docs for P2 gates', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
+    const ws = new Workspace(root);
+    await writeBaseDeliveryDocs(ws);
+    await ws.writeFile('docs/iterations/P2/08-functional-test.md', '# P2 Functional validation\n');
+    await ws.writeFile('docs/iterations/P2/quickstart.md', '# P2 QuickStart\n');
+    await ws.writeFile('src/main.ts', 'export function main() {}\n');
+    await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
+    await ws.writeFile('package.json', JSON.stringify({
+      name: 'audit-app',
+      type: 'module',
+      scripts: { test: 'vitest run', build: 'tsc -p tsconfig.json', lint: 'eslint .' },
+    }, null, 2));
+
+    const result = await runIterationGate({
+      ws,
+      sandbox: new FakeSandbox({ exec: okResult({ stdout: 'usage: app\n' }), runTests: okResult() }),
+      plan: tsPlan(),
+      profile: getLanguageProfile('typescript'),
+      iterationId: 'P2',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.scope).toBe('iteration');
+    expect(result.iterationId).toBe('P2');
+    expect(result.checks.some((check) => check.name === 'readme')).toBe(false);
+    expect(result.checks.some((check) => check.name === 'doc:docs/iterations/P2/08-functional-test.md')).toBe(true);
   });
 
   it('fails a Python project that has no runnable entrypoint', async () => {

@@ -1,5 +1,13 @@
-import { PHASE_ORDER, REQUIRED_V_MODEL_PHASES, type ComplexityAssessment, type Plan, type Step } from './plan.js';
-import { DOC_NAMES, PHASE_DOC, deliveryDocsForProjectType } from './docs.js';
+import {
+  PHASE_ORDER,
+  REQUIRED_V_MODEL_PHASES,
+  V_MODEL_SOURCE_TO_TEST_PHASE,
+  type ComplexityAssessment,
+  type Phase,
+  type Plan,
+  type Step,
+} from './plan.js';
+import { DOC_NAMES, deliveryDocsForIteration, phaseDocForIteration, testPlanDocForIteration } from './docs.js';
 import { getLanguageProfile } from './language.js';
 import { analyzeArchitectureDemand, validateArchitectureContract } from './architecture.js';
 
@@ -37,15 +45,45 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  const phases = new Set(plan.steps.map((s) => s.phase));
-  for (const phase of REQUIRED_V_MODEL_PHASES) {
-    if (!phases.has(phase)) {
+  const implementationPhases = plan.implementationPhases ?? [];
+  const implementationPhaseIds = new Set(implementationPhases.map((phase) => phase.id));
+  const executableImplementationPhases = implementationPhases.filter((phase) => phase.status !== 'deferred');
+  const executableIterationIds = new Set(executableImplementationPhases.map((phase) => phase.id));
+  const iterationOrder = new Map(implementationPhases.map((phase, index) => [phase.id, index]));
+  const stepIterationId = (step: Step): string => step.iterationId ?? 'P1';
+  const stepIterationOrder = (step: Step): number => iterationOrder.get(stepIterationId(step)) ?? 0;
+
+  for (const step of plan.steps) {
+    const iterationId = stepIterationId(step);
+    if (implementationPhases.length > 0 && !implementationPhaseIds.has(iterationId)) {
       issues.push({
         level: 'error',
-        message:
-          `Plan must include a ${phase} macro Step. Required V-model phases are ` +
-          `${REQUIRED_V_MODEL_PHASES.join(' -> ')}; DEBUG is optional when explicit remediation work is planned.`,
+        stepId: step.id,
+        message: `Step iterationId ${iterationId} is not declared in implementationPhases.`,
       });
+    }
+    if (implementationPhases.length > 0 && !executableIterationIds.has(iterationId)) {
+      issues.push({
+        level: 'error',
+        stepId: step.id,
+        message: `Step belongs to deferred implementation phase ${iterationId}; deferred phases must not contain executable Steps.`,
+      });
+    }
+  }
+
+  for (const iteration of executableImplementationPhases) {
+    const iterationSteps = plan.steps.filter((step) => stepIterationId(step) === iteration.id);
+    const phases = new Set(iterationSteps.map((s) => s.phase));
+    for (const phase of REQUIRED_V_MODEL_PHASES) {
+      if (!phases.has(phase)) {
+        issues.push({
+          level: 'error',
+          message:
+            `Plan must include a ${phase} macro Step for implementation phase ${iteration.id}. ` +
+            `Each iteration is a complete V-model cycle: ${REQUIRED_V_MODEL_PHASES.join(' -> ')}; ` +
+            `DEBUG is optional when explicit remediation work is planned.`,
+        });
+      }
     }
   }
 
@@ -54,7 +92,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
     issues.push({ level: 'error', message: 'Plan contains a dependency cycle' });
   }
 
-  // 3. outputs unique（允许 REFACTOR / DEBUG 阶段修改其依赖链上已存在的产物）
+  // 3. outputs unique（允许 DEBUG 阶段修改其依赖链上已存在的产物）
   const outputOwners = new Map<string, string>();
   const stepByIdEarly = new Map(plan.steps.map((s) => [s.id, s]));
   for (const s of plan.steps) {
@@ -63,7 +101,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
       if (prev) {
         const prevStep = stepByIdEarly.get(prev);
         const allowModify =
-          (s.phase === 'REFACTOR' || s.phase === 'DEBUG') &&
+          s.phase === 'DEBUG' &&
           prevStep !== undefined &&
           transitivelyDependsOn(s, prev, stepByIdEarly);
         if (!allowModify) {
@@ -85,7 +123,16 @@ export function lintPlan(plan: Plan): LintIssue[] {
     for (const dep of s.dependsOn) {
       const d = stepById.get(dep);
       if (!d) continue;
-      if (PHASE_ORDER[d.phase] > PHASE_ORDER[s.phase]) {
+      const depOrder = stepIterationOrder(d);
+      const currentOrder = stepIterationOrder(s);
+      if (depOrder > currentOrder) {
+        issues.push({
+          level: 'error',
+          stepId: s.id,
+          message: `Iteration ${stepIterationId(s)} depends on later iteration ${stepIterationId(d)} (${dep}).`,
+        });
+      }
+      if (depOrder === currentOrder && PHASE_ORDER[d.phase] > PHASE_ORDER[s.phase]) {
         issues.push({
           level: 'error',
           stepId: s.id,
@@ -95,7 +142,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 5. each CODE step needs at least one TEST step that depends on it (directly or transitively).
+  // 5. each CODE step needs at least one UNIT_TEST step that depends on it (directly or transitively).
   //    Exception: CODE steps whose outputs are entirely Python package marker files (`__init__.py`)
   //    are not independently testable.
   const codeSteps = plan.steps.filter((s) => s.phase === 'CODE');
@@ -104,7 +151,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
       c.outputs.length > 0 && c.outputs.every((o) => o === '__init__.py' || o.endsWith('/__init__.py'));
     if (onlyInitFiles) continue;
     const covered = plan.steps.some(
-      (t) => t.phase === 'TEST' && transitivelyDependsOn(t, c.id, stepById),
+      (t) => t.phase === 'UNIT_TEST' && stepIterationId(t) === stepIterationId(c) && transitivelyDependsOn(t, c.id, stepById),
     );
     if (!covered) {
       const suggestedId = nextStepId(plan.steps);
@@ -116,10 +163,10 @@ export function lintPlan(plan: Plan): LintIssue[] {
         level: 'error',
         stepId: c.id,
         message:
-          `CODE step ${c.id} has no corresponding TEST step. ` +
-          `Add a TEST step (e.g. id="${suggestedId}", phase="TEST", role="Tester", dependsOn=["${c.id}"], ` +
+          `CODE step ${c.id} has no corresponding UNIT_TEST step. ` +
+          `Add a UNIT_TEST step (e.g. id="${suggestedId}", phase="UNIT_TEST", role="Tester", dependsOn=["${c.id}"], ` +
           `outputs=["${testFile}"]) so plan lint rule S004/S005 passes; ` +
-          `or have an existing TEST step include "${c.id}" in its dependsOn (chain-style coverage is allowed).`,
+          `or have an existing UNIT_TEST step include "${c.id}" in its dependsOn (chain-style coverage is allowed).`,
       });
     }
   }
@@ -128,7 +175,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
   const ownsManifest = (step: Step): boolean =>
     step.outputs.some((o) => o === profile.manifestFile || o.endsWith(`/${profile.manifestFile}`));
   if (profile.seedManifestFromDeps) {
-    // Python：runtime 依据 plan.dependencies 渲染 requirements.txt；ARCH 不得直接产出该文件。
+    // Python：runtime 依据 plan.dependencies 渲染 requirements.txt；HIGH_LEVEL_DESIGN 不得直接产出该文件。
     if (!plan.dependencies || plan.dependencies.length === 0) {
       issues.push({
         level: 'error',
@@ -145,10 +192,10 @@ export function lintPlan(plan: Plan): LintIssue[] {
       }
     }
   } else {
-    // Greenfield TypeScript：ARCH 必须创建 package.json。
+    // Greenfield TypeScript：HIGH_LEVEL_DESIGN 必须创建 package.json。
     // 增量/自举：现有 manifest 是基线契约，除非需求确实修改它，否则不应列为输出。
     const manifestSteps = plan.steps.filter((s) => ownsManifest(s));
-    const archManifestSteps = manifestSteps.filter((s) => s.phase === 'ARCH');
+    const archManifestSteps = manifestSteps.filter((s) => s.phase === 'HIGH_LEVEL_DESIGN');
     if (
       (plan.intent === 'greenfield' && archManifestSteps.length !== 1) ||
       (plan.intent !== 'greenfield' && archManifestSteps.length > 1)
@@ -157,30 +204,32 @@ export function lintPlan(plan: Plan): LintIssue[] {
         level: 'error',
         message:
           plan.intent === 'greenfield'
-            ? `For ${profile.displayName} greenfield plans, exactly one ARCH step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`
-            : `For ${profile.displayName} incremental plans, at most one ARCH step may modify the existing ${profile.manifestFile}.`,
+            ? `For ${profile.displayName} greenfield plans, exactly one HIGH_LEVEL_DESIGN step must output ${profile.manifestFile} (scripts + dependencies + devDependencies).`
+            : `For ${profile.displayName} incremental plans, at most one HIGH_LEVEL_DESIGN step may modify the existing ${profile.manifestFile}.`,
       });
     }
     for (const s of manifestSteps) {
-      if (s.phase !== 'ARCH') {
+      if (s.phase !== 'HIGH_LEVEL_DESIGN') {
         issues.push({
           level: 'error',
           stepId: s.id,
-          message: `${profile.manifestFile} must be authored by an ARCH step, not ${s.phase}.`,
+          message: `${profile.manifestFile} must be authored by a HIGH_LEVEL_DESIGN step, not ${s.phase}.`,
         });
       }
     }
   }
 
-  // 7. phase purity — REQUIREMENT / ARCH / TASK / DELIVERY 阶段不得产出实现/测试源码
-  //    REFACTOR 不在此名单：重构的语义就是修改 src/tests 源码（已由规则 #3 允许复用 outputs、规则 #9 强制 dependsOn TEST + 产出 04-refactor.md 把守）
-  //    CODE/TEST/DEBUG 本就负责实现/测试代码，自然不在此名单
+  // 7. phase purity — 需求/设计阶段不得产出实现/测试源码；功能测试阶段不得产出 src 实现代码。
   const SRC_RE = /^(?:src|tests)\//;
-  const DOC_ONLY_PHASES = new Set(['REQUIREMENT', 'ARCH', 'TASK', 'DELIVERY']);
+  const DOC_ONLY_PHASES = new Set(['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN']);
   for (const s of plan.steps) {
-    if (!DOC_ONLY_PHASES.has(s.phase)) continue;
+    const docOnly = DOC_ONLY_PHASES.has(s.phase);
+    const functionalTestSrcWrite = s.phase === 'FUNCTIONAL_TEST';
+    if (!docOnly && !functionalTestSrcWrite) continue;
     for (const out of s.outputs) {
-      if (SRC_RE.test(out) && (profile.codeExtensions.some((e) => out.endsWith(e)) || out.endsWith('/'))) {
+      const isCodeOrTestPath = SRC_RE.test(out) && (profile.codeExtensions.some((e) => out.endsWith(e)) || out.endsWith('/'));
+      const isImplementationPath = out.startsWith('src/') && (profile.codeExtensions.some((e) => out.endsWith(e)) || out.endsWith('/'));
+      if ((docOnly && isCodeOrTestPath) || (functionalTestSrcWrite && isImplementationPath)) {
         issues.push({
           level: 'error',
           stepId: s.id,
@@ -209,58 +258,62 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 9. REFACTOR 阶段：计划必须至少有一个 REFACTOR Step；每个 REFACTOR Step 必须 dependsOn 至少一个 TEST Step，且 outputs 包含 docs/04-refactor.md
-  const refactorSteps = plan.steps.filter((s) => s.phase === 'REFACTOR');
-  if (refactorSteps.length === 0) {
-    issues.push({
-      level: 'error',
-      message: `Plan must include at least one REFACTOR step whose outputs include ${DOC_NAMES.refactor}.`,
-    });
-  }
-  for (const r of refactorSteps) {
-    const dependsOnTest = r.dependsOn.some((d) => stepById.get(d)?.phase === 'TEST');
-    if (!dependsOnTest) {
-      issues.push({
-        level: 'error',
-        stepId: r.id,
-        message: 'REFACTOR step must dependsOn at least one TEST step (regression-first)',
-      });
-    }
-    if (!r.outputs.includes(DOC_NAMES.refactor)) {
-      issues.push({
-        level: 'error',
-        stepId: r.id,
-        message: `REFACTOR step outputs must include ${DOC_NAMES.refactor}`,
-      });
-    }
-  }
-
-  // 10. DELIVERY 阶段：每个 DELIVERY Step outputs 必须包含完整交付文档包
-  for (const d of plan.steps.filter((s) => s.phase === 'DELIVERY')) {
-    const requiredDocs = deliveryDocsForProjectType(plan.projectType ?? 'application');
+  // 9. FUNCTIONAL_TEST 阶段：每个 FUNCTIONAL_TEST Step outputs 必须包含完整交付文档包。
+  for (const d of plan.steps.filter((s) => s.phase === 'FUNCTIONAL_TEST')) {
+    const requiredDocs = deliveryDocsForIteration(plan.projectType ?? 'application', stepIterationId(d));
     for (const doc of requiredDocs) {
       if (!d.outputs.includes(doc)) {
         issues.push({
           level: 'error',
           stepId: d.id,
-          message: `DELIVERY step outputs must include ${doc}`,
+          message: `FUNCTIONAL_TEST step outputs must include ${doc}`,
         });
       }
     }
   }
 
-  // 10b. REQUIREMENT / ARCH / TASK 阶段：该阶段至少某个 Step 的 outputs 必须包含其规范验收文档。
-  for (const phase of ['REQUIREMENT', 'ARCH', 'TASK'] as const) {
-    const expected = PHASE_DOC[phase]!;
-    const phaseSteps = plan.steps.filter((s) => s.phase === phase);
-    if (phaseSteps.length === 0) continue;
-    const covered = phaseSteps.some((s) => s.outputs.includes(expected));
-    if (!covered) {
-      issues.push({
-        level: 'error',
-        stepId: phaseSteps[0]!.id,
-        message: `${phase} 阶段未产出规范验收文档：${expected}`,
-      });
+  // 10. 每个迭代周期都必须产出各阶段规范验收文档；左侧阶段同步产出对应测试计划。
+  for (const iteration of executableImplementationPhases) {
+    for (const phase of REQUIRED_V_MODEL_PHASES) {
+      const expected = phaseDocForIteration(phase, iteration.id);
+      if (!expected) continue;
+      const phaseSteps = plan.steps.filter((s) => s.phase === phase && stepIterationId(s) === iteration.id);
+      if (phaseSteps.length === 0) continue;
+      const covered = phaseSteps.some((s) => s.outputs.includes(expected));
+      if (!covered) {
+        issues.push({
+          level: 'error',
+          stepId: phaseSteps[0]!.id,
+          message: `${iteration.id} ${phase} 阶段未产出规范验收文档：${expected}`,
+        });
+      }
+    }
+    for (const [sourcePhase, testPhase] of Object.entries(V_MODEL_SOURCE_TO_TEST_PHASE) as Array<[Phase, Phase]>) {
+      const sourceSteps = plan.steps.filter((s) => s.phase === sourcePhase && stepIterationId(s) === iteration.id);
+      if (sourceSteps.length === 0) continue;
+      const expectedTestPlan = testPlanDocForIteration(testPhase, iteration.id);
+      if (expectedTestPlan && !sourceSteps.some((step) => step.outputs.includes(expectedTestPlan))) {
+        issues.push({
+          level: 'error',
+          stepId: sourceSteps[0]!.id,
+          message: `${sourcePhase} must synchronously output paired ${testPhase} plan: ${expectedTestPlan}`,
+        });
+      }
+      for (const sourceStep of sourceSteps) {
+        const covered = plan.steps.some(
+          (candidate) =>
+            candidate.phase === testPhase &&
+            stepIterationId(candidate) === iteration.id &&
+            transitivelyDependsOn(candidate, sourceStep.id, stepById),
+        );
+        if (!covered) {
+          issues.push({
+            level: 'error',
+            stepId: sourceStep.id,
+            message: `${sourceStep.phase} step ${sourceStep.id} must be covered by a paired ${testPhase} step in ${iteration.id}.`,
+          });
+        }
+      }
     }
   }
 
@@ -275,9 +328,9 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 11. 除 TEST 以外的所有阶段必须声明至少 1 个 output（TEST 步骤可仅依赖 TEST gate 跑 pytest）。
+  // 11. 除 DEBUG 以外的所有阶段必须声明至少 1 个 output。
   for (const s of plan.steps) {
-    if (s.phase !== 'TEST' && s.outputs.length === 0) {
+    if (s.phase !== 'DEBUG' && s.outputs.length === 0) {
       issues.push({
         level: 'error',
         stepId: s.id,
@@ -306,13 +359,13 @@ export function lintPlan(plan: Plan): LintIssue[] {
     }
   }
 
-  // 13. V 模型可追踪性：ARCH 模块必须落到 CODE 宏 Step，并被对应 TEST 宏 Step 验证。
+  // 13. V 模型可追踪性：HIGH_LEVEL_DESIGN 模块必须落到 CODE 宏 Step，并被对应 MODULE_TEST 宏 Step 验证。
   const architectureModules = plan.architectureModules ?? [];
   if (demand.nonTrivial && architectureModules.length === 0) {
     issues.push({
       level: 'warn',
       message:
-        'Legacy plan has no architectureModules contract; regenerate with `xcompiler build` to enable ARCH → CODE → TEST traceability.',
+        'Legacy plan has no architectureModules contract; regenerate with `xcompiler build` to enable HIGH_LEVEL_DESIGN → CODE → MODULE_TEST traceability.',
     });
   }
   if (architectureModules.length > 0) {
@@ -332,11 +385,10 @@ export function lintPlan(plan: Plan): LintIssue[] {
       message: 'Plan must include complexityAssessment from the planning phase.',
     });
   }
-  const implementationPhases = plan.implementationPhases ?? [];
   if (implementationPhases.length === 0) {
     issues.push({
       level: 'error',
-      message: 'Plan must include implementationPhases with P1 current.',
+      message: 'Plan must include implementationPhases with executable V-model iteration goals.',
     });
   } else {
     const current = implementationPhases.filter((phase) => phase.status === 'current');
@@ -346,23 +398,24 @@ export function lintPlan(plan: Plan): LintIssue[] {
         message: 'implementationPhases must have exactly one current phase and it must be P1.',
       });
     }
-    for (const phase of implementationPhases.filter((item) => item.id !== 'P1')) {
-      if (phase.status !== 'deferred') {
+    for (const phase of executableImplementationPhases) {
+      if (!phase.verificationGate || phase.verificationGate.checks.length === 0) {
         issues.push({
           level: 'error',
-          message: `Implementation phase ${phase.id} must be deferred; only P1 is executed by the current V-model plan.`,
+          message:
+            `implementation phase ${phase.id} must define a verificationGate with concrete end-of-iteration checks.`,
         });
       }
     }
   }
   if (plan.complexityAssessment) {
     const requiredPhaseCount = requiredImplementationPhaseCount(plan.complexityAssessment);
-    if (implementationPhases.length > 0 && implementationPhases.length < requiredPhaseCount) {
+    if (executableImplementationPhases.length > 0 && executableImplementationPhases.length < requiredPhaseCount) {
       issues.push({
         level: 'error',
         message:
           `complexityAssessment.level=${plan.complexityAssessment.level} requires at least ` +
-          `${requiredPhaseCount} implementation phase(s).`,
+          `${requiredPhaseCount} executable implementation iteration(s).`,
       });
     }
     if (plan.complexityAssessment.level !== 'simple' && !plan.complexityAssessment.splitRecommended) {
@@ -371,21 +424,21 @@ export function lintPlan(plan: Plan): LintIssue[] {
         message: 'moderate/complex complexityAssessment requires splitRecommended=true.',
       });
     }
-    if (plan.complexityAssessment?.splitRecommended && implementationPhases.length < 2) {
+    if (plan.complexityAssessment?.splitRecommended && executableImplementationPhases.length < 2) {
       issues.push({
         level: 'error',
-        message: 'complexityAssessment.splitRecommended requires implementationPhases with P1 current and at least one deferred enhancement phase.',
+        message: 'complexityAssessment.splitRecommended requires at least two executable implementation iterations.',
       });
     }
     if (
       plan.complexityAssessment.level === 'simple' &&
       !plan.complexityAssessment.splitRecommended &&
       !plan.complexityAssessment.userForcedPhaseSplit &&
-      implementationPhases.length > 1
+      executableImplementationPhases.length > 1
     ) {
       issues.push({
         level: 'error',
-        message: 'simple complexity without splitRecommended must use exactly one current implementation phase.',
+        message: 'simple complexity without splitRecommended must use exactly one executable implementation iteration.',
       });
     }
   }
@@ -507,9 +560,17 @@ export function topoSort(steps: Step[]): Step[] {
   return out;
 
   function cmp(a: Step, b: Step): number {
+    const ia = iterationSortValue(a.iterationId ?? 'P1');
+    const ib = iterationSortValue(b.iterationId ?? 'P1');
+    if (ia !== ib) return ia - ib;
     const pa = PHASE_ORDER[a.phase];
     const pb = PHASE_ORDER[b.phase];
     if (pa !== pb) return pa - pb;
     return a.id.localeCompare(b.id);
   }
+}
+
+function iterationSortValue(iterationId: string): number {
+  const match = iterationId.match(/^P(\d{1,3})$/u);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }

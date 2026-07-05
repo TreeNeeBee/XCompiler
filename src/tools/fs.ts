@@ -47,14 +47,15 @@ export function resolveWriteChunkBytes(
   if (typeof configured === 'number') return configured;
 
   const phaseBonus: Record<string, number> = {
-    REQUIREMENT: 0,
-    ARCH: 1000,
-    TASK: 1000,
+    REQUIREMENT_ANALYSIS: 500,
+    HIGH_LEVEL_DESIGN: 1500,
+    DETAILED_DESIGN: 1500,
     CODE: 2500,
-    TEST: 2000,
+    UNIT_TEST: 2000,
+    INTEGRATION_TEST: 2000,
+    MODULE_TEST: 2200,
+    FUNCTIONAL_TEST: 1800,
     DEBUG: 2500,
-    REFACTOR: 3000,
-    DELIVERY: 1000,
   };
   const tools = new Set(ctx.tools ?? []);
   const outputBonus = Math.min((ctx.outputs?.length ?? 0) * 500, 3000);

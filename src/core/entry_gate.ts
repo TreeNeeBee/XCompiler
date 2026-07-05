@@ -55,7 +55,7 @@ export function injectSrcBootstrap(content: string): string {
  *   - src/main.py
  *   - src/<任意子包>/__main__.py
  *
- * 这是个"通用兜底"：LLM 写错了路径，XCompiler 在每次进入 DELIVERY 之前/DELIVERY gate 之前
+ * 这是个"通用兜底"：LLM 写错了路径，XCompiler 在每次进入 FUNCTIONAL_TEST gate 之前
  * 自动给它加 sys.path 自举，避免反复 DEBUG 同一个低层错误。
  */
 export async function autoFixSrcImports(
@@ -94,7 +94,7 @@ export async function autoFixSrcImports(
 }
 
 /**
- * 进入 TEST/DEBUG 阶段前确保 tests/conftest.py 存在并把 src/ 注入 sys.path。
+ * 进入测试/DEBUG 阶段前确保 tests/conftest.py 存在并把 src/ 注入 sys.path。
  * 这样 LLM 写 `from <module> import ...` 在 pytest 下能直接找到，避免反复
  * 因 ModuleNotFoundError 进入 Debugger 死循环。仅在文件不存在时写入。
  */
@@ -140,12 +140,12 @@ function validatePythonEntrypointSource(rel: string, content: string): string | 
 }
 
 /**
- * DELIVERY gate：尝试运行入口的 \`--help\`，确保工程"开箱即用"。
+ * FUNCTIONAL_TEST gate：尝试运行入口的 \`--help\`，确保工程"开箱即用"。
  *
  * 优先级：
  *   1. \`python src/main.py --help\`
  *   2. \`python -m <pkg> --help\`（取 src/ 下第一个含 \`__main__.py\` 的子包）
- *   3. 若都不存在 → 返回 ok=false。入口是 DELIVERY 的强制验收项，不能依赖
+ *   3. 若都不存在 → 返回 ok=false。入口是 FUNCTIONAL_TEST 的强制验收项，不能依赖
  *      Planner 提示词或文档 lint 间接兜底。
  *
  * exit !=0 / timeout / 包含典型的 ModuleNotFoundError 文本 → ok=false，

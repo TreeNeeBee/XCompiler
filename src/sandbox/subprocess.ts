@@ -180,7 +180,7 @@ export class SubprocessSandbox implements Sandbox {
     try {
       pkgContent = await fs.readFile(pkgAbs, 'utf8');
     } catch {
-      // package.json 尚未生成（ARCH 之前）→ 跳过 npm install。
+      // package.json 尚未生成（HIGH_LEVEL_DESIGN 之前）→ 跳过 npm install。
       return { rebuilt: false, reason: 'no package.json yet' };
     }
     const lockAbs = this.opts.ws.abs('package-lock.json');

@@ -10,7 +10,7 @@ import { ScoreStore } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { Workspace } from '../workspace/workspace.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
-import { Planner, buildPlan, type ClarificationCategory, type ClarifyQuestion, type PlannerInput } from '../agents/planner.js';
+import { Planner, buildPlan, type ClarificationCategory, type ClarifyOption, type ClarifyQuestion, type PlannerInput } from '../agents/planner.js';
 import { PlanSchema } from '../core/plan.js';
 import { DOC_NAMES } from '../core/docs.js';
 import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incremental.js';
@@ -59,6 +59,36 @@ export class CompileExitError extends Error {
     super(message);
     this.name = 'CompileExitError';
   }
+}
+
+export function formatClarificationQuestion(q: ClarifyQuestion): string {
+  const choiceRange = formatClarificationChoiceRange(q.options);
+  const lines = [
+    `${q.id} [${q.category}] ${q.question}`,
+    `  ↳ ${q.why}`,
+  ];
+  for (const option of q.options) {
+    lines.push(`  ${option.label}. ${option.answer}`);
+  }
+  lines.push(`  ${t().compile.clarifyChoiceHint(choiceRange)}`);
+  return lines.join('\n');
+}
+
+function formatClarificationChoiceRange(options: ClarifyOption[]): string {
+  if (options.length === 0) return 'A-E';
+  const first = options[0]?.label ?? 'A';
+  const last = options[options.length - 1]?.label ?? first;
+  return first === last ? first : `${first}-${last}`;
+}
+
+export function resolveClarificationAnswer(q: ClarifyQuestion, rawAnswer: string): string {
+  const answer = rawAnswer.trim();
+  const label = answer.toUpperCase();
+  if (/^[A-E]$/u.test(label)) {
+    const option = q.options.find((candidate) => candidate.label === label);
+    if (option) return `${option.label}. ${option.answer}`;
+  }
+  return answer;
 }
 
 export function resolveCompileLanguage(
@@ -201,6 +231,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     answer: string;
     category?: ClarificationCategory;
     why?: string;
+    options?: ClarifyOption[];
   }> = [];
   let clarificationQuestions: ClarifyQuestion[] = [];
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
@@ -221,8 +252,9 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       throw err;
     }
     for (const q of clarificationQuestions) {
-      const ans = await input({ message: `${q.id} [${q.category}] ${q.question}\n  ↳ ${q.why}` });
-      clarifications.push({ question: q.question, answer: ans, category: q.category, why: q.why });
+      const rawAnswer = await input({ message: formatClarificationQuestion(q) });
+      const ans = resolveClarificationAnswer(q, rawAnswer);
+      clarifications.push({ question: q.question, answer: ans, category: q.category, why: q.why, options: q.options });
       await audit.userInput(M.compile.auditClarifyAnswer(q.id, q.question), ans);
     }
   }
@@ -489,6 +521,7 @@ function renderTopicDraft(
     answer: string;
     category?: ClarificationCategory;
     why?: string;
+    options?: ClarifyOption[];
   }>,
   addenda: string = '',
 ): string {
@@ -508,6 +541,12 @@ function renderTopicDraft(
     for (const [i, c] of qa.entries()) {
       lines.push(`- **Q${i + 1}${c.category ? ` · ${c.category}` : ''}** ${c.question}`);
       if (c.why) lines.push(`  - **Why** ${c.why}`);
+      if (c.options && c.options.length > 0) {
+        lines.push('  - **Options**');
+        for (const option of c.options) {
+          lines.push(`    - ${option.label}. ${option.answer}`);
+        }
+      }
       lines.push(`  - **A** ${c.answer}`);
     }
     lines.push('');

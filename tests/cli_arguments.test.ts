@@ -12,7 +12,7 @@ describe('CLI argument validation', () => {
   it('normalizes supported enum arguments', () => {
     expect(parseLocale('CN')).toBe('zh');
     expect(parseIntent('FEATURE')).toBe('feature');
-    expect(parsePhase('test')).toBe('TEST');
+    expect(parsePhase('unit_test')).toBe('UNIT_TEST');
     expect(parseStepId('s007')).toBe('S007');
     expect(parseNonNegativeInteger('0')).toBe(0);
   });

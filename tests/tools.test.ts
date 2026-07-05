@@ -39,7 +39,7 @@ describe('isAllowedWrite', () => {
     expect(isAllowedWrite('./src/x.py', ['src/'])).toBe(true);
   });
 
-  it('allows tests/fixtures/<f> when tests/fixtures is in whitelist (engine TEST/DEBUG augmentation)', () => {
+  it('allows tests/fixtures/<f> when tests/fixtures is in whitelist (engine test/DEBUG augmentation)', () => {
     expect(isAllowedWrite('tests/fixtures/sample.dbc', ['tests/fixtures'])).toBe(true);
     expect(isAllowedWrite('tests/fixtures/nested/x.csv', ['tests/fixtures'])).toBe(true);
     // 不能影响 tests/ 同级其它文件
@@ -84,7 +84,7 @@ describe('write_file tool', () => {
   it('auto-scales write chunk budget by phase and step context', () => {
     expect(resolveWriteChunkBytes(1234, { phase: 'CODE' })).toBe(1234);
     const dynamic = resolveWriteChunkBytes('auto', {
-      phase: 'REFACTOR',
+      phase: 'CODE',
       tools: ['write_file', 'append_file'],
       outputs: ['src/a.ts', 'src/b.ts', 'tests/a.test.ts'],
       contextChars: 20_000,

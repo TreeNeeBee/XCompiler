@@ -1,5 +1,19 @@
-import type { ArchitectureModule, Language, ProjectType, Step, StepSubtask } from '../core/plan.js';
-import { DOC_NAMES, PHASE_DOC, deliveryDocsForProjectType } from '../core/docs.js';
+import {
+  PHASES,
+  V_MODEL_SOURCE_TO_TEST_PHASE,
+  type ArchitectureModule,
+  type Language,
+  type ProjectType,
+  type Step,
+  type StepSubtask,
+} from '../core/plan.js';
+import {
+  DOC_NAMES,
+  PHASE_DOC,
+  deliveryDocsForIteration,
+  phaseDocForIteration,
+  testPlanDocForIteration,
+} from '../core/docs.js';
 import { pathCoveredByOutputs } from '../core/architecture.js';
 
 /**
@@ -15,7 +29,7 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
  *  - calibrateStepIds:            Step id → S### 形式（同步 dependsOn）
  *  - calibrateStepShape:          补齐 schema 必填项（role/acceptance/systemPrompt/title/description）
  *  - calibrateArchitectureStepMappings:
- *                                   将 architectureModules 映射到 CODE / TEST 宏 Step 的 subTasks
+ *                                   将 architectureModules 映射到 CODE / MODULE_TEST 宏 Step 的 subTasks
  */
 
 // =============================================================================
@@ -119,16 +133,26 @@ function packageKey(line: string): string {
 
 /** LLM 常用的旧文档名 → 规范化命名。 */
 export const DOC_PATH_ALIASES: Record<string, string> = {
-  'docs/requirements.md': DOC_NAMES.requirement,
-  'docs/requirement.md': DOC_NAMES.requirement,
-  'docs/srs.md': DOC_NAMES.requirement,
-  'docs/architecture.md': DOC_NAMES.architecture,
-  'docs/arch.md': DOC_NAMES.architecture,
-  'docs/tasks.md': DOC_NAMES.tasks,
-  'docs/task.md': DOC_NAMES.tasks,
-  'docs/refactor.md': DOC_NAMES.refactor,
-  'docs/delivery.md': DOC_NAMES.delivery,
-  'docs/deliverables.md': DOC_NAMES.delivery,
+  'docs/01-requirement.md': DOC_NAMES.requirementAnalysis,
+  'docs/requirements.md': DOC_NAMES.requirementAnalysis,
+  'docs/requirement.md': DOC_NAMES.requirementAnalysis,
+  'docs/srs.md': DOC_NAMES.requirementAnalysis,
+  'docs/02-architecture.md': DOC_NAMES.highLevelDesign,
+  'docs/architecture.md': DOC_NAMES.highLevelDesign,
+  'docs/arch.md': DOC_NAMES.highLevelDesign,
+  'docs/03-tasks.md': DOC_NAMES.detailedDesign,
+  'docs/tasks.md': DOC_NAMES.detailedDesign,
+  'docs/task.md': DOC_NAMES.detailedDesign,
+  'docs/design.md': DOC_NAMES.detailedDesign,
+  'docs/04-refactor.md': DOC_NAMES.functionalTest,
+  'docs/refactor.md': DOC_NAMES.functionalTest,
+  'docs/05-delivery.md': DOC_NAMES.functionalTest,
+  'docs/delivery.md': DOC_NAMES.functionalTest,
+  'docs/deliverables.md': DOC_NAMES.functionalTest,
+  'docs/unit-test.md': DOC_NAMES.unitTest,
+  'docs/integration-test.md': DOC_NAMES.integrationTest,
+  'docs/module-test.md': DOC_NAMES.moduleTest,
+  'docs/functional-test.md': DOC_NAMES.functionalTest,
   'docs/quick-start.md': DOC_NAMES.quickstart,
   'docs/quick_start.md': DOC_NAMES.quickstart,
   'docs/quickstart.md': DOC_NAMES.quickstart,
@@ -139,26 +163,57 @@ export const DOC_PATH_ALIASES: Record<string, string> = {
 
 /**
  * 把 LLM 容易写歪的常见旧文档名规整为 V 模型规范化命名。同时：
- *  - 各阶段（REQUIREMENT/ARCH/TASK/REFACTOR/DELIVERY）若 outputs 缺失对应规范文档，自动追加；
+ *  - 各阶段若 outputs 缺失对应规范文档，自动追加；
+ *  - V 模型左侧阶段同步补齐对应测试计划文档；
  *  - 若有 Step 把 docs/topic.md 列为 outputs，则移除（topic.md 仅由 xcompiler build 写入）。
  */
 export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'application'): Step[] {
   const remap = (p: string): string => DOC_PATH_ALIASES[p] ?? p;
   const dropTopic = (p: string): boolean => p !== DOC_NAMES.topic;
   return steps.map((s) => {
-    const inputs = (s.inputs ?? []).map(remap);
-    let outputs = (s.outputs ?? []).map(remap).filter(dropTopic);
-    const expected = PHASE_DOC[s.phase];
+    const iterationId = s.iterationId ?? 'P1';
+    const inputs = (s.inputs ?? []).map((p) => iterationScopedInput(remap(p), s.phase, iterationId));
+    let outputs = (s.outputs ?? []).map((p) => iterationScopedDoc(remap(p), s.phase, iterationId)).filter(dropTopic);
+    const expected = phaseDocForIteration(s.phase, iterationId);
     if (expected && !outputs.includes(expected)) {
-      // 仅在该阶段允许有"主验收文档"时自动补齐（CODE/TEST/DEBUG 不在表内）。
+      // 仅在该阶段允许有"主验收文档"时自动补齐（CODE/DEBUG 不在表内）。
       outputs = [expected, ...outputs];
     }
-    if (s.phase === 'DELIVERY') {
-      const requiredDocs = [...deliveryDocsForProjectType(projectType)];
+    const pairedTestPhase = V_MODEL_SOURCE_TO_TEST_PHASE[s.phase as keyof typeof V_MODEL_SOURCE_TO_TEST_PHASE];
+    const testPlanDoc = pairedTestPhase ? testPlanDocForIteration(pairedTestPhase, iterationId) : undefined;
+    if (testPlanDoc && !outputs.includes(testPlanDoc)) {
+      outputs = [...outputs, testPlanDoc];
+    }
+    if (s.phase === 'FUNCTIONAL_TEST') {
+      const requiredDocs = [...deliveryDocsForIteration(projectType, iterationId)];
       outputs = [...requiredDocs, ...outputs.filter((out) => !requiredDocs.includes(out))];
     }
     return { ...s, inputs, outputs };
   });
+}
+
+function iterationScopedDoc(path: string, phase: Step['phase'], iterationId: string): string {
+  if (iterationId === 'P1') return path;
+  if (path === DOC_NAMES.readme && phase === 'FUNCTIONAL_TEST') {
+    return `docs/iterations/${iterationId}/README.md`;
+  }
+  if (path === DOC_NAMES.quickstart && phase === 'FUNCTIONAL_TEST') {
+    return `docs/iterations/${iterationId}/quickstart.md`;
+  }
+  if (path === DOC_NAMES.apiGuide && phase === 'FUNCTIONAL_TEST') {
+    return `docs/iterations/${iterationId}/api-guide.md`;
+  }
+  for (const [docPhase, canonical] of Object.entries(PHASE_DOC)) {
+    if (path === canonical) {
+      return phaseDocForIteration(docPhase as Step['phase'], iterationId) ?? path;
+    }
+  }
+  return path;
+}
+
+function iterationScopedInput(path: string, phase: Step['phase'], iterationId: string): string {
+  if (iterationId === 'P1' || phase === 'REQUIREMENT_ANALYSIS') return path;
+  return iterationScopedDoc(path, phase, iterationId);
 }
 
 // =============================================================================
@@ -204,14 +259,15 @@ export function calibrateStepIds(steps: Step[]): Step[] {
 
 /** 阶段 → 默认 role 兜底。 */
 const PHASE_DEFAULT_ROLE: Record<string, string> = {
-  REQUIREMENT: 'Planner',
-  ARCH: 'Architect',
-  TASK: 'Planner',
+  REQUIREMENT_ANALYSIS: 'Planner',
+  HIGH_LEVEL_DESIGN: 'Architect',
+  DETAILED_DESIGN: 'Architect',
   CODE: 'Coder',
-  TEST: 'Tester',
+  UNIT_TEST: 'Tester',
+  INTEGRATION_TEST: 'Tester',
+  MODULE_TEST: 'Tester',
+  FUNCTIONAL_TEST: 'Tester',
   DEBUG: 'Debugger',
-  REFACTOR: 'Coder',
-  DELIVERY: 'Planner',
 };
 
 /** 把 LLM 偶尔写错的 role 别名规范到合法白名单。 */
@@ -230,37 +286,44 @@ const ROLE_ALIASES: Record<string, string> = {
 
 const VALID_ROLES = new Set(['Planner', 'Architect', 'Coder', 'Tester', 'Debugger']);
 
-const VALID_PHASES = new Set([
-  'REQUIREMENT', 'ARCH', 'TASK', 'CODE', 'TEST', 'DEBUG', 'REFACTOR', 'DELIVERY',
-]);
+const VALID_PHASES = new Set<string>(PHASES);
 
 /** LLM 偶尔写错的 phase 别名 / 同义词 → 规范名。键已 lower-case。 */
 const PHASE_ALIASES: Record<string, string> = {
-  requirement: 'REQUIREMENT', requirements: 'REQUIREMENT', req: 'REQUIREMENT', spec: 'REQUIREMENT',
-  arch: 'ARCH', architecture: 'ARCH', design: 'ARCH',
-  task: 'TASK', tasks: 'TASK', planning: 'TASK', breakdown: 'TASK',
+  requirement: 'REQUIREMENT_ANALYSIS', requirements: 'REQUIREMENT_ANALYSIS', req: 'REQUIREMENT_ANALYSIS', spec: 'REQUIREMENT_ANALYSIS',
+  requirement_analysis: 'REQUIREMENT_ANALYSIS', 'requirement-analysis': 'REQUIREMENT_ANALYSIS', analysis: 'REQUIREMENT_ANALYSIS',
+  arch: 'HIGH_LEVEL_DESIGN', architecture: 'HIGH_LEVEL_DESIGN', high_level_design: 'HIGH_LEVEL_DESIGN', 'high-level-design': 'HIGH_LEVEL_DESIGN',
+  overview_design: 'HIGH_LEVEL_DESIGN', system_design: 'HIGH_LEVEL_DESIGN', outline_design: 'HIGH_LEVEL_DESIGN', 概要设计: 'HIGH_LEVEL_DESIGN',
+  task: 'DETAILED_DESIGN', tasks: 'DETAILED_DESIGN', planning: 'DETAILED_DESIGN', breakdown: 'DETAILED_DESIGN',
+  design: 'DETAILED_DESIGN', detailed_design: 'DETAILED_DESIGN', 'detailed-design': 'DETAILED_DESIGN', 详细设计: 'DETAILED_DESIGN',
   code: 'CODE', coding: 'CODE', implement: 'CODE', implementation: 'CODE', dev: 'CODE', develop: 'CODE',
-  test: 'TEST', testing: 'TEST', tests: 'TEST', qa: 'TEST', verify: 'TEST', verification: 'TEST',
+  test: 'UNIT_TEST', testing: 'UNIT_TEST', tests: 'UNIT_TEST', qa: 'UNIT_TEST', unit: 'UNIT_TEST', unit_test: 'UNIT_TEST', 'unit-test': 'UNIT_TEST',
+  integration: 'INTEGRATION_TEST', integration_test: 'INTEGRATION_TEST', 'integration-test': 'INTEGRATION_TEST',
+  module: 'MODULE_TEST', module_test: 'MODULE_TEST', 'module-test': 'MODULE_TEST',
+  functional: 'FUNCTIONAL_TEST', functional_test: 'FUNCTIONAL_TEST', 'functional-test': 'FUNCTIONAL_TEST',
+  verify: 'FUNCTIONAL_TEST', verification: 'FUNCTIONAL_TEST',
   debug: 'DEBUG', debugging: 'DEBUG', fix: 'DEBUG', bugfix: 'DEBUG',
-  refactor: 'REFACTOR', refactoring: 'REFACTOR', cleanup: 'REFACTOR',
-  delivery: 'DELIVERY', deliver: 'DELIVERY', release: 'DELIVERY', package: 'DELIVERY', packaging: 'DELIVERY', deploy: 'DELIVERY',
+  refactor: 'CODE', refactoring: 'CODE', cleanup: 'CODE',
+  delivery: 'FUNCTIONAL_TEST', deliver: 'FUNCTIONAL_TEST', release: 'FUNCTIONAL_TEST', package: 'FUNCTIONAL_TEST', packaging: 'FUNCTIONAL_TEST', deploy: 'FUNCTIONAL_TEST',
 };
 
 /** outputs 路径 → 阶段强证据（命中即覆盖 role 推断）。 */
 const PHASE_BY_OUTPUT_DOC: Array<[RegExp, string]> = [
-  [/(^|\/)docs\/01-requirement\.md$/i, 'REQUIREMENT'],
-  [/(^|\/)docs\/02-architecture\.md$/i, 'ARCH'],
-  [/(^|\/)docs\/03-tasks\.md$/i, 'TASK'],
-  [/(^|\/)docs\/04-refactor\.md$/i, 'REFACTOR'],
-  [/(^|\/)docs\/05-delivery\.md$/i, 'DELIVERY'],
+  [/(^|\/)docs\/01-(?:requirement|requirement-analysis)\.md$/i, 'REQUIREMENT_ANALYSIS'],
+  [/(^|\/)docs\/02-(?:architecture|high-level-design)\.md$/i, 'HIGH_LEVEL_DESIGN'],
+  [/(^|\/)docs\/03-(?:tasks|detailed-design)\.md$/i, 'DETAILED_DESIGN'],
+  [/(^|\/)docs\/05-unit-test\.md$/i, 'UNIT_TEST'],
+  [/(^|\/)docs\/06-integration-test\.md$/i, 'INTEGRATION_TEST'],
+  [/(^|\/)docs\/07-module-test\.md$/i, 'MODULE_TEST'],
+  [/(^|\/)docs\/(?:04-refactor|05-delivery|08-functional-test)\.md$/i, 'FUNCTIONAL_TEST'],
 ];
 
 /** 由 role 反推阶段（弱证据，仅在路径线索与别名都不可用时使用）。 */
 const PHASE_BY_ROLE: Record<string, string> = {
-  Planner: 'REQUIREMENT',
-  Architect: 'ARCH',
+  Planner: 'REQUIREMENT_ANALYSIS',
+  Architect: 'HIGH_LEVEL_DESIGN',
   Coder: 'CODE',
-  Tester: 'TEST',
+  Tester: 'UNIT_TEST',
   Debugger: 'DEBUG',
 };
 
@@ -277,14 +340,15 @@ const WRITE_CAPABLE_TOOL_REFS = new Set([
 ]);
 
 const PHASE_DEFAULT_TOOLS: Record<string, string[]> = {
-  REQUIREMENT: ['skill:author'],
-  ARCH: ['skill:author'],
-  TASK: ['skill:author'],
+  REQUIREMENT_ANALYSIS: ['skill:author'],
+  HIGH_LEVEL_DESIGN: ['skill:author'],
+  DETAILED_DESIGN: ['skill:author'],
   CODE: ['skill:author'],
-  TEST: ['skill:tester'],
+  UNIT_TEST: ['skill:tester'],
+  INTEGRATION_TEST: ['skill:tester'],
+  MODULE_TEST: ['skill:tester'],
+  FUNCTIONAL_TEST: ['skill:tester'],
   DEBUG: ['skill:debugger'],
-  REFACTOR: ['skill:refactorer'],
-  DELIVERY: ['skill:author'],
 };
 
 export function ensureEssentialToolRefs(step: Pick<Step, 'phase' | 'tools' | 'outputs'>): string[] {
@@ -301,8 +365,8 @@ export function ensureEssentialToolRefs(step: Pick<Step, 'phase' | 'tools' | 'ou
  *   1. 原值是合法阶段 → 原样返回
  *   2. PHASE_ALIASES 命中（小写 / 同义词）
  *   3. outputs 中含强路径证据（docs/0N-*.md）
- *   4. outputs 含 src 下 .py → CODE；含 tests 下 .py → TEST
- *   5. 由 role 兜底（Planner→REQUIREMENT 等）
+ *   4. outputs 含 src 下源文件 → CODE；含 tests 下测试文件 → 对应测试阶段
+ *   5. 由 role 兜底（Planner→REQUIREMENT_ANALYSIS 等）
  *   6. 仍无法识别 → 'CODE'（最常见阶段，避免连锁失败）
  */
 function inferPhase(rawPhase: unknown, role: string, outputs: string[]): string {
@@ -317,8 +381,11 @@ function inferPhase(rawPhase: unknown, role: string, outputs: string[]): string 
       if (re.test(out)) return phase;
     }
   }
-  if (outputs.some((o) => /(^|\/)tests\/.*\.py$/i.test(o))) return 'TEST';
-  if (outputs.some((o) => /(^|\/)src\/.*\.py$/i.test(o))) return 'CODE';
+  if (outputs.some((o) => /(^|\/)tests\/functional\//i.test(o))) return 'FUNCTIONAL_TEST';
+  if (outputs.some((o) => /(^|\/)tests\/integration\//i.test(o))) return 'INTEGRATION_TEST';
+  if (outputs.some((o) => /(^|\/)tests\/modules?\//i.test(o))) return 'MODULE_TEST';
+  if (outputs.some((o) => /(^|\/)tests\/.*\.(?:py|ts|tsx)$/i.test(o))) return 'UNIT_TEST';
+  if (outputs.some((o) => /(^|\/)src\/.*\.(?:py|ts|tsx)$/i.test(o))) return 'CODE';
   if (role && PHASE_BY_ROLE[role]) return PHASE_BY_ROLE[role]!;
   return 'CODE';
 }
@@ -371,6 +438,7 @@ export function calibrateStepShape(steps: Step[]): Step[] {
 
     return {
       id: String(s.id ?? ''),
+      iterationId: (typeof s.iterationId === 'string' && s.iterationId.trim()) ? s.iterationId.trim() : 'P1',
       phase: phase as Step['phase'],
       title,
       description,
@@ -433,11 +501,11 @@ function dedup<T>(arr: T[]): T[] {
 }
 
 // =============================================================================
-// 4a. ARCH 模块 ↔ CODE/TEST Step 映射校准
+// 4a. HIGH_LEVEL_DESIGN 模块 ↔ CODE/MODULE_TEST Step 映射校准
 // =============================================================================
 
 /**
- * LLM 经常能正确列出 architectureModules，却在 steps 里把多个模块塞进同一个 CODE / TEST Step。
+ * LLM 经常能正确列出 architectureModules，却在 steps 里把多个模块塞进同一个 CODE / MODULE_TEST Step。
  * 新版计划模型保留“大 Step”执行语义，不再把这些 Step 机械拆碎；模块级细分写入 subTasks。
  * 这样执行器仍按大 Step 运行，但 Step 内有可审计的二级任务清单。
  */
@@ -469,7 +537,7 @@ export function calibrateArchitectureStepMappings(
       return withModuleSubTasks({ ...step, dependsOn }, ownedModules, 'CODE');
     }
 
-    if (step.phase === 'TEST') {
+    if (step.phase === 'MODULE_TEST') {
       const testedModules = modules.filter((module) =>
         module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
       );
@@ -477,7 +545,7 @@ export function calibrateArchitectureStepMappings(
         .map((module) => ownerByModule.get(module.id))
         .filter((owner): owner is string => Boolean(owner));
       dependsOn = dedup([...dependsOn, ...testedOwners]);
-      return withModuleSubTasks({ ...step, dependsOn }, testedModules, 'TEST');
+      return withModuleSubTasks({ ...step, dependsOn }, testedModules, 'MODULE_TEST');
     }
 
     return { ...step, dependsOn };
@@ -487,7 +555,7 @@ export function calibrateArchitectureStepMappings(
 function withModuleSubTasks(
   step: Step,
   modules: ArchitectureModule[],
-  kind: 'CODE' | 'TEST',
+  kind: 'CODE' | 'MODULE_TEST',
 ): Step {
   if (modules.length === 0) return step;
   const existing = step.subTasks ?? [];
@@ -523,17 +591,17 @@ function flattenSubTaskTexts(tasks: StepSubtask[]): string[] {
 }
 
 // =============================================================================
-// 4b. Plan 覆盖率补齐（自动注入缺失的 TEST Step）
+// 4b. Plan 覆盖率补齐（自动注入缺失的 UNIT_TEST Step）
 // =============================================================================
 
 /**
- * 兜底自动补 TEST 覆盖：lint 规则要求每个 CODE Step 必须有至少一个 TEST Step
- * （直接或传递地）依赖它。LLM 经常忘记产出 TEST 阶段，或只对最末尾的 CODE 写 TEST，
+ * 兜底自动补 UNIT_TEST 覆盖：lint 规则要求每个 CODE Step 必须有至少一个 UNIT_TEST Step
+ * （直接或传递地）依赖它。LLM 经常忘记产出 UNIT_TEST 阶段，或只对最末尾的 CODE 写 UNIT_TEST，
  * 导致前面的 CODE Step 无人覆盖。本函数：
  *  - 找出所有未被覆盖的 CODE Step（排除仅产出 __init__.py 的）；
- *  - 若有，则追加一个 TEST Step（id = 末位+1），dependsOn 列出全部未覆盖 CODE Step
+ *  - 若有，则追加一个 UNIT_TEST Step（id = 末位+1），dependsOn 列出全部未覆盖 CODE Step
  *    的 id；title/description/systemPrompt 由模板生成，让 Tester 自决具体测试文件命名。
- *  - 不修改已有 Step；不影响已有 TEST 覆盖的 CODE Step（避免重复）。
+ *  - 不修改已有 Step；不影响已有 UNIT_TEST 覆盖的 CODE Step（避免重复）。
  *
  * 这是一个**幂等的安全网**：对已有合规 plan（每个 CODE 都被覆盖）调用此函数等价于 no-op；
  * 真正的目标是让 LLM 输出残缺时 buildPlan 不会一开始就 lint 失败导致整盘重跑。
@@ -542,6 +610,7 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
   const stepById = new Map(steps.map((s) => [s.id, s] as const));
   const isInitOnly = (s: Step): boolean =>
     s.outputs.length > 0 && s.outputs.every((o) => o === '__init__.py' || o.endsWith('/__init__.py'));
+  const iterationIdOf = (s: Step): string => s.iterationId ?? 'P1';
 
   // 谁能传递地依赖到 codeId？
   const transitivelyDepends = (test: Step, codeId: string): boolean => {
@@ -559,72 +628,90 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
   };
 
   const codeSteps = steps.filter((s) => s.phase === 'CODE' && !isInitOnly(s));
-  const testSteps = steps.filter((s) => s.phase === 'TEST');
-  const uncovered = codeSteps.filter(
-    (c) => !testSteps.some((t) => transitivelyDepends(t, c.id)),
-  );
-  if (uncovered.length === 0) return steps;
+  const testSteps = steps.filter((s) => s.phase === 'UNIT_TEST');
+  const uncoveredByIteration = new Map<string, Step[]>();
+  for (const codeStep of codeSteps) {
+    const iterationId = iterationIdOf(codeStep);
+    const covered = testSteps.some((testStep) =>
+      iterationIdOf(testStep) === iterationId && transitivelyDepends(testStep, codeStep.id),
+    );
+    if (!covered) {
+      const bucket = uncoveredByIteration.get(iterationId) ?? [];
+      bucket.push(codeStep);
+      uncoveredByIteration.set(iterationId, bucket);
+    }
+  }
+  if (uncoveredByIteration.size === 0) return steps;
 
-  // 取末位编号 + 1 作为新 TEST id（保留 S### 三位前导零）
-  const maxNum = steps.reduce((m, s) => {
+  // 取末位编号 + 1 作为新 UNIT_TEST id（保留 S### 三位前导零）
+  let maxNum = steps.reduce((m, s) => {
     const mm = String(s.id).match(/^S(\d{3,})$/);
     return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
   }, 0);
-  const newId = 'S' + String(maxNum + 1).padStart(3, '0');
-  const testOutput = language === 'typescript'
-    ? `tests/auto_${newId.toLowerCase()}.test.ts`
-    : `tests/test_auto_${newId.toLowerCase()}.py`;
-
-  const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join('、');
   const tsMode = language === 'typescript';
-  const synthetic: Step = {
-    id: newId,
-    phase: 'TEST',
-    title: `自动补齐：覆盖 ${uncovered.map((c) => c.id).join(' / ')}`,
-    description:
-      `Planner 未为 ${targetTitles} 显式生成 TEST Step，由 calibration 自动追加。` +
-      (tsMode
-        ? `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 Vitest 测试文件（*.test.ts），覆盖正常路径与典型错误路径。`
-        : `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 pytest 测试文件，覆盖正常路径与典型错误路径。`),
-    systemPrompt:
-      `本 Step 是 calibration 自动追加的 TEST 兜底，覆盖以下 CODE Step：${targetTitles}。\n` +
-      (tsMode
-        ? `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`
-        : `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`) +
-      `输入：上述 CODE Step 产出的 src/ 文件 + docs/。\n` +
-      (tsMode
-        ? `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 npm test / Vitest 自动验证。\n`
-        : `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 TEST gate 会用 pytest 自动验证。\n`) +
-      (tsMode
-        ? `验收：所有新增测试在 npm test / Vitest 下通过；任一目标 CODE 的核心 API 至少有一条断言。`
-        : `验收：所有新增测试 pytest 通过；任一目标 CODE 的核心 API 至少有一条断言。`),
-    role: 'Tester',
-    tools: ['skill:tester'],
-    inputs: uncovered.flatMap((c) => c.outputs),
-    outputs: [testOutput],
-    dependsOn: uncovered.map((c) => c.id),
-    acceptance: tsMode
-      ? `npm test / Vitest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`
-      : `pytest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`,
-    status: 'PENDING',
-    retries: 0,
-    maxRetries: 3,
-  };
+  const syntheticSteps: Step[] = [];
+  const uncoveredIds = new Set<string>();
+  for (const [iterationId, uncovered] of uncoveredByIteration) {
+    for (const codeStep of uncovered) uncoveredIds.add(codeStep.id);
+    maxNum += 1;
+    const newId = 'S' + String(maxNum).padStart(3, '0');
+    const unitTestDoc = phaseDocForIteration('UNIT_TEST', iterationId);
+    const testOutput = language === 'typescript'
+      ? `tests/auto_${newId.toLowerCase()}.test.ts`
+      : `tests/test_auto_${newId.toLowerCase()}.py`;
 
-  const uncoveredIds = new Set(uncovered.map((c) => c.id));
+    const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join('、');
+    syntheticSteps.push({
+      id: newId,
+      iterationId,
+      phase: 'UNIT_TEST',
+      title: `自动补齐单元测试：覆盖 ${uncovered.map((c) => c.id).join(' / ')}`,
+      description:
+        `Planner 未为 ${targetTitles} 显式生成 UNIT_TEST Step，由 calibration 自动追加。` +
+        (tsMode
+          ? `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 Vitest 测试文件（*.test.ts），覆盖正常路径与典型错误路径。`
+          : `Tester 应为每个目标 CODE Step 在 tests/ 下创建至少一个 pytest 测试文件，覆盖正常路径与典型错误路径。`),
+      systemPrompt:
+        `本 Step 是 calibration 自动追加的 UNIT_TEST 兜底，覆盖以下 CODE Step：${targetTitles}。\n` +
+        (tsMode
+          ? `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`
+          : `范围：仅写 / 调试 ${testOutput}，不得修改 src/ 实现。\n`) +
+        `输入：上述 CODE Step 产出的 src/ 文件 + docs/。\n` +
+        (tsMode
+          ? `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 UNIT_TEST gate 会用 npm test / Vitest 自动验证。\n`
+          : `产出：${testOutput}（覆盖每一个目标 CODE Step 的核心 API），运行期 UNIT_TEST gate 会用 pytest 自动验证。\n`) +
+        (tsMode
+          ? `验收：所有新增测试在 npm test / Vitest 下通过；任一目标 CODE 的核心 API 至少有一条断言。`
+          : `验收：所有新增测试 pytest 通过；任一目标 CODE 的核心 API 至少有一条断言。`),
+      role: 'Tester',
+      tools: ['skill:tester'],
+      inputs: uncovered.flatMap((c) => c.outputs),
+      outputs: unitTestDoc ? [unitTestDoc, testOutput] : [testOutput],
+      dependsOn: uncovered.map((c) => c.id),
+      acceptance: tsMode
+        ? `npm test / Vitest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`
+        : `pytest 在 tests/ 下能找到至少 ${uncovered.length} 个新测试文件并全部通过，覆盖 ${uncovered.map((c) => c.id).join(' / ')} 的主要 API。`,
+      status: 'PENDING',
+      retries: 0,
+      maxRetries: 3,
+    });
+  }
+  const syntheticByIteration = new Map(syntheticSteps.map((step) => [iterationIdOf(step), step]));
   const rewired = steps.map((step) => {
-    if (step.phase !== 'REFACTOR') return step;
-    const alreadyDependsOnTest = step.dependsOn.some((depId) => stepById.get(depId)?.phase === 'TEST');
+    if (!(['INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'] as Step['phase'][]).includes(step.phase)) return step;
+    const alreadyDependsOnTest = step.dependsOn.some((depId) => stepById.get(depId)?.phase === 'UNIT_TEST');
     if (alreadyDependsOnTest) return step;
     const touchesUncoveredCode = step.dependsOn.some((depId) => uncoveredIds.has(depId));
     if (!touchesUncoveredCode) return step;
+    const synthetic = syntheticByIteration.get(iterationIdOf(step));
+    if (!synthetic) return step;
     return {
       ...step,
-      dependsOn: dedup([...step.dependsOn, newId]),
+      dependsOn: dedup([...step.dependsOn, synthetic.id]),
     };
   });
 
-  return [...rewired, synthetic];
+  return [...rewired, ...syntheticSteps];
 }
 
 // =============================================================================
@@ -827,7 +914,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
         `(1) **首选**用 pytest 的 \`tmp_path\` / \`tmpdir\` fixture 在测试里临时构造该文件，` +
         `例如把 ${f} 内容用 Python 写入 tmp_path 后传入被测函数，避免污染仓库；` +
         `(2) 若该文件是被测模块的"标准样例"，应当作为产物落到 tests/fixtures/${f}，` +
-        `用 \`write_file\` 创建该 fixture（**TEST/DEBUG 阶段 tests/fixtures/ 已默认放开写权限**，` +
+        `用 \`write_file\` 创建该 fixture（**测试/DEBUG 阶段 tests/fixtures/ 已默认放开写权限**，` +
         `子目录会自动 mkdir -p，无需提前在 outputs 登记）；` +
         `(3) 若被测函数允许 mock，用 \`unittest.mock.mock_open\` 或猴补 \`builtins.open\` 绕过真实 IO。` +
         `**严禁**单纯把硬编码路径改成另一个不存在的路径敷衍过去。`

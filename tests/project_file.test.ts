@@ -106,7 +106,7 @@ function samplePlan(statuses: Array<[string, Plan['steps'][number]['status']]>):
     createdAt: '2026-06-30T00:00:00.000Z',
     steps: statuses.map(([id, status], index) => ({
       id,
-      phase: index === 0 ? 'REQUIREMENT' : index === 1 ? 'CODE' : 'TEST',
+      phase: index === 0 ? 'REQUIREMENT_ANALYSIS' : index === 1 ? 'CODE' : 'UNIT_TEST',
       title: `Step ${id}`,
       description: `Description for ${id}`,
       systemPrompt: `Prompt for ${id}`,

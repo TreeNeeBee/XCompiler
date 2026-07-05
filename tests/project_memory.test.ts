@@ -15,6 +15,7 @@ import type { Step } from '../src/core/plan.js';
 const step = (overrides: Partial<Step> = {}): Step =>
   ({
     id: 'S200',
+    iterationId: 'P1',
     phase: 'CODE',
     title: 'Extend reporting service',
     description: 'Add invoice export orchestration to the reporting service.',
@@ -35,7 +36,7 @@ describe('project memory', () => {
     const ws = new Workspace(root);
     await ws.writeFile('docs/topic.md', 'Invoice reporting with CSV export.');
     await ws.writeFile(
-      'docs/02-architecture.md',
+      'docs/02-high-level-design.md',
       [
         'ReportingService coordinates exporters and formatters.',
         'Must preserve CSV export compatibility for existing clients.',
