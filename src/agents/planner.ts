@@ -405,7 +405,7 @@ function extractClarifyOptionAnswer(item: unknown): string {
 }
 
 function stripOptionLabel(value: string): string {
-  return value.replace(/^\s*[A-Ea-e]\s*[\).\]、:：-]\s*/u, '');
+  return value.replace(/^\s*[A-Ea-e]\s*[).\]、:：-]\s*/u, '');
 }
 
 function validateClarifyJson(
