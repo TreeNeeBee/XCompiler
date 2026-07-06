@@ -137,7 +137,6 @@ jobs:
   npm-publish:
     name: Publish npm package
     runs-on: ubuntu-22.04
-    needs: release
     steps:
       - name: Checkout tag
         uses: actions/checkout@v6
