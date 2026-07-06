@@ -1,6 +1,6 @@
 {
   "name": "@xcompiler/cli",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "XCompiler — AI Software Factory: V-model driven, multi-LLM orchestrated software development agent.",
   "license": "Apache-2.0",
   "type": "module",
@@ -83,7 +83,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@types/node": "^22.10.2",
-    "@yao-pkg/pkg": "^6.21.0",
+    "@yao-pkg/pkg": "^6.19.0",
     "eslint": "^9.39.4",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
