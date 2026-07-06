@@ -257,7 +257,7 @@ async function listFiles(ws: Workspace, dir: string): Promise<string[]> {
 }
 
 async function walk(abs: string, rel: string, out: string[]): Promise<void> {
-  let entries: Dirent[] = [];
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(abs, { withFileTypes: true });
   } catch {

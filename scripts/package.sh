@@ -19,7 +19,7 @@
 #   - macos-x64（Intel Mac）可在 Intel Mac 本机打包，或作为显式交叉编译目标。
 #
 # 依赖：
-#   - Node 20+
+#   - Node 24+
 #   - @yao-pkg/pkg（devDependency；必须已通过 npm ci / npm install 安装）
 #   - zip（选择 Windows 目标时必需）
 #   - 可选：ldid（macOS 包签名用）；缺失时本脚本会自动从 GitHub 拉取静态二进制
@@ -103,7 +103,7 @@ if [[ -z "$TARGETS" ]]; then
   exit 2
 fi
 
-NODE_VER="node20"
+NODE_VER="node24"
 ENTRY="dist/pkg-build/xcompiler.cjs"
 OUT_ROOT="dist/pkg"
 PKG_BIN="$ROOT/node_modules/.bin/pkg"

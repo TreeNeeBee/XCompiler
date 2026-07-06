@@ -20,15 +20,13 @@ export const addDependencyTool: Tool<
     const abs = ctx.ws.abs(manifestPath);
     const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
     const added: string[] = [];
-    let final: string[] = [];
+    let final: string[];
 
     if (ctx.language === 'typescript') {
-      let pkg: Record<string, unknown> = {};
-      try {
-        pkg = JSON.parse(await fs.readFile(abs, 'utf8')) as Record<string, unknown>;
-      } catch {
-        pkg = {};
-      }
+      const pkg = await fs
+        .readFile(abs, 'utf8')
+        .then((text) => JSON.parse(text) as Record<string, unknown>)
+        .catch(() => ({} as Record<string, unknown>));
       const existingDeps =
         pkg.dependencies && typeof pkg.dependencies === 'object' && !Array.isArray(pkg.dependencies)
           ? { ...(pkg.dependencies as Record<string, string>) }

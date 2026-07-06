@@ -256,7 +256,7 @@ npm run smoke:ollama            # real ollama end-to-end smoke test
 Full steps in [docs/deploy.md](docs/deploy.md):
 
 ```bash
-# A. Local (Node 20 + Python 3)
+# A. Local (Node 24 + Python 3)
 npm ci && npm run build && npm link
 xcompiler --help
 

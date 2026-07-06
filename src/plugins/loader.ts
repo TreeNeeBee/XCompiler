@@ -39,7 +39,7 @@ export async function loadPluginSources(options: PluginLoadOptions): Promise<XCo
     } catch (error) {
       const message = t().plugins.manifestReadFailed(manifestPath, errorMessage(error));
       await auditRejected(options, '', 'manifest-read', message, { manifestPath, entryPath });
-      throw new Error(message);
+      throw new Error(message, { cause: error });
     }
     const report = checkPluginCompatibility(manifest, runtime);
     if (!report.compatible) {
@@ -69,7 +69,7 @@ export async function loadPluginSources(options: PluginLoadOptions): Promise<XCo
     } catch (error) {
       const message = t().plugins.moduleLoadFailed(item.manifest.id, item.entryPath, errorMessage(error));
       await auditRejected(options, item.manifest.id, 'module-load', message, item);
-      throw new Error(message);
+      throw new Error(message, { cause: error });
     }
     const plugin = loaded[exportName];
     if (!isPlugin(plugin)) {
@@ -80,7 +80,7 @@ export async function loadPluginSources(options: PluginLoadOptions): Promise<XCo
     if (!sameRuntimeManifest(plugin.manifest, item.manifest)) {
       const message = t().plugins.manifestMismatch(item.manifest.id);
       await auditRejected(options, item.manifest.id, 'manifest-mismatch', message, item);
-      throw new Error(message);
+      throw new Error(message, { cause: new Error('plugin runtime manifest differs from preflight manifest') });
     }
     plugins.push({ ...plugin, manifest: snapshotManifest(item.manifest) });
   }

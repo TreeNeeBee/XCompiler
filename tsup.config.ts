@@ -2,7 +2,7 @@ import { defineConfig } from 'tsup';
 
 const shared = {
   format: ['esm'] as const,
-  target: 'node20',
+  target: 'node24',
   splitting: false,
   sourcemap: true,
   clean: true,
