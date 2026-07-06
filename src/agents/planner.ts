@@ -824,9 +824,7 @@ function normalizeImplementationPhases(
 }
 
 function requiredImplementationPhaseCount(assessment: ComplexityAssessment): number {
-  if (assessment.level === 'complex') return 3;
-  if (assessment.level === 'moderate') return 2;
-  if (assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
+  if (assessment.level !== 'simple' || assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
   return 1;
 }
 

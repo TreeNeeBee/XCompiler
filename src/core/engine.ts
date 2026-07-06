@@ -23,6 +23,9 @@ import {
   type ToolRegistry,
   type ToolContext,
   type Tool,
+  type ToolExecutionReporter,
+  type ToolPermissionRequest,
+  type ToolPermissionRequester,
 } from '../tools/index.js';
 import { StepExecutor, verifyOutputs } from '../agents/executor.js';
 import type { ExecutorRunMetrics } from '../agents/executor.js';
@@ -84,6 +87,12 @@ export interface EngineOptions {
   maxWriteChunkBytes?: WriteChunkBytes;
   /** Called whenever the engine persists Step progress to plan.json. */
   onPlanProgress?: (plan: Plan) => Promise<void>;
+  /** Optional protocol/UI permission hook for sensitive tool operations. */
+  requestPermission?: ToolPermissionRequester;
+  /** Optional protocol/UI event hook for tool calls and changed files. */
+  onToolEvent?: ToolExecutionReporter;
+  /** Whether PhaseEngine may write human terminal progress directly. Defaults to true for CLI compatibility. */
+  terminalOutput?: boolean;
 }
 
 export interface EngineResult {
@@ -186,6 +195,44 @@ export class PhaseEngine {
     this.debugCache = new DebugCache(opts.ws.abs('.xcompiler/debug_cache.json'));
   }
 
+  private get terminalOutput(): boolean {
+    return this.opts.terminalOutput ?? true;
+  }
+
+  private log(...args: unknown[]): void {
+    if (this.terminalOutput) console.log(...args);
+  }
+
+  private spin(text: string, options?: { animate?: boolean }) {
+    return this.terminalOutput ? ora(text, options).start() : null;
+  }
+
+  private async requestEnginePermission(
+    request: ToolPermissionRequest,
+  ): Promise<{ approved: boolean; reason?: string }> {
+    if (!this.opts.requestPermission) return { approved: true };
+    const decision = await this.opts.requestPermission(request);
+    await this.opts.audit.event(
+      'note',
+      `${request.operationType} ${decision.approved ? 'approved' : 'denied'}: ${request.target}`,
+      {
+        messageId: 'engine.permission_decision',
+        operationType: request.operationType,
+        target: request.target,
+        approved: decision.approved,
+        reason: decision.reason,
+      },
+    );
+    return decision;
+  }
+
+  private async requireEnginePermission(request: ToolPermissionRequest): Promise<void> {
+    const decision = await this.requestEnginePermission(request);
+    if (!decision.approved) {
+      throw new Error(`permission denied for ${request.operationType}: ${request.target}`);
+    }
+  }
+
   async run(plan: Plan): Promise<EngineResult> {
     await this.plugins.initialize();
     if (!this.pluginExtensionsApplied) {
@@ -279,19 +326,37 @@ export class PhaseEngine {
     const order = topoSort(plan.steps);
     if (this.opts.dryRun) {
       for (const s of order) {
-        console.log(`  ${chalk.cyan(s.id.padEnd(5))} ${chalk.yellow(s.phase.padEnd(11))} ${s.title}`);
+        this.log(`  ${chalk.cyan(s.id.padEnd(5))} ${chalk.yellow(s.phase.padEnd(11))} ${s.title}`);
       }
       return { totalSteps: order.length, executedSteps: 0 };
     }
 
+    await this.requireEnginePermission({
+      operationType: 'git_operation',
+      target: 'git init/snapshot/revert for XCompiler run rollback',
+      reason: 'XCompiler uses git snapshots to make each V-model step reversible.',
+      risk: 'This may initialize or update git metadata in the current workspace.',
+      scope: 'current workspace',
+      skippable: false,
+      denyBehavior: 'Terminate the run because safe rollback cannot be guaranteed.',
+    });
     await this.opts.git.ensureRepo();
     if (await this.opts.ws.exists(this.profile.manifestFile)) {
-      const spin = ora(t().engine.spinSandboxBuild(this.profile)).start();
+      await this.requireEnginePermission({
+        operationType: 'build_command',
+        target: `sandbox build ${this.profile.manifestFile}`,
+        reason: 'Prepare the project sandbox before running code-generation steps.',
+        risk: 'This may execute package manager or environment setup commands in the sandbox.',
+        scope: 'current workspace sandbox',
+        skippable: false,
+        denyBehavior: 'Terminate the run because the sandbox is not ready.',
+      });
+      const spin = this.spin(t().engine.spinSandboxBuild(this.profile));
       try {
         const r = await this.opts.sandbox.build(this.profile.manifestFile);
-        spin.succeed(t().engine.sandboxReady(r.reason));
+        spin?.succeed(t().engine.sandboxReady(r.reason));
       } catch (err) {
-        spin.fail((err as Error).message);
+        spin?.fail((err as Error).message);
         throw err;
       }
     }
@@ -307,7 +372,7 @@ export class PhaseEngine {
       started = true;
       if (this.opts.onlyPhase && step.phase !== this.opts.onlyPhase) continue;
       if (step.status === 'DONE') {
-        console.log(chalk.gray(t().engine.stepSkipDone(step.id, step.phase)));
+        this.log(chalk.gray(t().engine.stepSkipDone(step.id, step.phase)));
         continue;
       }
 
@@ -349,12 +414,21 @@ export class PhaseEngine {
       }
 
       if (step.phase === 'HIGH_LEVEL_DESIGN' && step.outputs.includes(this.profile.manifestFile)) {
-        const spin = ora(t().engine.spinSandboxRebuild(step.id, this.profile)).start();
+        await this.requireEnginePermission({
+          operationType: 'build_command',
+          target: `sandbox rebuild ${this.profile.manifestFile}`,
+          reason: 'Dependencies or project manifest changed after high-level design.',
+          risk: 'This may execute package manager or environment setup commands in the sandbox.',
+          scope: 'current workspace sandbox',
+          skippable: false,
+          denyBehavior: 'Terminate the run because dependent steps cannot be validated safely.',
+        });
+        const spin = this.spin(t().engine.spinSandboxRebuild(step.id, this.profile));
         try {
           const r = await this.opts.sandbox.build(this.profile.manifestFile);
-          spin.succeed(t().engine.sandboxStatus(r.reason));
+          spin?.succeed(t().engine.sandboxStatus(r.reason));
         } catch (err) {
-          spin.fail((err as Error).message);
+          spin?.fail((err as Error).message);
           throw err;
         }
       }
@@ -557,7 +631,28 @@ export class PhaseEngine {
 
   private async runIterationGateWithRepair(plan: Plan, finalStep: Step): Promise<EngineResult> {
     const iterationId = finalStep.iterationId ?? 'P1';
-    const spin = ora(`running iteration gate ${iterationId}`, { animate: false }).start();
+    const gatePermission = await this.requestEnginePermission({
+      operationType: 'test_command',
+      target: `iteration gate ${iterationId}`,
+      reason: 'Validate the completed iteration before moving on.',
+      risk: 'The iteration gate may execute project tests or entrypoint commands in the sandbox.',
+      scope: 'current workspace sandbox',
+      skippable: true,
+      denyBehavior: 'Mark the iteration gate as failed and report verification as incomplete.',
+    });
+    if (!gatePermission.approved) {
+      const reason = `permission denied for iteration gate ${iterationId}`;
+      const failureLog = `${reason}\n${gatePermission.reason ?? ''}`.trim();
+      this.lastFailure = { reason, failureLog };
+      return {
+        totalSteps: plan.steps.length,
+        executedSteps: 0,
+        failedStepId: `ITERATION_GATE_${iterationId}`,
+        failureReason: reason,
+        failureLog,
+      };
+    }
+    const spin = this.spin(`running iteration gate ${iterationId}`, { animate: false });
     let auditResult = await runIterationGate({
       ws: this.opts.ws,
       sandbox: this.opts.sandbox,
@@ -571,11 +666,11 @@ export class PhaseEngine {
       checks: auditResult.checks,
     });
     if (auditResult.ok) {
-      spin.succeed(`iteration gate ${iterationId} passed`);
+      spin?.succeed(`iteration gate ${iterationId} passed`);
       return { totalSteps: plan.steps.length, executedSteps: 0 };
     }
 
-    spin.fail(`iteration gate ${iterationId} failed; entering Debugger repair`);
+    spin?.fail(`iteration gate ${iterationId} failed; entering Debugger repair`);
     await this.opts.audit.event('note', `iteration gate ${iterationId} failed; entering Debugger repair`, {
       messageId: 'engine.iteration_gate_repair_start',
       iterationId,
@@ -756,7 +851,7 @@ export class PhaseEngine {
     if (this.isVModelTestPhase(step.phase) || step.phase === 'DEBUG') {
       const fixed = (await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit)) ?? [];
       if (fixed.length > 0) {
-        console.log(
+        this.log(
           chalk.yellow(t().engine.autoFixedSrcImports(fixed.length, fixed.join(', '))),
         );
       }
@@ -768,34 +863,48 @@ export class PhaseEngine {
     const hadUnresolved = this.debugCache.hasUnresolvedFailure(step.id);
     let priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
     let initial: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
-    if (opts.initialDebug) {
-      initial = await this.runOneAttempt(plan, step, {
-        asDebugger: true,
-        failureLog: opts.initialDebug.failureLog,
-        reason: opts.initialDebug.reason,
+    try {
+      if (opts.initialDebug) {
+        initial = await this.runOneAttempt(plan, step, {
+          asDebugger: true,
+          failureLog: opts.initialDebug.failureLog,
+          reason: opts.initialDebug.reason,
           priorAttemptsPrompt: priorPrompt,
           contextPaths: opts.initialDebug.contextPaths,
           contextMode: opts.initialDebug.contextMode,
           issueId: activeIssueId,
           completedBeforeDebug,
         });
-    } else if (hadUnresolved) {
-      const last = this.debugCache.attempts(step.id).slice(-1)[0]!;
-      console.log(
-        chalk.yellow(
-          t().engine.debugResumeNotice(step.id, this.debugCache.attempts(step.id).length),
-        ),
-      );
-      initial = await this.runOneAttempt(plan, step, {
-        asDebugger: true,
-        failureLog: last.failureLogTail,
-        reason: last.reason,
-        priorAttemptsPrompt: priorPrompt,
-        issueId: activeIssueId,
-        completedBeforeDebug,
-      });
-    } else {
-      initial = await this.runOneAttempt(plan, step);
+      } else if (hadUnresolved) {
+        const last = this.debugCache.attempts(step.id).slice(-1)[0]!;
+        this.log(
+          chalk.yellow(
+            t().engine.debugResumeNotice(step.id, this.debugCache.attempts(step.id).length),
+          ),
+        );
+        initial = await this.runOneAttempt(plan, step, {
+          asDebugger: true,
+          failureLog: last.failureLogTail,
+          reason: last.reason,
+          priorAttemptsPrompt: priorPrompt,
+          issueId: activeIssueId,
+          completedBeforeDebug,
+        });
+      } else {
+        initial = await this.runOneAttempt(plan, step);
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      initial = {
+        ok: false,
+        failureLog: err instanceof Error ? (err.stack ?? reason) : reason,
+        reason,
+        issueKind: 'exception',
+        evidence: {
+          stage: opts.initialDebug || hadUnresolved ? 'initial-debug-attempt' : 'initial-attempt',
+          role: opts.initialDebug || hadUnresolved ? 'Debugger' : step.role,
+        },
+      };
     }
     if (initial.ok) {
       await this.debugCache.markDone(step.id);
@@ -810,6 +919,9 @@ export class PhaseEngine {
         evidence: initial.evidence,
       });
       activeIssueId = issue.id;
+      if (!(initial.rollbackToPairedSource && this.isVModelTestPhase(step.phase))) {
+        await this.routeIssueToStep(issue, step, 'same phase Debugger repair');
+      }
     }
     // 记录首轮失败
     await this.debugCache.recordAttempt(step.id, {
@@ -857,10 +969,10 @@ export class PhaseEngine {
       attempt++;
       step.retries = attempt;
       await this.persistPlan(plan);
-      const spin = ora(
+      const spin = this.spin(
         t().engine.spinDebugRetry(step.id, attempt, budget, absoluteCap, lastReason),
         { animate: false },
-      ).start();
+      );
       let r: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
       try {
         r = await this.runOneAttempt(plan, step, {
@@ -873,7 +985,8 @@ export class PhaseEngine {
         });
       } catch (err) {
         const msg = (err as Error).message;
-        spin.fail(t().engine.retryException(attempt, budget, msg));
+        spin?.fail(t().engine.retryException(attempt, budget, msg));
+        await this.markIssueUnresolved(activeIssueId, msg);
         consecutiveBad++;
         // 异常视为最严重的不健康信号：立即半窗，连续 2 次直接终止。
         budget = Math.max(attempt + 1, Math.ceil(budget / 2));
@@ -887,7 +1000,7 @@ export class PhaseEngine {
         continue;
       }
       if (r.ok) {
-        spin.succeed(t().engine.fixSucceeded(step.id, attempt));
+        spin?.succeed(t().engine.fixSucceeded(step.id, attempt));
         await this.debugCache.markDone(step.id);
         return true;
       }
@@ -905,18 +1018,18 @@ export class PhaseEngine {
         const before = budget;
         budget = Math.min(absoluteCap, budget + 2);
         consecutiveBad = 0;
-        spin.fail(
+        spin?.fail(
           t().engine.retryHealthyButFailed(attempt, before, budget, tag, r.reason ?? ''),
         );
       } else if (bad) {
         consecutiveBad++;
         const before = budget;
         budget = Math.max(attempt + 1, Math.ceil(budget / 2));
-        spin.fail(
+        spin?.fail(
           t().engine.retryLowQuality(attempt, before, budget, tag, r.reason ?? ''),
         );
         if (consecutiveBad >= 2) {
-          console.log(
+          this.log(
             chalk.yellow(
               t().engine.earlyAbortLowQuality(step.id, consecutiveBad),
             ),
@@ -929,7 +1042,7 @@ export class PhaseEngine {
         }
       } else {
         consecutiveBad = 0;
-        spin.fail(t().engine.retryStillFailed(attempt, budget, tag, r.reason ?? ''));
+        spin?.fail(t().engine.retryStillFailed(attempt, budget, tag, r.reason ?? ''));
       }
       lastReason = r.reason ?? lastReason;
       lastFailureLog = r.failureLog;
@@ -986,19 +1099,20 @@ export class PhaseEngine {
       metrics?: ExecutorRunMetrics;
     },
   ): void {
+    if (!this.terminalOutput) return;
     const bar = chalk.red('─'.repeat(60));
-    console.log(bar);
-    console.log(
+    this.log(bar);
+    this.log(
       chalk.red.bold(t().engine.stepFinalFailed(step.id, step.phase, step.role)),
     );
-    console.log(
+    this.log(
       chalk.gray(
         t().engine.finalAttemptsLine(info.attempts, info.budget, info.cap, info.earlyAbort),
       ),
     );
     if (info.metrics) {
       const m = info.metrics;
-      console.log(
+      this.log(
         chalk.gray(
           t().engine.finalMetricsLine(
             m.healthScore.toFixed(2),
@@ -1010,21 +1124,21 @@ export class PhaseEngine {
         ),
       );
     }
-    console.log(chalk.red(t().engine.reasonLabel) + info.reason);
+    this.log(chalk.red(t().engine.reasonLabel) + info.reason);
     const tail = info.failureLog
       ? info.failureLog.split('\n').slice(-80).join('\n')
       : t().engine.noFailureLog;
-    console.log(chalk.gray(t().engine.failureLogHeader));
-    console.log(tail);
+    this.log(chalk.gray(t().engine.failureLogHeader));
+    this.log(tail);
     const sugs = calibrateDebugSuggestions(info.failureLog, info.reason);
     if (sugs.length > 0) {
-      console.log(chalk.yellow(t().engine.fixSuggestionsHeader));
+      this.log(chalk.yellow(t().engine.fixSuggestionsHeader));
       sugs.forEach((s, i) => {
-        console.log(chalk.yellow(t().engine.suggestionLine(i + 1, s.code, s.hint)));
+        this.log(chalk.yellow(t().engine.suggestionLine(i + 1, s.code, s.hint)));
       });
     }
-    console.log(chalk.gray(t().engine.auditHint(step.id)));
-    console.log(bar);
+    this.log(chalk.gray(t().engine.auditHint(step.id)));
+    this.log(bar);
   }
 
   private selectAuditRepairStep(
@@ -1207,6 +1321,8 @@ export class PhaseEngine {
       stepId: step.id,
       language: plan.language,
       writeChunkBytes,
+      requestPermission: this.opts.requestPermission,
+      onToolEvent: this.opts.onToolEvent,
     };
 
     const llm = this.opts.router.for(role);
@@ -1235,10 +1351,10 @@ export class PhaseEngine {
 
     const spin = debug
       ? null
-      : ora(
+      : this.spin(
           t().engine.spinStepRunning(step.id, step.phase, chalk.bold(step.title)),
           { animate: false },
-        ).start();
+        );
     try {
       const r = await executor.run({
         step,
@@ -1298,6 +1414,34 @@ export class PhaseEngine {
 
         // 测试阶段强制验收门：必须测试退出码 0，否则按 V 模型映射回退到对应左侧阶段。
         if (this.isVModelTestPhase(step.phase)) {
+          const permission = await this.requestEnginePermission({
+            operationType: 'test_command',
+            target: `${this.profile.id} test gate for ${step.id}`,
+            reason: 'Validate the test phase before marking the V-model step complete.',
+            risk: 'Project test commands execute code in the configured sandbox.',
+            scope: 'current workspace sandbox',
+            skippable: true,
+            denyBehavior: 'Fail this test gate and route the issue through normal V-model debug handling.',
+            stepId: step.id,
+          });
+          if (!permission.approved) {
+            const reason = `permission denied for test gate ${step.id}`;
+            const failureLog = [
+              t().engine.reasonLine(reason),
+              permission.reason ?? '',
+            ].filter(Boolean).join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.git.revertTo(sha);
+            return {
+              ok: false,
+              failureLog,
+              reason,
+              metrics: r.metrics,
+              rollbackToPairedSource: true,
+              issueKind: step.phase === 'FUNCTIONAL_TEST' ? 'functional-gate' : 'test-gate',
+              evidence: { permissionDenied: true },
+            };
+          }
           const pt = await this.opts.sandbox.runTests([], {});
           if (pt.exitCode !== 0 || pt.timedOut) {
             const tail = (s: string) => s.split('\n').slice(-30).join('\n');
@@ -1340,6 +1484,34 @@ export class PhaseEngine {
         if (step.phase === 'FUNCTIONAL_TEST') {
           // gate 前再跑一次 auto-fix（FUNCTIONAL_TEST Step 自身可能新建/改写了入口）
           await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit);
+          const permission = await this.requestEnginePermission({
+            operationType: 'shell_command',
+            target: `${this.profile.id} functional entry probe`,
+            reason: 'Validate the generated project entrypoint before final delivery.',
+            risk: 'This executes project code in the configured sandbox.',
+            scope: 'current workspace sandbox',
+            skippable: true,
+            denyBehavior: 'Fail the functional gate and route the issue through normal V-model debug handling.',
+            stepId: step.id,
+          });
+          if (!permission.approved) {
+            const reason = `permission denied for functional probe ${step.id}`;
+            const failureLog = [
+              t().engine.reasonLine(reason),
+              permission.reason ?? '',
+            ].filter(Boolean).join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.git.revertTo(sha);
+            return {
+              ok: false,
+              failureLog,
+              reason,
+              metrics: r.metrics,
+              rollbackToPairedSource: true,
+              issueKind: 'functional-gate',
+              evidence: { permissionDenied: true },
+            };
+          }
           const probe = await this.profile.probeEntry(this.opts.ws, this.opts.sandbox);
           if (!probe.ok) {
             const reason = t().engine.deliveryGateReason(probe.command, probe.exitCode, !!probe.timedOut);

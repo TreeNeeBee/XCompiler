@@ -1,17 +1,18 @@
 import chalk from 'chalk';
-import { runDoctor, type CheckLevel, type DoctorOptions } from '../core/doctor.js';
+import {
+  runDoctorCommand,
+  type CheckLevel,
+  type RuntimeDoctorOptions,
+} from '../runtime/doctor.js';
 import { t } from '../i18n/index.js';
 
-export interface DoctorCliOptions extends DoctorOptions {
-  /** Exit non-zero on warnings as well as failures. */
-  strict?: boolean;
-}
+export type DoctorCliOptions = RuntimeDoctorOptions;
 
-/** CLI entrypoint for `xcompiler doctor`. Prints a coloured report and exits the process. */
+/** CLI adapter for `xcompiler doctor`. */
 export async function runDoctorCli(opts: DoctorCliOptions = {}): Promise<void> {
   const M = t().doctor;
   console.log(chalk.bold(M.header));
-  const report = await runDoctor(opts);
+  const { report, exitCode } = await runDoctorCommand(opts);
   for (const sec of report.sections) {
     console.log('\n' + chalk.bold(sec.title));
     for (const it of sec.items) {
@@ -21,11 +22,12 @@ export async function runDoctorCli(opts: DoctorCliOptions = {}): Promise<void> {
   console.log('');
   if (report.fails > 0) {
     console.log(chalk.red(`✖ ${M.summaryFail(report.fails)}`));
-    process.exit(1);
+    process.exitCode = exitCode;
+    return;
   }
   if (report.warns > 0) {
     console.log(chalk.yellow(`! ${M.summaryWarn(report.warns)}`));
-    if (opts.strict) process.exit(1);
+    if (exitCode !== 0) process.exitCode = exitCode;
     return;
   }
   console.log(chalk.green(`✔ ${M.summaryOk}`));

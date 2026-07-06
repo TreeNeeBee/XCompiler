@@ -100,7 +100,7 @@ describe('buildPlan — Step id 规整', () => {
     expect(plan.implementationPhases?.[0]?.id).toBe('P1');
     expect(plan.implementationPhases?.[0]?.status).toBe('current');
     expect(plan.implementationPhases?.some((phase) => phase.status === 'planned')).toBe(true);
-    expect(plan.implementationPhases?.length).toBeGreaterThanOrEqual(3);
+    expect(plan.implementationPhases?.length).toBeGreaterThanOrEqual(2);
   });
 
   it('rejects Step subTasks deeper than two levels', () => {

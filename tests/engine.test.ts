@@ -485,6 +485,50 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(plan.steps[0]?.status).toBe('FAILED');
   });
 
+  it('records and routes startup exceptions before Debugger recovery', async () => {
+    const plan = fakePlan();
+    plan.steps = [plan.steps.find((step) => step.phase === 'CODE')!];
+    plan.steps[0]!.dependsOn = [];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    (sandbox as unknown as { build: () => Promise<{ rebuilt: boolean; reason: string }> }).build =
+      async () => ({ rebuilt: false, reason: 'stubbed' });
+
+    const router = new FakeRouter({
+      Debugger: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'repair startup failure',
+          actions: [
+            { tool: 'write_file', args: { path: 'src/hello.py', content: 'def hi():\n    return 1\n' } },
+            { tool: 'write_file', args: { path: 'docs/tests/unit-test-plan.md', content: '# unit plan\n' } },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 1,
+    });
+    const r = await engine.run(plan);
+    expect(r.failedStepId).toBeUndefined();
+    expect(plan.steps[0]?.status).toBe('DONE');
+
+    const issueLog = await ws.readFile('.xcompiler/issues/issues.jsonl');
+    expect(issueLog).toContain('"event":"recorded"');
+    expect(issueLog).toContain('"event":"routed"');
+    expect(issueLog).toContain('"event":"resolved"');
+    expect(issueLog).toContain('no scripted llm for role Coder');
+    expect(issueLog).toContain('"targetPhase":"CODE"');
+  });
+
   it('recovers a failing CODE step via Debugger retry', async () => {
     const plan = fakePlan();
     plan.steps = [plan.steps.find((step) => step.phase === 'CODE')!]; // only CODE

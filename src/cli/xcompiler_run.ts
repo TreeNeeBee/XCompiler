@@ -1,10 +1,11 @@
-import path from 'node:path';
 import { Command } from 'commander';
-import { runExecute } from './execute.js';
+import { runRunCommand } from '../runtime/commands.js';
+import type { ExecuteResult } from '../runtime/run.js';
 import { setLocale, t } from '../i18n/index.js';
 import { XCOMPILER_VERSION } from '../version.js';
 import { configureLocalizedHelp, localeFromArgv, parseLocale, parsePhase, parseStepId } from './arguments.js';
 import { xcEnv } from '../config/env.js';
+import { createCliRuntimeIO } from './runtime_adapter.js';
 
 setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
 
@@ -27,20 +28,10 @@ program
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
   .action(async (planArg, opts) => {
-    const explicit = opts.output ?? opts.workspace;
-    // workspace 推断优先级：
-    //  1. 显式 -o / -w
-    //  2. plan 参数给出时 → 取 plan 所在目录（避免在 XCompiler 源码目录里 run 别人的项目）
-    //  3. 均未提供 → process.cwd()
-    const ws = explicit
-      ? path.resolve(explicit)
-      : planArg
-        ? path.dirname(path.resolve(planArg))
-        : process.cwd();
-    const planPath = planArg ? path.resolve(planArg) : path.join(ws, 'plan.json');
-    await runExecute({
-      planPath,
-      workspace: ws,
+    const result = await runRunCommand({
+      planArg,
+      output: opts.output,
+      workspace: opts.workspace,
       configPath: opts.config,
       dryRun: !!opts.dryRun,
       fromStepId: opts.from,
@@ -48,11 +39,25 @@ program
       resetStatus: !!opts.reset,
       force: !!opts.force,
       projectFilePath: opts.projectFile,
-      projectCommand: 'run',
+      cwd: process.cwd(),
+      io: createCliRuntimeIO(),
     });
+    applyExecuteExitCode(result);
   });
 
 program.parseAsync(process.argv).catch((err) => {
   console.error(t().system.unhandledError(err?.message ?? String(err)));
   process.exit(1);
 });
+
+function applyExecuteExitCode(result: ExecuteResult): void {
+  const exitCode =
+    typeof result.exitCode === 'number'
+      ? result.exitCode
+      : result.status === 'failed'
+        ? 4
+        : result.status === 'error'
+          ? 5
+          : 0;
+  if (exitCode !== 0) process.exitCode = exitCode;
+}

@@ -23,7 +23,7 @@ describe('user-visible output i18n catalog', () => {
     expect(tFor('en').system.unsupportedPypiOnlyNetwork).toContain('pypi-only');
     expect(tFor('zh').system.unsupportedPypiOnlyNetwork).toContain('pypi-only');
 
-    const source = await fs.readFile(new URL('../src/cli/compile.ts', import.meta.url), 'utf8');
+    const source = await fs.readFile(new URL('../src/runtime/build.ts', import.meta.url), 'utf8');
     expect(source).toContain('message: M.compile.gate1Confirm');
     expect(source).not.toContain("message: '需求是否符合预期?'");
   });

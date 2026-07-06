@@ -4,7 +4,12 @@ import { jsonrepair } from 'jsonrepair';
 import type { LLMClient } from '../llm/types.js';
 import type { Step } from '../core/plan.js';
 import { getLanguageProfile, type LanguageProfile } from '../core/language.js';
-import type { Tool, ToolContext, ToolResult } from '../tools/types.js';
+import type {
+  Tool,
+  ToolContext,
+  ToolPermissionRequest,
+  ToolResult,
+} from '../tools/types.js';
 import { makeStreamReporter } from '../llm/stream.js';
 import { t } from '../i18n/index.js';
 
@@ -236,8 +241,55 @@ export class StepExecutor {
           });
           continue;
         }
+        const permission = buildPermissionRequest(a.tool, a.args, inp.step.id, inp.ctx.language);
+        if (a.tool === 'apply_patch' && typeof a.args.patch === 'string') {
+          await inp.ctx.onToolEvent?.({
+            status: 'started',
+            stepId: inp.step.id,
+            tool: a.tool,
+            target: actionTargetPaths(a.tool, a.args).join(', '),
+            args: a.args,
+            patch: a.args.patch,
+          });
+        }
+        if (permission && inp.ctx.requestPermission) {
+          const decision = await inp.ctx.requestPermission(permission);
+          if (!decision.approved) {
+            const r = {
+              ok: false,
+              error: `permission denied for ${permission.operationType}: ${permission.target}` +
+                (decision.reason ? ` (${decision.reason})` : ''),
+            };
+            updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
+            await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, false, r.error), {
+              messageId: 'audit.tool_result',
+              stepId: inp.step.id,
+              tool: a.tool,
+              ok: false,
+              permissionDenied: true,
+            });
+            calls.push({ tool: a.tool, ok: false, error: r.error });
+            turnResults.push({ ...r, tool: a.tool });
+            await inp.ctx.onToolEvent?.({
+              status: 'completed',
+              stepId: inp.step.id,
+              tool: a.tool,
+              target: permission.target,
+              ok: false,
+              error: r.error,
+            });
+            continue;
+          }
+        }
         await inp.ctx.audit?.event('tool.call', t().audit.toolCalled(a.tool), {
           messageId: 'audit.tool_called', stepId: inp.step.id, tool: a.tool, args: a.args,
+        });
+        await inp.ctx.onToolEvent?.({
+          status: 'started',
+          stepId: inp.step.id,
+          tool: a.tool,
+          target: actionTargetPaths(a.tool, a.args).join(', ') || undefined,
+          args: a.args,
         });
         const toolReporter = makeStreamReporter(
           t().stream.toolExecution(inp.step.id, a.tool),
@@ -251,6 +303,16 @@ export class StepExecutor {
           stepId: inp.step.id,
           tool: a.tool,
           ok: r.ok,
+        });
+        await inp.ctx.onToolEvent?.({
+          status: 'completed',
+          stepId: inp.step.id,
+          tool: a.tool,
+          target: actionTargetPaths(a.tool, a.args).join(', ') || undefined,
+          ok: r.ok,
+          summary: r.summary,
+          error: r.error,
+          changedFiles: r.ok ? changedFilesForAction(a.tool, a.args, r) : undefined,
         });
         calls.push({ tool: a.tool, ok: r.ok, summary: r.summary, error: r.error });
         turnResults.push({ ...r, tool: a.tool });
@@ -349,6 +411,121 @@ function extractPatchTargets(patch: string): string[] {
 
 function normalizeRelPath(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '');
+}
+
+function buildPermissionRequest(
+  tool: string,
+  args: Record<string, unknown>,
+  stepId: string,
+  language: ToolContext['language'],
+): ToolPermissionRequest | undefined {
+  const target = actionTargetPaths(tool, args).join(', ');
+  const runtime = language === 'typescript' ? 'npm' : 'python';
+  if (tool === 'write_file' || tool === 'append_file' || tool === 'replace_in_file' || tool === 'apply_patch') {
+    return {
+      operationType: 'file_write',
+      target: target || '(workspace file)',
+      reason: `Step ${stepId} requested ${tool} to update project files.`,
+      risk: 'This operation modifies files in the current workspace.',
+      scope: 'current workspace',
+      skippable: true,
+      denyBehavior: 'The tool call is skipped and the agent must continue with an alternative or fail the step.',
+      stepId,
+      tool,
+      metadata: { args: redactLargeArgs(args) },
+    };
+  }
+  if (tool === 'add_dependency') {
+    return {
+      operationType: 'config_change',
+      target: language === 'typescript' ? 'package.json' : 'requirements.txt',
+      reason: `Step ${stepId} requested dependency manifest changes.`,
+      risk: 'This can alter project dependencies and may trigger sandbox rebuilds.',
+      scope: 'current workspace dependency manifest',
+      skippable: true,
+      denyBehavior: 'The dependency change is skipped; later build or test steps may fail and report the missing dependency.',
+      stepId,
+      tool,
+      metadata: { args },
+    };
+  }
+  if (tool === 'install_deps' || tool === 'pip_install') {
+    return {
+      operationType: 'install_dependency',
+      target: Array.isArray(args.packages) ? args.packages.join(', ') : '(packages)',
+      reason: `Step ${stepId} requested dependency installation.`,
+      risk: 'This may execute package manager scripts and download code from registries.',
+      scope: 'current workspace sandbox',
+      skippable: true,
+      denyBehavior: 'Dependency installation is skipped and the task continues with the missing dependency reported.',
+      stepId,
+      tool,
+      metadata: { args },
+    };
+  }
+  if (tool === 'run_tests') {
+    return {
+      operationType: 'test_command',
+      target: runtime === 'npm' ? 'npm test' : 'pytest',
+      reason: `Step ${stepId} requested test execution to validate changes.`,
+      risk: 'Project test scripts may execute arbitrary local project code.',
+      scope: 'current workspace sandbox',
+      skippable: true,
+      denyBehavior: 'Tests are skipped and the final result must mark verification as incomplete.',
+      stepId,
+      tool,
+      metadata: { args },
+    };
+  }
+  if (tool === 'run_program' || tool === 'run_python') {
+    return {
+      operationType: 'shell_command',
+      target: `${runtime} ${Array.isArray(args.args) ? args.args.join(' ') : ''}`.trim(),
+      reason: `Step ${stepId} requested program execution.`,
+      risk: 'This executes project code in the configured sandbox.',
+      scope: 'current workspace sandbox',
+      skippable: true,
+      denyBehavior: 'The command is skipped and the agent must use another validation strategy or fail the step.',
+      stepId,
+      tool,
+      metadata: { args },
+    };
+  }
+  if (tool === 'http_fetch') {
+    return {
+      operationType: 'network_access',
+      target: typeof args.url === 'string' ? args.url : '(url)',
+      reason: `Step ${stepId} requested network access.`,
+      risk: 'This contacts an external HTTP endpoint from the host process.',
+      scope: 'network',
+      skippable: true,
+      denyBehavior: 'The network call is skipped; the agent must use local context or report the missing data.',
+      stepId,
+      tool,
+      metadata: { args: redactLargeArgs(args) },
+    };
+  }
+  return undefined;
+}
+
+function redactLargeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string' && value.length > 500) {
+      out[key] = `${value.slice(0, 500)}... [truncated ${value.length - 500} chars]`;
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function changedFilesForAction(tool: string, args: Record<string, unknown>, result: ToolResult): string[] {
+  if (tool === 'apply_patch' && result.data && typeof result.data === 'object') {
+    const changed = (result.data as { changedFiles?: unknown }).changedFiles;
+    if (Array.isArray(changed)) return changed.filter((x): x is string => typeof x === 'string');
+  }
+  return actionTargetPaths(tool, args);
 }
 
 function describeToolForStep(tool: Tool, ctx: ToolContext): string {

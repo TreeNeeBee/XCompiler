@@ -13,7 +13,17 @@ import { addDependencyTool } from './deps.js';
 import { httpFetchTool } from './net.js';
 
 export { ToolRegistry, isAllowedWrite } from './types.js';
-export type { Tool, ToolContext, ToolResult } from './types.js';
+export type {
+  Tool,
+  ToolContext,
+  ToolExecutionEvent,
+  ToolExecutionReporter,
+  ToolPermissionDecision,
+  ToolPermissionOperation,
+  ToolPermissionRequest,
+  ToolPermissionRequester,
+  ToolResult,
+} from './types.js';
 export { EditGuard } from './guard.js';
 export type { EditRecord } from './guard.js';
 export { resolveWriteChunkBytes, DEFAULT_WRITE_CHUNK_BYTES } from './fs.js';
