@@ -170,16 +170,23 @@ jobs:
       - name: Verify npm package contents
         run: npm pack --dry-run
 
-      - name: Publish to npm with trusted publishing
-        id: trusted_publish
-        continue-on-error: true
-        run: npm publish --provenance --access public
-
-      - name: Publish to npm with token fallback
-        if: steps.trusted_publish.outcome == 'failure'
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
+          PACKAGE_SPEC="$(node -p "const p=require('./package.json'); p.name + '@' + p.version")"
+
+          if npm publish --provenance --access public; then
+            exit 0
+          fi
+
+          if npm view "${PACKAGE_SPEC}" version >/dev/null 2>&1; then
+            echo "${PACKAGE_SPEC} is already available on npm after the trusted publish attempt."
+            exit 0
+          fi
+
+          echo "Trusted publishing failed; attempting NPM_TOKEN fallback." >&2
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             echo "Trusted publishing failed and NPM_TOKEN is not configured." >&2
             exit 1
