@@ -181,4 +181,29 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.toolCalls.find((c) => c.tool === 'write_file' && !c.ok)?.error).toContain('write denied');
     await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
   });
+
+  it('requests permission before sensitive write tools and skips the write when denied', async () => {
+    const requests: string[] = [];
+    const events: string[] = [];
+    const exec = new StepExecutor({ llm: new CapturingLLM(), maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      tools: [writeFileTool],
+      ctx: {
+        ...ctx,
+        requestPermission: async (request) => {
+          requests.push(`${request.operationType}:${request.target}`);
+          return { approved: false, reason: 'test denial' };
+        },
+        onToolEvent: (event) => {
+          events.push(`${event.status}:${event.tool}:${event.ok ?? ''}`);
+        },
+      },
+    });
+    expect(r.success).toBe(false);
+    expect(requests).toEqual(['file_write:src/x.py']);
+    expect(r.toolCalls[0]?.error).toContain('permission denied');
+    expect(events).toContain('completed:write_file:false');
+    await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toThrow();
+  });
 });

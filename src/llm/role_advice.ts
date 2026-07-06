@@ -20,6 +20,9 @@ export function findSharedCoderDebuggerModel(router: LLMRouter): RoleModelAdvice
 export async function reportRoleModelAdvice(
   router: LLMRouter,
   audit?: AuditLogger,
+  reporter: (message: string) => void | Promise<void> = (message) => {
+    console.log(chalk.yellow('!'), message);
+  },
 ): Promise<RoleModelAdvice | undefined> {
   const advice = findSharedCoderDebuggerModel(router);
   if (!advice) return undefined;
@@ -28,7 +31,7 @@ export async function reportRoleModelAdvice(
     advice.coder.provider,
     advice.debugger.provider,
   );
-  console.log(chalk.yellow('!'), text);
+  await reporter(text);
   await audit?.event('note', text, {
     messageId: 'llm.coder_debugger_same_model',
     coder: advice.coder,

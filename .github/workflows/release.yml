@@ -19,6 +19,7 @@ on:
 
 permissions:
   contents: write   # 创建 release / 上传 asset 必需
+  id-token: write   # npm trusted publishing / provenance 必需
 
 jobs:
   release:
@@ -132,3 +133,56 @@ jobs:
             dist/pkg/xcompiler-macos-arm64.tar.gz
             dist/pkg/xcompiler-win-x64.zip
             dist/pkg/SHA256SUMS
+
+  npm-publish:
+    name: Publish npm package
+    runs-on: ubuntu-22.04
+    needs: release
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v6
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Verify release version
+        run: |
+          npm run version:check
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Build npm package
+        run: npm run build
+
+      - name: Verify npm package contents
+        run: npm pack --dry-run
+
+      - name: Publish to npm with trusted publishing
+        id: trusted_publish
+        continue-on-error: true
+        run: npm publish --provenance --access public
+
+      - name: Publish to npm with token fallback
+        if: steps.trusted_publish.outcome == 'failure'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "Trusted publishing failed and NPM_TOKEN is not configured." >&2
+            exit 1
+          fi
+          npm publish --access public

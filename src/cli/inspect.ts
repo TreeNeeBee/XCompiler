@@ -1,62 +1,49 @@
-import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import chalk from 'chalk';
-import { loadPlan } from '../core/storage.js';
-import type { Plan, Step } from '../core/plan.js';
+import {
+  runLsCommand,
+  runShowCommand,
+  type InspectStep,
+  type LsOptions,
+  type ShowOptions,
+} from '../runtime/inspect.js';
 import { t } from '../i18n/index.js';
 
-export interface LsOptions {
-  workspace: string;
-  /** 递归查找 plan.json 的最大深度（默认 4） */
-  maxDepth?: number;
-}
+export type { LsOptions, ShowOptions };
 
-/** `xcompiler ls` —— 在 workspace 下扫描所有 plan.json 并打印状态摘要。 */
+/** `xcompiler ls` CLI adapter. */
 export async function runLs(opts: LsOptions): Promise<void> {
-  const root = path.resolve(opts.workspace);
-  const found = await findPlans(root, opts.maxDepth ?? 4);
-  if (found.length === 0) {
+  const result = await runLsCommand(opts);
+  if (result.plans.length === 0) {
     console.log(chalk.yellow(t().inspect.noPlanFound));
     return;
   }
-  for (const f of found) {
-    try {
-      const plan = await loadPlan(f);
-      const summary = summarize(plan);
-      console.log(
-        chalk.green('●'),
-        t().inspect.planHeader(chalk.cyan(path.relative(root, f) || f), plan.language),
-      );
-      console.log('  ' + t().inspect.planStatusSummary(
-        summary.total, summary.done, summary.pending, summary.failed, summary.skipped, summary.running,
-      ));
-      if (plan.requirementDigest) {
-        const oneLine = plan.requirementDigest.split('\n')[0]?.slice(0, 100) ?? '';
-        if (oneLine) console.log(`   ${chalk.gray(t().inspect.digestLabel)} ${oneLine}`);
-      }
-    } catch (err) {
-      console.log(chalk.red('✖'), t().inspect.planReadFailed(path.relative(root, f) || f, (err as Error).message));
+  for (const plan of result.plans) {
+    if (plan.error) {
+      console.log(chalk.red('✖'), t().inspect.planReadFailed(plan.relativePath || plan.path, plan.error));
+      continue;
+    }
+    const summary = plan.summary;
+    if (!summary) continue;
+    console.log(
+      chalk.green('●'),
+      t().inspect.planHeader(chalk.cyan(plan.relativePath || plan.path), plan.language ?? ''),
+    );
+    console.log('  ' + t().inspect.planStatusSummary(
+      summary.total, summary.done, summary.pending, summary.failed, summary.skipped, summary.running,
+    ));
+    if (plan.requirementDigestLine) {
+      console.log(`   ${chalk.gray(t().inspect.digestLabel)} ${plan.requirementDigestLine}`);
     }
   }
 }
 
-export interface ShowOptions {
-  workspace: string;
-  stepId: string;
-  planPath?: string;
-  /** 从 jsonl 审计中匹配该 step 的最近 N 条事件，默认 10 */
-  auditTail?: number;
-}
-
-/** `xcompiler show <stepId>` —— 打印 Step 定义、状态、产物、最近审计。 */
+/** `xcompiler show <stepId>` CLI adapter. */
 export async function runShow(opts: ShowOptions): Promise<void> {
-  const root = path.resolve(opts.workspace);
-  const planPath = opts.planPath ? path.resolve(opts.planPath) : path.join(root, 'plan.json');
-  const plan = await loadPlan(planPath);
-  const step = plan.steps.find((s) => s.id === opts.stepId);
+  const result = await runShowCommand(opts);
+  const step = result.step;
   if (!step) {
     console.error(chalk.red(t().inspect.stepNotFound(opts.stepId)));
-    process.exitCode = 1;
+    process.exitCode = result.exitCode;
     return;
   }
 
@@ -82,46 +69,18 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log('');
 
   console.log(chalk.gray(t().inspect.secOutputs));
-  for (const out of step.outputs) {
-    const exists = await fileExists(path.join(root, out));
-    console.log('  ' + t().inspect.outputStatus(exists, out));
+  for (const out of result.outputs) {
+    console.log('  ' + t().inspect.outputStatus(out.exists, out.path));
   }
   console.log('');
 
-  // 最近审计 (jsonl)
-  const auditFile = path.join(root, '.xcompiler', 'audit.jsonl');
-  const tail = opts.auditTail ?? 10;
-  const events = await readAuditFor(auditFile, opts.stepId, tail);
-  console.log(chalk.gray(t().inspect.secRecentAudit(events.length)));
-  for (const ev of events) {
+  console.log(chalk.gray(t().inspect.secRecentAudit(result.auditEvents.length)));
+  for (const ev of result.auditEvents) {
     console.log('  ' + t().inspect.auditEntry(ev.ts, chalk.cyan(ev.kind), ev.msg ?? ''));
   }
 }
 
-/* ---------------- helpers ---------------- */
-
-interface PlanSummary {
-  total: number;
-  done: number;
-  failed: number;
-  pending: number;
-  running: number;
-  skipped: number;
-}
-
-function summarize(plan: Plan): PlanSummary {
-  const acc: PlanSummary = { total: plan.steps.length, done: 0, failed: 0, pending: 0, running: 0, skipped: 0 };
-  for (const s of plan.steps) {
-    if (s.status === 'DONE') acc.done++;
-    else if (s.status === 'FAILED') acc.failed++;
-    else if (s.status === 'RUNNING') acc.running++;
-    else if (s.status === 'SKIPPED') acc.skipped++;
-    else acc.pending++;
-  }
-  return acc;
-}
-
-function statusBadge(status: Step['status']): string {
+function statusBadge(status: InspectStep['status']): string {
   switch (status) {
     case 'DONE':
       return chalk.green('[DONE]');
@@ -136,7 +95,7 @@ function statusBadge(status: Step['status']): string {
   }
 }
 
-function renderSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number): string[] {
+function renderSubTasks(tasks: NonNullable<InspectStep['subTasks']>, depth: number): string[] {
   const lines: string[] = [];
   const indent = '  '.repeat(depth);
   for (const task of tasks) {
@@ -149,81 +108,4 @@ function renderSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number): st
     }
   }
   return lines;
-}
-
-async function fileExists(p: string): Promise<boolean> {
-  try {
-    await fs.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function findPlans(root: string, maxDepth: number): Promise<string[]> {
-  const out: string[] = [];
-  const SKIP = new Set(['node_modules', '.git', 'dist', '.xcompiler', 'docs']);
-  async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > maxDepth) return;
-    let entries: import('node:fs').Dirent[];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e.name.startsWith('.') && e.name !== '.') {
-        if (e.name !== '.xcompiler') {
-          // skip hidden dirs except .xcompiler (which itself is in SKIP anyway)
-        }
-      }
-      if (e.isDirectory()) {
-        if (SKIP.has(e.name)) continue;
-        await walk(path.join(dir, e.name), depth + 1);
-      } else if (e.isFile() && e.name === 'plan.json') {
-        out.push(path.join(dir, e.name));
-      }
-    }
-  }
-  await walk(root, 0);
-  return out.sort();
-}
-
-interface AuditLine {
-  ts: string;
-  kind: string;
-  msg?: string;
-}
-
-async function readAuditFor(file: string, stepId: string, tail: number): Promise<AuditLine[]> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(file, 'utf8');
-  } catch {
-    return [];
-  }
-  const out: AuditLine[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    let ev: Record<string, unknown>;
-    try {
-      ev = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    const data = ev.data as Record<string, unknown> | undefined;
-    const msg = typeof ev.msg === 'string' ? ev.msg : '';
-    const matches =
-      msg.includes(stepId) ||
-      (data && typeof data.stepId === 'string' && data.stepId === stepId) ||
-      (data && typeof data.step === 'string' && data.step === stepId);
-    if (matches) {
-      out.push({
-        ts: typeof ev.ts === 'string' ? ev.ts : '',
-        kind: typeof ev.kind === 'string' ? ev.kind : '?',
-        msg,
-      });
-    }
-  }
-  return out.slice(-tail);
 }

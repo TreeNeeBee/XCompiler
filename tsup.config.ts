@@ -26,4 +26,9 @@ export default defineConfig([
     entry: ['src/runtime.ts'],
     outDir: 'dist/runtime',
   },
+  {
+    ...shared,
+    entry: ['src/acp/index.ts'],
+    outDir: 'dist/acp',
+  },
 ]);

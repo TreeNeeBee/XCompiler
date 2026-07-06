@@ -298,7 +298,25 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     ).rejects.toThrow(/projectType/);
   });
 
-  it('拒绝 complex 复杂度但只给 P1/P2 的 plan', async () => {
+  it('允许 complex 复杂度由 LLM 决定 P1/P2 两个完整可执行迭代', async () => {
+    const p1Steps = vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py').map((step) => {
+      if (step.phase === 'CODE') {
+        return { ...step, outputs: ['src/main.py', 'src/cli.py', iterationTestPlan('P1', 'unit-test-plan.md')] };
+      }
+      if (step.phase === 'MODULE_TEST') {
+        return { ...step, outputs: [iterationDoc('P1', '07-module-test.md'), 'tests/test_main.py', 'tests/test_cli.py'] };
+      }
+      return step;
+    });
+    const p2Steps = vModelSteps('P2', 9, 'src/dashboard.py', 'tests/test_dashboard.py').map((step) => {
+      if (step.phase === 'CODE') {
+        return { ...step, outputs: ['src/dashboard.py', 'src/dashboard_validation.py', iterationTestPlan('P2', 'unit-test-plan.md')] };
+      }
+      if (step.phase === 'MODULE_TEST') {
+        return { ...step, outputs: [iterationDoc('P2', '07-module-test.md'), 'tests/test_dashboard.py', 'tests/test_dashboard_validation.py'] };
+      }
+      return step;
+    });
     const draft = {
       requirementDigest: 'Complex reporting platform with API, CLI, persistence, and dashboard.',
       globalPrompt: '',
@@ -309,6 +327,40 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
         splitRecommended: true,
         userForcedPhaseSplit: false,
       },
+      architectureModules: [
+        {
+          id: 'M001',
+          name: 'Core API and persistence',
+          responsibility: 'Owns the API, CLI, and persistence core for the first usable slice.',
+          sourcePaths: ['src/main.py'],
+          testPaths: ['tests/test_main.py'],
+          dependencies: [],
+        },
+        {
+          id: 'M002',
+          name: 'Dashboard reporting',
+          responsibility: 'Owns the dashboard reporting workflow built after the core slice.',
+          sourcePaths: ['src/dashboard.py'],
+          testPaths: ['tests/test_dashboard.py'],
+          dependencies: ['M001'],
+        },
+        {
+          id: 'M003',
+          name: 'CLI workflow',
+          responsibility: 'Owns command line orchestration that exposes the core reporting workflow.',
+          sourcePaths: ['src/cli.py'],
+          testPaths: ['tests/test_cli.py'],
+          dependencies: ['M001'],
+        },
+        {
+          id: 'M004',
+          name: 'Dashboard validation',
+          responsibility: 'Owns dashboard validation scenarios and user-visible reporting acceptance.',
+          sourcePaths: ['src/dashboard_validation.py'],
+          testPaths: ['tests/test_dashboard_validation.py'],
+          dependencies: ['M002'],
+        },
+      ],
       implementationPhases: [
         {
           id: 'P1',
@@ -330,15 +382,11 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
         },
       ],
       dependencies: ['pytest'],
-      steps: [
-        ...vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
-        ...vModelSteps('P2', 9, 'src/dashboard.py', 'tests/test_dashboard.py'),
-      ],
+      steps: [...p1Steps, ...p2Steps],
     };
     const p = new Planner(fakeLLM(JSON.stringify(draft)));
-    await expect(
-      p.decompose({ rawRequirement: draft.requirementDigest, clarifications: [] }),
-    ).rejects.toThrow(/requires at least 3 executable implementation iteration/);
+    const plan = await p.decompose({ rawRequirement: draft.requirementDigest, clarifications: [] });
+    expect(plan.implementationPhases?.map((phase) => phase.id)).toEqual(['P1', 'P2']);
   });
 
   it('复杂需求缺少 HIGH_LEVEL_DESIGN 模块契约时拒绝 plan，让 fallback 重新生成', async () => {

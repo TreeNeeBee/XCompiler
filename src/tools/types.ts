@@ -3,6 +3,55 @@ import type { Sandbox } from '../sandbox/types.js';
 import type { AuditLogger } from '../audit/audit.js';
 import type { Language } from '../core/plan.js';
 
+export type ToolPermissionOperation =
+  | 'shell_command'
+  | 'file_write'
+  | 'file_delete'
+  | 'install_dependency'
+  | 'config_change'
+  | 'git_operation'
+  | 'network_access'
+  | 'test_command'
+  | 'build_command'
+  | 'external_read'
+  | 'external_write';
+
+export interface ToolPermissionRequest {
+  id?: string;
+  operationType: ToolPermissionOperation;
+  target: string;
+  reason: string;
+  risk: string;
+  scope: string;
+  skippable: boolean;
+  denyBehavior: string;
+  stepId?: string;
+  tool?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ToolPermissionDecision {
+  approved: boolean;
+  reason?: string;
+}
+
+export type ToolPermissionRequester = (request: ToolPermissionRequest) => Promise<ToolPermissionDecision>;
+
+export interface ToolExecutionEvent {
+  status: 'started' | 'completed';
+  stepId: string;
+  tool: string;
+  target?: string;
+  args?: Record<string, unknown>;
+  ok?: boolean;
+  summary?: string;
+  error?: string;
+  changedFiles?: string[];
+  patch?: string;
+}
+
+export type ToolExecutionReporter = (event: ToolExecutionEvent) => void | Promise<void>;
+
 /** 工具调用的统一上下文。 */
 export interface ToolContext {
   ws: Workspace;
@@ -16,6 +65,10 @@ export interface ToolContext {
   language?: Language;
   /** 当前 Step 的 write_file / append_file 单次 content 字节预算。 */
   writeChunkBytes?: number;
+  /** Optional protocol/UI permission hook for sensitive tool operations. */
+  requestPermission?: ToolPermissionRequester;
+  /** Optional protocol/UI event hook for tool calls and file changes. */
+  onToolEvent?: ToolExecutionReporter;
 }
 
 /** 单次工具调用的结果统一结构。 */

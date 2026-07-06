@@ -1,15 +1,21 @@
-import path from 'node:path';
 import { Command } from 'commander';
-import { runCompile, CompileExitError } from './compile.js';
-import { runExecute } from './execute.js';
+import { CompileExitError } from '../runtime/build.js';
+import type { ExecuteResult } from '../runtime/run.js';
+import {
+  runAppendCommand,
+  runBuildCommand,
+  runEvolveCommand,
+  runLoadCommand,
+  runRunCommand,
+} from '../runtime/commands.js';
 import { runLs, runShow } from './inspect.js';
 import { runDoctorCli } from './doctor.js';
-import { resolveCompileWorkspace, resolveEvolveWorkspace } from './workspace.js';
 import { runBootstrap } from './bootstrap.js';
 import { setLocale, t } from '../i18n/index.js';
 import { XCOMPILER_VERSION } from '../version.js';
-import { loadXCompilerProject } from '../core/project_file.js';
 import { xcEnv } from '../config/env.js';
+import { createCliRuntimeIO } from './runtime_adapter.js';
+import { runAcpStdioServer } from '../acp/index.js';
 import {
   localeFromArgv,
   configureLocalizedHelp,
@@ -56,14 +62,11 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    const ws = await resolveCompileWorkspace({
+    await runBuildCommand({
       output: opts.output,
       workspace: opts.workspace,
       baseDir: opts.baseDir,
       name: opts.name,
-    });
-    await runCompile({
-      workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
@@ -74,6 +77,7 @@ program
       projectCommand: 'build',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
+      io: createCliRuntimeIO(),
     });
   });
 
@@ -94,36 +98,24 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    const ws = await resolveEvolveWorkspace({
+    const result = await runEvolveCommand({
       output: opts.output,
       workspace: opts.workspace,
       baseDir: opts.baseDir,
       name: opts.name,
-    });
-    const resolvedPlanPath = opts.planOut ? path.resolve(opts.planOut) : path.join(ws, 'plan.json');
-    const compiled = await runCompile({
-      workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
       intent: opts.intent,
       baselinePlanFile: opts.baselinePlan,
-      outputFile: resolvedPlanPath,
+      planOut: opts.planOut,
       projectFilePath: opts.projectFile,
-      projectCommand: 'evolve',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
+      cwd: process.cwd(),
+      io: createCliRuntimeIO(),
     });
-    if (!compiled.planPath) return;
-    await runExecute({
-      planPath: compiled.planPath,
-      workspace: ws,
-      configPath: opts.config,
-      force: !!opts.force,
-      projectFilePath: opts.projectFile,
-      projectCommand: 'evolve',
-      recordProjectHistory: false,
-    });
+    applyExecuteExitCode(result.execution);
   });
 
 program
@@ -137,19 +129,17 @@ program
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
   .action(async (projectArg, opts) => {
-    const project = await loadXCompilerProject(projectArg);
-    await runExecute({
-      planPath: project.planPath,
-      workspace: project.workspace,
-      configPath: opts.config ? path.resolve(opts.config) : project.configPath,
+    const result = await runLoadCommand({
+      projectFile: projectArg,
+      configPath: opts.config,
       dryRun: !!opts.dryRun,
       fromStepId: opts.from,
       onlyPhase: opts.phase,
       resetStatus: !!opts.reset,
       force: !!opts.force,
-      projectFilePath: project.filePath,
-      projectCommand: 'load',
+      io: createCliRuntimeIO(),
     });
+    applyExecuteExitCode(result);
   });
 
 program
@@ -164,32 +154,18 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (projectArg, opts) => {
-    const project = await loadXCompilerProject(projectArg);
-    const configPath = opts.config ? path.resolve(opts.config) : project.configPath;
-    const planPath = opts.planOut ? path.resolve(opts.planOut) : project.planPath;
-    const compiled = await runCompile({
-      workspace: project.workspace,
-      configPath,
+    const result = await runAppendCommand({
+      projectFile: projectArg,
+      configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
       intent: opts.intent,
-      baselinePlanFile: project.planPath,
-      outputFile: planPath,
-      projectFilePath: project.filePath,
-      projectCommand: 'append',
+      planOut: opts.planOut,
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
+      io: createCliRuntimeIO(),
     });
-    if (!compiled.planPath) return;
-    await runExecute({
-      planPath: compiled.planPath,
-      workspace: project.workspace,
-      configPath,
-      force: !!opts.force,
-      projectFilePath: project.filePath,
-      projectCommand: 'append',
-      recordProjectHistory: false,
-    });
+    applyExecuteExitCode(result.execution);
   });
 
 program
@@ -233,20 +209,10 @@ program
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
   .action(async (planArg, opts) => {
-    const explicit = opts.output ?? opts.workspace;
-    // workspace 推断优先级：
-    //  1. 显式 -o / -w
-    //  2. 给了 [plan] → 取 plan 所在目录（避免在 XCompiler 源码目录里 run 别人的项目）
-    //  3. 都没给 → process.cwd()
-    const ws = explicit
-      ? path.resolve(explicit)
-      : planArg
-        ? path.dirname(path.resolve(planArg))
-        : process.cwd();
-    const planPath = planArg ? path.resolve(planArg) : path.join(ws, 'plan.json');
-    await runExecute({
-      planPath,
-      workspace: ws,
+    const result = await runRunCommand({
+      planArg,
+      output: opts.output,
+      workspace: opts.workspace,
       configPath: opts.config,
       dryRun: !!opts.dryRun,
       fromStepId: opts.from,
@@ -254,8 +220,10 @@ program
       resetStatus: !!opts.reset,
       force: !!opts.force,
       projectFilePath: opts.projectFile,
-      projectCommand: 'run',
+      cwd: process.cwd(),
+      io: createCliRuntimeIO(),
     });
+    applyExecuteExitCode(result);
   });
 
 program
@@ -295,6 +263,13 @@ program
     await runDoctorCli({ configPath: opts.config, strict: !!opts.strict });
   });
 
+program
+  .command('acp')
+  .description('Start XCompiler in ACP Code Agent mode over stdio JSON-RPC')
+  .action(async () => {
+    await runAcpStdioServer();
+  });
+
 program.parseAsync(process.argv).catch((err) => {
   if (err instanceof CompileExitError) {
     process.exitCode = err.exitCode;
@@ -303,3 +278,16 @@ program.parseAsync(process.argv).catch((err) => {
   console.error(t().system.unhandledError(err?.message ?? String(err)));
   process.exitCode = 1;
 });
+
+function applyExecuteExitCode(result: ExecuteResult | undefined): void {
+  if (!result) return;
+  const exitCode =
+    typeof result.exitCode === 'number'
+      ? result.exitCode
+      : result.status === 'failed'
+        ? 4
+        : result.status === 'error'
+          ? 5
+          : 0;
+  if (exitCode !== 0) process.exitCode = exitCode;
+}

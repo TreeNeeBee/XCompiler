@@ -1,10 +1,11 @@
 import { Command } from 'commander';
-import { runCompile, CompileExitError } from './compile.js';
-import { resolveCompileWorkspace } from './workspace.js';
+import { CompileExitError } from '../runtime/build.js';
+import { runBuildCommand } from '../runtime/commands.js';
 import { setLocale, t } from '../i18n/index.js';
 import { XCOMPILER_VERSION } from '../version.js';
 import { configureLocalizedHelp, localeFromArgv, parseIntent, parseLocale } from './arguments.js';
 import { xcEnv } from '../config/env.js';
+import { createCliRuntimeIO } from './runtime_adapter.js';
 
 setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
 const defaultBaseDir = xcEnv('DEFAULT_BASE_DIR') ?? '/tmp';
@@ -31,14 +32,11 @@ program
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
-    const ws = await resolveCompileWorkspace({
+    await runBuildCommand({
       output: opts.output,
       workspace: opts.workspace,
       baseDir: opts.baseDir,
       name: opts.name,
-    });
-    await runCompile({
-      workspace: ws,
       configPath: opts.config,
       inputFile: opts.input,
       topicFile: opts.topic,
@@ -49,6 +47,7 @@ program
       projectCommand: 'build',
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
+      io: createCliRuntimeIO(),
     });
   });
 
