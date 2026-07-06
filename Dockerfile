@@ -2,12 +2,12 @@
 # ---------------------------------------------------------------------------
 # XCompiler — multi-stage image
 #   stage 1 (build):  install dev deps, compile TS -> dist/
-#   stage 2 (runtime): node20-slim + python3/venv/git，仅装 production deps，体积更小。
+#   stage 2 (runtime): node24-slim + python3/venv/git，仅装 production deps，体积更小。
 #                      容器内强制 sandbox=subprocess（运行时检测到容器即拒绝 docker 沙盒）。
 # ---------------------------------------------------------------------------
 
 # -------- Stage 1: build ----------------------------------------------------
-FROM node:20-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
@@ -18,7 +18,7 @@ COPY src ./src
 RUN npm run build
 
 # -------- Stage 2: runtime --------------------------------------------------
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 # Python（subprocess 沙盒 / Architect 装包用）+ git（snapshot/revert）
 # tini 用作 PID 1，正确转发信号、回收 zombies

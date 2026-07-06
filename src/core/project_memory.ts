@@ -275,7 +275,7 @@ async function listProjectFiles(root: string): Promise<string[]> {
 
 async function walk(abs: string, rel: string, out: string[], depth: number): Promise<void> {
   if (depth > 6 || out.length >= 160) return;
-  let entries: Dirent[] = [];
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(abs, { withFileTypes: true });
   } catch {

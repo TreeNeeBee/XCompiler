@@ -109,12 +109,7 @@ export class SubprocessSandbox implements Sandbox {
 
   private async buildPython(requirementsTxt: string): Promise<{ rebuilt: boolean; reason: string }> {
     const reqAbs = this.opts.ws.abs(requirementsTxt);
-    let reqContent = '';
-    try {
-      reqContent = await fs.readFile(reqAbs, 'utf8');
-    } catch {
-      reqContent = '';
-    }
+    const reqContent = await fs.readFile(reqAbs, 'utf8').catch(() => '');
     const sig = crypto.createHash('sha256').update(reqContent).digest('hex');
     const cached = await fs.readFile(this.cacheFile, 'utf8').catch(() => '');
     const venvExists = await fs
@@ -176,10 +171,8 @@ export class SubprocessSandbox implements Sandbox {
 
   private async buildNode(manifestFile: string): Promise<{ rebuilt: boolean; reason: string }> {
     const pkgAbs = this.opts.ws.abs(manifestFile);
-    let pkgContent = '';
-    try {
-      pkgContent = await fs.readFile(pkgAbs, 'utf8');
-    } catch {
+    const pkgContent = await fs.readFile(pkgAbs, 'utf8').catch(() => '');
+    if (!pkgContent) {
       // package.json 尚未生成（HIGH_LEVEL_DESIGN 之前）→ 跳过 npm install。
       return { rebuilt: false, reason: 'no package.json yet' };
     }

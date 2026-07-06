@@ -81,7 +81,9 @@ export class OllamaClient implements LLMClient {
     try {
       json = JSON.parse(text) as OllamaChatResponse;
     } catch (err) {
-      throw new Error(`Ollama: non-JSON response: ${(err as Error).message}\n${text.slice(0, 500)}`);
+      throw new Error(`Ollama: non-JSON response: ${(err as Error).message}\n${text.slice(0, 500)}`, {
+        cause: err,
+      });
     }
     if (json.error) throw new Error(`Ollama error: ${json.error}`);
     return json.message?.content ?? '';

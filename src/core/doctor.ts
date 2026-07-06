@@ -59,8 +59,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
 
   // 1) config
   const cfgSection: CheckSection = { title: M.sectionConfig, items: [] };
-  let cfg: XCompilerConfig | null = null;
-  let cfgPath = '';
+  let cfg: XCompilerConfig;
+  let cfgPath: string;
   try {
     const loaded = await loadConfigWithPath(opts.configPath);
     cfg = loaded.config;

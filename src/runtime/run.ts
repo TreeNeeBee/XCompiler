@@ -182,7 +182,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
 
   const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
   await scoreStore.load();
-  let unavailableProviders = new Set<string>();
+  let unavailableProviders: Set<string>;
   try {
     const pf = await preflightProviders(cfg, scoreStore, audit);
     unavailableProviders = new Set(pf.unreachable);

@@ -3,7 +3,7 @@
 > 适用版本：`@xcompiler/cli ≥ 0.1.0`
 > 两种部署方式：
 >
-> 1. **本地（Local）**：宿主机直接装 Node 20 + Python 3，用 `npm link` 暴露 `xcompiler` 命令。开发与单机生产首选。
+> 1. **本地（Local）**：宿主机直接装 Node 24 + Python 3，用 `npm link` 暴露 `xcompiler` 命令。开发与单机生产首选。
 > 2. **Docker**：多阶段构建的 `xcompiler:latest` 镜像 + `docker compose`。适合 CI、共享服务器、网络隔离的生产环境。
 
 ---
@@ -27,9 +27,9 @@
 
 ```bash
 # Linux/macOS
-curl -fsSL https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz | sudo tar -xJ -C /opt
-export PATH=/opt/node-v20.18.0-linux-x64/bin:$PATH
-node -v   # v20.x
+curl -fsSL https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz | sudo tar -xJ -C /opt
+export PATH=/opt/node-v24.18.0-linux-x64/bin:$PATH
+node -v   # v24.x
 
 # 克隆并装包
 git clone <repo-url> xcompiler && cd xcompiler
@@ -106,7 +106,7 @@ rm -rf <repo>/node_modules <repo>/dist
 
 ## 1.7 单文件可执行程序（无 Node 依赖）
 
-> 适合分发到**没有 Node 环境**的目标机器。打出来的可执行程序内嵌了 Node 20 + 全部 JS 依赖，
+> 适合分发到**没有 Node 环境**的目标机器。打出来的可执行程序内嵌了 Node 24 + 全部 JS 依赖，
 > 终端用户只需要把单文件 `xcompiler` / `xcompiler.exe` 解压后直接运行即可。
 >
 > ⚠️ **注意**：单文件可执行程序仍然需要目标机器自带 **Python 3.11+ / git** —— 它们用于沙盒（pip / pytest）和 snapshot/revert。这是 XCompiler 自身的运行期依赖，不在打包范围内。
@@ -149,7 +149,7 @@ dist/pkg/
 > **macOS Apple Silicon 原生目标为 macos-arm64**；`npm run package` 会在 Apple Silicon Mac 上自动选择该目标。
 > 关键点：
 >
-> - `--no-bytecode` 已默认开启 — 解决 V8 bytecode snapshot 在 Node 20 readline / NDJSON HTTP 流场景下的 SIGSEGV。
+> - `--no-bytecode` 已默认开启 — 解决 V8 bytecode snapshot 在 Node 24 readline / NDJSON HTTP 流场景下的 SIGSEGV。
 > - 强制代码签名 — macOS 本机使用系统 `codesign` 执行并验证 ad-hoc 签名；Linux 交叉打包 macOS 目标时使用 `ldid`。
 > - macos-x64（Intel Mac）会在 Intel Mac 上被自动选择，也可显式执行 `npm run package:macos-x64`。
 

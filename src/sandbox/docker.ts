@@ -117,12 +117,7 @@ export class DockerSandbox implements Sandbox {
   private async buildPython(requirementsTxt: string): Promise<{ rebuilt: boolean; reason: string }> {
     const sandboxAbs = this.opts.ws.abs(this.sandboxRel);
     const reqAbs = this.opts.ws.abs(requirementsTxt);
-    let reqContent = '';
-    try {
-      reqContent = await fs.readFile(reqAbs, 'utf8');
-    } catch {
-      reqContent = '';
-    }
+    const reqContent = await fs.readFile(reqAbs, 'utf8').catch(() => '');
     const sig = crypto.createHash('sha256').update(this.image + '\n' + reqContent).digest('hex');
     const cacheAbs = this.opts.ws.abs(this.cacheRel);
     const cached = await fs.readFile(cacheAbs, 'utf8').catch(() => '');
@@ -180,10 +175,8 @@ export class DockerSandbox implements Sandbox {
 
   private async buildNode(manifestFile: string): Promise<{ rebuilt: boolean; reason: string }> {
     const pkgAbs = this.opts.ws.abs(manifestFile);
-    let pkgContent = '';
-    try {
-      pkgContent = await fs.readFile(pkgAbs, 'utf8');
-    } catch {
+    const pkgContent = await fs.readFile(pkgAbs, 'utf8').catch(() => '');
+    if (!pkgContent) {
       return { rebuilt: false, reason: 'no package.json yet' };
     }
     const lockContent = await fs.readFile(this.opts.ws.abs('package-lock.json'), 'utf8').catch(() => '');

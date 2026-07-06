@@ -254,7 +254,7 @@ npm run smoke:ollama            # 真实 ollama 端到端冒烟
 完整步骤见 [docs/deploy.md](docs/deploy.md)：
 
 ```bash
-# A. 本地（Node 20 + Python 3）
+# A. 本地（Node 24 + Python 3）
 npm ci && npm run build && npm link
 xcompiler --help
 

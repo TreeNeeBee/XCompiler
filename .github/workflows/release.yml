@@ -3,7 +3,7 @@ name: Release
 # 触发条件：推送形如 v0.1.0 / v1.2.3-beta1 的 tag。
 # 流水线职责：
 #   1. checkout 该 tag
-#   2. 装 Node 20 + pnpm/npm 依赖
+#   2. 装 Node 24 + pnpm/npm 依赖
 #   3. 跑 vitest + tsc 作为发版门
 #   4. 跨平台打 4 个 pkg 产物（linux-x64 / linux-arm64 / macos-arm64 / win-x64）
 #   5. 算 SHA256SUMS
@@ -26,14 +26,14 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0   # 需要完整历史以便 git tag -l --format / git log 抽 notes
 
-      - name: Setup Node 20
-        uses: actions/setup-node@v4
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install deps
@@ -120,7 +120,7 @@ jobs:
           cat RELEASE_BODY.md
 
       - name: Create GitHub Release & upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: XCompiler ${{ github.ref_name }}
@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node 24
         uses: actions/setup-node@v6
