@@ -10,7 +10,7 @@ function baseConfig(extra: Record<string, unknown> = {}): Record<string, unknown
     llm: {
       default: 'ollama_code',
       providers: {
-        ollama_code: { base_url: 'http://localhost:11434', model: 'qwen' },
+        ollama_code: { type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen' },
       },
       roles: {},
       fallbacks: [],
@@ -83,12 +83,13 @@ describe('config locale', () => {
     const oldBaseUrl = process.env.XC_TEST_OPENAI_BASE_URL;
     try {
       process.env.XC_TEST_NUMERIC_API_KEY = '1111';
-      process.env.XC_TEST_OPENAI_BASE_URL = 'http://10.80.105.160:11435/v1';
+      process.env.XC_TEST_OPENAI_BASE_URL = 'http://127.0.0.1:11435/v1';
       const cfgPath = await writeRawConfig(`
 llm:
   default: openai
   providers:
     openai:
+      type: openai
       api_key: \${XC_TEST_NUMERIC_API_KEY}
       base_url: \${XC_TEST_OPENAI_BASE_URL}
       model: gpt-4o-mini
@@ -109,13 +110,73 @@ agent:
 `);
       const { config } = await loadConfigWithPath(cfgPath);
       expect(config.llm.providers.openai!.api_key).toBe('1111');
-      expect(config.llm.providers.openai!.base_url).toBe('http://10.80.105.160:11435/v1');
+      expect(config.llm.providers.openai!.base_url).toBe('http://127.0.0.1:11435/v1');
     } finally {
       if (oldKey === undefined) delete process.env.XC_TEST_NUMERIC_API_KEY;
       else process.env.XC_TEST_NUMERIC_API_KEY = oldKey;
       if (oldBaseUrl === undefined) delete process.env.XC_TEST_OPENAI_BASE_URL;
       else process.env.XC_TEST_OPENAI_BASE_URL = oldBaseUrl;
     }
+  });
+
+  it('parses OpenAI-compatible json_schema response format capability', async () => {
+    const cfg = baseConfig({
+      llm: {
+        default: 'openrouter_hy3',
+        providers: {
+          openrouter_hy3: {
+            type: 'openai',
+            api_key: 'dummy',
+            base_url: 'https://openrouter.ai/api/v1',
+            model: 'tencent/hy3:free',
+            json_response_format: 'json_schema',
+          },
+        },
+        roles: { Coder: ['openrouter_hy3'] },
+        fallbacks: [],
+        role_fallbacks: {},
+        scores: {},
+      },
+    });
+    const cfgPath = await writeConfig(cfg);
+    const { config } = await loadConfigWithPath(cfgPath);
+    expect(config.llm.providers.openrouter_hy3!.json_response_format).toBe('json_schema');
+  });
+
+  it('parses cluster provider tags and score bounds', async () => {
+    const cfg = baseConfig({
+      llm: {
+        default: 'openrouter_free',
+        providers: {
+          openrouter_free: {
+            type: 'openai',
+            api_key: 'dummy',
+            base_url: 'https://openrouter.ai/api/v1',
+            model: 'openrouter/free',
+            tags: ['Cluster'],
+          },
+        },
+        roles: { Coder: ['openrouter_free'] },
+        fallbacks: [],
+        role_fallbacks: {},
+        cluster_score_min: 0.2,
+        cluster_score_max: 0.5,
+        scores: {},
+      },
+    });
+    const cfgPath = await writeConfig(cfg);
+    const { config } = await loadConfigWithPath(cfgPath);
+    expect(config.llm.providers.openrouter_free!.tags).toEqual(['cluster']);
+    expect(config.llm.cluster_score_min).toBe(0.2);
+    expect(config.llm.cluster_score_max).toBe(0.5);
+  });
+
+  it('rejects inverted cluster score bounds', async () => {
+    const cfg = baseConfig();
+    (cfg.llm as Record<string, unknown>).cluster_score_min = 0.8;
+    (cfg.llm as Record<string, unknown>).cluster_score_max = 0.5;
+    const cfgPath = await writeConfig(cfg);
+    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/cluster_score_min/);
   });
 
   it('prefers XC_PATH as the short global config directory', async () => {

@@ -1,0 +1,170 @@
+import { describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { buildPlan } from '../src/agents/planner.js';
+import type { Phase, Step } from '../src/core/plan.js';
+import {
+  buildPhasePlanFromCurrentPlan,
+  defaultPhasePlanPath,
+  defaultPhasePlanStepPath,
+  phasePlanFileName,
+} from '../src/core/phase_plan.js';
+import { loadPlanTarget, savePhasePlan, savePlan } from '../src/core/storage.js';
+
+describe('phase plan persistence', () => {
+  it('loads phasePlan.json as the current phase plan target', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-phase-plan-'));
+    const plan = buildPlan(
+      {
+        requirementDigest: 'Build a small CLI utility.',
+        globalPrompt: 'Keep the implementation compact.',
+        dependencies: [],
+        complexityAssessment: {
+          level: 'complex',
+          rationale: 'Requires a core phase and a follow-up enhancement phase.',
+          splitRecommended: true,
+          userForcedPhaseSplit: false,
+        },
+        implementationPhases: [
+          {
+            id: 'P1',
+            title: 'Core CLI',
+            objective: 'Deliver the core command workflow.',
+            status: 'current',
+            scope: ['core command'],
+            deliverables: ['working CLI'],
+            dependsOn: [],
+            verificationGate: {
+              summary: 'Core CLI can run.',
+              checks: ['npm test'],
+              failurePolicy: 'Return to V-model debug for P1.',
+            },
+          },
+          {
+            id: 'P2',
+            title: 'Enhancements',
+            objective: 'Add optional reporting features.',
+            status: 'planned',
+            scope: ['reports'],
+            deliverables: ['report command'],
+            dependsOn: ['P1'],
+            verificationGate: {
+              summary: 'Reporting features pass regression checks.',
+              checks: ['npm test'],
+              failurePolicy: 'Plan P2 only after P1 passes.',
+            },
+          },
+        ],
+        steps: vModelSteps(),
+      },
+      { language: 'typescript', intent: 'greenfield' },
+    );
+
+    const phasePlanPath = defaultPhasePlanPath(workspace);
+    const currentPlanPath = defaultPhasePlanStepPath(workspace, plan.phaseId);
+    await savePlan(currentPlanPath, plan);
+    const phasePlan = buildPhasePlanFromCurrentPlan({ plan, phasePlanPath, currentPlanPath });
+    await savePhasePlan(phasePlanPath, phasePlan);
+
+    expect(path.basename(currentPlanPath)).toBe('plan.P1.json');
+    expect(phasePlan.currentPhaseId).toBe('P1');
+    expect(phasePlan.phases.find((phase) => phase.id === 'P1')?.planPath).toBe(phasePlanFileName('P1'));
+    expect(phasePlan.phases.find((phase) => phase.id === 'P2')?.planPath).toBe(phasePlanFileName('P2'));
+
+    const loaded = await loadPlanTarget(phasePlanPath);
+    expect(loaded.phasePlanPath).toBe(phasePlanPath);
+    expect(loaded.planPath).toBe(currentPlanPath);
+    expect(loaded.plan.phaseId).toBe('P1');
+    expect(loaded.plan.steps).toHaveLength(plan.steps.length);
+  });
+
+  it('migrates legacy V-model source/test-plan mappings before linting', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-phase-plan-legacy-'));
+    const plan = buildPlan(
+      {
+        requirementDigest: 'Build a small CLI utility.',
+        globalPrompt: 'Keep the implementation compact.',
+        dependencies: [],
+        complexityAssessment: {
+          level: 'simple',
+          rationale: 'Single core workflow.',
+          splitRecommended: false,
+          userForcedPhaseSplit: false,
+        },
+        implementationPhases: [
+          {
+            id: 'P1',
+            title: 'Core CLI',
+            objective: 'Deliver the core command workflow.',
+            status: 'current',
+            scope: ['core command'],
+            deliverables: ['working CLI'],
+            dependsOn: [],
+            verificationGate: {
+              summary: 'Core CLI can run.',
+              checks: ['npm test'],
+              failurePolicy: 'Return to V-model debug for P1.',
+            },
+          },
+        ],
+        steps: vModelSteps(),
+      },
+      { language: 'typescript', intent: 'greenfield' },
+    );
+    const hld = plan.steps.find((step) => step.phase === 'HIGH_LEVEL_DESIGN')!;
+    const detailed = plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')!;
+    hld.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md', 'package.json'];
+    detailed.outputs = ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'];
+    const planPath = path.join(workspace, 'plan.P1.json');
+    await savePlan(planPath, plan);
+
+    const loaded = await loadPlanTarget(planPath);
+
+    expect(loaded.migrations).toHaveLength(2);
+    expect(loaded.plan.steps.find((step) => step.phase === 'HIGH_LEVEL_DESIGN')?.outputs)
+      .toEqual(['docs/02-high-level-design.md', 'package.json', 'docs/tests/module-test-plan.md']);
+    expect(loaded.plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')?.outputs)
+      .toEqual(['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md']);
+  });
+});
+
+function vModelSteps(): Step[] {
+  const phases: Phase[] = [
+    'REQUIREMENT_ANALYSIS',
+    'HIGH_LEVEL_DESIGN',
+    'DETAILED_DESIGN',
+    'CODE',
+    'UNIT_TEST',
+    'INTEGRATION_TEST',
+    'MODULE_TEST',
+    'FUNCTIONAL_TEST',
+  ];
+  return phases.map((phase, index) => {
+    const id = `S${String(index + 1).padStart(3, '0')}`;
+    return {
+      id,
+      iterationId: 'P1',
+      phase,
+      title: `${phase} step`,
+      description: `Complete ${phase}.`,
+      systemPrompt: `Implement ${phase} deliverables.`,
+      role: phase.endsWith('TEST') ? 'Tester' : phase === 'CODE' ? 'Coder' : 'Planner',
+      tools: ['write_file'],
+      inputs: index === 0 ? [] : [`docs/${String(index).padStart(2, '0')}.md`],
+      outputs: stepOutputs(phase, index),
+      dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
+      acceptance: `${phase} output exists.`,
+      status: 'PENDING',
+      retries: 0,
+      maxRetries: 3,
+    };
+  });
+}
+
+function stepOutputs(phase: Phase, index: number): string[] {
+  if (phase === 'HIGH_LEVEL_DESIGN') return ['docs/02.md', 'package.json'];
+  if (phase === 'CODE') return ['src/main.ts'];
+  if (phase === 'UNIT_TEST') return ['tests/main.test.ts'];
+  return [`docs/${String(index + 1).padStart(2, '0')}.md`];
+}

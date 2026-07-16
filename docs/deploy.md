@@ -12,7 +12,7 @@
 
 | 组件 | 版本 | 用途 |
 |---|---|---|
-| **LLM 服务** | ollama ≥ 0.3 (`gemma4:31b` + `qwen3-coder:30b`) **或** 任一 OpenAI 兼容 endpoint | XCompiler 的所有 Agent 推理 |
+| **LLM 服务** | OpenRouter API key（默认 Free mode）**或** 任一 OpenAI-compatible endpoint；Ollama 可作为本地备选 | XCompiler 的所有 Agent 推理 |
 | **Git** | 任意现代版本 | XCompiler 在 workspace 内做 snapshot/revert（每个 Step 一次提交）|
 | **Python 3.11+** | （仅 `sandbox=subprocess` 必需，docker 模式可省）| 沙盒内运行 pip / pytest |
 
@@ -41,12 +41,14 @@ npm ci
 ```bash
 cp .env.example .env
 # 编辑 .env：
-#   OLLAMA_BASE_URL=http://10.80.106.160:11434
-#   OPENAI_API_KEY=...（可空）
+#   OPENROUTER_API_KEY=<your-key>
+#   OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+#   OPENROUTER_MODEL=qwen/qwen3-coder:free
 
 cp config.example.yaml config.yaml
-# 关键字段（详见 README.md "运行期调优参数"）：
-#   llm.roles.{Planner|Architect|Coder|Tester|Debugger}: provider 名
+# 关键字段（详见 README.md 与 docs/openrouter.md）：
+#   llm.providers.<name>.type: openai | ollama
+#   llm.roles.{Planner|Architect|Coder|Tester|Debugger}: provider 名数组
 #   agent.sandbox: subprocess | docker
 #   agent.max_rounds_per_step / max_debug_rounds_per_step / max_debug_retries
 ```
@@ -71,18 +73,19 @@ xcompiler --version
 npm run typecheck
 npm test                           # 完整 Vitest 回归（含本机回环网络测试）
 
-# 2) ollama 烟测（需 OLLAMA_BASE_URL 可达）
-OLLAMA_BASE_URL=http://10.80.106.160:11434 \
-OLLAMA_REQUEST_TIMEOUT_MS=900000 \
-OLLAMA_STREAM_IDLE_TIMEOUT_MS=300000 \
-npm run smoke:ollama
+# 2) OpenRouter endpoint 烟测（需 .env 中 OPENROUTER_API_KEY 可用）
+set -a
+. ./.env
+set +a
+curl https://openrouter.ai/api/v1/models \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY"
 
 # 3) 端到端编排
 mkdir -p /tmp/hello-demo && cat > /tmp/hello-demo/intake.md <<'EOF'
 开发一个 Python 包 hello，提供 hello.greet(name) -> str；至少 3 个 pytest 用例。
 EOF
 xcompiler build -o /tmp/hello-demo -i /tmp/hello-demo/intake.md --yes
-xcompiler run /tmp/hello-demo/plan.json
+xcompiler run /tmp/hello-demo/phasePlan.json
 ```
 
 ### 1.5 升级
@@ -307,9 +310,10 @@ docker run --rm -it \
 
 [Dockerfile](../Dockerfile) 已预设 `ENV XC_IN_CONTAINER=1`。
 
-### 2.7 内置 ollama（可选）
+### 2.7 内置 Ollama（可选备份）
 
-如要在同一 compose 中跑 ollama，编辑 [docker-compose.yml](../docker-compose.yml) 取消注释 `ollama` 服务与对应 volume，然后：
+默认配置不需要内置 Ollama。如要在同一 compose 中跑 Ollama 作为 `type: ollama` 备选 provider，
+编辑 [docker-compose.yml](../docker-compose.yml) 取消注释 `ollama` 服务与对应 volume，然后：
 
 ```bash
 docker compose up -d ollama

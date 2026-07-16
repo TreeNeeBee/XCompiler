@@ -6,15 +6,19 @@ import { Workspace } from '../src/workspace/workspace.js';
 import { StepExecutor } from '../src/agents/executor.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import type { Step } from '../src/core/plan.js';
-import type { ToolContext } from '../src/tools/types.js';
-import { writeFileTool } from '../src/tools/fs.js';
+import type { Tool, ToolContext } from '../src/tools/types.js';
+import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 
 class CapturingLLM implements LLMClient {
   readonly name = 'cap';
   public lastSystem = '';
+  public lastUser = '';
   async chat(messages: ChatMessage[], _o?: ChatOptions): Promise<string> {
     const sys = messages.find((m) => m.role === 'system');
+    const users = messages.filter((m) => m.role === 'user');
+    const user = users[users.length - 1];
     this.lastSystem = sys?.content ?? '';
+    this.lastUser = user?.content ?? '';
     return JSON.stringify({
       thoughts: 'create file',
       actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } }],
@@ -84,6 +88,27 @@ describe('StepExecutor system prompt assembly', () => {
     expect(turns[0].data.thoughts).toBe('create file');
     expect(turns[0].data.actions[0].tool).toBe('write_file');
     expect(turns[0].data.done).toBe(true);
+  });
+
+  it('uses the runtime execution role in prompts and audit events', async () => {
+    const { AuditLogger } = await import('../src/audit/audit.js');
+    const audit = new AuditLogger({ root: tmp, command: 'test' });
+    await audit.start({});
+    const llm = new CapturingLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [writeFileTool],
+      ctx: { ...ctx, audit },
+    });
+    expect(r.success).toBe(true);
+    expect(llm.lastUser).toContain('role: Debugger');
+    expect(llm.lastUser).not.toContain('role: Coder');
+
+    const jsonl = await fs.readFile(path.join(tmp, '.xcompiler/audit.jsonl'), 'utf8');
+    const turns = jsonl.trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.kind === 'executor.turn');
+    expect(turns[0].data.role).toBe('Debugger');
   });
 
   it('parses LLM output that contains multiple back-to-back ```json blocks (uses first)', async () => {
@@ -160,6 +185,34 @@ describe('StepExecutor system prompt assembly', () => {
     expect(written).toBe('def run():\n    print("x")\n    return None\n');
   });
 
+  it('ignores malformed action entries without crashing history compaction', async () => {
+    const { AuditLogger } = await import('../src/audit/audit.js');
+    const audit = new AuditLogger({ root: tmp, command: 'test' });
+    await audit.start({});
+    class MalformedActionLLM implements LLMClient {
+      readonly name = 'malformed-action';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'write file and accidentally put done in actions',
+          actions: [
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+            { done: true },
+          ],
+          done: true,
+        });
+      }
+    }
+
+    const exec = new StepExecutor({ llm: new MalformedActionLLM(), maxRounds: 2 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: { ...ctx, audit } });
+
+    expect(r.success).toBe(true);
+    expect(await ws.exists('src/x.py')).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'invalid_action' && !c.ok)?.error).toContain('missing string tool');
+    const jsonl = await fs.readFile(path.join(tmp, '.xcompiler/audit.jsonl'), 'utf8');
+    expect(jsonl).toContain('audit.executor_invalid_actions_ignored');
+  });
+
   it('does not accept done=true while tool failures remain unresolved', async () => {
     class FailedToolLLM implements LLMClient {
       readonly name = 'failed-tool';
@@ -180,6 +233,124 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.error).toContain('unresolved tool failures remain');
     expect(r.toolCalls.find((c) => c.tool === 'write_file' && !c.ok)?.error).toContain('write denied');
     await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
+  });
+
+  it('allows completion when a pathless write_file arg failure is repaired by a later valid write_file', async () => {
+    class MissingPathThenValidWriteLLM implements LLMClient {
+      readonly name = 'missing-path-then-valid-write';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'first malformed write is followed by the real required output',
+          actions: [
+            { tool: 'write_file', args: { content: '# missing path\n' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new MissingPathThenValidWriteLLM(), maxRounds: 1 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'write_file' && !c.ok)?.error).toContain('path must be a non-empty string');
+    await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
+  });
+
+  it('allows completion after an unauthorized read-only probe once outputs are written', async () => {
+    class ReadProbeThenWriteLLM implements LLMClient {
+      readonly name = 'read-probe-then-write';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'try reading, then write required output',
+          actions: [
+            { tool: 'read_file', args: { path: 'src/x.py' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new ReadProbeThenWriteLLM(), maxRounds: 1 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'read_file' && !c.ok)?.error).toContain('tool not allowed');
+    await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
+  });
+
+  it('truncates long tool failures before feeding them back to the LLM', async () => {
+    class LongFailureLLM implements LLMClient {
+      readonly name = 'long-failure';
+      public secondUser = '';
+      private calls = 0;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls === 2) {
+          this.secondUser = messages.filter((m) => m.role === 'user').at(-1)?.content ?? '';
+        }
+        return this.calls === 1
+          ? JSON.stringify({
+              thoughts: 'trigger long failure',
+              actions: [{ tool: 'huge_fail', args: {} }],
+              done: false,
+            })
+          : JSON.stringify({ thoughts: 'stop after feedback', actions: [], done: true });
+      }
+    }
+    const hugeFailTool: Tool<Record<string, never>, never> = {
+      name: 'huge_fail',
+      description: 'returns a huge error',
+      argsSchema: {},
+      async run() {
+        return { ok: false, error: `prefix-${'x'.repeat(5000)}-suffix` };
+      },
+    };
+    const llm = new LongFailureLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const r = await exec.run({ step: { ...baseStep, tools: ['huge_fail'] }, tools: [hugeFailTool], ctx });
+
+    expect(r.success).toBe(false);
+    expect(llm.secondUser.length).toBeLessThan(3200);
+    expect(llm.secondUser).toContain('[truncated');
+    expect(llm.secondUser).not.toContain('x'.repeat(3000));
+  });
+
+  it('stops a test step after the configured run_tests failure budget is exhausted', async () => {
+    class RepeatingTestFailureLLM implements LLMClient {
+      readonly name = 'test-failure-loop';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        return JSON.stringify({
+          thoughts: 'run the test gate again',
+          actions: [{ tool: 'run_tests', args: { args: ['tests/test_integration.py'] } }],
+          done: false,
+        });
+      }
+    }
+    const failingRunTestsTool: Tool<{ args?: string[] }, never> = {
+      name: 'run_tests',
+      description: 'runs pytest and fails',
+      argsSchema: { args: 'string[]' },
+      async run() {
+        return { ok: false, error: 'pytest exit=1\nsrc/parser.py: receivers bug' };
+      },
+    };
+    const llm = new RepeatingTestFailureLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 6, maxFailedTestRuns: 2 });
+    const testStep: Step = {
+      ...baseStep,
+      phase: 'INTEGRATION_TEST',
+      role: 'Tester',
+      tools: ['run_tests'],
+      outputs: [],
+    };
+
+    const r = await exec.run({ step: testStep, tools: [failingRunTestsTool], ctx });
+
+    expect(r.success).toBe(false);
+    expect(r.rounds).toBe(2);
+    expect(llm.calls).toBe(2);
+    expect(r.error).toContain('V-model rollback');
   });
 
   it('requests permission before sensitive write tools and skips the write when denied', async () => {
@@ -205,5 +376,56 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.toolCalls[0]?.error).toContain('permission denied');
     expect(events).toContain('completed:write_file:false');
     await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toThrow();
+  });
+
+  it('fails early when the model repeats read-only probes without progress', async () => {
+    class ReadLoopLLM implements LLMClient {
+      readonly name = 'read-loop';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        return JSON.stringify({
+          thoughts: 'inspect again',
+          actions: [{ tool: 'read_file', args: { path: 'src/source.py' } }],
+          done: false,
+        });
+      }
+    }
+    await ws.writeFile('src/source.py', 'value = 1\n');
+    const llm = new ReadLoopLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const r = await exec.run({ step: baseStep, tools: [readFileTool], ctx });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('repeated read-only/probe actions without progress');
+    expect(llm.calls).toBe(3);
+  });
+
+  it('compacts large write content out of assistant history before the next round', async () => {
+    class LargeWriteThenInspectLLM implements LLMClient {
+      readonly name = 'large-history';
+      calls = 0;
+      sawContentBytes = false;
+      sawRawContent = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            thoughts: 'write a large file',
+            actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: `payload = "${'A'.repeat(2000)}"\n` } }],
+            done: false,
+          });
+        }
+        const history = messages.map((message) => message.content).join('\n');
+        this.sawContentBytes = history.includes('"contentBytes"');
+        this.sawRawContent = history.includes('A'.repeat(500));
+        return JSON.stringify({ thoughts: 'finish', actions: [], done: true });
+      }
+    }
+    const llm = new LargeWriteThenInspectLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(llm.sawContentBytes).toBe(true);
+    expect(llm.sawRawContent).toBe(false);
   });
 });

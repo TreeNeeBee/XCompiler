@@ -249,6 +249,8 @@ export interface Messages {
     plannerInvalidPlan: string;
     plannerInvalidPlanHint1: string;
     plannerInvalidPlanHint2: string;
+    plannerTransportFailureHint1: string;
+    plannerTransportFailureHint2: string;
     decomposeSucceed: (n: number) => string;
     schemaFail: string;
     schemaInvalidSavedAt: (path: string) => string;
@@ -264,6 +266,7 @@ export interface Messages {
     editTopicMsg: string;
     topicWritten: (path: string) => string;
     planWritten: (path: string) => string;
+    phasePlanWritten: (path: string) => string;
     planPreviewHeader: string;
     planPreviewFooter: string;
     gate2Confirm: string;
@@ -398,6 +401,8 @@ export interface Messages {
   // ───────── Agent system prompts (large blocks) ─────────
   prompts: {
     plannerSystem: (profile: LanguageProfile) => string;
+    plannerPhasePlanSystem: (profile: LanguageProfile) => string;
+    plannerPhaseDecomposeSystem: (profile: LanguageProfile) => string;
     plannerClarify: (
       rawRequirement: string,
       opts?: {
@@ -412,6 +417,23 @@ export interface Messages {
       qa: string,
       addenda: string,
       opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; baseline?: string },
+    ) => string;
+    plannerPhasePlan: (
+      rawRequirement: string,
+      qa: string,
+      addenda: string,
+      opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; baseline?: string },
+    ) => string;
+    plannerPhaseDecompose: (
+      rawRequirement: string,
+      qa: string,
+      addenda: string,
+      opts: {
+        intent?: 'greenfield' | 'feature' | 'refactor' | 'self';
+        baseline?: string;
+        phasePlan: string;
+        phaseId: string;
+      },
     ) => string;
     plannerClarifySystem: string;
     plannerSelfMode: string;

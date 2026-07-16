@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { loadPlan, savePlan } from '../core/storage.js';
+import { loadPlanTarget, savePlan } from '../core/storage.js';
 import { topoSort } from '../core/lint.js';
 import { AuditLogger } from '../audit/audit.js';
 import { Workspace } from '../workspace/workspace.js';
@@ -7,7 +7,7 @@ import { GitService } from '../workspace/git.js';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
 import { reportRoleModelAdvice } from '../llm/role_advice.js';
-import { ScoreStore } from '../llm/scores.js';
+import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
 import { PhaseEngine } from '../core/engine.js';
@@ -17,6 +17,7 @@ import { getLanguageProfile } from '../core/language.js';
 import { runProjectAudit, shouldRunProjectAudit } from '../core/project_audit.js';
 import { refreshProjectMemory } from '../core/project_memory.js';
 import { updateProjectFile } from '../core/project_file.js';
+import { DebugCache } from '../core/debug_cache.js';
 import type { Language, PlanIntent } from '../core/plan.js';
 import { setLocale, t } from '../i18n/index.js';
 import { PluginHost } from '../plugins/host.js';
@@ -104,9 +105,18 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   await pluginHost.initialize();
 
-  const planAbs = path.resolve(opts.planPath);
-  const plan = await loadPlan(planAbs);
+  const target = await loadPlanTarget(opts.planPath);
+  const planAbs = target.planPath;
+  const publicPlanPath = target.phasePlanPath ?? target.planPath;
+  const plan = target.plan;
   const projectCommand = opts.projectCommand ?? 'run';
+  if (target.migrations && target.migrations.length > 0) {
+    await savePlan(planAbs, plan);
+    await audit.event('plan.persist', `normalized ${target.migrations.length} legacy V-model plan output mapping(s)`, {
+      messageId: 'execute.plan_migrated',
+      migrations: target.migrations,
+    });
+  }
 
   // --force 隐含重置所有 Step 状态、覆写锁，让整个 Plan 从头执行。
   if (opts.force) {
@@ -120,10 +130,37 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       s.retries = 0;
     }
     await savePlan(planAbs, plan);
+    const debugCache = new DebugCache(ws.abs('.xcompiler/debug_cache.json'));
+    await debugCache.clearAll();
+    await audit.event('plan.persist', 'cleared debug cache because run reset was requested', {
+      messageId: 'execute.debug_cache_reset',
+    });
+  }
+  const recoveredRunning: Array<{ stepId: string; status: string; reason: string }> = [];
+  if (!opts.resetStatus) {
+    for (const step of plan.steps) {
+      if (step.status !== 'RUNNING') continue;
+      const outputs = step.outputs.filter((out) => !out.endsWith('/'));
+      const complete = outputs.length > 0 && (await Promise.all(outputs.map((out) => ws.exists(out)))).every(Boolean);
+      step.status = complete ? 'DONE' : 'PENDING';
+      step.retries = 0;
+      recoveredRunning.push({
+        stepId: step.id,
+        status: step.status,
+        reason: complete ? 'all declared outputs exist' : 'one or more declared outputs are missing',
+      });
+    }
+    if (recoveredRunning.length > 0) {
+      await savePlan(planAbs, plan);
+      await audit.event('plan.persist', `recovered ${recoveredRunning.length} stale RUNNING step(s)`, {
+        messageId: 'execute.plan_running_recovered',
+        steps: recoveredRunning,
+      });
+    }
   }
   let projectFilePath = await updateProjectFile({
     workspace: ws.root,
-    planPath: planAbs,
+    planPath: publicPlanPath,
     configPath: cfgPath,
     projectFilePath: opts.projectFilePath,
     command: projectCommand,
@@ -135,7 +172,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   // 将 xcompiler build 沉淀的依赖预写入依赖清单（仅当语言 profile 要求 runtime seeding 时，如 Python）。
   // Python 需要 calibration（剥离版本锁 / 重写幻觉包名）后再与现有内容对比：
   //  - 不存在 → 写入。
-  //  - 已存在但内容与校准后不一致（例如 老运行遗留了 `cantools==4.3.*`）→ 重写为校准后版本。
+  //  - 已存在但内容与校准后不一致（例如 老运行遗留了无效版本约束）→ 重写为校准后版本。
   // 这能防止升级 XCompiler 后旧 sandbox 仍卡在幻觉依赖上。
   // TypeScript 等语言的 package.json 由 HIGH_LEVEL_DESIGN 步骤撰写，不在此 seeding。
   const profile = getLanguageProfile(plan.language);
@@ -163,6 +200,9 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   const order = topoSort(plan.steps);
   await audit.event('plan.persist', t().execute.auditPlanLoaded(planAbs), {
     messageId: 'execute.plan_loaded',
+    requestedPath: target.requestedPath,
+    phasePlanPath: target.phasePlanPath,
+    phaseId: plan.phaseId,
     steps: plan.steps.length,
     order: order.map((s) => s.id),
   });
@@ -180,7 +220,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     return { status: 'dry-run' };
   }
 
-  const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
+  const scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit, scoreStoreOptionsFromConfig(cfg.llm));
   await scoreStore.load();
   let unavailableProviders: Set<string>;
   try {
@@ -264,7 +304,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     onPlanProgress: async (progressPlan) => {
       projectFilePath = await updateProjectFile({
         workspace: ws.root,
-        planPath: planAbs,
+        planPath: publicPlanPath,
         configPath: cfgPath,
         projectFilePath,
         command: projectCommand,
@@ -358,7 +398,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           });
           await updateProjectFile({
             workspace: ws.root,
-            planPath: planAbs,
+            planPath: publicPlanPath,
             configPath: cfgPath,
             projectFilePath,
             command: projectCommand,
@@ -390,7 +430,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         });
         await updateProjectFile({
           workspace: ws.root,
-          planPath: planAbs,
+          planPath: publicPlanPath,
           configPath: cfgPath,
           projectFilePath,
           command: projectCommand,
@@ -411,7 +451,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     });
     await updateProjectFile({
       workspace: ws.root,
-      planPath: planAbs,
+      planPath: publicPlanPath,
       configPath: cfgPath,
       projectFilePath,
       command: projectCommand,
@@ -431,7 +471,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     await audit.end({ status: 'error', message: msg, stack });
     await updateProjectFile({
       workspace: ws.root,
-      planPath: planAbs,
+      planPath: publicPlanPath,
       configPath: cfgPath,
       projectFilePath,
       command: projectCommand,

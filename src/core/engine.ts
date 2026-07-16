@@ -37,7 +37,7 @@ import {
 import { t } from '../i18n/index.js';
 import { buildDefaultSkills, SkillRegistry } from '../skills/skill.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
-import { DebugCache } from './debug_cache.js';
+import { DebugCache, sanitizeDebugFailureLogForPrompt } from './debug_cache.js';
 import { getLanguageProfile, type LanguageProfile } from './language.js';
 import { missingArchitectureDocumentTokens } from './architecture.js';
 import { DOC_NAMES } from './docs.js';
@@ -85,7 +85,7 @@ export interface EngineOptions {
   maxEditLinesPerStep?: number | 'auto';
   /** write_file / append_file 单次 content 字节预算；auto 按 Step 上下文动态估算。 */
   maxWriteChunkBytes?: WriteChunkBytes;
-  /** Called whenever the engine persists Step progress to plan.json. */
+  /** Called whenever the engine persists Step progress to the current phase plan. */
   onPlanProgress?: (plan: Plan) => Promise<void>;
   /** Optional protocol/UI permission hook for sensitive tool operations. */
   requestPermission?: ToolPermissionRequester;
@@ -110,6 +110,7 @@ type DebugAttemptContext = {
   reason: string;
   priorAttemptsPrompt?: string;
   contextPaths?: string[];
+  extraAllowedWrites?: string[];
   contextMode?: 'audit-repair' | 'iteration-gate' | 'test-rollback';
   issueId?: string;
   completedBeforeDebug?: boolean;
@@ -132,6 +133,7 @@ type EngineIssueKind =
   | 'functional-gate'
   | 'iteration-gate'
   | 'project-audit'
+  | 'infrastructure'
   | 'exception';
 
 type EngineIssueStatus = 'recorded' | 'routed' | 'repairing' | 'resolved' | 'unresolved';
@@ -388,7 +390,11 @@ export class PhaseEngine {
       executed++;
       await this.persistPlan(plan);
       if (!ok) {
-        if (!this.opts.onlyPhase && this.isVModelTestPhase(step.phase)) {
+        const nonDebuggableInfrastructureFailure = isNonDebuggableInfrastructureFailure(
+          this.lastFailure?.reason,
+          this.lastFailure?.failureLog,
+        );
+        if (!nonDebuggableInfrastructureFailure && !this.opts.onlyPhase && this.isVModelTestPhase(step.phase)) {
           const rollback = await this.rollbackFailedTestPhase(plan, order, step, this.lastIssue);
           executed += rollback.executedSteps;
           await this.persistPlan(plan);
@@ -617,6 +623,38 @@ export class PhaseEngine {
     };
   }
 
+  private async completedPhaseRepairViolation(
+    toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
+  ): Promise<string | undefined> {
+    if (!hasSuccessfulRepairMutation(toolCalls)) {
+      return 'completed phase debug finished without a successful patch or rewrite tool call';
+    }
+    const changedFiles = await this.repairChangedFiles();
+    if (changedFiles.length === 0) {
+      return 'completed phase debug finished without a non-runtime workspace diff';
+    }
+    return undefined;
+  }
+
+  private async repairChangedFiles(): Promise<string[]> {
+    const planPath = normalizeGitPath(path.relative(this.opts.ws.root, path.resolve(this.opts.planPath)));
+    const status = await this.opts.git.raw().status();
+    return status.files
+      .map((file) => normalizeGitPath(file.path))
+      .filter((file) => file.length > 0)
+      .filter((file) => !isRuntimeOnlyChange(file, planPath));
+  }
+
+  private testGateArgsForStep(step: Step): string[] {
+    if (step.phase === 'FUNCTIONAL_TEST') return [];
+    return dedup(
+      step.outputs
+        .filter((out) => typeof out === 'string' && !out.endsWith('/'))
+        .map((out) => normalizeGitPath(out))
+        .filter(isTestFilePath),
+    );
+  }
+
   private shouldRunIterationGate(plan: Plan, step: Step): boolean {
     if (this.opts.onlyPhase || this.opts.dryRun) return false;
     if (step.phase !== 'FUNCTIONAL_TEST') return false;
@@ -734,6 +772,18 @@ export class PhaseEngine {
       [...sourceCandidates].reverse().find((step) => stepTransitivelyDependsOn(failedTest, step.id, stepById)) ??
       sourceCandidates.at(-1);
     const failureLog = this.lastFailure?.failureLog ?? `${failedTest.phase} failed.`;
+    if (isNonDebuggableInfrastructureFailure(this.lastFailure?.reason, failureLog)) {
+      const reason = this.lastFailure?.reason ?? `${failedTest.phase} failed due to a non-debuggable infrastructure failure.`;
+      await this.markIssueUnresolved(issue?.id, reason);
+      return {
+        ok: false,
+        totalSteps: order.length,
+        executedSteps: 0,
+        failedStepId: failedTest.id,
+        failureReason: reason,
+        failureLog,
+      };
+    }
     const reason =
       `${failedTest.phase} failed; rolling back to paired ${sourcePhase} phase for Debugger repair, ` +
       `then rerunning subsequent V-model phases.`;
@@ -753,6 +803,15 @@ export class PhaseEngine {
         failureLog,
       };
     }
+
+    await this.debugCache.load();
+    const sourceFailureLog = this.debugCache.attempts(sourceStep.id).slice(-1)[0]?.failureLogTail;
+    const debugFailureLog = [
+      failureLog,
+      sourceFailureLog
+        ? `## paired source phase latest failure (${sourceStep.id})\n${sanitizeDebugFailureLogForPrompt(sourceFailureLog)}`
+        : '',
+    ].filter(Boolean).join('\n');
 
     await this.routeIssueToStep(issue, sourceStep, reason);
 
@@ -780,13 +839,14 @@ export class PhaseEngine {
       ok = await this.executeStepWithDebug(plan, sourceStep, {
         initialDebug: {
           reason,
-          failureLog,
+          failureLog: debugFailureLog,
           contextPaths: dedup([
             ...sourceStep.inputs,
             ...sourceStep.outputs,
             ...failedTest.inputs,
             ...failedTest.outputs,
           ]),
+          extraAllowedWrites: [...failedTest.outputs],
           contextMode: 'test-rollback',
           issueId: issue?.id,
           completedBeforeDebug: sourceStep.status === 'DONE',
@@ -812,7 +872,9 @@ export class PhaseEngine {
     }
 
     await this.debugCache.markDone(failedTest.id);
-    const restartIndex = Math.max(0, order.findIndex((step) => step.id === sourceStep.id));
+    const repairedTestValid = await this.validateRepairedTestPhaseWithoutRegeneration(plan, failedTest);
+    const restartFrom = repairedTestValid ? failedTest : sourceStep;
+    const restartIndex = Math.max(0, order.findIndex((step) => step.id === restartFrom.id));
     return {
       ok: true,
       totalSteps: order.length,
@@ -821,9 +883,113 @@ export class PhaseEngine {
     };
   }
 
+  private async validateRepairedTestPhaseWithoutRegeneration(plan: Plan, step: Step): Promise<boolean> {
+    if (!this.isVModelTestPhase(step.phase)) return false;
+    const missing: string[] = [];
+    for (const out of step.outputs) {
+      if (out.endsWith('/')) continue;
+      if (!(await this.opts.ws.exists(out))) missing.push(out);
+    }
+    if (missing.length > 0) {
+      await this.opts.audit.event('note', `rollback validation skipped for ${step.id}: missing outputs ${missing.join(', ')}`, {
+        messageId: 'engine.rollback_validation_missing_outputs',
+        stepId: step.id,
+        phase: step.phase,
+        missing,
+      });
+      return false;
+    }
+
+    await this.profile.ensureTestBootstrap?.(this.opts.ws, this.opts.audit);
+    await this.profile.autoFixImports?.(this.opts.ws, this.opts.audit);
+
+    const testPermission = await this.requestEnginePermission({
+      operationType: 'test_command',
+      target: `${this.profile.id} rollback validation for ${step.id}`,
+      reason: 'Validate the repaired test phase outputs before regenerating them.',
+      risk: 'Project test commands execute code in the configured sandbox.',
+      scope: 'current workspace sandbox',
+      skippable: true,
+      denyBehavior: 'Regenerate the test phase through the normal V-model step.',
+      stepId: step.id,
+    });
+    if (!testPermission.approved) {
+      await this.opts.audit.event('note', `rollback validation denied for ${step.id}`, {
+        messageId: 'engine.rollback_validation_denied',
+        stepId: step.id,
+        phase: step.phase,
+        reason: testPermission.reason,
+      });
+      return false;
+    }
+
+    const testArgs = this.testGateArgsForStep(step);
+    const tests = await this.opts.sandbox.runTests(testArgs, {});
+    if (tests.exitCode !== 0 || tests.timedOut) {
+      await this.opts.audit.event('note', `rollback validation failed for ${step.id}`, {
+        messageId: 'engine.rollback_validation_failed',
+        stepId: step.id,
+        phase: step.phase,
+        testArgs,
+        exitCode: tests.exitCode,
+        timedOut: tests.timedOut,
+        stdout: tests.stdout,
+        stderr: tests.stderr,
+      });
+      return false;
+    }
+
+    if (step.phase === 'FUNCTIONAL_TEST') {
+      const probePermission = await this.requestEnginePermission({
+        operationType: 'shell_command',
+        target: `${this.profile.id} rollback functional probe for ${step.id}`,
+        reason: 'Validate the generated project entrypoint after rollback repair.',
+        risk: 'This executes project code in the configured sandbox.',
+        scope: 'current workspace sandbox',
+        skippable: true,
+        denyBehavior: 'Regenerate the functional test phase through the normal V-model step.',
+        stepId: step.id,
+      });
+      if (!probePermission.approved) {
+        await this.opts.audit.event('note', `rollback functional probe denied for ${step.id}`, {
+          messageId: 'engine.rollback_functional_probe_denied',
+          stepId: step.id,
+          phase: step.phase,
+          reason: probePermission.reason,
+        });
+        return false;
+      }
+      const probe = await this.profile.probeEntry(this.opts.ws, this.opts.sandbox);
+      if (!probe.ok) {
+        await this.opts.audit.event('note', `rollback functional probe failed for ${step.id}`, {
+          messageId: 'engine.rollback_functional_probe_failed',
+          stepId: step.id,
+          phase: step.phase,
+          command: probe.command,
+          exitCode: probe.exitCode,
+          timedOut: probe.timedOut,
+          stdoutTail: probe.stdoutTail,
+          stderrTail: probe.stderrTail,
+        });
+        return false;
+      }
+    }
+
+    step.status = 'DONE';
+    step.retries = 0;
+    await this.refreshCurrentProjectMemory(plan);
+    await this.opts.git.snapshot(step.id, step.retries, 'validated after rollback repair');
+    await this.opts.audit.event('phase.end', `${step.id} rollback validation passed`, {
+      messageId: 'engine.rollback_validation_passed',
+      stepId: step.id,
+      phase: step.phase,
+    });
+    return true;
+  }
+
   /** 主入口：先正常执行；若失败则进入 Debugger 重试循环（滑动窗口式自适应）。
-   *  跨 xcompiler run 记忆：若 .xcompiler/debug_cache.json 里该 step 上次以 FAILED 结束，本次
-   *  首轮直接进入 Debugger 模式并把历史 attempts 挑明告诉 LLM，避免重走弯路。 */
+   *  跨 xcompiler run 记忆：若普通 step 上次以 FAILED 结束，本次首轮直接进入 Debugger 模式。
+   *  V 模型测试阶段的历史失败不在同阶段恢复 Debugger，而是直接回退到配对左侧阶段。 */
   private async executeStepWithDebug(
     plan: Plan,
     step: Step,
@@ -833,8 +999,13 @@ export class PhaseEngine {
     } = {},
   ): Promise<boolean> {
     await this.debugCache.load();
-    const completedBeforeDebug = opts.initialDebug?.completedBeforeDebug ?? step.status === 'DONE';
-    let activeIssueId = opts.initialDebug?.issueId;
+    const initialDebug = opts.initialDebug;
+    const inheritedExtraAllowedWrites = initialDebug?.extraAllowedWrites;
+    const completedBeforeDebug = initialDebug?.completedBeforeDebug ?? step.status === 'DONE';
+    const rootDebugFailureLog = initialDebug
+      ? sanitizeDebugFailureLogForPrompt(initialDebug.failureLog)
+      : undefined;
+    let activeIssueId = initialDebug?.issueId;
     // 阶段产物归档：在首次尝试前，将本 Step outputs 中已存在的 docs/* 文件移至 docs/history/
     if (!opts.skipOutputArchive) {
       for (const out of step.outputs) {
@@ -864,14 +1035,15 @@ export class PhaseEngine {
     let priorPrompt = this.debugCache.renderPriorAttemptsForPrompt(step.id);
     let initial: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
     try {
-      if (opts.initialDebug) {
+      if (initialDebug) {
         initial = await this.runOneAttempt(plan, step, {
           asDebugger: true,
-          failureLog: opts.initialDebug.failureLog,
-          reason: opts.initialDebug.reason,
+          failureLog: rootDebugFailureLog ?? initialDebug.failureLog,
+          reason: initialDebug.reason,
           priorAttemptsPrompt: priorPrompt,
-          contextPaths: opts.initialDebug.contextPaths,
-          contextMode: opts.initialDebug.contextMode,
+          contextPaths: initialDebug.contextPaths,
+          extraAllowedWrites: inheritedExtraAllowedWrites,
+          contextMode: initialDebug.contextMode,
           issueId: activeIssueId,
           completedBeforeDebug,
         });
@@ -882,14 +1054,49 @@ export class PhaseEngine {
             t().engine.debugResumeNotice(step.id, this.debugCache.attempts(step.id).length),
           ),
         );
-        initial = await this.runOneAttempt(plan, step, {
-          asDebugger: true,
-          failureLog: last.failureLogTail,
-          reason: last.reason,
-          priorAttemptsPrompt: priorPrompt,
-          issueId: activeIssueId,
-          completedBeforeDebug,
-        });
+        if (this.isVModelTestPhase(step.phase)) {
+          const lastFailureLog = sanitizeDebugFailureLogForPrompt(last.failureLogTail);
+          if (isNonDebuggableInfrastructureFailure(last.reason, lastFailureLog)) {
+            const reason = last.reason || `${step.phase} had an unresolved LLM provider failure from a previous run.`;
+            initial = {
+              ok: false,
+              failureLog: [t().engine.reasonLine(reason), priorPrompt, lastFailureLog].filter(Boolean).join('\n'),
+              reason,
+              issueKind: 'infrastructure',
+              evidence: {
+                stage: 'cached-infrastructure-failure',
+                role: step.role,
+                attempts: this.debugCache.attempts(step.id).length,
+              },
+            };
+          } else {
+            const reason =
+              `${step.phase} had an unresolved failure from a previous run; ` +
+              'rolling back to the paired V-model source phase instead of resuming same-phase Debugger.';
+            initial = {
+              ok: false,
+              failureLog: [t().engine.reasonLine(reason), priorPrompt, lastFailureLog].filter(Boolean).join('\n'),
+              reason,
+              rollbackToPairedSource: true,
+              issueKind: step.phase === 'FUNCTIONAL_TEST' ? 'functional-gate' : 'test-gate',
+              evidence: {
+                stage: 'cached-test-failure',
+                role: 'Debugger',
+                attempts: this.debugCache.attempts(step.id).length,
+              },
+            };
+          }
+        } else {
+          initial = await this.runOneAttempt(plan, step, {
+            asDebugger: true,
+            failureLog: sanitizeDebugFailureLogForPrompt(last.failureLogTail),
+            reason: last.reason,
+            priorAttemptsPrompt: priorPrompt,
+            extraAllowedWrites: inheritedExtraAllowedWrites,
+            issueId: activeIssueId,
+            completedBeforeDebug,
+          });
+        }
       } else {
         initial = await this.runOneAttempt(plan, step);
       }
@@ -898,11 +1105,11 @@ export class PhaseEngine {
       initial = {
         ok: false,
         failureLog: err instanceof Error ? (err.stack ?? reason) : reason,
-        reason,
-        issueKind: 'exception',
+          reason,
+          issueKind: 'exception',
         evidence: {
-          stage: opts.initialDebug || hadUnresolved ? 'initial-debug-attempt' : 'initial-attempt',
-          role: opts.initialDebug || hadUnresolved ? 'Debugger' : step.role,
+          stage: initialDebug || hadUnresolved ? 'initial-debug-attempt' : 'initial-attempt',
+          role: initialDebug || hadUnresolved ? 'Debugger' : step.role,
         },
       };
     }
@@ -910,6 +1117,10 @@ export class PhaseEngine {
       await this.debugCache.markDone(step.id);
       return true;
     }
+    const nonDebuggableInfrastructureFailure = isNonDebuggableInfrastructureFailure(
+      initial.reason,
+      initial.failureLog,
+    );
     if (!activeIssueId) {
       const issue = await this.recordIssue(plan, step, {
         kind: this.classifyIssueKind(step, initial),
@@ -919,7 +1130,10 @@ export class PhaseEngine {
         evidence: initial.evidence,
       });
       activeIssueId = issue.id;
-      if (!(initial.rollbackToPairedSource && this.isVModelTestPhase(step.phase))) {
+      if (
+        !nonDebuggableInfrastructureFailure &&
+        !(initial.rollbackToPairedSource && this.isVModelTestPhase(step.phase))
+      ) {
         await this.routeIssueToStep(issue, step, 'same phase Debugger repair');
       }
     }
@@ -928,7 +1142,7 @@ export class PhaseEngine {
       attempt: 0,
       reason: initial.reason ?? 'failed',
       failureLogTail: initial.failureLog,
-      suggestions: calibrateDebugSuggestions(initial.failureLog, initial.reason ?? '').map(
+      suggestions: calibrateDebugSuggestions(sanitizeDebugFailureLogForPrompt(initial.failureLog), initial.reason ?? '').map(
         (s) => `[${s.code}] ${s.hint}`,
       ),
       metrics: initial.metrics
@@ -941,6 +1155,26 @@ export class PhaseEngine {
           }
         : undefined,
     });
+    if (nonDebuggableInfrastructureFailure) {
+      const reason = initial.reason ?? 'infrastructure failure';
+      step.status = 'FAILED';
+      this.lastFailure = {
+        reason,
+        failureLog: initial.failureLog,
+      };
+      await this.debugCache.markFailed(step.id, reason);
+      await this.markIssueUnresolved(activeIssueId, reason);
+      this.printStepFailure(step, {
+        attempts: 0,
+        budget: 0,
+        cap: 0,
+        earlyAbort: true,
+        reason,
+        failureLog: initial.failureLog,
+        metrics: initial.metrics,
+      });
+      return false;
+    }
     if (initial.rollbackToPairedSource && this.isVModelTestPhase(step.phase)) {
       step.status = 'FAILED';
       this.lastFailure = {
@@ -975,11 +1209,15 @@ export class PhaseEngine {
       );
       let r: Awaited<ReturnType<PhaseEngine['runOneAttempt']>>;
       try {
+        const retryFailureLog = rootDebugFailureLog
+          ? composeDebugRetryFailureLog(rootDebugFailureLog, lastFailureLog, lastReason)
+          : lastFailureLog;
         r = await this.runOneAttempt(plan, step, {
           asDebugger: true,
-          failureLog: lastFailureLog,
+          failureLog: retryFailureLog,
           reason: lastReason,
           priorAttemptsPrompt: priorPrompt,
+          extraAllowedWrites: inheritedExtraAllowedWrites,
           issueId: activeIssueId,
           completedBeforeDebug,
         });
@@ -1003,14 +1241,20 @@ export class PhaseEngine {
         spin?.succeed(t().engine.fixSucceeded(step.id, attempt));
         await this.debugCache.markDone(step.id);
         return true;
-      }
-      const m = r.metrics;
-      const healthy =
-        !!m && m.parseFailures === 0 && m.repeatedTurns <= 1 && m.healthScore >= 0.6;
-      const bad =
-        !!m &&
-        (m.healthScore < 0.3 ||
-          m.parseFailures + m.repeatedTurns >= Math.max(2, Math.ceil(m.rounds / 2)));
+	      }
+	      const m = r.metrics;
+	      const readOnlyProbeLoop = isReadOnlyProbeLoopFailure(r.reason);
+	      const healthy =
+	        !readOnlyProbeLoop &&
+	        !!m &&
+	        m.parseFailures === 0 &&
+	        m.repeatedTurns <= 1 &&
+	        m.healthScore >= 0.6;
+	      const bad =
+	        readOnlyProbeLoop ||
+	        (!!m &&
+	          (m.healthScore < 0.3 ||
+	            m.parseFailures + m.repeatedTurns >= Math.max(2, Math.ceil(m.rounds / 2))));
       const tag = m
         ? `health=${m.healthScore.toFixed(2)} parseFail=${m.parseFailures} repeat=${m.repeatedTurns} progress=${m.progressRatio.toFixed(2)}`
         : '';
@@ -1052,7 +1296,7 @@ export class PhaseEngine {
         attempt,
         reason: r.reason ?? lastReason,
         failureLogTail: r.failureLog,
-        suggestions: calibrateDebugSuggestions(r.failureLog, r.reason ?? '').map(
+        suggestions: calibrateDebugSuggestions(sanitizeDebugFailureLogForPrompt(r.failureLog), r.reason ?? '').map(
           (s) => `[${s.code}] ${s.hint}`,
         ),
         metrics: m
@@ -1283,10 +1527,10 @@ export class PhaseEngine {
     const baseTools: Tool[] = this.registry.pick(allNames);
 
     const allowedWrites = debug
-      ? this.computeDebugAllowedWrites(plan, step)
+      ? dedup([...this.computeDebugAllowedWrites(plan, step), ...(debug.extraAllowedWrites ?? [])])
       : this.computeStepAllowedWrites(plan, step);
     // 测试 / DEBUG 阶段始终额外放开 tests/fixtures/ —— 测试 fixture 不必逐文件登记到 outputs，
-    // 否则 LLM 想 write_file 创建 sample.dbc 之类样例只能死循环。
+    // 否则 LLM 想 write_file 创建样例输入文件时只能死循环。
     const augmentedWrites = this.isVModelTestPhase(step.phase) || step.phase === 'DEBUG' || debug
       ? dedup([...allowedWrites, 'tests/fixtures'])
       : allowedWrites;
@@ -1325,29 +1569,57 @@ export class PhaseEngine {
       onToolEvent: this.opts.onToolEvent,
     };
 
-    const llm = this.opts.router.for(role);
-    const baseRounds = this.opts.maxRoundsPerStep ?? 6;
-    // DEBUG 默认 max(16, base*3)；测试阶段修复依赖调用链上源码，需更多轮次。
-    const debugRounds =
-      this.opts.maxDebugRoundsPerStep ??
-      Math.max(this.isVModelTestPhase(step.phase) ? 20 : 16, baseRounds * 3);
-    const rounds = debug ? debugRounds : baseRounds;
-    // 不能复用 cached executor：不同轮数需要独立实例。
-    const executor = new StepExecutor({ llm, maxRounds: rounds });
+    let executor: StepExecutor;
+    let ctxSnippets: Array<{ path: string; content: string }>;
+    let sha: string;
+    try {
+      const llm = this.opts.router.for(role);
+      const baseRounds = this.opts.maxRoundsPerStep ?? 6;
+      // DEBUG 默认保持短窗口；测试失败应通过 V 模型回退到对应源码阶段，
+      // 不应在 Tester step 内无限重写测试文件。
+      const debugRounds =
+        this.opts.maxDebugRoundsPerStep ??
+        Math.max(8, baseRounds);
+      const rounds = debug ? debugRounds : baseRounds;
+      const hasRunTests = allNames.includes('run_tests');
+      const maxFailedTestRuns = (this.isVModelTestPhase(step.phase) || debug) && hasRunTests
+        ? Math.max(1, Math.min(3, Math.ceil(rounds / 3)))
+        : undefined;
+      // 不能复用 cached executor：不同轮数需要独立实例。
+      executor = new StepExecutor({ llm, maxRounds: rounds, maxFailedTestRuns });
 
-    // 加载 inputs + outputs 已存在文件 作为上下文（debug 时尤其重要）
-    const ctxSnippets = await this.buildContextSnippets(plan, step, debug);
+      // 加载 inputs + outputs 已存在文件 作为上下文（debug 时尤其重要）
+      ctxSnippets = await this.buildContextSnippets(plan, step, debug);
 
-    step.status = 'RUNNING';
-    await this.persistPlan(plan);
-    const sha = await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug retry' : 'before');
-    await this.opts.audit.event('phase.start', t().engine.phaseStart(step.id, debug ? 'DEBUG' : step.phase, step.title), {
-      messageId: 'engine.phase_start',
-      role,
-      tools: allNames,
-      snapshot: sha,
-      retry: step.retries,
-    });
+      step.status = 'RUNNING';
+      await this.persistPlan(plan);
+      sha = await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug retry' : 'before');
+      await this.opts.audit.event('phase.start', t().engine.phaseStart(step.id, debug ? 'DEBUG' : step.phase, step.title), {
+        messageId: 'engine.phase_start',
+        role,
+        tools: allNames,
+        snapshot: sha,
+        retry: step.retries,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const stack = (err as Error).stack ?? msg;
+      await this.opts.audit.event('phase.end', t().engine.phaseException(step.id, msg), {
+        messageId: 'engine.phase_exception',
+        error: msg,
+        stack,
+        stage: 'attempt-preparation',
+        role,
+        retry: step.retries,
+      });
+      return {
+        ok: false,
+        failureLog: stack,
+        reason: msg,
+        issueKind: 'exception',
+        evidence: { stage: 'attempt-preparation', role },
+      };
+    }
 
     const spin = debug
       ? null
@@ -1355,9 +1627,11 @@ export class PhaseEngine {
           t().engine.spinStepRunning(step.id, step.phase, chalk.bold(step.title)),
           { animate: false },
         );
+    const debugFailureLog = debug ? sanitizeDebugFailureLogForPrompt(debug.failureLog) : undefined;
     try {
       const r = await executor.run({
         step,
+        executionRole: role,
         tools: guardedTools,
         ctx,
         contextSnippets: ctxSnippets,
@@ -1365,10 +1639,10 @@ export class PhaseEngine {
         debugContext: debug
           ? {
               reason: debug.reason,
-              failureLog: debug.failureLog,
+              failureLog: debugFailureLog ?? debug.failureLog,
               suggestions:
                 renderDebugSuggestions(
-                  calibrateDebugSuggestions(debug.failureLog, debug.reason),
+                  calibrateDebugSuggestions(debugFailureLog ?? debug.failureLog, debug.reason),
                 ) +
                 (debug.priorAttemptsPrompt ? `\n\n${debug.priorAttemptsPrompt}` : ''),
             }
@@ -1377,6 +1651,36 @@ export class PhaseEngine {
         languageProfile: this.profile,
       });
       const verify = await verifyOutputs({ step, tools: guardedTools, ctx });
+      if (this.isVModelTestPhase(step.phase) && shouldRollbackTestPhaseFromToolFailures(r.toolCalls)) {
+        const reason = `${step.phase} tool verification failed; rolling back to paired V-model source phase.`;
+        const failureLog = [
+          t().engine.reasonLine(reason),
+          t().engine.roundsLine(r.rounds),
+          t().engine.toolCallsHeader,
+          ...r.toolCalls.map((c) =>
+            t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+          ),
+        ].join('\n');
+        spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+        await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+          messageId: 'engine.phase_failed',
+          rounds: r.rounds,
+          reason,
+          retry: step.retries,
+          metrics: r.metrics,
+          rollbackToPairedSource: true,
+        });
+        await this.opts.git.revertTo(sha);
+        return {
+          ok: false,
+          failureLog,
+          reason,
+          metrics: r.metrics,
+          rollbackToPairedSource: true,
+          issueKind: step.phase === 'FUNCTIONAL_TEST' ? 'functional-gate' : 'test-gate',
+          evidence: { toolCalls: r.toolCalls },
+        };
+      }
       if (r.success && verify.ok) {
         // HIGH_LEVEL_DESIGN 阶段强制验收门：概要设计文档必须逐项覆盖 Plan 的结构化模块契约。
         if (step.phase === 'HIGH_LEVEL_DESIGN' && (plan.architectureModules?.length ?? 0) > 0) {
@@ -1442,7 +1746,8 @@ export class PhaseEngine {
               evidence: { permissionDenied: true },
             };
           }
-          const pt = await this.opts.sandbox.runTests([], {});
+          const testArgs = this.testGateArgsForStep(step);
+          const pt = await this.opts.sandbox.runTests(testArgs, {});
           if (pt.exitCode !== 0 || pt.timedOut) {
             const tail = (s: string) => s.split('\n').slice(-30).join('\n');
             const reason = t().engine.testGateReason(pt.exitCode, !!pt.timedOut);
@@ -1472,6 +1777,7 @@ export class PhaseEngine {
               evidence: {
                 exitCode: pt.exitCode,
                 timedOut: pt.timedOut,
+                testArgs,
                 stdout: pt.stdout,
                 stderr: pt.stderr,
               },
@@ -1552,6 +1858,35 @@ export class PhaseEngine {
             };
           }
         }
+        if (debug?.completedBeforeDebug) {
+          const reason = await this.completedPhaseRepairViolation(r.toolCalls);
+          if (reason) {
+            const failureLog = [
+              t().engine.reasonLine(reason),
+              t().engine.roundsLine(r.rounds),
+              t().engine.toolCallsHeader,
+              ...r.toolCalls.map((c) =>
+                t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+              ),
+            ].join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, true, reason));
+            await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, true, reason), {
+              messageId: 'engine.phase_failed',
+              rounds: r.rounds,
+              reason,
+              retry: step.retries,
+            });
+            await this.opts.git.revertTo(sha);
+            return {
+              ok: false,
+              failureLog,
+              reason,
+              metrics: r.metrics,
+              issueKind: 'phase',
+              evidence: { completedBeforeDebug: true, repairRequired: true },
+            };
+          }
+        }
         step.status = 'DONE';
         await this.refreshCurrentProjectMemory(plan);
         const repair = debug?.issueId
@@ -1585,7 +1920,9 @@ export class PhaseEngine {
           t().engine.roundsLine(r.rounds),
           metricsLine,
           t().engine.toolCallsHeader,
-          ...r.toolCalls.map((c) => t().engine.toolCallLine(c.tool, c.ok, c.summary ?? c.error ?? '')),
+          ...r.toolCalls.map((c) =>
+            t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+          ),
         ].join('\n');
       spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
       await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
@@ -1595,8 +1932,22 @@ export class PhaseEngine {
         retry: step.retries,
         metrics: m,
       });
-      // 回退到本次尝试起点
-      await this.opts.git.revertTo(sha);
+      // 普通阶段失败应回退到本次尝试起点；Debugger 失败则保留已提交的修复进展，
+      // 否则下一轮 retry 会丢失上一轮 patch/rewrite，真实项目会在同一错误上反复打转。
+      if (debug) {
+        await this.opts.audit.event('note', `debug attempt failed; preserving workspace changes for next retry`, {
+          messageId: 'engine.debug_failed_attempt_preserved',
+          stepId: step.id,
+          phase: step.phase,
+          retry: step.retries,
+          reason,
+          metrics: m,
+          previousSnapshot: sha,
+        });
+        await this.opts.git.snapshot(step.id, step.retries, 'debug failed preserved');
+      } else {
+        await this.opts.git.revertTo(sha);
+      }
       return { ok: false, failureLog, reason, metrics: m, issueKind: 'phase' };
     } catch (err) {
       const msg = (err as Error).message;
@@ -1795,6 +2146,103 @@ export class PhaseEngine {
 
 function dedup<T>(arr: T[]): T[] {
   return [...new Set(arr)];
+}
+
+const REPAIR_MUTATION_TOOLS = new Set([
+  'add_dependency',
+  'append_file',
+  'apply_patch',
+  'replace_in_file',
+  'write_file',
+]);
+
+function hasSuccessfulRepairMutation(
+  toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
+): boolean {
+  return toolCalls.some((call) => call.ok && REPAIR_MUTATION_TOOLS.has(call.tool));
+}
+
+function shouldRollbackTestPhaseFromToolFailures(
+  toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
+): boolean {
+  return toolCalls.some((call) => {
+    if (call.ok) return false;
+    const detail = `${call.tool} ${call.error ?? call.summary ?? ''}`.toLowerCase();
+    return (
+      call.tool === 'run_tests' ||
+      detail.includes('pytest exit=') ||
+      detail.includes('write denied: src/') ||
+      detail.includes('append denied: src/') ||
+      detail.includes('tool not allowed for this step: add_dependency')
+    );
+  });
+}
+
+function compactToolCallDetail(detail: string): string {
+  const normalized = detail.trim();
+  if (normalized.length <= 2000) return normalized;
+  const head = normalized.slice(0, 800);
+  const tail = normalized.slice(-1000);
+  return `${head}\n... [truncated ${normalized.length - head.length - tail.length} chars]\n${tail}`;
+}
+
+function normalizeGitPath(file: string): string {
+  return file.replace(/\\/g, '/');
+}
+
+function isRuntimeOnlyChange(file: string, planPath: string): boolean {
+  if (file === planPath) return true;
+  if (file.startsWith('.xcompiler/')) return true;
+  if (file === '.coverage' || file.startsWith('coverage/')) return true;
+  if (file === '.pytest_cache' || file.startsWith('.pytest_cache/')) return true;
+  if (file.endsWith('.tsbuildinfo')) return true;
+  if (file.endsWith('.pyc')) return true;
+  return file.split('/').includes('__pycache__');
+}
+
+function isTestFilePath(file: string): boolean {
+  const name = file.split('/').pop() ?? file;
+  if (file.startsWith('tests/') || file.startsWith('test/')) {
+    return /\.(py|[cm]?[jt]sx?)$/.test(name);
+  }
+  return (
+    /^test_.+\.py$/.test(name) ||
+    /_test\.py$/.test(name) ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(name)
+  );
+}
+
+function isNonDebuggableInfrastructureFailure(reason?: string, failureLog?: string): boolean {
+  const text = `${reason ?? ''}\n${failureLog ?? ''}`.toLowerCase();
+  return (
+    /typeerror:\s*fetch failed/u.test(text) ||
+	    /(?:openai|ollama) http (?:401|403|408|409|429|5\d\d)\b/u.test(text) ||
+	    /(?:openai|ollama|llm|provider)[^\n]{0,180}(?:rate[- ]?limit|rate limited|rate-limited|retry-after|retry_after_seconds)/u.test(text) ||
+	    /(?:response_format|json_object|json_schema)[^\n]{0,220}(?:not support|unsupported|invalid_request_body|supported formats)/u.test(text) ||
+	    /openai stream (?:wall-clock|idle)/u.test(text) ||
+    /ollama stream (?:wall-clock|idle)/u.test(text) ||
+    /prefill_memory_exceeded|prefill memory guard|dynamic ceiling/u.test(text) ||
+    /context (?:length|window)|token limit|too many tokens|prompt too long|max(?:imum)? context/u.test(text) ||
+    /input[^\n]{0,80}tokens[^\n]{0,120}(?:exceed|limit|ceiling)/u.test(text) ||
+    /llm provider|provider_call_failed|all llm providers failed/u.test(text)
+	  );
+}
+
+function isReadOnlyProbeLoopFailure(reason?: string): boolean {
+  return /repeated read-only\/probe actions without progress/u.test(reason ?? '');
+}
+
+function composeDebugRetryFailureLog(rootFailureLog: string, latestFailureLog: string, latestReason: string): string {
+  const root = sanitizeDebugFailureLogForPrompt(rootFailureLog).trim();
+  const latest = sanitizeDebugFailureLogForPrompt(latestFailureLog).trim();
+  if (!latest || latest === root || root.includes(latest)) return root;
+  return [
+    root,
+    '',
+    '## latest Debugger attempt failure',
+    t().engine.reasonLine(latestReason),
+    latest,
+  ].filter(Boolean).join('\n');
 }
 
 function stepTransitivelyDependsOn(

@@ -27,6 +27,7 @@ import {
   calibrateDocPaths,
   calibratePythonRequirements,
   calibrateArchitectureStepMappings,
+  calibrateVModelDependencies,
   calibrateStepIds,
   calibrateStepShape,
   calibratePlanCoverage,
@@ -95,6 +96,14 @@ export interface DraftPlan {
   steps: Step[];
 }
 
+export interface DraftPhasePlan {
+  requirementDigest: string;
+  globalPrompt: string;
+  projectType: ProjectType;
+  complexityAssessment: ComplexityAssessment;
+  implementationPhases: ImplementationPhase[];
+}
+
 export class Planner {
   constructor(
     private readonly llm: LLMClient,
@@ -111,6 +120,7 @@ export class Planner {
       this.language,
     );
     const projectShapeAmbiguous = isProjectShapeAmbiguous(rawRequirement);
+    const externalApiRequired = hasExternalApiOrUrlRequirement(rawRequirement);
     const prompt = t().prompts.plannerClarify(rawRequirement, {
       intent: opts.intent ?? 'greenfield',
       hasBaseline: !!opts.hasBaseline,
@@ -133,7 +143,10 @@ export class Planner {
           onProvider: (n) => { provider = n; },
           onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
           // 在 provider fallback 层校验问题集质量，避免“只有两三个泛泛问题”直接进入 Gate 1。
-          validate: (t) => validateClarifyJson(t, demand.nonTrivial, projectShapeAmbiguous),
+          validate: (t) => validateClarifyJson(t, demand.nonTrivial, {
+            projectShapeAmbiguous,
+            externalApiRequired,
+          }),
         },
       );
       rep.done();
@@ -146,15 +159,7 @@ export class Planner {
   }
 
   async decompose(input: PlannerInput): Promise<DraftPlan> {
-    const qa = input.clarifications
-      .map((c, i) => {
-        const optionBlock = c.options && c.options.length > 0
-          ? `\n候选设定:\n${c.options.map((option) => `- ${option.label}. ${option.answer}`).join('\n')}`
-          : '';
-        return `Q${i + 1}${c.category ? ` [${c.category}]` : ''}: ${c.question}` +
-          `${c.why ? `\n澄清目的: ${c.why}` : ''}${optionBlock}\nA${i + 1}: ${c.answer}`;
-      })
-      .join('\n\n');
+    const qa = formatClarificationTranscript(input.clarifications);
     const addenda = (input.userAddenda ?? '').trim();
     const parseContext = {
       language: this.language,
@@ -164,43 +169,194 @@ export class Planner {
       intent: input.intent ?? 'greenfield' as PlanIntent,
     };
     const intent = input.intent ?? 'greenfield';
-    const prompt = t().prompts.plannerDecompose(input.rawRequirement, qa, addenda, {
+    const phasePlan = await this.planPhases(input, qa, addenda, parseContext, intent);
+    const currentPhase = phasePlan.implementationPhases.find((phase) => phase.status === 'current') ??
+      phasePlan.implementationPhases[0];
+    if (!currentPhase) {
+      throw new Error('Planner phase plan has no current implementation phase.');
+    }
+    return this.decomposeCurrentPhase(input, qa, addenda, parseContext, intent, phasePlan, currentPhase);
+  }
+
+  private async planPhases(
+    input: PlannerInput,
+    qa: string,
+    addenda: string,
+    parseContext: DraftParseContext,
+    intent: PlanIntent,
+  ): Promise<DraftPhasePlan> {
+    const prompt = t().prompts.plannerPhasePlan(input.rawRequirement, qa, addenda, {
       intent,
       baseline: input.baselineContext ?? '',
     });
-    const rep = makeStreamReporter('Planner.decompose', this.llm.name);
-    let provider: string | undefined;
-    let text: string;
-    try {
-      text = await this.llm.chat(
-        [
-          {
-            role: 'system',
-            content:
-              t().prompts.plannerSystem(getLanguageProfile(this.language)) +
-              (intent === 'self' ? `\n\n${t().prompts.plannerSelfMode}` : ''),
-          },
-          { role: 'user', content: prompt },
-        ],
+    const { text, provider } = await this.chatWithStructuredValidationRetry({
+      label: 'Planner.phasePlan',
+      context: parseContext,
+      messages: (feedback) => [
         {
-          responseFormat: 'json',
-          temperature: 0.1,
-          onToken: rep.onToken,
-          onProvider: (n) => { provider = n; },
-          onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
-          // 在 chain 层验证：如果 LLM 输出不能解析为含 steps 的 JSON（
-          // 例如 token loop / 截断），FallbackClient 会自动切换到下一个 provider。
-          validate: (t) => parseDraftPlanJson(t, parseContext),
+          role: 'system',
+          content:
+            t().prompts.plannerPhasePlanSystem(getLanguageProfile(this.language)) +
+            (intent === 'self' ? `\n\n${t().prompts.plannerSelfMode}` : ''),
         },
-      );
-      rep.done();
-    } catch (err) {
-      rep.done('failed');
-      throw err;
-    }
-    await this.audit?.plannerThought('decompose', text, { qaCount: input.clarifications.length, provider });
-    return parseDraftPlanJson(text, parseContext);
+        { role: 'user', content: prompt + feedback },
+      ],
+      validate: (t) => parsePhasePlanJson(t, parseContext),
+    });
+    await this.audit?.plannerThought('phasePlan', text, { qaCount: input.clarifications.length, provider });
+    return parsePhasePlanJson(text, parseContext);
   }
+
+  private async decomposeCurrentPhase(
+    input: PlannerInput,
+    qa: string,
+    addenda: string,
+    parseContext: DraftParseContext,
+    intent: PlanIntent,
+    phasePlan: DraftPhasePlan,
+    currentPhase: ImplementationPhase,
+  ): Promise<DraftPlan> {
+    const prompt = t().prompts.plannerPhaseDecompose(input.rawRequirement, qa, addenda, {
+      intent,
+      baseline: input.baselineContext ?? '',
+      phasePlan: JSON.stringify(phasePlan, null, 2),
+      phaseId: currentPhase.id,
+    });
+    const { text, provider } = await this.chatWithStructuredValidationRetry({
+      label: `Planner.decompose.${currentPhase.id}`,
+      context: parseContext,
+      messages: (feedback) => [
+        {
+          role: 'system',
+          content:
+            t().prompts.plannerPhaseDecomposeSystem(getLanguageProfile(this.language)) +
+            (intent === 'self' ? `\n\n${t().prompts.plannerSelfMode}` : ''),
+        },
+        { role: 'user', content: prompt + feedback },
+      ],
+      validate: (t) => parsePhaseStepPlanJson(t, parseContext, phasePlan, currentPhase.id),
+    });
+    await this.audit?.plannerThought('decompose', text, {
+      qaCount: input.clarifications.length,
+      provider,
+      phaseId: currentPhase.id,
+    });
+    return parsePhaseStepPlanJson(text, parseContext, phasePlan, currentPhase.id);
+  }
+
+  private async chatWithStructuredValidationRetry(input: {
+    label: string;
+    context: DraftParseContext;
+    messages: (feedback: string) => Array<{ role: 'system' | 'user'; content: string }>;
+    validate: (text: string) => void;
+  }): Promise<{ text: string; provider?: string }> {
+    const maxAttempts = plannerStructuredRepairAttemptLimit(input.context);
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const repairFeedback = formatPlannerValidationFeedback(lastError);
+      const rep = makeStreamReporter(
+        attempt === 1 ? input.label : `${input.label}.repair${attempt - 1}`,
+        this.llm.name,
+      );
+      let provider: string | undefined;
+      try {
+        const text = await this.llm.chat(
+          input.messages(repairFeedback),
+          {
+            responseFormat: 'json',
+            temperature: 0.1,
+            onToken: rep.onToken,
+            onProvider: (n) => { provider = n; },
+            onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
+            validate: input.validate,
+          },
+        );
+        rep.done();
+        return { text, provider };
+      } catch (err) {
+        rep.done('failed');
+        lastError = err;
+        if (attempt >= maxAttempts || !isPlannerStructuredValidationError(err)) {
+          throw err;
+        }
+        await this.audit?.event('note', `${input.label} validation failed; retrying with contract feedback`, {
+          messageId: 'planner.validation_retry',
+          label: input.label,
+          attempt,
+          maxAttempts,
+          error: errorMessage(err),
+        });
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('Planner validation retry exhausted.');
+  }
+}
+
+function plannerStructuredRepairAttemptLimit(context: DraftParseContext): number {
+  const demand = analyzeArchitectureDemand(
+    {
+      requirementDigest: context.rawRequirement,
+      rawRequirement: context.rawRequirement,
+      userAddenda: context.userAddenda,
+      baselineSummary: context.baselineSummary,
+      intent: context.intent,
+    },
+    context.language,
+  );
+  return demand.nonTrivial || context.intent !== 'greenfield' ? 3 : 2;
+}
+
+function formatPlannerValidationFeedback(err: unknown): string {
+  if (!err) return '';
+  const message = errorMessage(err).slice(0, 1800);
+  return [
+    '',
+    '',
+    '上一次输出未通过 XCompiler 计划契约校验。请根据以下错误修正后重新输出完整、严格 JSON，禁止解释或 Markdown：',
+    `校验错误：${message}`,
+    '修正要求：',
+    '- 保留已确认的 PhasePlan 约束；只生成当前 current phase 的内容。',
+    '- architectureModules 必须满足错误中要求的模块数量、sourcePaths/testPaths 和 CODE/MODULE_TEST 可追踪性。',
+    '- 若一个 CODE 宏 Step 覆盖多个模块，必须在该 CODE Step 的 subTasks 中逐一列出对应模块。',
+    '- 不要删除标准 V 模型 8 个宏 Step。',
+  ].join('\n');
+}
+
+function isPlannerStructuredValidationError(err: unknown): boolean {
+  const message = errorMessage(err);
+  if (isPlannerTransportFailure(message)) return false;
+  return /^Planner (?:architecture|phase|JSON|draft|complexityAssessment|implementationPhases|iteration)/u.test(message);
+}
+
+function isPlannerTransportFailure(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes('fetch failed') ||
+    text.includes('timed out') ||
+    text.includes('timeout') ||
+    text.includes('connection') ||
+    text.includes('econnrefused') ||
+    text.includes('econnreset') ||
+    text.includes('socket') ||
+    text.includes('terminated') ||
+    text.includes('server closed')
+  );
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function formatClarificationTranscript(input: PlannerInput['clarifications']): string {
+  return input
+    .map((c, i) => {
+      const optionBlock = c.options && c.options.length > 0
+        ? `\n候选设定:\n${c.options.map((option) => `- ${option.label}. ${option.answer}`).join('\n')}`
+        : '';
+      return `Q${i + 1}${c.category ? ` [${c.category}]` : ''}: ${c.question}` +
+        `${c.why ? `\n澄清目的: ${c.why}` : ''}${optionBlock}\nA${i + 1}: ${c.answer}`;
+    })
+    .join('\n\n');
 }
 
 export function buildPlan(
@@ -229,8 +385,13 @@ export function buildPlan(
     complexityAssessment,
     draft.requirementDigest,
   );
+  const phaseId = implementationPhases.find((phase) => phase.status === 'current')?.id ??
+    draft.steps.find((step) => step.iterationId)?.iterationId ??
+    'P1';
   const iterated = normalizeStepIterations(draft.steps, implementationPhases);
-  const shaped = calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType);
+  const shaped = calibrateVModelDependencies(
+    calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType),
+  );
   const mapped = calibrateArchitectureStepMappings(shaped, draft.architectureModules ?? []);
   const contracted = injectArchitectureContractPrompts(mapped, draft.architectureModules ?? []);
   // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
@@ -244,6 +405,7 @@ export function buildPlan(
     version: '1',
     language,
     intent: opts.intent ?? 'greenfield',
+    phaseId,
     projectType,
     requirementDigest: draft.requirementDigest,
     complexityAssessment,
@@ -276,7 +438,7 @@ function injectArchitectureContractPrompts(
         `\n\nHIGH_LEVEL_DESIGN 契约（强制）：docs/02-high-level-design.md 必须逐项写明本开发模块在整体系统中的定位、系统级对外接口、外部 API、第三方库选型、依赖确认，以及以下模块的职责、源码路径、测试路径和依赖，不得合并或省略：\n${inventory}`;
     } else if (step.phase === 'DETAILED_DESIGN') {
       contractBlock =
-        `\n\nDETAILED_DESIGN 契约（强制）：docs/03-detailed-design.md 必须定义模块内部具体功能实现、内部架构、数据结构/控制流，并为以下每个模块保留独立 CODE/MODULE_TEST 任务及验收映射：\n${inventory}`;
+        `\n\nDETAILED_DESIGN 契约（强制）：docs/03-detailed-design.md 必须定义模块内部具体功能实现、内部架构、数据结构/控制流，并为以下每个模块保留独立 CODE/INTEGRATION_TEST 任务及验收映射：\n${inventory}`;
     } else if (step.phase === 'CODE') {
       const owned = modules.filter((module) =>
         module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
@@ -411,7 +573,7 @@ function stripOptionLabel(value: string): string {
 function validateClarifyJson(
   text: string,
   complex: boolean,
-  projectShapeAmbiguous = false,
+  opts: { projectShapeAmbiguous?: boolean; externalApiRequired?: boolean } = {},
 ): ClarifyQuestion[] {
   const data = safeJson(text);
   const raw = coerceClarifyArray(data);
@@ -455,9 +617,14 @@ function validateClarifyJson(
       throw new Error(`clarify missing required ${required} question`);
     }
   }
-  if (projectShapeAmbiguous && !parsed.some(isProjectShapeClarification)) {
+  if (opts.projectShapeAmbiguous && !parsed.some(isProjectShapeClarification)) {
     throw new Error(
       'clarify missing required project shape question: ask whether this should be an API library, runnable application, or mixed deliverable',
+    );
+  }
+  if (opts.externalApiRequired && !parsed.some(isExternalApiCredentialClarification)) {
+    throw new Error(
+      'clarify missing required external API credential question: ask whether the user has an API/key/token; if not, default to open no-key APIs',
     );
   }
   return parsed;
@@ -469,6 +636,120 @@ interface DraftParseContext {
   userAddenda: string;
   baselineSummary: string;
   intent: PlanIntent;
+}
+
+function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhasePlan {
+  const data = safeJson(text);
+  if (!data || typeof data !== 'object') {
+    throw new Error('Planner did not return a JSON object for phase planning.');
+  }
+  const root = data as Record<string, unknown>;
+  const obj =
+    root.phasePlan && typeof root.phasePlan === 'object'
+      ? root.phasePlan as Record<string, unknown>
+      : root;
+  const digest = obj.requirementDigest;
+  if (typeof digest !== 'string' || !digest.trim()) {
+    throw new Error('Planner PhasePlan missing requirementDigest.');
+  }
+  const globalPrompt = typeof obj.globalPrompt === 'string' ? obj.globalPrompt : '';
+  const projectType = parseProjectType(obj.projectType);
+  if (!projectType) {
+    throw new Error('Planner PhasePlan missing valid projectType; project shape must be classified by the LLM.');
+  }
+  const complexityAssessment = parseComplexityAssessment(obj.complexityAssessment);
+  if (!complexityAssessment) {
+    throw new Error('Planner PhasePlan missing valid complexityAssessment; complexity must be assessed before Step planning.');
+  }
+  const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
+  if (!parsedImplementationPhases || parsedImplementationPhases.length === 0) {
+    throw new Error('Planner PhasePlan missing valid implementationPhases; P1 current phase must be explicit.');
+  }
+  const phaseIssue = validateImplementationPhaseDraft(parsedImplementationPhases, complexityAssessment);
+  if (phaseIssue) {
+    throw new Error(`Planner PhasePlan implementationPhases invalid: ${phaseIssue}`);
+  }
+  const implementationPhases = normalizeImplementationPhases(
+    parsedImplementationPhases,
+    complexityAssessment,
+    digest,
+  );
+  const demand = analyzeArchitectureDemand(
+    {
+      requirementDigest: digest,
+      rawRequirement: context.rawRequirement,
+      userAddenda: context.userAddenda,
+      globalPrompt,
+      baselineSummary: context.baselineSummary,
+      intent: context.intent,
+    },
+    context.language,
+  );
+  const forcedPhaseSplit = hasForcedPhaseSplit([
+    digest,
+    context.rawRequirement,
+    context.userAddenda,
+  ].join('\n'));
+  if (demand.nonTrivial && !complexityAssessment.splitRecommended) {
+    throw new Error(
+      `Planner PhasePlan underestimates a non-trivial request (${demand.reasonLabel}); ` +
+      'splitRecommended must be true and additional planned iterations must be listed in PhasePlan.',
+    );
+  }
+  if (forcedPhaseSplit && !complexityAssessment.userForcedPhaseSplit) {
+    throw new Error('Planner PhasePlan missed the user-forced phase split request.');
+  }
+  return {
+    requirementDigest: digest,
+    globalPrompt,
+    projectType,
+    complexityAssessment,
+    implementationPhases,
+  };
+}
+
+function parsePhaseStepPlanJson(
+  text: string,
+  context: DraftParseContext,
+  phasePlan: DraftPhasePlan,
+  currentIterationId: string,
+): DraftPlan {
+  const data = safeJson(text);
+  if (!data || typeof data !== 'object') {
+    throw new Error('Planner did not return a JSON object for phase Step planning.');
+  }
+  const obj = data as Record<string, unknown>;
+  const rawDeps = Array.isArray(obj.dependencies)
+    ? obj.dependencies
+    : Array.isArray(obj.pythonRequirements)
+      ? obj.pythonRequirements
+      : [];
+  const draft = {
+    requirementDigest:
+      typeof obj.requirementDigest === 'string' && obj.requirementDigest.trim()
+        ? obj.requirementDigest
+        : phasePlan.requirementDigest,
+    globalPrompt:
+      typeof obj.globalPrompt === 'string' && obj.globalPrompt.trim()
+        ? obj.globalPrompt
+        : phasePlan.globalPrompt,
+    projectType: phasePlan.projectType,
+    complexityAssessment: phasePlan.complexityAssessment,
+    implementationPhases: phasePlan.implementationPhases,
+    dependencies: (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string'),
+    architectureModules: obj.architectureModules,
+    steps: obj.steps,
+  };
+  const parsed = parseDraftPlanJson(JSON.stringify(draft), context);
+  const wrongIteration = parsed.steps.find((step) => (step.iterationId ?? 'P1') !== currentIterationId);
+  if (wrongIteration) {
+    throw new Error(
+      `Planner phase StepPlan must materialize only ${currentIterationId}; ` +
+      `${wrongIteration.id} references ${wrongIteration.iterationId ?? 'P1'}. ` +
+      'Future planned phases must stay in PhasePlan until they are loaded as the current phase.',
+    );
+  }
+  return parsed;
 }
 
 function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPlan {
@@ -699,15 +980,15 @@ function validateIterationVModelDraft(
   steps: Step[],
   phases: ImplementationPhase[],
 ): string | undefined {
-  const executable = phases.filter((phase) => phase.status !== 'deferred');
-  const executableIds = new Set(executable.map((phase) => phase.id));
+  const current = phases.filter((phase) => phase.status === 'current');
+  const materializedIds = new Set(current.map((phase) => phase.id));
   for (const step of steps) {
     const iterationId = step.iterationId ?? 'P1';
-    if (!executableIds.has(iterationId)) {
-      return `${step.id} references non-executable iteration ${iterationId}`;
+    if (!materializedIds.has(iterationId)) {
+      return `${step.id} references non-current iteration ${iterationId}; planned phases are PhasePlan goals and must not contain executable Steps yet`;
     }
   }
-  for (const iteration of executable) {
+  for (const iteration of current) {
     const iterationSteps = steps.filter((step) => (step.iterationId ?? 'P1') === iteration.id);
     const phaseSet = new Set(iterationSteps.map((step) => step.phase));
     for (const required of REQUIRED_V_MODEL_PHASES) {
@@ -737,6 +1018,31 @@ function isProjectShapeClarification(question: ClarifyQuestion): boolean {
     /api[- ]?library|public api|reusable api|client library|sdk|package|library|runnable app|application|cli|service|mixed/u.test(text) ||
     /api\s*(库|客户端|能力)|公共\s*api|可复用接口|库项目|软件包|开发包|可运行|应用|命令行|服务|混合/u.test(question.question)
   );
+}
+
+function hasExternalApiOrUrlRequirement(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    /\b(external|third[- ]party|provider|remote|public|open)\s+(api|url|endpoint|service)\b/u.test(lower) ||
+    /\b(fetch|request|call|consume|access|query)\s+(?:an?\s+)?(?:external|third[- ]party|remote|public|open)\s+(api|url|endpoint|service)\b/u.test(lower) ||
+    /\bhttps?:\/\//iu.test(text) ||
+    /(?:外部|第三方|公开|开放|远程|联网|网络).{0,12}(?:api|接口|url|地址|服务|数据源)/iu.test(text) ||
+    /(?:天气|节假日|假日|地图|汇率|股票|新闻|物流).{0,18}(?:api|接口|查询|获取|请求|调用|数据)/iu.test(text) ||
+    /(?:获取|查询|请求|调用).{0,18}(?:天气|节假日|假日|地图|汇率|股票|新闻|物流).{0,18}(?:数据|接口|api)?/iu.test(text)
+  );
+}
+
+function isExternalApiCredentialClarification(question: ClarifyQuestion): boolean {
+  const text = `${question.question}\n${question.why}\n${question.options.map((option) => option.answer).join('\n')}`.toLowerCase();
+  const asksCredential = /\b(api key|apikey|token|credential|secret|auth|authorization|provider key)\b/u.test(text) ||
+    /(?:api\s*)?(?:key|token)|密钥|令牌|凭证|鉴权|授权/u.test(text);
+  const mentionsNoKeyFallback =
+    /\b(no[- ]?key|without key|no token|free public|open api|public api|no authentication)\b/u.test(text) ||
+    /免\s*(?:key|token|密钥|鉴权)|无需\s*(?:key|token|密钥|鉴权)|公开接口|开放接口|免费接口/u.test(text);
+  const externalApiContext =
+    /\b(api|url|endpoint|provider|external|third[- ]party|fetch|request)\b/u.test(text) ||
+    /外部|第三方|接口|数据源|天气|节假日|联网/u.test(text);
+  return externalApiContext && asksCredential && mentionsNoKeyFallback;
 }
 
 function projectShapeSignals(text: string): { libraryLike: boolean; appLike: boolean; genericApi: boolean } {
@@ -824,7 +1130,8 @@ function normalizeImplementationPhases(
 }
 
 function requiredImplementationPhaseCount(assessment: ComplexityAssessment): number {
-  if (assessment.level !== 'simple' || assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
+  if (assessment.level === 'complex') return 3;
+  if (assessment.level === 'moderate' || assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
   return 1;
 }
 

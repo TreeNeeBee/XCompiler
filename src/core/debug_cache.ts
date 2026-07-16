@@ -41,13 +41,51 @@ interface CacheShape {
 
 const EMPTY: CacheShape = { version: 1, steps: {} };
 
+export function sanitizeDebugFailureLogForPrompt(log: string): string {
+  const lines = log.split(/\r?\n/u);
+  const out: string[] = [];
+  let mode: 'keep' | 'skip-history' | 'skip-suggestions' = 'keep';
+  for (const line of lines) {
+    if (/^##\s+历史\s+DEBUG\s+尝试/u.test(line)) {
+      mode = 'skip-history';
+      continue;
+    }
+    if (/^##\s+修复建议/u.test(line)) {
+      mode = 'skip-suggestions';
+      continue;
+    }
+    if (mode === 'skip-history') {
+      if (/^(原因：|Reason:|##\s+debug failure log\b)/u.test(line)) {
+        mode = 'keep';
+      } else {
+        continue;
+      }
+    }
+    if (mode === 'skip-suggestions') {
+      if (/^(原因：|Reason:|轮次：|工具调用：|---\s+|##\s+历史\s+DEBUG\s+尝试|##\s+debug failure log\b)/u.test(line)) {
+        mode = 'keep';
+        if (/^##\s+历史\s+DEBUG\s+尝试/u.test(line)) {
+          mode = 'skip-history';
+          continue;
+        }
+      } else {
+        continue;
+      }
+    }
+    if (/^\s*suggestions:\s/u.test(line)) continue;
+    out.push(line);
+  }
+  const cleaned = out.join('\n').trim();
+  return cleaned.length > 0 ? cleaned : log;
+}
+
 /**
  * 跨 `xcompiler run` 的 debug 历史持久化。
  *
  * 落盘位置：`<workspace>/.xcompiler/debug_cache.json`。
  *
  * 设计原则：
- * 1. 只在 workspace 内，**不污染 plan.json**——plan.json 是用户/Planner 的契约，不应混入运行期日志。
+ * 1. 只在 workspace 内，**不污染阶段计划**——phasePlan / plan.Px 是用户与 Planner 的契约，不应混入运行期日志。
  * 2. 一次 `xcompiler run` 内的多次 retry → append；单步 DONE → clear；单步 FAILED → 保留，下一次 `xcompiler run`
  *    可读到这些尝试，作为 Debugger 的 prior context，让模型不要再走死路。
  * 3. 单步保留 attempts 数量上限 `maxAttemptsPerStep`（默认 12），超出按 FIFO 丢弃；每条 failureLog 按
@@ -106,7 +144,7 @@ export class DebugCache {
       attempt: entry.attempt,
       ts: entry.ts ?? new Date().toISOString(),
       reason: (entry.reason ?? '').slice(0, 500),
-      failureLogTail: tail(entry.failureLogTail ?? ''),
+      failureLogTail: tail(sanitizeDebugFailureLogForPrompt(entry.failureLogTail ?? '')),
       suggestions: entry.suggestions,
       snapshotSha: entry.snapshotSha,
       metrics: entry.metrics,
@@ -133,6 +171,14 @@ export class DebugCache {
       delete this.data.steps[stepId];
       await this.save();
     }
+  }
+
+  /** `xcompiler run --reset` 会重置所有 Step 状态；对应的跨会话失败记忆也必须清空。 */
+  async clearAll(): Promise<void> {
+    await this.load();
+    if (Object.keys(this.data.steps).length === 0) return;
+    this.data = { version: 1, steps: {} };
+    await this.save();
   }
 
   /** 该 step 终态失败 → 保留 attempts，更新 lastStatus，便于下一次 run 直接用 Debugger 模式复用上下文。 */
@@ -166,7 +212,7 @@ export class DebugCache {
         ? ` [health=${e.metrics.healthScore.toFixed(2)} parseFail=${e.metrics.parseFailures} repeat=${e.metrics.repeatedTurns}]`
         : '';
       const sugg = e.suggestions && e.suggestions.length > 0
-        ? `\n    suggestions: ${e.suggestions.join(' | ')}`
+        ? `\n    prior suggestions: omitted (${e.suggestions.length}) to avoid stale guidance; use the current failure log first.`
         : '';
       return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${sugg}`;
     });

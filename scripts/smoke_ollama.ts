@@ -3,7 +3,7 @@ import { setLocale, t } from '../src/i18n/index.js';
 
 setLocale(process.env.XC_LANG ?? process.env.XCOMPILER_LANG ?? 'en');
 
-const BASE = process.env.OLLAMA_BASE_URL ?? 'http://10.80.106.160:11434';
+const BASE = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
 const REQUEST_TIMEOUT_MS = envMs('OLLAMA_REQUEST_TIMEOUT_MS', 15 * 60 * 1000);
 const STREAM_IDLE_TIMEOUT_MS = envMs('OLLAMA_STREAM_IDLE_TIMEOUT_MS', 5 * 60 * 1000);
 const DESIGN_MODEL = process.env.OLLAMA_DESIGN_MODEL ?? 'gemma4:31b-mlx';

@@ -17,8 +17,8 @@ XCompiler splits "writing code" into two phases — **compile** and **execute** 
 
 | Command | Role | Input | Output |
 |---|---|---|---|
-| **`xcompiler build`** | **AI Compiler** — translates natural-language requirements into executable phase-steps (a plan) | A requirement text (`-i req.md`, `-t topic.md`, or interactive) | `plan.json` (topologically ordered Step DAG) + `topic.md` + `plan.md` |
-| **`xcompiler run`** | **AI Executor** — runs the compiled phase-steps in topological order | `plan.json` | Runnable Python/TypeScript project + green tests + `docs/05-delivery.md` |
+| **`xcompiler build`** | **AI Compiler** — translates natural-language requirements into a phase plan and executable current-phase steps | A requirement text (`-i req.md`, `-t topic.md`, or interactive) | `phasePlan.json` + `plan.P1.json` (current phase Step DAG) + `topic.md` + `plan.md` |
+| **`xcompiler run`** | **AI Executor** — runs the current phase from the compiled phase plan | `phasePlan.json` (legacy `plan.json` remains readable) | Runnable Python/TypeScript project + green tests + `docs/05-delivery.md` |
 
 > Analogy: `xcompiler build` ≈ a compiler turning C source into machine instructions; `xcompiler run` ≈ the CPU executing those instructions.
 > Difference: XCompiler's "instructions" are V-model phases (REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY), and each "execution unit" is a sandbox-constrained multi-Agent loop.
@@ -34,7 +34,7 @@ XCompiler encodes the **V-model** of software engineering directly as the decomp
 ```text
                   ┌────────── xcompiler build (AI Compiler) ──────────┐
                   │                                          │
-   Requirement ──► Intake ──► Clarify ──► Decompose ──► plan.json
+   Requirement ──► Intake ──► Clarify ──► PhasePlan ──► plan.P1.json
         (NL)             │            │
                          └─ Gate 1 ───┘ Gate 2  (two human confirmation gates)
 
@@ -106,7 +106,7 @@ XCompiler encodes the **V-model** of software engineering directly as the decomp
             │  LLM Router  │ │   Sandbox    │ │   Workspace      │
    │  chain +     │ │  subprocess  │ │   git + audit    │
    │  fallback    │ │  / docker    │ │   + .xcompiler/       │
-   │  (ollama,    │ │  venv iso.   │ │   plan.json      │
+   │  (ollama,    │ │  venv iso.   │ │ phasePlan/plan.Px │
    │   openai)    │ │              │ │                  │
    └──────────────┘ └──────────────┘ └──────────────────┘
 ```
@@ -132,7 +132,7 @@ Layer responsibilities:
 ```bash
 # 1. Install dependencies
 npm ci
-cp .env.example .env            # fill OLLAMA_BASE_URL etc.
+cp .env.example .env            # fill OPENROUTER_API_KEY for the default Free-mode provider
 cp config.example.yaml config.yaml
 
 # 2. Build and install as a global command
@@ -145,7 +145,7 @@ echo "Parse a DBC file into an Excel report" > req.md
 xcompiler build -i req.md --yes
 
 # 4. Execute the plan
-xcompiler run /tmp/xcompiler-<timestamp>/plan.json
+xcompiler run /tmp/xcompiler-<timestamp>/phasePlan.json
 
 # 5. Resume later from the generated project file
 xcompiler load /tmp/xcompiler-<timestamp>/xcompiler-<timestamp>.xc
@@ -155,7 +155,7 @@ Dev mode (no build step):
 
 ```bash
 npm run dev -- build
-npm run dev -- run path/to/plan.json
+npm run dev -- run path/to/phasePlan.json
 ```
 
 Incremental evolution on top of an existing workspace:
@@ -181,7 +181,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler build` | `-i <file>` | Use a requirements file (non-interactive) |
 | `xcompiler build` | `-t <file>` | Reuse a previously clarified `topic.md` and skip Gate 1 |
 | `xcompiler build` | `--intent <greenfield\|feature\|refactor\|self>` | Choose greenfield, incremental, or isolated self-bootstrap planning |
-| `xcompiler build` | `--baseline-plan <file>` | Point incremental planning at an explicit existing `plan.json` |
+| `xcompiler build` | `--baseline-plan <file>` | Point incremental planning at an explicit existing `phasePlan.json` or legacy `plan.json` |
 | `xcompiler build` / `xcompiler run` | `--project-file <file>` | Create/update a specific `XXX.xc` project file |
 | `xcompiler build` | `--force` | Override the workspace lock and regenerate the plan |
 | `xcompiler evolve` | `...` | Compile an incremental plan, then immediately execute it in the same workspace |
@@ -193,15 +193,18 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run` | `--force` | Equivalent to `--reset` + override lock |
 | `xcompiler run` | `--from <stepId>` / `--phase <phase>` | Resume / run only one phase |
 | `xcompiler run` | `--dry-run` | Print topology only |
-| `xcompiler ls` | — | Scan workspace and list every plan's status |
+| `xcompiler ls` | — | Scan workspace and list every phase plan's status |
 | `xcompiler show <stepId>` | — | Inspect a single Step (definition / outputs / recent audit) |
 
 ---
 
 ## Default runtime
 
-- **LLM**: local ollama (`gemma4:31b` for Planner / Architect, `qwen3-coder:30b` for Coder / Tester / Debugger).
-  Set `fallbacks: [openai]` in `config.yaml` to fall back to an OpenAI-compatible endpoint when the primary chain fails.
+- **LLM**: OpenRouter Free mode by default, configured as an explicit `type: openai` OpenAI-compatible provider.
+  Put `OPENROUTER_API_KEY` in `.env`, keep `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`, and choose a free model slug such as `qwen/qwen3-coder:free`.
+  For production-like engineering runs, give each role a dedicated first-choice model and append `openrouter_free` (`model: openrouter/free`, `tags: [cluster]`) as the last fallback in every role chain.
+  Cluster providers default to the lower dynamic score band `0.2..0.5`, so they remain backups unless the dedicated models fail or their scores decay.
+  See [docs/openrouter.md](docs/openrouter.md) for the setup guide and official OpenRouter links.
 - **i18n**: set top-level `locale: en` or `locale: zh` in `config.yaml` to control CLI and prompt language.
 - **Sandbox**: `subprocess` by default (creates an isolated venv at `<workspace>/.sandbox/<project>/`); switch to `docker` for bind-mount + network / resource limits.
 - **Audit**: every run writes `<workspace>/.xcompiler/audit.jsonl` and `docs/process_log.md`, recording all LLM I/O, tool calls and Step state transitions.
@@ -215,6 +218,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 |---|---|
 | [docs/XCompiler_design.md](docs/XCompiler_design.md) | Overall design: V-model phases, Agent / Skill / Tool abstractions, Sandbox & Workspace |
 | [docs/implementation_plan.md](docs/implementation_plan.md) | M1 → M6 milestones and landing steps |
+| [docs/openrouter.md](docs/openrouter.md) | OpenRouter Free-mode setup with `type: openai` provider config |
 | [docs/deploy.md](docs/deploy.md) | Deployment guide (local + Docker) |
 | [docs/plugin_api.md](docs/plugin_api.md) | Typed plugin API, lifecycle hooks, ordering and failure policy |
 | [docs/versioning.md](docs/versioning.md) | Core and Plugin API version sources, sync commands and release checks |
@@ -229,6 +233,8 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 ---
 
 ## Runtime tuning (`config.yaml → agent.*`)
+
+LLM routing is configured under `config.yaml → llm.*`. Use `roles.<Role>` arrays for role-specific chains, set `scores.<provider>: 0` to disable a provider, and tune cluster fallback score bounds with `cluster_score_min` / `cluster_score_max` when you want `openrouter/free` to be more or less aggressive as a backup.
 
 | Field | Default | Effect |
 |---|---|---|

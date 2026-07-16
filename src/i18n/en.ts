@@ -24,8 +24,8 @@ For P2+ iterations, put the same basenames under \`docs/iterations/<iterationId>
 
 Synchronous test-design rule:
 - REQUIREMENT_ANALYSIS must also output \`docs/tests/functional-test-plan.md\`.
-- HIGH_LEVEL_DESIGN must also output \`docs/tests/integration-test-plan.md\`.
-- DETAILED_DESIGN must also output \`docs/tests/module-test-plan.md\`.
+- HIGH_LEVEL_DESIGN must also output \`docs/tests/module-test-plan.md\`.
+- DETAILED_DESIGN must also output \`docs/tests/integration-test-plan.md\`.
 - CODE must also output \`docs/tests/unit-test-plan.md\`.
 For P2+ iterations, put those under \`docs/iterations/<iterationId>/tests/\`.
 
@@ -35,8 +35,8 @@ Phase responsibilities:
 - DETAILED_DESIGN defines the module-internal functions, data structures, algorithms, control flow, error handling, and internal architecture.
 - CODE implements only the designed scope and produces runnable/importable Python source.
 - UNIT_TEST verifies CODE internals and public functions.
-- INTEGRATION_TEST verifies external interfaces, selected third-party libraries, dependency wiring, and API/client boundaries from HIGH_LEVEL_DESIGN.
-- MODULE_TEST verifies module-level behaviour and architecture from DETAILED_DESIGN.
+- INTEGRATION_TEST verifies module-internal collaboration, data flow, and component integration from DETAILED_DESIGN.
+- MODULE_TEST verifies the current module's position in the whole system, external interfaces, and dependency boundaries from HIGH_LEVEL_DESIGN.
 - FUNCTIONAL_TEST verifies requirements end-to-end and produces user-facing documentation.
 
 Functional documentation bundle: P1 FUNCTIONAL_TEST outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/08-functional-test.md\`; for \`projectType\` = \`library\` or \`mixed\`, also include \`docs/api-guide.md\`. P2+ uses \`docs/iterations/<iterationId>/08-functional-test.md\`, \`quickstart.md\`, and optional \`api-guide.md\`. Documentation must follow the active i18n language.
@@ -57,6 +57,7 @@ Mandatory rules:
 13. dependencies is a Python pip dependency list. Include \`pytest\`; use bare package names only; never list \`requirements.txt\` in Step outputs.
 14. Application/mixed projects need a directly executable Python entry point (\`src/main.py\` or package \`__main__.py\`) that reuses CODE modules. Library/mixed projects need a stable public API and \`docs/api-guide.md\`.
 15. Structured HIGH_LEVEL_DESIGN -> CODE -> MODULE_TEST contract: for non-trivial work, return \`architectureModules\` with each module's id, name, responsibility, sourcePaths, testPaths, and dependencies. CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
+16. Third-party library choices must match real APIs: HIGH_LEVEL_DESIGN must name the concrete entry point function/class or verification basis for the selected library in this requirement; do not invent parser/export APIs from package names alone.
 
 Output JSON shape:
 {
@@ -117,15 +118,18 @@ Rules:
      **must NOT** add their own sys.path.insert(...). If you create or edit conftest.py yourself,
      keep the existing sys.path injection — do not delete it.
    - [Self-contained tests] Tests **must NOT** open() a sample file that does not exist on disk
-     (e.g. "test.dbc", "sample.csv"). When a target function needs file input, do exactly one of:
-       (a) use pytest's tmp_path fixture inside the test, e.g. tmp_path.joinpath("x.dbc").write_text(...);
-       (b) use write_file to put a fixture under tests/fixtures/<name> — test/DEBUG phases have
-           write permission to tests/fixtures/ by default, sub-directories are auto-mkdir'd, and
-           **fixture paths do NOT need to be pre-declared in outputs**.
+     (e.g. "sample.csv"). When a target function needs file input, choose in this priority order:
+       (a) first reuse a real sample supplied by the user or already present in the workspace, copying/referencing it under tests/fixtures/<name>;
+       (b) for third-party or industry-standard formats with no local sample, use http_fetch to obtain a small reference sample from official docs,
+           the upstream repository, or a public standard/example, save it under tests/fixtures/<name>, and record the source in the test report or comment;
+       (c) only for simple text formats such as CSV/JSON/INI, and only when you can immediately run_tests, construct a minimal sample with pytest tmp_path.
+     If the network is unavailable, no user sample exists, and the format standard cannot be confirmed, report a blocker asking the user for a sample.
      A test that references a file nobody created will trap the Debugger in an endless FileNotFoundError loop.
    - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed",
-     the **fixture itself is malformed** (DBC/CSV/JSON/...), **not the implementation**.
-     read_file the fixture → write_file a minimal valid sample for that format → run_tests again.
+     the **fixture itself is malformed**, **not the implementation**.
+     read_file the fixture, identify the format from the extension/parser/error, then prefer a user/workspace sample or an authoritative http_fetch reference;
+     rewrite the whole fixture with write_file and run_tests. After repeated failures on a complex domain format, stop inventing from memory and ask
+     for a user sample or network reference.
      Never edit the implementation, the assertion, or mock out the parser to "fix" a parse error — fix the fixture first.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
@@ -146,8 +150,8 @@ DEBUG is runtime rollback/repair only. If a test phase fails, XCompiler rolls ba
 
 Use the same phase documents and synchronous test-design rule as the Python planner:
 - REQUIREMENT_ANALYSIS: \`docs/01-requirement-analysis.md\` plus \`docs/tests/functional-test-plan.md\`.
-- HIGH_LEVEL_DESIGN: \`docs/02-high-level-design.md\` plus \`docs/tests/integration-test-plan.md\`.
-- DETAILED_DESIGN: \`docs/03-detailed-design.md\` plus \`docs/tests/module-test-plan.md\`.
+- HIGH_LEVEL_DESIGN: \`docs/02-high-level-design.md\` plus \`docs/tests/module-test-plan.md\`.
+- DETAILED_DESIGN: \`docs/03-detailed-design.md\` plus \`docs/tests/integration-test-plan.md\`.
 - CODE: implementation outputs plus \`docs/tests/unit-test-plan.md\`.
 - UNIT_TEST: \`docs/05-unit-test.md\`.
 - INTEGRATION_TEST: \`docs/06-integration-test.md\`.
@@ -191,7 +195,7 @@ Rules:
    - [Import convention] Local source modules under src/ use ESM relative imports with explicit ".ts" specifiers, e.g. \`import { x } from "./util.ts";\`. Keep code compatible with Node's native TypeScript type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.<module>\`, or sys.path hacks.
    - [Test convention] Tests use Vitest: \`import { describe, it, expect } from "vitest";\`. Test files live under \`tests/**/*.test.ts\`.
    - [Self-contained tests] Tests **must NOT** read a sample file that does not exist on disk. When a target function needs file input, either create the content inside the test or write fixtures under \`tests/fixtures/<name>\`.
-   - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed", the **fixture itself is malformed**. read_file the fixture → write_file a minimal valid sample → run_tests again. Never "fix" a parse error by weakening the implementation or the assertion.
+   - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed", the **fixture itself is malformed**. read_file the fixture, prefer a user/workspace sample; if none exists, use http_fetch to obtain an authoritative public reference; construct minimal samples only for simple text formats and immediately run_tests. Never weaken the implementation/assertion, and never repeatedly invent complex domain fixtures from memory.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
 6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
@@ -207,6 +211,74 @@ Return strict JSON only. Each question must be directly answerable by a product 
 
 function buildPlannerSystem(profile: LanguageProfile): string {
   return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM) + profile.plannerPromptOverride;
+}
+
+function buildPlannerPhasePlanSystem(profile: LanguageProfile): string {
+  return `You are the Planner of XCompiler. This is two-level planning, pass one: PhasePlan.
+
+Target language: ${profile.displayName}.
+
+Return only the project-level PhasePlan. Do not return steps, architectureModules, dependencies, or any individual V-model Step.
+
+The PhasePlan must:
+1. Classify projectType: application / library / mixed.
+2. Assess complexityAssessment: simple / moderate / complex with rationale.
+3. Produce implementationPhases: P1 status=current; later P2/P3 status=planned. simple uses P1 only; moderate uses at least P1+P2; complex uses at least P1+P2+P3; user-forced staging uses at least P1+P2 and userForcedPhaseSplit=true.
+4. Give each phase objective, scope, deliverables, dependsOn, and verificationGate.
+5. Keep planned phases as goals and gates only. Do not expand any Step for them; a separate pass will generate a full V-model plan for one phase at a time.
+
+Return strict JSON only:
+{
+  "requirementDigest": "string",
+  "globalPrompt": "string",
+  "projectType": "application | library | mixed",
+  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
+  "implementationPhases": [
+    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["..."], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." } }
+  ]
+}
+
+No Markdown, no explanatory prose, no steps, no source/test file inventory.` + profile.plannerPromptOverride;
+}
+
+function buildPlannerPhaseDecomposeSystem(profile: LanguageProfile): string {
+  return `You are the Planner of XCompiler. This is two-level planning, pass two: generate a full V-model StepPlan for the requested phase.
+
+Target language: ${profile.displayName}.
+
+You will receive a frozen PhasePlan and a phaseId. Generate Steps only for that phaseId. Planned phases must not be expanded into this StepPlan.
+
+Every current phase must use the canonical V-model:
+REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST.
+
+Phase responsibilities:
+- REQUIREMENT_ANALYSIS defines functional scope, acceptance, boundaries, and user-visible behaviour, and synchronously emits the functional test plan.
+- HIGH_LEVEL_DESIGN defines system position, external interfaces, third-party library choices, dependency confirmation, and integration boundaries, and synchronously emits the integration test plan.
+- DETAILED_DESIGN defines module-internal functions/classes, data structures, algorithms, control flow, error handling, and internal architecture, and synchronously emits the module test plan.
+- CODE implements only the current phase and synchronously emits the unit test plan.
+- UNIT_TEST / INTEGRATION_TEST / MODULE_TEST / FUNCTIONAL_TEST verify their paired left-side phases.
+
+Return only the current phase's dependencies, architectureModules, and steps. Complex or multi-concern work must declare architectureModules for the current phase and map module-level work under CODE/MODULE_TEST subTasks. Each Step's subTasks may nest at most two levels.
+
+architectureModules may describe only product/business source modules for the current phase:
+- sourcePaths must be target-language source files under src/. They must not be directories, tests/, docs/, README, fixtures, utils, or report files.
+- testPaths must be target-language test files under tests/. They must not be directories.
+- Test fixtures, test helpers, sample inputs, and temporary output files belong in test Step outputs or subTasks, not in architectureModules.
+
+Return strict JSON only:
+{
+  "requirementDigest": "string",
+  "globalPrompt": "string",
+  "dependencies": ["pytest"],
+  "architectureModules": [
+    { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.py"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
+  ],
+  "steps": [
+    { "id": "S001", "iterationId": "P1", "phase": "REQUIREMENT_ANALYSIS", "title": "string", "description": "string", "systemPrompt": "scope, inputs, outputs, acceptance, forbidden actions", "role": "Planner", "tools": ["write_file"], "inputs": ["docs/topic.md"], "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md"], "subTasks": [], "dependsOn": [], "acceptance": "string", "maxRetries": 3 }
+  ]
+}
+
+Do not output Steps for future planned phases. Do not output requirements.txt. Design phases must not write src/tests. FUNCTIONAL_TEST must include README.md, docs/quickstart.md, and the functional validation document.` + profile.plannerPromptOverride;
 }
 
 function buildExecutorSystem(profile: LanguageProfile): string {
@@ -226,7 +298,7 @@ const messages: Messages = {
     preflightOllamaUnreachable: (baseUrl, message) => `preflight: ollama ${baseUrl} unreachable: ${message}`,
     preflightAutoAdded: (providers, roles) => `preflight: auto-added ${providers} provider(s) for roles [${roles}]`,
     scoreFileHeader: '# XCompiler LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
-    scoreFileSemantics: '# Scores: default 1.0; failure -0.5 (floor 0=disabled); success +0.1 (cap 10).',
+    scoreFileSemantics: '# Scores: default 1.0; automatic range 0.1-1.0; providers tagged cluster default to 0.2-0.5 unless llm.cluster_score_min/max widens it; failure -0.5; success +0.1; only user-configured score=0 disables a provider.',
   },
   system: {
     configEnvMissing: (names) => `[xcompiler] unset config environment variables were replaced with empty strings: ${names}`,
@@ -315,34 +387,34 @@ const messages: Messages = {
   },
   cli: {
     rootDescription: 'XCompiler — AI Software Factory CLI',
-    compileDescription: 'Interactively compile a requirement into plan.json (with mandatory human gates)',
-    runDescription: 'Execute a confirmed plan.json (supports phased runs: --phase / --from)',
+    compileDescription: 'Interactively compile a requirement into phasePlan.json and the current phase plan (with mandatory human gates)',
+    runDescription: 'Execute a confirmed phasePlan.json (supports phased runs: --phase / --from)',
     loadDescription: 'Load a XXX.xc project file and continue its current plan',
     appendDescription: 'Append a new requirement to an existing XXX.xc project through clarification and V-model execution',
-    lsDescription: 'Scan workspace and list every plan.json status summary',
+    lsDescription: 'Scan workspace and list every phasePlan.json / legacy plan.json status summary',
     showDescription: 'Print Step definition / status / outputs / recent audit',
     optWorkspace: 'workspace directory (alias of --output, defaults to current directory)',
     optOutput: 'project / workspace output directory (highest priority, alias of -w)',
     optConfig: 'path to config.yaml',
     optInput: 'read requirement from a file (non-interactive)',
     optTopic: 'reuse an already-clarified topic.md as input: skip intake / clarify / addenda / Gate 1 and go straight to decompose',
-    optPlanOut: 'output path for plan.json (default <workspace>/plan.json)',
+    optPlanOut: 'output path for phasePlan.json (default <workspace>/phasePlan.json)',
     optBaseDir: 'project root output directory (creates <name> subdir under it)',
     optName: 'project name (default xcompiler-<timestamp>)',
     optYes: 'skip human confirmation (only meaningful with -i / -t)',
-    optForce: 'force regenerate: override workspace lock and ignore existing plan.json',
+    optForce: 'force regenerate: override workspace lock and ignore existing plan files',
     optDryRun: 'print topology only, do not execute',
     optFrom: 'start from the given Step (earlier ones are skipped)',
     optPhase: 'execute only the given phase (REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN/CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST/DEBUG)',
     optReset: 'reset all Step status to PENDING',
     optMaxDepth: 'maximum recursion depth',
     optTail: 'number of recent audit entries',
-    optPlan: 'plan.json path, default <workspace>/plan.json',
+    optPlan: 'phasePlan.json path, default <workspace>/phasePlan.json',
     optLang: 'UI / prompt language: EN | CN (ISO 3166-1 Alpha-2)',
     optIntent: 'plan intent: greenfield | feature | refactor | self',
-    optBaselinePlan: 'existing baseline plan.json path (default <workspace>/plan.json)',
+    optBaselinePlan: 'existing baseline phasePlan.json / plan.json path (default <workspace>/phasePlan.json)',
     optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
-    argPlan: 'plan.json path (default = <workspace>/plan.json)',
+    argPlan: 'phasePlan.json or legacy plan.json path (default = <workspace>/phasePlan.json)',
     argProjectFile: 'XXX.xc project file',
     argStepId: 'Step ID, e.g. S001',
     evolveDescription: 'Generate and execute an incremental feature/refactor plan on top of an existing workspace',
@@ -414,7 +486,7 @@ const messages: Messages = {
     auditDecomposeFailed: 'planner.decompose failed',
     lintIssue: (id, message) => ` - [${id}] ${message}`,
     planPreviewTruncated: '… (truncated; see docs/plan.md)',
-    auditPlanPersisted: (p) => `plan.json written: ${p}`,
+    auditPlanPersisted: (p) => `phase plan written: ${p}`,
     projectFileWritten: (p) => `project file updated: ${p}`,
     nextCommand: (command) => `  Next: ${command}`,
     topicEmptyExit: '--topic file is empty, aborting.',
@@ -431,8 +503,10 @@ const messages: Messages = {
     spinDecompose: 'Planner is decomposing along the V-model…',
     decomposeFail: 'Planner decomposition failed',
     plannerInvalidPlan: 'Planner could not produce a valid plan:',
-    plannerInvalidPlanHint1: '  Common cause: every LLM provider returned malformed/truncated JSON (e.g. token loop).',
-    plannerInvalidPlanHint2: '  Investigate: check llm.error / planner.thought entries in .xcompiler/audit.jsonl.',
+    plannerInvalidPlanHint1: '  Common cause: the LLM output did not satisfy the XCompiler plan schema, V-model skeleton, or architecture contract; this error must not be skipped.',
+    plannerInvalidPlanHint2: '  Investigate: check llm.error / planner.thought entries in .xcompiler/audit.jsonl and repair the Planner output against the contract.',
+    plannerTransportFailureHint1: '  Common cause: the LLM provider connection failed, timed out, or the server closed the request; this is not a project plan/source defect.',
+    plannerTransportFailureHint2: '  Investigate: check OPENAI_BASE_URL / provider base_url, model service reachability, network permissions, and timeout settings, then rerun build.',
     decomposeSucceed: (n) => `generated ${n} Step(s)`,
     schemaFail: 'Plan schema validation failed:',
     schemaInvalidSavedAt: (p) => `  full plan saved to: ${p}`,
@@ -447,12 +521,13 @@ const messages: Messages = {
     gate1Cancelled: 'Cancelled, no files written.',
     editTopicMsg: 'Edit topic.md',
     topicWritten: (p) => `topic written: ${p}`,
-    planWritten: (p) => `plan written: ${p}`,
+    planWritten: (p) => `phase plan written: ${p}`,
+    phasePlanWritten: (p) => `phasePlan written: ${p}`,
     planPreviewHeader: '─── plan.md (preview) ───',
     planPreviewFooter: '─────────────────────────',
-    gate2Confirm: 'Confirm this plan? (Final confirmation — confirms write to plan.json)',
+    gate2Confirm: 'Confirm this plan? (Final confirmation — writes phasePlan.json and the current phase plan)',
     gate2AuditLabel: 'Plan Confirmation Gate (Gate 2)',
-    gate2Rejected: 'Not confirmed, abandoned. plan.json was not written.',
+    gate2Rejected: 'Not confirmed, abandoned. phasePlan.json was not written.',
     baselineLoaded: (kind, sources) => `loaded ${kind} baseline from: ${sources}`,
     baselineMissing: (workspace) => `incremental mode requires an existing project baseline in ${workspace} (topic / docs / plan / src).`,
     baselineLanguageOverride: (baseline, source, configured) =>
@@ -465,7 +540,7 @@ const messages: Messages = {
     topicSecBaseline: '## Existing project baseline',
   },
   inspect: {
-    noPlanFound: 'No plan.json found',
+    noPlanFound: 'No phasePlan.json / plan.json found',
     digestLabel: 'digest:',
     stepNotFound: (id) => `Step ${id} not found`,
     secDescription: '— description —',
@@ -491,7 +566,7 @@ const messages: Messages = {
     auditPlanLoaded: (p) => `plan loaded: ${p}`,
     planLoaded: (p) => `Plan loaded: ${p}`,
     planSummary: (language, steps) => `  language=${language}, steps=${steps}`,
-    preflightModelMissing: (names) => `LLM preflight: missing models, disabled [${names}]`,
+    preflightModelMissing: (names) => `LLM preflight: missing models, skipped for this run and lowered to the minimum dynamic score [${names}]`,
     preflightAutoAdded: (n) => `LLM preflight: auto-injected ${n} provider(s) (from ollama /api/tags)`,
     runInterrupted: (id, e, total) => `execution interrupted at ${id} (executed ${e}/${total})`,
     runReasonLabel: '  reason: ',
@@ -604,6 +679,8 @@ const messages: Messages = {
   },
   prompts: {
     plannerSystem: (p) => buildPlannerSystem(p),
+    plannerPhasePlanSystem: (p) => buildPlannerPhasePlanSystem(p),
+    plannerPhaseDecomposeSystem: (p) => buildPlannerPhaseDecomposeSystem(p),
     plannerSelfMode: `SELF-BOOTSTRAP OVERRIDE (takes precedence over conflicting greenfield rules above):
 - The target is the existing XCompiler repository. Preserve its current package.json, tsconfig, bin entries, CLI entrypoints, module layout, public exports, and documentation unless the requirement explicitly changes them.
 - Do not create src/main.ts merely to satisfy a greenfield entrypoint convention. Reuse the entrypoints declared by the existing package.json.
@@ -629,6 +706,7 @@ Question mix (functionality first):
 - At least one quality question requesting measurable latency, throughput, volume, concurrency, accuracy, reliability, or security targets. Never ask only “Any performance requirements?”.
 - At least one extensibility question identifying the most likely future business capability, extension axis, or interface that must remain stable. Never ask only “Should it be extensible?”.
 - If the deliverable shape is unclear, include one boundary question asking whether this should be an API library/SDK/package, a runnable application/CLI/service, or a mixed deliverable with both.
+- If the requirement needs access to external APIs, URLs, or third-party data sources, include one data or boundary question asking whether the user already has a usable API, key, token, or auth method. If they do not, the default for this delivery is to choose a public, no-key/no-token, verifiable API; do not generate placeholder URLs.
 - Order by blocking impact: core functional/data decisions first, then scope and quality, then future evolution.
 - One primary decision per question. Include useful business choices/examples; do not join unrelated questions with “and/or”.
 - For every question, generate 2-5 feasible answer options ordered by priority. The option count is not fixed: use 2 for binary choices, 3 for common defaults, and 4-5 only when there are genuinely distinct viable settings. Do not pad or force every question to exactly 3 options.
@@ -674,10 +752,73 @@ ${opts.baseline || '(missing baseline)'}
 - When baseline files already exist, prefer editing/extending those modules over creating shadow implementations with duplicate behaviour.
 
 Output a strict JSON plan per the system rules.`,
+    plannerPhasePlan: (raw, qa, addenda, opts = {}) =>
+      `Original requirement:
+"""
+${raw}
+"""
+
+Clarification Q&A:
+${qa || '(none)'}
+
+${addenda ? `User addenda (must be strictly followed; takes priority over vague original wording):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+  ? `Incremental intent: ${opts.intent}
+
+Generate a PhasePlan on top of the existing project. Reuse current architecture, files, tests, and dependencies where possible. Preserve existing behaviour outside the requested change.
+
+Existing project baseline:
+"""
+${opts.baseline || '(missing baseline)'}
+"""
+
+`
+  : ''}First generate only the high-level PhasePlan:
+- Assess complexity and choose phase count: simple => P1 current only; moderate => P1 current + at least P2 planned; complex => P1 current + at least P2/P3 planned.
+- P1 objective must be an independently deliverable and verifiable core slice.
+- P2/P3 should contain only future enhancement goals, scope, deliverables, and verification gates. Do not expand any V-model Step.
+- Every phase verificationGate must say failures are fed to Debugger, rolled back to the paired V-model phase, and followed by rerunning subsequent phases.
+- Return only PhasePlan JSON. Do not include steps, architectureModules, or dependencies.`,
+    plannerPhaseDecompose: (raw, qa, addenda, opts) =>
+      `Original requirement:
+"""
+${raw}
+"""
+
+Clarification Q&A:
+${qa || '(none)'}
+
+${addenda ? `User addenda (must be strictly followed; takes priority over vague original wording):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+  ? `Incremental intent: ${opts.intent}
+
+Generate the current phase's incremental V-model StepPlan on top of the existing project. Reuse current architecture, files, tests, and dependencies where possible.
+
+Existing project baseline:
+"""
+${opts.baseline || '(missing baseline)'}
+"""
+
+`
+  : ''}Frozen PhasePlan:
+"""
+${opts.phasePlan}
+"""
+
+Phase to expand now: ${opts.phaseId}
+
+Return a full V-model StepPlan only for ${opts.phaseId}:
+- Every Step.iterationId must equal "${opts.phaseId}".
+- Do not output Steps for any other planned phase; P2/P3 detailed plans are generated only when they become the current phase.
+- If ${opts.phaseId} spans multiple concerns (domain logic, CLI/API, file I/O, external integration, orchestration, tests), declare architectureModules for this phase and map module-level work under CODE/MODULE_TEST subTasks.
+- architectureModules.sourcePaths may only contain product source files under src/. Do not register tests/fixtures, tests/utils, sample files, directories, or docs as architecture modules.
+- dependencies contains only packages required by this phase; Python must include pytest; never output requirements.txt.
+- This phase must contain the canonical eight V-model macro Steps and synchronous paired test-design outputs.
+
+Return strict JSON StepPlan for the current phase only.`,
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
       'DEBUG may edit upstream source files and tests within the current allowedWrites. If the failure reveals a real implementation, contract, or downstream integration mismatch, fix that real defect; do not pass by weakening assertions, skipping tests, deleting failing cases, or merely accommodating an incorrect test. ' +
+      'If the failure is a missing third-party dependency or wrong library choice, use add_dependency with the real package name or change the source back to the real library selected by HIGH_LEVEL_DESIGN; never add try/except ImportError fake modules, fake classes/functions, empty implementations, or fallback mocks in production src/ code to bypass the error. ' +
       'Begin with read_file / code_search to localise the issue, then make the smallest possible fix via apply_patch / replace_in_file / add_dependency, and finally run_tests to verify. ' +
       'If the failure log shows a network/API failure, do not stop at probing endpoints: use at most two consecutive http_fetch probes, reject 2xx responses with empty or unusable bodies, then patch the real integration and verify with run_program plus run_tests. Do not set done=true while the entrypoint still reports a network/API failure.' +
       (suggestions ? `\n\n${suggestions}` : ''),
@@ -696,17 +837,18 @@ Output a strict JSON plan per the system rules.`,
     author: 'Use write_file to create new files; prefer paths inside the current Step writable allowlist.',
     tester:
       'Write and run pytest tests verifying function behaviour; on failure parse with analyze_error. ' +
-      '[Self-contained fixtures] Tests **must NOT** open() a sample file that does not exist on disk (e.g. "test.dbc"); ' +
-      'when the target function needs file input, either use pytest tmp_path to construct content inside the test, ' +
-      'or use write_file to put a fixture under tests/fixtures/<name> — test/DEBUG phases already grant write permission ' +
-      'to that directory, sub-dirs are auto-mkdir\'d, and **fixture paths do NOT need to be pre-declared in outputs**. ' +
+      '[Self-contained fixtures] Tests **must NOT** open() a sample file that does not exist on disk. ' +
+      'When the target function needs file input, first reuse a real user/workspace sample; if none exists, use http_fetch to get a small reference sample from official docs, the upstream repository, or a public standard/example, ' +
+      'save it under tests/fixtures/<name>, and record the source. Only for simple text formats such as CSV/JSON/INI may you construct a minimal pytest tmp_path sample and immediately run_tests. ' +
+      'Test/DEBUG phases already grant write permission to tests/fixtures/, sub-dirs are auto-mkdir\'d, and **fixture paths do NOT need to be pre-declared in outputs**. ' +
       'When generating tests, always emit every dependent resource so the Debugger does not loop on FileNotFoundError. ' +
       '[Fixture iteration] If a running test raises "Invalid syntax / Parse error / Malformed" from the target function, ' +
-      'your fixture content does not match the format spec: read_file to inspect, write_file to rewrite a minimal valid ' +
-      'sample, then run_tests. Never edit the implementation or assertions to "fix" a parse error.',
+      'your fixture content does not match the format spec: read_file to inspect, then prefer a user sample or authoritative http_fetch reference before rewriting and running tests. ' +
+      'After repeated failures on a complex domain format, stop inventing from memory and ask for a user sample or network reference. Never edit the implementation or assertions to "fix" a parse error.',
     dep_resolver: 'On ModuleNotFoundError, use add_dependency to write the package back into requirements.txt and rebuild the sandbox.',
     debugger:
-      'First run_tests / run_python to reproduce the error → analyze_error → patch / replace_in_file to fix → run_tests again. Make the smallest possible change each round. ' +
+      'First run_tests / run_python to reproduce the error → analyze_error → patch / replace_in_file / add_dependency to fix → run_tests again. Make the smallest possible change each round. ' +
+      '[Missing dependencies] Add the real dependency or use the real library selected by the design; never fake modules/classes/functions, empty implementations, or fallback mocks in production src/ code. ' +
       '[Network/API failures] Locate the failing URL, try only a small number of replacement API probes, then patch the source and run_program to prove the entrypoint no longer emits API failure. ' +
       '[Important] If replace_in_file on the same file fails ≥ 2 times in a row, switch to read_file and then patch or rewrite within the current runtime chunk limit; stop guessing the find string. ' +
       '[No no-ops] replace_in_file find and replace must differ — if you only want to "verify" a snippet, use read_file; do not submit identical-string replacements.',
@@ -733,7 +875,7 @@ Output a strict JSON plan per the system rules.`,
     ollamaModelMissing: (provider, model, baseUrl) =>
       `provider "${provider}": model "${model}" NOT installed on ${baseUrl} (run \`ollama pull ${model}\`)`,
     ollamaModelOk: (provider, model) => `provider "${provider}": model "${model}" available`,
-    openaiKeyMissing: (provider) => `provider "${provider}": api_key empty (set OPENAI_API_KEY or config.llm.providers.${provider}.api_key)`,
+    openaiKeyMissing: (provider) => `provider "${provider}": api_key empty (set the provider env var such as OPENROUTER_API_KEY, or config.llm.providers.${provider}.api_key)`,
     openaiReachable: (provider, baseUrl) => `provider "${provider}": OpenAI endpoint reachable @ ${baseUrl}`,
     openaiUnreachable: (provider, baseUrl, msg) => `provider "${provider}": OpenAI endpoint unreachable @ ${baseUrl} — ${msg}`,
     openaiModelListMissing: (provider, model) =>

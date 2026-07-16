@@ -8,6 +8,8 @@ import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import { t } from '../i18n/index.js';
 import type { PluginHost } from '../plugins/host.js';
 
+type ProviderConfig = XCompilerConfig['llm']['providers'][string];
+
 export class LLMRouter {
   private readonly clients = new Map<string, LLMClient>();
 
@@ -106,6 +108,8 @@ export class LLMRouter {
 /** 顺序尝试 provider，第一个成功即返回；全部失败则抛最后一个错。 */
 class FallbackClient implements LLMClient {
   readonly name: string;
+  private static readonly MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
+
   constructor(
     private readonly chain: { name: string; client: LLMClient }[],
     private readonly audit: AuditLogger | undefined,
@@ -121,9 +125,53 @@ class FallbackClient implements LLMClient {
     let lastErr: unknown;
     for (let i = 0; i < this.chain.length; i++) {
       const c = this.chain[i]!;
-      try {
+      let attemptOptions = options;
+      for (let providerAttempt = 1; providerAttempt <= FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS; providerAttempt++) {
+        let out: string;
         try { options?.onProviderStart?.(c.name, c.client.name); } catch { /* display only */ }
-        const out = await c.client.chat(messages, options);
+        try {
+          out = await c.client.chat(messages, attemptOptions);
+        } catch (err) {
+          lastErr = err;
+          if (
+            providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS &&
+            isRetryableLLMError(err)
+          ) {
+            const retryWithoutStreaming = shouldRetryWithoutStreaming(err, attemptOptions);
+            if (retryWithoutStreaming) {
+              attemptOptions = withoutStreamingOptions(attemptOptions);
+            }
+            await this.audit?.event(
+              'note',
+              retryWithoutStreaming
+                ? `${this.role} retrying ${c.client.name} without streaming after transient LLM stream failure`
+                : `${this.role} retrying ${c.client.name} after transient LLM stream failure`,
+              {
+                messageId: retryWithoutStreaming ? 'llm.provider_retry_non_stream' : 'llm.provider_retry',
+                provider: c.name,
+                attempt: i + 1,
+                providerAttempt,
+                remaining: this.chain.length - i - 1,
+                error: errorMessage(err),
+              },
+            );
+            continue;
+          }
+          this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
+          await this.audit?.event(
+            'llm.error',
+            t().llm.providerCallFailed(this.role, c.client.name),
+            {
+              messageId: 'llm.provider_call_failed',
+              provider: c.name,
+              attempt: i + 1,
+              providerAttempt,
+              remaining: this.chain.length - i - 1,
+              error: errorMessage(err),
+            },
+          );
+          break;
+        }
         if (options?.validate) {
           try {
             options.validate(out);
@@ -135,6 +183,7 @@ class FallbackClient implements LLMClient {
                 messageId: 'llm.provider_validation_failed',
                 provider: c.name,
                 attempt: i + 1,
+                providerAttempt,
                 remaining: this.chain.length - i - 1,
                 error: (vErr as Error).message,
                 output_preview: out.slice(0, 400),
@@ -142,30 +191,54 @@ class FallbackClient implements LLMClient {
             );
             this.scores?.decay(c.name, `validate failed in role ${this.role}`);
             lastErr = vErr;
-            continue;
+            break;
           }
         }
         this.scores?.boost(c.name, `success in role ${this.role}`);
         try { options?.onProvider?.(c.name); } catch { /* observability must not fail the call */ }
         return out;
-      } catch (err) {
-        lastErr = err;
-        this.scores?.decay(c.name, `chat threw in role ${this.role}: ${(err as Error).message.slice(0, 120)}`);
-        await this.audit?.event(
-          'llm.error',
-          t().llm.providerCallFailed(this.role, c.client.name),
-          {
-            messageId: 'llm.provider_call_failed',
-            provider: c.name,
-            attempt: i + 1,
-            remaining: this.chain.length - i - 1,
-            error: (err as Error).message,
-          },
-        );
       }
     }
     throw lastErr instanceof Error ? lastErr : new Error('all LLM providers failed');
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function withoutStreamingOptions(options?: ChatOptions): ChatOptions | undefined {
+  if (!options?.onToken) return options;
+  const next: ChatOptions = { ...options };
+  delete next.onToken;
+  delete next.streamStopWhen;
+  return next;
+}
+
+function shouldRetryWithoutStreaming(err: unknown, options?: ChatOptions): boolean {
+  if (!options?.onToken) return false;
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('stream idle') ||
+    msg.includes('degenerate non-json prefix') ||
+    msg.includes('stream response aborted') ||
+    msg.includes('response aborted before completion') ||
+    msg.includes('fetch failed') ||
+    msg.includes('terminated')
+  );
+}
+
+function isRetryableLLMError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('token loop') ||
+    msg.includes('degenerate non-json prefix') ||
+    msg.includes('stream idle') ||
+    msg.includes('stream response aborted') ||
+    msg.includes('response aborted') ||
+    msg.includes('fetch failed') ||
+    msg.includes('terminated')
+  );
 }
 
 function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMClient {
@@ -186,18 +259,10 @@ function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMC
 }
 
 function createClient(
-  name: string,
-  p: {
-    api_key?: string;
-    base_url?: string;
-    model: string;
-    request_timeout_ms?: number;
-    stream_idle_timeout_ms?: number;
-    max_output_chars?: number;
-    think?: boolean;
-  },
+  _name: string,
+  p: ProviderConfig,
 ): LLMClient | null {
-  if (isOllamaProvider(name)) {
+  if (isOllamaProvider(p)) {
     return new OllamaClient({
       baseUrl: normalizeBaseUrl(p.base_url, 'http://localhost:11434'),
       model: p.model,
@@ -207,11 +272,12 @@ function createClient(
       think: p.think,
     });
   }
-  if (isOpenAICompatibleProvider(name)) {
+  if (isOpenAICompatibleProvider(p)) {
     return new OpenAIClient({
       apiKey: p.api_key ?? '',
       baseUrl: normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1'),
       model: p.model,
+      jsonResponseFormat: p.json_response_format,
       requestTimeoutMs: p.request_timeout_ms,
       streamIdleTimeoutMs: p.stream_idle_timeout_ms,
       maxOutputChars: p.max_output_chars,
@@ -220,21 +286,14 @@ function createClient(
   return null;
 }
 
-/** Provider names backed by Ollama's native /api/chat protocol. */
-export function isOllamaProvider(name: string): boolean {
-  return name === 'ollama' || name.startsWith('ollama_');
+/** Providers backed by Ollama's native /api/chat protocol. */
+export function isOllamaProvider(provider: Pick<ProviderConfig, 'type'>): boolean {
+  return provider.type === 'ollama';
 }
 
-/** Provider names backed by OpenAI-compatible /v1/chat/completions APIs. */
-export function isOpenAICompatibleProvider(name: string): boolean {
-  return (
-    name === 'openai' ||
-    name.startsWith('openai_') ||
-    name === 'openapi' ||
-    name.startsWith('openapi_') ||
-    name === 'mlx' ||
-    name.startsWith('mlx_')
-  );
+/** Providers backed by OpenAI-compatible /v1/chat/completions APIs. */
+export function isOpenAICompatibleProvider(provider: Pick<ProviderConfig, 'type'>): boolean {
+  return provider.type === 'openai';
 }
 
 /**

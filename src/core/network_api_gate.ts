@@ -6,7 +6,7 @@ export interface NetworkApiFailure {
 }
 
 const FAILURE_LINE_RE =
-  /\b(?:network|api|http|https|request|requests|fetch|connection|dns|ssl|tls|socket|timeout|timed out|status code|client error|server error)\b.*\b(?:fail(?:ed|ure)?|error|timeout|timed out|refused|reset|unreachable|unavailable|forbidden|unauthorized|not found|too many requests|bad gateway|service unavailable)\b|\b(?:fail(?:ed|ure)?|error|timeout|timed out|refused|reset|unreachable|unavailable)\b.*\b(?:network|api|http|https|request|requests|fetch|connection|dns|ssl|tls|socket)\b|(?:网络|接口|API|HTTP|请求|连接|超时|限流|不可用)[^\n]{0,80}(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)|(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)[^\n]{0,80}(?:网络|接口|API|HTTP|请求|连接|服务)/iu;
+  /\b(?:network|api|http|https|request|requests|fetch|connection|dns|ssl|tls|socket|timed out|status code|client error|server error)\b.*\b(?:fail(?:ed|ure)?|error|timed out|timeout(?:\s+(?:exceeded|after|while|connecting|reading))|refused|reset|unreachable|unavailable|forbidden|unauthorized|not found|too many requests|bad gateway|service unavailable)\b|\b(?:fail(?:ed|ure)?|error|timed out|timeout(?:\s+(?:exceeded|after|while|connecting|reading))|refused|reset|unreachable|unavailable)\b.*\b(?:network|api|http|https|request|requests|fetch|connection|dns|ssl|tls|socket)\b|(?:网络|接口|API|HTTP|请求|连接|超时|限流|不可用)[^\n]{0,80}(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)|(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)[^\n]{0,80}(?:网络|接口|API|HTTP|请求|连接|服务)/iu;
 
 const EXCEPTION_RE =
   /\b(?:ConnectionError|Timeout|ReadTimeout|ConnectTimeout|HTTPError|SSLError|ProxyError|TooManyRedirects|MaxRetryError|NameResolutionError|gaierror|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN)\b/u;

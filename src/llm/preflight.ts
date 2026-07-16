@@ -2,8 +2,8 @@ import type { XCompilerConfig } from '../config/config.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import { getJson } from './ollama.js';
-import { normalizeBaseUrl } from './router.js';
-import type { ScoreStore } from './scores.js';
+import { isOllamaProvider, normalizeBaseUrl } from './router.js';
+import { ScoreStore } from './scores.js';
 
 /** ollama 的 /api/tags 响应签名（仅取 model 字段）。 */
 interface OllamaTagsResponse {
@@ -18,10 +18,12 @@ export interface PreflightOptions {
 }
 
 export interface PreflightResult {
-  /** 探活后被置 0 评分的 provider（模型不在 ollama 服务器上）。 */
+  /** 探活后模型缺失的 provider；当前运行会跳过，并把动态评分降到最低值。 */
   zeroed: string[];
-  /** 本次探活不可达的 provider；只影响当前运行，不持久化为 score=0。 */
+  /** 本次探活不可达或模型缺失的 provider；只影响当前运行，不持久化为 score=0。 */
   unreachable: string[];
+  /** 历史 sidecar 把非 ollama provider 置 0，但当前没有其他活候选时恢复的 provider；用户配置 score=0 不恢复。 */
+  revived: string[];
   /** 自动加入的合成 provider（key=合成名, value=模型名）。 */
   autoAdded: Record<string, string>;
   /** 每个 ollama base_url 的可达模型清单（探活成功才有）。 */
@@ -31,9 +33,9 @@ export interface PreflightResult {
 /**
  * 启动期 LLM 自检：
  *  1. 对每个 ollama provider，GET `${base_url}/api/tags`，比对配置的 model 是否存在。
- *  2. 不存在 → ScoreStore.set(name, 0, 'preflight: model not on server')。
- *     存在但当前评分=0 → 恢复为 max(1, 当前)，让用户手工拉模型后无需再编辑评分。
- *  3. 全部 ollama provider 都被置 0 时（任何角色都没活着的候选），从可达 ollama 服务器扫描
+ *  2. 不存在 → 当前运行跳过该 provider，并把 ScoreStore 降到最低动态分。
+ *     存在但当前评分=0 且不是用户显式禁用 → 恢复为 1，让用户手工拉模型后无需再编辑评分。
+ *  3. 全部 ollama provider 都不可用时（任何角色都没活着的候选），从可达 ollama 服务器扫描
  *     全量 tags，把每个模型注册为合成 provider `auto_<sanitized>`，加入到所有现存角色的
  *     候选数组里。完成后再次校验：若仍有角色为空，抛错让 CLI 退出（exit code 7）。
  *
@@ -47,12 +49,12 @@ export async function preflightProviders(
 ): Promise<PreflightResult> {
   const probeTimeoutMs = options.probeTimeoutMs ?? 3000;
   const fetchTags = options.fetchTags ?? defaultFetchTags;
-  const result: PreflightResult = { zeroed: [], unreachable: [], autoAdded: {}, tags: {} };
+  const result: PreflightResult = { zeroed: [], unreachable: [], revived: [], autoAdded: {}, tags: {} };
 
   // 1) 收集所有 ollama provider 及其 base_url
   const ollamaProviders: Array<{ name: string; baseUrl: string; model: string }> = [];
   for (const [name, p] of Object.entries(cfg.llm.providers)) {
-    if (name === 'ollama' || name.startsWith('ollama_')) {
+    if (isOllamaProvider(p)) {
       ollamaProviders.push({
         name,
         baseUrl: normalizeBaseUrl(p.base_url, 'http://localhost:11434'),
@@ -92,17 +94,29 @@ export async function preflightProviders(
       continue;
     }
     if (!tags.includes(p.model)) {
-      scores.set(p.name, 0, `preflight: model "${p.model}" not on ${p.baseUrl}`);
+      scores.set(p.name, ScoreStore.MIN, `preflight: model "${p.model}" not on ${p.baseUrl}`);
       result.zeroed.push(p.name);
-    } else if (scores.get(p.name) === 0) {
-      // 之前被置 0 过，现在模型回来了 → 恢复为 1
+      if (!result.unreachable.includes(p.name)) result.unreachable.push(p.name);
+    } else if (scores.get(p.name) === 0 && !scores.isUserDisabled(p.name)) {
+      // 之前被置 0 过，现在模型回来了且不是用户显式禁用 → 恢复为 1
       scores.set(p.name, 1, `preflight: model "${p.model}" returned to ${p.baseUrl}`);
     }
   }
 
   // 4) 检查每个角色是否还有活着的候选；若没有，触发 auto-import
   const unavailable = new Set(result.unreachable);
-  const rolesNeedingRescue = listRolesWithoutLiveProvider(cfg, scores, unavailable);
+  let rolesNeedingRescue = listRolesWithoutLiveProvider(cfg, scores, unavailable);
+  if (rolesNeedingRescue.length > 0) {
+    result.revived = reviveScoreZeroNonOllamaCandidates(cfg, scores, unavailable, rolesNeedingRescue);
+    if (result.revived.length > 0) {
+      await audit?.event('llm.score', `Revived score-zero non-Ollama providers: ${result.revived.join(', ')}`, {
+        messageId: 'llm.preflight_provider_revived',
+        providers: result.revived,
+        roles: rolesNeedingRescue,
+      });
+      rolesNeedingRescue = listRolesWithoutLiveProvider(cfg, scores, unavailable);
+    }
+  }
   if (rolesNeedingRescue.length > 0) {
     const reachable = baseUrls.filter((u) => result.tags[u] && result.tags[u]!.length > 0);
     if (reachable.length === 0) {
@@ -118,9 +132,11 @@ export async function preflightProviders(
       const synthName = `auto_${model.replace(/[^a-zA-Z0-9]+/g, '_').toLowerCase()}`;
       if (cfg.llm.providers[synthName]) continue; // 已经加过了
       cfg.llm.providers[synthName] = {
+        type: 'ollama',
         api_key: '',
         base_url: sourceUrl,
         model,
+        tags: undefined,
       };
       result.autoAdded[synthName] = model;
       // 默认评分 1
@@ -182,6 +198,29 @@ function listRolesWithoutLiveProvider(
     if (live.length === 0) out.push(r);
   }
   return out;
+}
+
+function reviveScoreZeroNonOllamaCandidates(
+  cfg: XCompilerConfig,
+  scores: ScoreStore,
+  unavailable: ReadonlySet<string>,
+  rolesNeedingRescue: string[],
+): string[] {
+  const revived: string[] = [];
+  for (const role of rolesNeedingRescue) {
+    for (const name of candidatesForRole(cfg, role)) {
+      if (revived.includes(name)) continue;
+      if (unavailable.has(name)) continue;
+      const provider = cfg.llm.providers[name];
+      if (!provider) continue;
+      if (isOllamaProvider(provider)) continue;
+      if (scores.get(name) !== 0) continue;
+      if (scores.isUserDisabled(name)) continue;
+      scores.set(name, 1, `preflight: revived non-Ollama provider for role ${role}`);
+      revived.push(name);
+    }
+  }
+  return revived;
 }
 
 async function defaultFetchTags(baseUrl: string, timeoutMs: number): Promise<string[]> {

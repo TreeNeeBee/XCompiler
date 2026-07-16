@@ -1,13 +1,18 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
+export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+export const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface OpenAIConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
-  /** 请求 wall-clock 总超时，毫秒。默认 10 分钟，0 表示无超时。 */
+  /** Structured JSON response format for OpenAI-compatible providers. */
+  jsonResponseFormat?: 'json_object' | 'json_schema' | 'none';
+  /** 请求 wall-clock 总超时，毫秒。默认 15 分钟，0 表示无超时。 */
   requestTimeoutMs?: number;
-  /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 60s，0 关闭。 */
+  /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 5 分钟，0 关闭。 */
   streamIdleTimeoutMs?: number;
   /** 流式模式下输出字符上限，超过即中断（防 token-loop 撑爆内存）；默认 200_000，0 关闭。 */
   maxOutputChars?: number;
@@ -44,11 +49,12 @@ export class OpenAIClient implements LLMClient {
       stream: !!options?.onToken,
     };
     if (options?.responseFormat === 'json') {
-      body.response_format = { type: 'json_object' };
+      const responseFormat = buildJsonResponseFormat(this.cfg.jsonResponseFormat ?? 'json_object');
+      if (responseFormat) body.response_format = responseFormat;
     }
     if (options?.onToken) return this.streamChat(url, body, options);
     const ctrl = new AbortController();
-    const timeoutMs = this.cfg.requestTimeoutMs ?? 10 * 60 * 1000;
+    const timeoutMs = this.cfg.requestTimeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
     const timer = timeoutMs > 0 ? setTimeout(() => ctrl.abort(new Error(`request timed out after ${timeoutMs}ms`)), timeoutMs) : null;
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
@@ -73,8 +79,8 @@ export class OpenAIClient implements LLMClient {
 
   private async streamChat(url: string, body: Record<string, unknown>, options: ChatOptions): Promise<string> {
     const ctrl = new AbortController();
-    const timeoutMs = this.cfg.requestTimeoutMs ?? 10 * 60 * 1000;
-    const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? 60 * 1000;
+    const timeoutMs = this.cfg.requestTimeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
+    const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS;
     const maxOutputChars = this.cfg.maxOutputChars ?? 200_000;
 
     // 把 watchdog 触发的中断原因记下来，因为底层 reader 在 abort 时
@@ -132,6 +138,7 @@ export class OpenAIClient implements LLMClient {
       let done = false;
       let cancelled = false;
       const repeatDetector = new RepeatTokenDetector();
+      const expectsJsonObject = options.responseFormat === 'json';
       const cancelReader = () => {
         if (cancelled) return;
         cancelled = true;
@@ -175,7 +182,11 @@ export class OpenAIClient implements LLMClient {
           const piece = choice.delta?.content ?? choice.message?.content ?? '';
           if (!piece) continue;
           aggregate += piece;
+          armIdle();
           options.onToken?.(piece);
+          if (expectsJsonObject && hasDegenerateJsonPrefix(aggregate)) {
+            throw new Error('detected degenerate non-JSON prefix in OpenAI stream; aborting');
+          }
           if (repeatDetector.feed(piece)) {
             throw new Error('detected token loop in OpenAI stream (repeated identical token); aborting');
           }
@@ -199,7 +210,6 @@ export class OpenAIClient implements LLMClient {
         while (!done) {
           const { value, done: readerDone } = await reader.read();
           if (readerDone) break;
-          armIdle();
           buf += decoder.decode(value, { stream: true });
           let sep = findSseSeparator(buf);
           while (sep) {
@@ -235,6 +245,66 @@ export class OpenAIClient implements LLMClient {
       cleanup();
     }
   }
+}
+
+function buildJsonResponseFormat(
+  format: 'json_object' | 'json_schema' | 'none',
+): Record<string, unknown> | undefined {
+  if (format === 'none') return undefined;
+  if (format === 'json_object') return { type: 'json_object' };
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: 'xcompiler_json_response',
+      strict: false,
+      schema: {
+        type: 'object',
+        properties: {
+          thoughts: { type: 'string' },
+          actions: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string' },
+                args: {
+                  type: 'object',
+                  additionalProperties: true,
+                },
+              },
+              required: ['tool', 'args'],
+              additionalProperties: true,
+            },
+          },
+          done: { type: 'boolean' },
+        },
+        additionalProperties: true,
+      },
+    },
+  };
+}
+
+function hasDegenerateJsonPrefix(text: string): boolean {
+  if (text.length < 128) return false;
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false;
+  const firstJson = Math.min(
+    ...['{', '['].map((char) => {
+      const index = trimmed.indexOf(char);
+      return index < 0 ? Number.POSITIVE_INFINITY : index;
+    }),
+  );
+  if (Number.isFinite(firstJson) && firstJson < 128) return false;
+  if (!Number.isFinite(firstJson) && trimmed.length >= 1024) return true;
+  if (Number.isFinite(firstJson) && firstJson >= 1024) return true;
+  const sample = trimmed.slice(0, 256);
+  if (/^[0-9\s.,"'`-]+$/u.test(sample)) return true;
+  const chars = [...sample.replace(/\s+/gu, '')];
+  if (chars.length < 96) return false;
+  const counts = new Map<string, number>();
+  for (const char of chars) counts.set(char, (counts.get(char) ?? 0) + 1);
+  const max = Math.max(...counts.values());
+  return max / chars.length >= 0.85;
 }
 
 function findSseSeparator(buf: string): { index: number; length: number } | null {

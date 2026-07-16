@@ -104,4 +104,102 @@ describe('calibrateArchitectureStepMappings', () => {
     };
     expect(validateArchitectureContract(modules, calibrated, 'python', demand)).toEqual([]);
   });
+
+  it('infers MODULE_TEST coverage through transitive V-model dependencies', () => {
+    const modules: ArchitectureModule[] = [
+      {
+        id: 'M001',
+        name: 'Weather',
+        responsibility: 'Fetch and normalize weather forecast data.',
+        sourcePaths: ['src/weather_client.py'],
+        testPaths: ['tests/test_weather_client.py'],
+        dependencies: [],
+      },
+    ];
+    const rawSteps = [
+      step({ id: 'S001', phase: 'CODE', outputs: ['src/weather_client.py'] }),
+      step({ id: 'S002', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_unit_weather.py'], dependsOn: ['S001'] }),
+      step({ id: 'S003', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md'], dependsOn: ['S002'] }),
+      step({ id: 'S004', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S003'] }),
+    ];
+
+    const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
+    const moduleTest = calibrated.find((item) => item.id === 'S004')!;
+
+    expect(moduleTest.outputs).toContain('tests/test_weather_client.py');
+    expect(moduleTest.dependsOn).toContain('S001');
+    expect(moduleTest.subTasks?.map((task) => task.id)).toEqual(['M001']);
+    expect(validateArchitectureContract(modules, calibrated, 'python', {
+      nonTrivial: true,
+      surfaces: ['cli', 'integration'],
+      baselineModules: 0,
+      minModules: 1,
+      reasonLabel: 'test',
+    })).toEqual([]);
+  });
+
+  it('keeps architecture module testPaths owned by MODULE_TEST instead of UNIT_TEST', () => {
+    const modules: ArchitectureModule[] = [
+      {
+        id: 'M001',
+        name: 'Weather',
+        responsibility: 'Fetch and normalize weather forecast data.',
+        sourcePaths: ['src/weather_client.py'],
+        testPaths: ['tests/test_weather_client.py'],
+        dependencies: [],
+      },
+    ];
+    const rawSteps = [
+      step({ id: 'S001', phase: 'CODE', outputs: ['src/weather_client.py'] }),
+      step({ id: 'S002', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_weather_client.py'], dependsOn: ['S001'] }),
+      step({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S002'] }),
+    ];
+
+    const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
+    const unitTest = calibrated.find((item) => item.id === 'S002')!;
+    const moduleTest = calibrated.find((item) => item.id === 'S003')!;
+
+    expect(unitTest.outputs).toEqual(['tests/test_unit_s002.py']);
+    expect(moduleTest.outputs).toContain('tests/test_weather_client.py');
+    expect(validateArchitectureContract(modules, calibrated, 'python', {
+      nonTrivial: true,
+      surfaces: ['cli', 'integration'],
+      baselineModules: 0,
+      minModules: 1,
+      reasonLabel: 'test',
+    })).toEqual([]);
+  });
+
+  it('moves architecture module testPaths away from INTEGRATION_TEST outputs', () => {
+    const modules: ArchitectureModule[] = [
+      {
+        id: 'M001',
+        name: 'IntegrationBoundary',
+        responsibility: 'Coordinate external API integration.',
+        sourcePaths: ['src/integration.py'],
+        testPaths: ['tests/test_integration.py'],
+        dependencies: [],
+      },
+    ];
+    const rawSteps = [
+      step({ id: 'S001', phase: 'CODE', outputs: ['src/integration.py'] }),
+      step({ id: 'S002', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_unit_integration.py'], dependsOn: ['S001'] }),
+      step({ id: 'S003', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['tests/test_integration.py'], dependsOn: ['S002'] }),
+      step({ id: 'S004', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S003'] }),
+    ];
+
+    const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
+    const integrationTest = calibrated.find((item) => item.id === 'S003')!;
+    const moduleTest = calibrated.find((item) => item.id === 'S004')!;
+
+    expect(integrationTest.outputs).toEqual(['tests/test_integration_s003.py']);
+    expect(moduleTest.outputs).toContain('tests/test_integration.py');
+    expect(validateArchitectureContract(modules, calibrated, 'python', {
+      nonTrivial: true,
+      surfaces: ['integration'],
+      baselineModules: 0,
+      minModules: 1,
+      reasonLabel: 'test',
+    })).toEqual([]);
+  });
 });

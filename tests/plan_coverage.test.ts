@@ -29,8 +29,8 @@ describe('calibratePlanCoverage', () => {
   it('appends a synthetic UNIT_TEST step covering all uncovered CODE steps when planner forgot UNIT_TEST entirely', () => {
     const steps: Step[] = [
       mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
-      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S001'] }),
-      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S002'] }),
+      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
       mkStep({ id: 'S004', phase: 'CODE', outputs: ['src/dbc_parser.py'], dependsOn: ['S003'] }),
       mkStep({ id: 'S005', phase: 'CODE', outputs: ['src/excel_exporter.py'], dependsOn: ['S004'] }),
     ];
@@ -68,6 +68,38 @@ describe('calibratePlanCoverage', () => {
     expect(out[3]!.dependsOn).toEqual(['S002']);
   });
 
+  it('adds a runnable test file to existing V-model test steps that only declared report docs', () => {
+    const steps: Step[] = [
+      mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/app.py'] }),
+      mkStep({
+        id: 'S002',
+        phase: 'UNIT_TEST',
+        role: 'Tester',
+        outputs: ['docs/05-unit-test.md', 'reports/unit-test-report.md'],
+        dependsOn: ['S001'],
+      }),
+      mkStep({
+        id: 'S003',
+        phase: 'INTEGRATION_TEST',
+        role: 'Tester',
+        outputs: ['docs/06-integration-test.md'],
+        dependsOn: ['S002'],
+      }),
+    ];
+
+    const out = calibratePlanCoverage(steps);
+
+    expect(out).not.toBe(steps);
+    expect(out).toHaveLength(3);
+    expect(out[1]!.outputs).toEqual([
+      'docs/05-unit-test.md',
+      'reports/unit-test-report.md',
+      'tests/test_unit_s002.py',
+    ]);
+    expect(out[1]!.systemPrompt).toContain('tests/test_unit_s002.py');
+    expect(out[2]!.outputs).toContain('tests/test_integration_s003.py');
+  });
+
   it('skips CODE steps whose outputs are only __init__.py marker files', () => {
     const steps: Step[] = [
       mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/pkg/__init__.py'] }),
@@ -78,8 +110,8 @@ describe('calibratePlanCoverage', () => {
   it('rewires downstream test phases to the synthetic UNIT_TEST step so the calibrated plan fully passes lint', () => {
     const steps: Step[] = [
       mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
-      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S001'] }),
-      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S002'] }),
+      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
       mkStep({ id: 'S004', phase: 'CODE', outputs: ['src/dbc_parser.py', 'docs/tests/unit-test-plan.md'], dependsOn: ['S003'] }),
       mkStep({ id: 'S005', phase: 'CODE', outputs: ['src/excel_exporter.py'], dependsOn: ['S004'] }),
       mkStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md'], dependsOn: ['S005'] }),

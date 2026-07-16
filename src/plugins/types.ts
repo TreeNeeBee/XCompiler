@@ -46,6 +46,8 @@ export interface HookContextMap {
   'compile.finish': {
     plan: Plan;
     planPath: string;
+    phasePlanPath?: string;
+    currentPlanPath?: string;
   };
   'run.before': {
     plan: Plan;

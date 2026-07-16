@@ -80,6 +80,8 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
     '在当前 Step writable allowlist 内创建或覆盖文件（单次 content 受运行时 chunk limit 限制；大文件按模块/函数/类边界用 write_file 首段 + append_file 续写）。注意：runtime 管理的依赖清单请用 add_dependency 维护。',
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
+    const argError = validateTextFileArgs('write_file', args);
+    if (argError) return { ok: false, error: argError };
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return {
         ok: false,
@@ -128,6 +130,8 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
     '把一段内容追加到当前 Step writable allowlist 内文件末尾（单次 content 受运行时 chunk limit 限制，用于配合 write_file 分块写出大文件）。',
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
+    const argError = validateTextFileArgs('append_file', args);
+    if (argError) return { ok: false, error: argError };
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return { ok: false, error: 'append denied: requirements.txt 由 add_dependency 维护。' };
     }
@@ -162,6 +166,18 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
     }
   },
 };
+
+function validateTextFileArgs(tool: string, args: unknown): string | undefined {
+  if (!args || typeof args !== 'object') return `invalid ${tool} args: expected object`;
+  const candidate = args as { path?: unknown; content?: unknown };
+  if (typeof candidate.path !== 'string' || candidate.path.trim() === '') {
+    return `invalid ${tool} args: path must be a non-empty string`;
+  }
+  if (typeof candidate.content !== 'string') {
+    return `invalid ${tool} args: content must be a string`;
+  }
+  return undefined;
+}
 
 export const listDirTool: Tool<{ path?: string }, { entries: string[] }> = {
   name: 'list_dir',

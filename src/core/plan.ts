@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const DEFAULT_PLAN_FILE = 'plan.json';
+
 export const PHASES = [
   'REQUIREMENT_ANALYSIS',
   'HIGH_LEVEL_DESIGN',
@@ -44,16 +46,16 @@ export const V_MODEL_TEST_PHASES = [
 /** Synchronous test-design mapping generated while executing the corresponding left-side phase. */
 export const V_MODEL_SOURCE_TO_TEST_PHASE = {
   REQUIREMENT_ANALYSIS: 'FUNCTIONAL_TEST',
-  HIGH_LEVEL_DESIGN: 'INTEGRATION_TEST',
-  DETAILED_DESIGN: 'MODULE_TEST',
+  HIGH_LEVEL_DESIGN: 'MODULE_TEST',
+  DETAILED_DESIGN: 'INTEGRATION_TEST',
   CODE: 'UNIT_TEST',
 } as const satisfies Record<(typeof V_MODEL_DEVELOPMENT_PHASES)[number], (typeof V_MODEL_TEST_PHASES)[number]>;
 
 /** Test failure rollback target: a failed test phase debugs from its paired source phase. */
 export const V_MODEL_TEST_TO_SOURCE_PHASE = {
   UNIT_TEST: 'CODE',
-  INTEGRATION_TEST: 'HIGH_LEVEL_DESIGN',
-  MODULE_TEST: 'DETAILED_DESIGN',
+  INTEGRATION_TEST: 'DETAILED_DESIGN',
+  MODULE_TEST: 'HIGH_LEVEL_DESIGN',
   FUNCTIONAL_TEST: 'REQUIREMENT_ANALYSIS',
 } as const satisfies Record<(typeof V_MODEL_TEST_PHASES)[number], (typeof V_MODEL_DEVELOPMENT_PHASES)[number]>;
 
@@ -73,7 +75,7 @@ export type ProjectType = (typeof PROJECT_TYPES)[number];
 export const COMPLEXITY_LEVELS = ['simple', 'moderate', 'complex'] as const;
 export type ComplexityLevel = (typeof COMPLEXITY_LEVELS)[number];
 
-/** Implementation phase status. `current` and `planned` phases are executable iteration cycles. */
+/** Implementation phase status. `current` is materialized as Steps; `planned` remains a PhasePlan goal until loaded. */
 export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'planned', 'deferred'] as const;
 export type ImplementationPhaseStatus = (typeof IMPLEMENTATION_PHASE_STATUSES)[number];
 
@@ -221,6 +223,8 @@ export const PlanSchema = z
     version: z.literal('1'),
     language: z.enum(LANGUAGES).default('python'),
     intent: z.enum(PLAN_INTENTS).default('greenfield'),
+    /** Materialized implementation phase for this phase-specific plan file. */
+    phaseId: z.string().regex(/^P\d{1,3}$/u, 'Plan phaseId must look like P1').default('P1'),
     projectType: z.enum(PROJECT_TYPES).default('application'),
     requirementDigest: z.string().min(1),
     complexityAssessment: ComplexityAssessmentSchema.optional(),

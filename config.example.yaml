@@ -1,50 +1,66 @@
 locale: zh  # CLI / prompt 语言：en 或 zh
 
 llm:
-  # 默认使用本地 ollama 上的 coder 模型
-  default: ollama_code
+  # Default: OpenRouter Free mode through an OpenAI-compatible /v1 endpoint.
+  # Uses OpenRouter's free-route alias by default.
+  default: openrouter_free
   providers:
-    # 设计/需求向：gemma4:31b-mlx（推理与结构化输出更稳）
-    ollama_design:
-      base_url: ${OLLAMA_BASE_URL}
-      model: gemma4:31b-mlx
+    openrouter_free:
+      type: openai
+      api_key: ${OPENROUTER_API_KEY}
+      base_url: ${OPENROUTER_BASE_URL}
+      model: openrouter/free
+      tags: [cluster]
+      # If a provider rejects json_object, set: json_response_format: json_schema
       request_timeout_ms: 900000
       stream_idle_timeout_ms: 300000
-      # 弱服务器生成大型结构化 JSON 时关闭长思考，避免正文首 token 等待数分钟。
-      think: false
-    # 编码/测试/调试向：qwen3.6:35b-mlx
-    ollama_code:
-      base_url: ${OLLAMA_BASE_URL}
-      model: qwen3.6:35b-mlx
-      request_timeout_ms: 900000
-      stream_idle_timeout_ms: 300000
-      think: false
-    # 备用：OpenAI 兼容
-    openai:
-      api_key: ${OPENAI_API_KEY}
-      base_url: ${OPENAI_BASE_URL}
-      model: gpt-4o-mini
-    # 本地 OpenAI-compatible 端点（例如 mlx-server /v1/chat/completions）
-    # mlx_server:
-    #   api_key: ""
-    #   base_url: http://127.0.0.1:8080/v1
-    #   model: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+
+    # Backup: local OpenAI-compatible endpoint, e.g. mlx-server or vLLM.
+    # local_openai:
+    #   type: openai
+    #   api_key: <LOCAL_OPENAI_API_KEY>
+    #   base_url: <LOCAL_OPENAI_BASE_URL>
+    #   model: <LOCAL_OPENAI_MODEL>
+    #   request_timeout_ms: 900000
+    #   stream_idle_timeout_ms: 300000
+
+    # Backup: local Ollama models.
+    # ollama_design:
+    #   type: ollama
+    #   base_url: <OLLAMA_BASE_URL>
+    #   model: <OLLAMA_DESIGN_MODEL>
+    #   request_timeout_ms: 900000
+    #   stream_idle_timeout_ms: 300000
+    #   think: false
+    # ollama_code:
+    #   type: ollama
+    #   base_url: <OLLAMA_BASE_URL>
+    #   model: <OLLAMA_CODE_MODEL>
+    #   request_timeout_ms: 900000
+    #   stream_idle_timeout_ms: 300000
+    #   think: false
 
   # 角色 → provider 数组（兼容单字符串）。
-  # 数组里的 provider 按 ScoreStore 评分降序使用，评分=0 自动跳过。
-  # 启动期 preflight 会探活 ollama /api/tags：模型不在服务器上 → 评分置 0；
-  # 若某角色全部候选都被置 0 → 自动从可达 ollama 服务器扫描 tags 并注入合成 provider。
+  # 数组里的 provider 按 ScoreStore 评分降序使用；用户手动设置 score=0 时跳过该 provider。
+  # 默认只启用 OpenRouter；如需本地备选，取消 providers 中对应块注释并加入各角色数组。
   roles:
-    Planner:   [ollama_design]
-    Architect: [ollama_design]
-    Coder:     [ollama_code]
-    Tester:    [ollama_code]
-    # Prefer a model different from Coder so debugging gets an independent reasoning path.
-    Debugger:  [ollama_design, ollama_code]
+    Planner:   [openrouter_free]
+    Architect: [openrouter_free]
+    Coder:     [openrouter_free]
+    Tester:    [openrouter_free]
+    Debugger:  [openrouter_free]
 
   # 评分快照（preflight 与运行时自动维护，落盘到同目录的 llm_scores.yaml）。
-  # 这里可以手工写初值；空 = 全部默认 1.0。
+  # 这里可以手工写初值；空 = 全部默认 1.0；显式写 0 表示用户禁用。
+  # tags: [cluster] 的聚合/路由 provider 默认动态评分范围为 0.2～0.5；
+  # 可按需调整上下限（min 最低 0.1，max 最高 1.0）。
+  cluster_score_min: 0.2
+  cluster_score_max: 0.5
   scores: {}
+
+  # 全局 fallback 链：默认不启用本地备选；如已取消 provider 注释，可设为 [local_openai] 或 [local_openai, ollama_code]。
+  fallbacks: []
+  role_fallbacks: {}
 
 agent:
   # python | typescript

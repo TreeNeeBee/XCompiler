@@ -8,8 +8,8 @@ function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig
     llm: {
       default: 'ollama_code',
       providers: {
-        ollama_code: { api_key: '', base_url: 'http://srv', model: 'qwen' },
-        ollama_design: { api_key: '', base_url: 'http://srv', model: 'gemma' },
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
+        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
       },
       roles: { Coder: ['ollama_code'], Planner: ['ollama_design'] },
       fallbacks: [],
@@ -37,7 +37,7 @@ function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig
 }
 
 describe('preflightProviders', () => {
-  it('zeros out provider when its model is missing on the server', async () => {
+  it('marks provider unavailable and lowers score when its model is missing on the server', async () => {
     const cfg = mkCfg();
     const scores = new ScoreStore('/tmp/x/config.yaml');
     const result = await preflightProviders(cfg, scores, undefined, {
@@ -45,7 +45,8 @@ describe('preflightProviders', () => {
       fetchTags: async () => ['qwen'],
     });
     expect(result.zeroed).toContain('ollama_design');
-    expect(scores.get('ollama_design')).toBe(0);
+    expect(result.unreachable).toContain('ollama_design');
+    expect(scores.get('ollama_design')).toBe(ScoreStore.MIN);
     expect(scores.get('ollama_code')).toBeGreaterThan(0);
   });
 
@@ -112,9 +113,9 @@ describe('preflightProviders', () => {
   it('continues with a configured fallback while excluding unreachable Ollama providers', async () => {
     const cfg = mkCfg({
       providers: {
-        ollama_code: { api_key: '', base_url: 'http://srv', model: 'qwen' },
-        ollama_design: { api_key: '', base_url: 'http://srv', model: 'gemma' },
-        openai: { api_key: 'k', base_url: 'http://openai', model: 'gpt' },
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
+        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
+        openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
       },
       fallbacks: ['openai'],
     });
@@ -126,5 +127,37 @@ describe('preflightProviders', () => {
     });
     expect(result.unreachable).toEqual(['ollama_code', 'ollama_design']);
     expect(scores.get('ollama_code')).toBe(1);
+  });
+
+  it('revives a non-Ollama provider disabled by historical sidecar score', async () => {
+    const cfg = mkCfg({
+      default: 'openai',
+      providers: {
+        openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
+      },
+      roles: { Planner: ['openai'] },
+    });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('openai', 0, 'previous transient failures');
+
+    const result = await preflightProviders(cfg, scores);
+
+    expect(result.revived).toEqual(['openai']);
+    expect(scores.get('openai')).toBe(1);
+  });
+
+  it('respects an explicit config score=0 for non-Ollama providers', async () => {
+    const cfg = mkCfg({
+      default: 'openai',
+      providers: {
+        openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
+      },
+      roles: { Planner: ['openai'] },
+      scores: { openai: 0 },
+    });
+    const scores = new ScoreStore('/tmp/x/config.yaml', cfg.llm.scores);
+
+    await expect(preflightProviders(cfg, scores)).rejects.toThrow(/没有可用的 provider|没有任何 ollama 服务器可达/);
+    expect(scores.get('openai')).toBe(0);
   });
 });

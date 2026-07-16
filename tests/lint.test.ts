@@ -67,7 +67,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
         role: 'Architect',
         tools: [],
         inputs: ['docs/01-requirement-analysis.md'],
-        outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'],
+        outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'],
         dependsOn: ['S001'],
         acceptance: 'arch exists',
         status: 'PENDING',
@@ -84,7 +84,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
         role: 'Planner',
         tools: [],
         inputs: ['docs/02-high-level-design.md'],
-        outputs: ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'],
+        outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'],
         dependsOn: ['S002'],
         acceptance: 'tasks doc exists',
         status: 'PENDING',
@@ -188,7 +188,7 @@ function makeTypeScriptPlan(): Plan {
   });
   plan.steps[1] = {
     ...plan.steps[1]!,
-    outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md', 'package.json'],
+    outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md', 'package.json'],
   };
   plan.steps[3] = {
     ...plan.steps[3]!,
@@ -259,7 +259,7 @@ describe('lintPlan', () => {
 
   it('rejects requirements.txt as a Step output', () => {
     const plan = makePlan();
-    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md', 'requirements.txt'];
+    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md', 'requirements.txt'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('renderer-owned'))).toBe(true);
   });
@@ -272,14 +272,14 @@ describe('lintPlan', () => {
   it('does not require an incremental TypeScript plan to rewrite package.json', () => {
     const plan = makeTypeScriptPlan();
     plan.intent = 'self';
-    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'];
+    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('package.json'))).toBe(false);
   });
 
   it('rejects TypeScript plans when package.json is not owned by exactly one HIGH_LEVEL_DESIGN step', () => {
     const plan = makeTypeScriptPlan();
-    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'];
+    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'];
     plan.steps[3]!.outputs = ['src/main.ts', 'docs/tests/unit-test-plan.md', 'package.json'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('exactly one HIGH_LEVEL_DESIGN step must output package.json'))).toBe(true);
@@ -334,7 +334,7 @@ describe('lintPlan', () => {
 
   it('rejects design outputs containing src/*.py', () => {
     const plan = makePlan();
-    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md', 'src/leak.py'];
+    plan.steps[1]!.outputs = ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md', 'src/leak.py'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('must not output implementation'))).toBe(true);
   });
@@ -356,7 +356,7 @@ describe('lintPlan', () => {
     const plan = makePlan();
     plan.steps[1]!.outputs = ['docs/02-high-level-design.md'];
     const errs = lintPlan(plan).filter((i) => i.level === 'error');
-    expect(errs.some((e) => e.message.includes('INTEGRATION_TEST plan'))).toBe(true);
+    expect(errs.some((e) => e.message.includes('MODULE_TEST plan'))).toBe(true);
   });
 
   it('rejects empty / too-short systemPrompt', () => {

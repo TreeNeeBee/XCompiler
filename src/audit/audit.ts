@@ -216,7 +216,7 @@ export class AuditLogger {
   async llmError(role: string, model: string, err: unknown): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     await this.event('llm.error', t().audit.eventLlmError(role, model, msg), {
-      messageId: 'audit.llm_error', role, model,
+      messageId: 'audit.llm_error', role, model, error: msg,
     });
   }
 
@@ -236,7 +236,7 @@ export class AuditLogger {
       kind: 'executor.turn',
       message: t().audit.eventExecutorTurn(stepId, round, role, payload.provider ?? ''),
       messageId: 'audit.executor_turn',
-      data: { ...storedPayload, contentMode: this.contentMode },
+      data: { ...storedPayload, role, contentMode: this.contentMode },
     });
     const summary = (payload.thoughts ?? '').trim().slice(0, 200) || t().audit.noThoughts;
     const actCount = Array.isArray(payload.actions) ? payload.actions.length : 0;

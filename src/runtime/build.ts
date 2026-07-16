@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
 import { reportRoleModelAdvice } from '../llm/role_advice.js';
-import { ScoreStore } from '../llm/scores.js';
+import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { Workspace } from '../workspace/workspace.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
@@ -14,7 +14,12 @@ import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incrementa
 import { lintPlan } from '../core/lint.js';
 import { refreshProjectMemory } from '../core/project_memory.js';
 import { renderPlanMarkdown } from '../core/render.js';
-import { savePlan } from '../core/storage.js';
+import { loadPhasePlan, savePhasePlan, savePlan } from '../core/storage.js';
+import {
+  buildPhasePlanFromCurrentPlan,
+  defaultPhasePlanPath,
+  defaultPhasePlanStepPath,
+} from '../core/phase_plan.js';
 import { updateProjectFile } from '../core/project_file.js';
 import { AuditLogger } from '../audit/audit.js';
 import { acquireLock, LockError } from '../core/lock.js';
@@ -39,7 +44,7 @@ export interface CompileOptions {
    * 已澄清的 topic.md 直接输入：跳过 intake / clarify / Addenda / Gate 1，把该文件
    * 内容当作冻结后的项目选题书，直接进入 decompose。常用于：
    *   - 用户上次已澄清并保留了 topic.md，重新跑 decompose 不想再问一遍
-   *   - 离线编辑了 topic.md 想直接拿来出 plan.json
+   *   - 离线编辑了 topic.md 想直接拿来出 phasePlan.json 与当前阶段计划
    * 与 --input 互斥；同时给则 --topic 优先并打印警告。
    */
   topicFile?: string;
@@ -153,7 +158,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const topicMode = !!opts.topicFile;
   const intent = opts.intent ?? 'greenfield';
   await pluginHost.emit('compile.start', { workspace: ws.root, intent, topicMode });
-  scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit);
+  scoreStore = new ScoreStore(cfgPath, cfg.llm.scores, audit, scoreStoreOptionsFromConfig(cfg.llm));
   await scoreStore.load();
   let unavailableProviders = new Set<string>();
   try {
@@ -381,8 +386,10 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     spin2.fail(M.compile.decomposeFail);
     const msg = (err as Error).message ?? String(err);
     await runtimeLog(io, 'error', `${M.compile.plannerInvalidPlan} ${msg}`);
-    await runtimeLog(io, 'dim', M.compile.plannerInvalidPlanHint1);
-    await runtimeLog(io, 'dim', M.compile.plannerInvalidPlanHint2);
+    const hints = isPlannerTransportFailure(msg)
+      ? [M.compile.plannerTransportFailureHint1, M.compile.plannerTransportFailureHint2]
+      : [M.compile.plannerInvalidPlanHint1, M.compile.plannerInvalidPlanHint2];
+    for (const hint of hints) await runtimeLog(io, 'dim', hint);
     await audit.event('llm.error', M.compile.auditDecomposeFailed, {
       messageId: 'compile.decompose_failed', stage: 'decompose', error: msg,
     });
@@ -443,10 +450,19 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   }
 
   // 7. Persist
-  const planPath = opts.outputFile
+  const phasePlanPath = opts.outputFile
     ? path.resolve(opts.outputFile)
-    : ws.abs('plan.json');
+    : defaultPhasePlanPath(ws.root);
+  const planPath = defaultPhasePlanStepPath(path.dirname(phasePlanPath), parsed.data.phaseId ?? 'P1');
   await savePlan(planPath, parsed.data);
+  const existingPhasePlan = await tryLoadPhasePlan(phasePlanPath);
+  const phasePlan = buildPhasePlanFromCurrentPlan({
+    plan: parsed.data,
+    phasePlanPath,
+    currentPlanPath: planPath,
+    existing: existingPhasePlan,
+  });
+  await savePhasePlan(phasePlanPath, phasePlan);
   // 归档上一版本（如有），再写入新版本。topic.md 已在第 3.5 步落盘，这里只处理 plan.
   await archiveIfExists(ws, DOC_NAMES.plan, audit);
   await ws.writeFile(DOC_NAMES.plan, planMd);
@@ -459,11 +475,12 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   await audit.event('plan.persist', M.compile.auditPlanPersisted(planPath), {
     messageId: 'compile.plan_persisted',
     planPath,
+    phasePlanPath,
     steps: parsed.data.steps.length,
   });
   const projectFile = await updateProjectFile({
     workspace: ws.root,
-    planPath,
+    planPath: phasePlanPath,
     configPath: cfgPath,
     projectFilePath: opts.projectFilePath,
     command: opts.projectCommand ?? 'build',
@@ -475,15 +492,39 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   });
 
   await runtimeLog(io, 'success', M.compile.planWritten(planPath));
+  await runtimeLog(io, 'success', M.compile.phasePlanWritten(phasePlanPath));
   await runtimeLog(io, 'success', M.compile.projectFileWritten(projectFile));
-  await runtimeLog(io, 'info', M.compile.nextCommand(`xcompiler run ${path.relative(process.cwd(), planPath)}`));
-  await pluginHost.emit('compile.finish', { plan: parsed.data, planPath });
-  await audit.end({ status: 'ok', planPath, steps: parsed.data.steps.length });
-  await runtimeResult(io, 'build', 'ok', { planPath, steps: parsed.data.steps.length });
-  return { planPath };
+  await runtimeLog(io, 'info', M.compile.nextCommand(`xcompiler run ${path.relative(process.cwd(), phasePlanPath)}`));
+  await pluginHost.emit('compile.finish', { plan: parsed.data, planPath: phasePlanPath, phasePlanPath, currentPlanPath: planPath });
+  await audit.end({ status: 'ok', planPath, phasePlanPath, steps: parsed.data.steps.length });
+  await runtimeResult(io, 'build', 'ok', { planPath: phasePlanPath, currentPlanPath: planPath, steps: parsed.data.steps.length });
+  return { planPath: phasePlanPath };
   } finally {
     try { await scoreStore?.flush(); } catch { /* never block release */ }
     await lock.release();
+  }
+}
+
+function isPlannerTransportFailure(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes('fetch failed') ||
+    text.includes('timed out') ||
+    text.includes('timeout') ||
+    text.includes('connection') ||
+    text.includes('econnrefused') ||
+    text.includes('econnreset') ||
+    text.includes('socket') ||
+    text.includes('terminated') ||
+    text.includes('server closed')
+  );
+}
+
+async function tryLoadPhasePlan(phasePlanPath: string) {
+  try {
+    return await loadPhasePlan(phasePlanPath);
+  } catch {
+    return undefined;
   }
 }
 

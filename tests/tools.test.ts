@@ -40,7 +40,7 @@ describe('isAllowedWrite', () => {
   });
 
   it('allows tests/fixtures/<f> when tests/fixtures is in whitelist (engine test/DEBUG augmentation)', () => {
-    expect(isAllowedWrite('tests/fixtures/sample.dbc', ['tests/fixtures'])).toBe(true);
+    expect(isAllowedWrite('tests/fixtures/sample.fixture', ['tests/fixtures'])).toBe(true);
     expect(isAllowedWrite('tests/fixtures/nested/x.csv', ['tests/fixtures'])).toBe(true);
     // 不能影响 tests/ 同级其它文件
     expect(isAllowedWrite('tests/test_foo.py', ['tests/fixtures'])).toBe(false);
@@ -51,11 +51,11 @@ describe('write_file tool', () => {
   it('auto-creates nested subdirectories (mkdir -p)', async () => {
     ctx.allowedWrites = ['tests/fixtures'];
     const r = await writeFileTool.run(
-      { path: 'tests/fixtures/sub/dir/sample.dbc', content: 'BO_ 1 X: 8 Vector__XXX\n' },
+      { path: 'tests/fixtures/sub/dir/sample.fixture', content: 'fixture-content\n' },
       ctx,
     );
     expect(r.ok).toBe(true);
-    expect(await ws.exists('tests/fixtures/sub/dir/sample.dbc')).toBe(true);
+    expect(await ws.exists('tests/fixtures/sub/dir/sample.fixture')).toBe(true);
   });
   it('writes within whitelist and rejects outside', async () => {
     const ok = await writeFileTool.run({ path: 'src/app.py', content: 'print(1)\n' }, ctx);
@@ -79,6 +79,16 @@ describe('write_file tool', () => {
     const appendTooLarge = await appendFileTool.run({ path: 'src/big.py', content: 'y'.repeat(17) }, ctx);
     expect(appendTooLarge.ok).toBe(false);
     expect(appendTooLarge.error).toContain('chunk limit 16B');
+  });
+
+  it('rejects malformed write args with a clear tool error instead of throwing', async () => {
+    const missingPath = await writeFileTool.run({ content: '# doc\n' } as never, ctx);
+    expect(missingPath.ok).toBe(false);
+    expect(missingPath.error).toContain('path must be a non-empty string');
+
+    const missingContent = await appendFileTool.run({ path: 'src/x.py' } as never, ctx);
+    expect(missingContent.ok).toBe(false);
+    expect(missingContent.error).toContain('content must be a string');
   });
 
   it('auto-scales write chunk budget by phase and step context', () => {

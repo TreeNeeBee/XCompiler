@@ -1,6 +1,18 @@
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { Workspace } from './workspace.js';
+
+const RUNTIME_EXCLUDE_PATTERNS = [
+  '.sandbox/',
+  '.pytest_cache/',
+  '**/__pycache__/',
+  '*.pyc',
+  'node_modules/',
+  'coverage/',
+  '.coverage',
+  '*.tsbuildinfo',
+];
 
 /**
  * GitService 基于 simple-git 提供 XCompiler 运行时所需的最小集：init / snapshot / revert / log。
@@ -16,32 +28,62 @@ export class GitService {
   /** 若仓库不存在则 git init + 首次空提交。幂等。 */
   async ensureRepo(): Promise<void> {
     const isRepo = await this.git.checkIsRepo().catch(() => false);
-    if (isRepo) return;
-    await this.git.init();
+    if (!isRepo) await this.git.init();
     // 配置最小 user 以便能 commit；仅在缺省时设置
     const local = await this.git.listConfig('local').catch(() => null);
     const has = (k: string) => !!local?.all?.[k];
     if (!has('user.email')) await this.git.addConfig('user.email', 'xcompiler@local');
     if (!has('user.name')) await this.git.addConfig('user.name', 'XCompiler');
+    await this.ensureRuntimeExcludes();
+    if (isRepo) return;
     // 创建一个 .gitkeep 让初次 commit 不为空
     await this.ws.writeFile('.xcompiler/.gitkeep', '');
-    await this.git.add(['.']);
+    await this.prepareSnapshotIndex();
     await this.git.commit('[xcompiler] init workspace');
   }
 
   /** 在某个 Step 的某次重试前打快照；返回 commit sha。 */
   async snapshot(stepId: string, retry: number, message?: string): Promise<string> {
     await this.ensureRepo();
-    await this.git.add(['.']);
-    const status = await this.git.status();
+    await this.prepareSnapshotIndex();
     const tag = `[xcompiler] ${stepId}#${retry}${message ? ` ${message}` : ''}`;
-    if (status.files.length === 0) {
-      // 没有变化也产生一个空 commit，便于精准 revert
-      const r = await this.git.commit(tag, undefined, { '--allow-empty': null });
-      return r.commit;
-    }
-    const r = await this.git.commit(tag);
+    // 没有变化也产生一个空 commit，便于精准 revert；同时避免 status/diff 在损坏 HEAD tree 上失败。
+    const r = await this.git.commit(tag, undefined, { '--allow-empty': null });
     return r.commit;
+  }
+
+  private async prepareSnapshotIndex(): Promise<void> {
+    await this.ensureRuntimeExcludes();
+    await this.untrackRuntimeArtifacts();
+    await this.git.raw(['add', '-A', '--', '.']);
+    await this.untrackRuntimeArtifacts();
+  }
+
+  private async ensureRuntimeExcludes(): Promise<void> {
+    const excludePath = this.ws.abs('.git/info/exclude');
+    let current = '';
+    try {
+      current = await fs.readFile(excludePath, 'utf8');
+    } catch {
+      return;
+    }
+    const missing = RUNTIME_EXCLUDE_PATTERNS.filter((pattern) => !current.split(/\r?\n/u).includes(pattern));
+    if (missing.length === 0) return;
+    const prefix = current.endsWith('\n') ? '\n' : '\n\n';
+    await fs.appendFile(
+      excludePath,
+      `${prefix}# XCompiler runtime artifacts\n${missing.join('\n')}\n`,
+      'utf8',
+    );
+  }
+
+  private async untrackRuntimeArtifacts(): Promise<void> {
+    const tracked = await this.git.raw(['ls-files', '-z']).catch(() => '');
+    const files = tracked.split('\0').filter((file) => isRuntimeArtifactPath(file));
+    for (let i = 0; i < files.length; i += 100) {
+      const chunk = files.slice(i, i + 100);
+      await this.git.raw(['rm', '--cached', '-r', '--ignore-unmatch', '--', ...chunk]);
+    }
   }
 
   /** 硬重置到指定 ref；用于 DEBUG 失败回滚。 */
@@ -66,4 +108,19 @@ export class GitService {
   rel(p: string): string {
     return path.relative(this.ws.root, path.resolve(this.ws.root, p));
   }
+}
+
+function isRuntimeArtifactPath(file: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  if (!normalized) return false;
+  return (
+    normalized === '.coverage' ||
+    normalized.startsWith('.sandbox/') ||
+    normalized.startsWith('.pytest_cache/') ||
+    normalized.startsWith('node_modules/') ||
+    normalized.startsWith('coverage/') ||
+    normalized.endsWith('.tsbuildinfo') ||
+    normalized.endsWith('.pyc') ||
+    normalized.split('/').includes('__pycache__')
+  );
 }

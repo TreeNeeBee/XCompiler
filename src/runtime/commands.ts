@@ -1,5 +1,8 @@
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { loadXCompilerProject } from '../core/project_file.js';
+import { DEFAULT_PLAN_FILE } from '../core/plan.js';
+import { DEFAULT_PHASE_PLAN_FILE } from '../core/phase_plan.js';
 import { runCompile, type CompileOptions } from './build.js';
 import { runExecute, type ExecuteOptions, type ExecuteResult } from './run.js';
 import {
@@ -40,7 +43,7 @@ export interface RuntimeEvolveCommandResult {
 
 export async function runEvolveCommand(opts: RuntimeEvolveCommandOptions): Promise<RuntimeEvolveCommandResult> {
   const workspace = await resolveEvolveWorkspace(opts, opts.cwd);
-  const resolvedPlanPath = opts.planOut ? path.resolve(opts.planOut) : path.join(workspace, 'plan.json');
+  const resolvedPlanPath = opts.planOut ? path.resolve(opts.planOut) : path.join(workspace, DEFAULT_PHASE_PLAN_FILE);
   const compiled = await runCompile({
     ...opts,
     workspace,
@@ -79,7 +82,7 @@ export async function runRunCommand(opts: RuntimeRunCommandOptions): Promise<Exe
     : opts.planArg
       ? path.dirname(path.resolve(opts.planArg))
       : cwd;
-  const planPath = opts.planArg ? path.resolve(opts.planArg) : path.join(workspace, 'plan.json');
+  const planPath = opts.planArg ? path.resolve(opts.planArg) : await defaultRunnablePlanPath(workspace);
   return runExecute({
     ...opts,
     workspace,
@@ -144,4 +147,21 @@ export async function runAppendCommand(opts: RuntimeAppendCommandOptions): Promi
     pluginStrict: opts.pluginStrict,
   });
   return { workspace: project.workspace, planPath: compiled.planPath, execution };
+}
+
+async function defaultRunnablePlanPath(workspace: string): Promise<string> {
+  const phasePlanPath = path.join(workspace, DEFAULT_PHASE_PLAN_FILE);
+  if (await fileExists(phasePlanPath)) return phasePlanPath;
+  const legacyPlanPath = path.join(workspace, DEFAULT_PLAN_FILE);
+  if (await fileExists(legacyPlanPath)) return legacyPlanPath;
+  return phasePlanPath;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
