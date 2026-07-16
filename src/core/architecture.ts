@@ -269,6 +269,7 @@ export function validateArchitectureContract(
   const allSourcePaths = new Set<string>();
   const allTestPaths = new Set<string>();
   const modulesByCodeOwner = new Map<string, ArchitectureModule[]>();
+  const stepIndex = new Map(steps.map((step, index) => [step.id, index]));
 
   for (const module of modules) {
     if (moduleIds.has(module.id)) {
@@ -292,17 +293,39 @@ export function validateArchitectureContract(
       allTestPaths.add(testPath);
     }
 
-    const owners = codeSteps.filter((step) =>
-      module.sourcePaths.every((path) => pathCoveredByOutputs(path, step.outputs)),
-    );
-    if (owners.length !== 1) {
+    const owners = codeSteps
+      .filter((step) => module.sourcePaths.every((path) => pathCoveredByOutputs(path, step.outputs)))
+      .sort((a, b) => (stepIndex.get(a.id) ?? 0) - (stepIndex.get(b.id) ?? 0));
+    if (owners.length === 0) {
       issues.push({
         message:
-          `${module.id} must map all sourcePaths to exactly one CODE macro step; found ${owners.length}.`,
+          `${module.id} must map all sourcePaths to a CODE macro step; found 0.`,
       });
       continue;
     }
     const codeOwner = owners[0]!;
+    const sameIterationOwners = owners.filter(
+      (owner) => owner.id !== codeOwner.id && stepIterationId(owner) === stepIterationId(codeOwner),
+    );
+    if (sameIterationOwners.length > 0) {
+      issues.push({
+        message:
+          `${module.id} must map all sourcePaths to one initial CODE macro step per iteration; ` +
+          `found duplicate owner(s): ${sameIterationOwners.map((owner) => owner.id).join(', ')}.`,
+      });
+      continue;
+    }
+    const disconnectedLaterOwners = owners.filter(
+      (owner) => owner.id !== codeOwner.id && !transitivelyDependsOn(owner, codeOwner.id, stepById),
+    );
+    if (disconnectedLaterOwners.length > 0) {
+      issues.push({
+        message:
+          `${module.id} later CODE step(s) must depend on the initial CODE owner ${codeOwner.id}; ` +
+          `found disconnected owner(s): ${disconnectedLaterOwners.map((owner) => owner.id).join(', ')}.`,
+      });
+      continue;
+    }
     const ownedModules = modulesByCodeOwner.get(codeOwner.id) ?? [];
     ownedModules.push(module);
     modulesByCodeOwner.set(codeOwner.id, ownedModules);
@@ -351,6 +374,10 @@ export function validateArchitectureContract(
   }
 
   return issues;
+}
+
+function stepIterationId(step: Step): string {
+  return step.iterationId ?? 'P1';
 }
 
 function hasModuleSubTasks(step: Step, modules: ArchitectureModule[]): boolean {

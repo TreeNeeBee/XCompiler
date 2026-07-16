@@ -4,12 +4,15 @@ import { URL } from 'node:url';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
+export const DEFAULT_OLLAMA_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+export const DEFAULT_OLLAMA_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
 export interface OllamaConfig {
   baseUrl: string;
   model: string;
-  /** 请求 wall-clock 总超时，毫秒。默认 10 分钟，0 表示无超时。 */
+  /** 请求 wall-clock 总超时，毫秒。默认 15 分钟，0 表示无超时。 */
   requestTimeoutMs?: number;
-  /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 60s。 */
+  /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 5 分钟。 */
   streamIdleTimeoutMs?: number;
   /** 流式模式下输出字符上限，超过即中断（防 token-loop 撑爆内存）；默认 200_000。 */
   maxOutputChars?: number;
@@ -43,8 +46,8 @@ export class OllamaClient implements LLMClient {
         num_predict: options?.maxTokens,
       },
     };
-    const timeoutMs = this.cfg.requestTimeoutMs ?? 10 * 60 * 1000;
-    const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? 60 * 1000;
+    const timeoutMs = this.cfg.requestTimeoutMs ?? DEFAULT_OLLAMA_REQUEST_TIMEOUT_MS;
+    const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? DEFAULT_OLLAMA_STREAM_IDLE_TIMEOUT_MS;
     const maxOutputChars = this.cfg.maxOutputChars ?? 200_000;
     if (stream) {
       return streamPostNdjson(

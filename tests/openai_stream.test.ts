@@ -70,6 +70,43 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
+  it('can request json_schema response format for OpenAI-compatible providers', async () => {
+    let responseFormat: unknown;
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (b) => (body += b.toString()));
+      req.on('end', () => {
+        const obj = JSON.parse(body) as { response_format?: unknown };
+        responseFormat = obj.response_format;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'json-schema-model',
+        jsonResponseFormat: 'json_schema',
+        requestTimeoutMs: 5000,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'json please' }], { responseFormat: 'json' }),
+      ).resolves.toBe('{"ok":true}');
+      expect(responseFormat).toMatchObject({
+        type: 'json_schema',
+        json_schema: {
+          name: 'xcompiler_json_response',
+          schema: { type: 'object', additionalProperties: true },
+        },
+      });
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('aborts a stalled stream via idle timeout (mlx-server hang scenario)', async () => {
     // Server sends one chunk then never sends another and never closes — simulates
     // an mlx-server that hangs mid-stream. Without an idle watchdog this would block
@@ -100,6 +137,51 @@ describe('OpenAI-compatible streaming', () => {
     } finally {
       if (open) (open as import('node:http').ServerResponse).end();
       await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('does not reset idle timeout on empty OpenAI-compatible stream chunks', async () => {
+    const originalFetch = globalThis.fetch;
+    const encoder = new TextEncoder();
+    let interval: NodeJS.Timeout | null = null;
+    globalThis.fetch = vi.fn(async (_input, init) => {
+      const signal = (init as RequestInit | undefined)?.signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal?.addEventListener('abort', () => {
+            if (interval) clearInterval(interval);
+            controller.error(signal.reason ?? new Error('aborted'));
+          });
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`),
+          );
+          interval = setInterval(() => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: {} }] })}\n\n`));
+          }, 40);
+        },
+        cancel() {
+          if (interval) clearInterval(interval);
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: 'http://127.0.0.1:1/v1',
+        model: 'mlx-model',
+        requestTimeoutMs: 0,
+        streamIdleTimeoutMs: 150,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/idle/);
+    } finally {
+      if (interval) clearInterval(interval);
+      globalThis.fetch = originalFetch;
     }
   });
 
@@ -264,6 +346,75 @@ describe('OpenAI-compatible streaming', () => {
       await expect(
         client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
       ).rejects.toThrow(/token loop/);
+    } finally {
+      stop = true;
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('aborts degenerate non-JSON prefixes in JSON streaming mode', async () => {
+    let open: import('node:http').ServerResponse | null = null;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: `2${'0'.repeat(180)}` } }] })}\n\n`);
+      open = res;
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'mlx-model',
+        requestTimeoutMs: 5_000,
+        streamIdleTimeoutMs: 5_000,
+        maxOutputChars: 0,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], {
+          responseFormat: 'json',
+          onToken: () => {},
+        }),
+      ).rejects.toThrow(/degenerate non-JSON prefix/);
+      expect(Date.now() - t0).toBeLessThan(1000);
+    } finally {
+      if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('aborts long prose prefixes in JSON streaming mode before output cap', async () => {
+    let stop = false;
+    const phrase = "I'll proceed. I'll generate. I'll output. ";
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const tick = () => {
+        if (stop || res.writableEnded) return;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: phrase } }] })}\n\n`);
+        setImmediate(tick);
+      };
+      tick();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'mlx-model',
+        requestTimeoutMs: 5_000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      const t0 = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], {
+          responseFormat: 'json',
+          onToken: () => {},
+        }),
+      ).rejects.toThrow(/degenerate non-JSON prefix/);
+      expect(Date.now() - t0).toBeLessThan(1000);
     } finally {
       stop = true;
       await new Promise<void>((r) => server.close(() => r()));

@@ -87,6 +87,27 @@ describe('buildPlan — Step id 规整', () => {
     expect(synthetic?.acceptance).toContain('npm test');
   });
 
+  it('补齐同一 iteration 内 V 模型宏 Step 的相邻依赖链', () => {
+    const draft = {
+      requirementDigest: 'DBC CLI to Excel',
+      globalPrompt: 'g',
+      dependencies: ['pytest'],
+      steps: [
+        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md'] }),
+        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S004', phase: 'CODE', role: 'Coder', outputs: ['src/main.py'], dependsOn: [] }),
+        baseStep({ id: 'S005', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_main.py'], dependsOn: ['S004'] }),
+        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['tests/test_integration.py'], dependsOn: ['S005'] }),
+        baseStep({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_module.py'], dependsOn: ['S006'] }),
+        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: ['README.md'], dependsOn: ['S007'] }),
+      ],
+    };
+    const plan = buildPlan(draft);
+    expect(plan.steps.find((step) => step.id === 'S004')?.dependsOn).toContain('S003');
+    expect(plan.steps.find((step) => step.id === 'S008')?.dependsOn).toContain('S007');
+  });
+
   it('为复杂或强制分阶段需求生成 P1 当前迭代和 planned 后续迭代', () => {
     const draft = {
       requirementDigest: 'Build a complex reporting platform. Phase 1 core import, Phase 2 dashboard.',

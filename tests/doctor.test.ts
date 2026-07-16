@@ -16,7 +16,7 @@ async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
     llm: {
       default: 'ollama_code',
       providers: {
-        ollama_code: { api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
       },
       roles: { Coder: ['ollama_code'] },
       fallbacks: [],
@@ -61,7 +61,7 @@ describe('doctor', () => {
       llm: {
         default: 'openai',
         providers: {
-          openai: { api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
+          openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
         roles: {},
         fallbacks: [],
@@ -79,8 +79,8 @@ describe('doctor', () => {
       llm: {
         default: 'ollama_code',
         providers: {
-          ollama_code: { api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
-          openai: { api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
+          ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
+          openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
         roles: { Coder: ['ollama_code'] },
         fallbacks: [],
@@ -99,7 +99,7 @@ describe('doctor', () => {
       llm: {
         default: 'ollama_code',
         providers: {
-          ollama_code: { api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
+          ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
         },
         roles: { Coder: ['ollama_code'] },
         fallbacks: [],

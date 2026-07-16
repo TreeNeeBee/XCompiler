@@ -41,6 +41,7 @@
     "dist/runtime",
     "dist/acp",
     "docs/acp.md",
+    "docs/openrouter.md",
     "docs/plugin_api.md",
     "docs/self_bootstrap.md",
     "docs/versioning.md",

@@ -3,10 +3,10 @@ import { normalizePythonRequirements } from '../src/agents/planner.js';
 import { sanitizeVenvName } from '../src/sandbox/subprocess.js';
 
 describe('normalizePythonRequirements', () => {
-  it('rewrites hallucinated CAN .dbc package names to cantools and strips version pins', () => {
-    const out = normalizePythonRequirements(['pydbc==0.1.*', 'python-can==4.*']);
-    expect(out).toContain('cantools');
-    expect(out).toContain('python-can');
+  it('rewrites common hallucinated Python package aliases and strips version pins', () => {
+    const out = normalizePythonRequirements(['sklearn==1.4.*', 'cv2==4.*']);
+    expect(out).toContain('scikit-learn');
+    expect(out).toContain('opencv-python');
     // 版本锁定被剥离
     expect(out.some((r) => r.includes('=='))).toBe(false);
     // pytest 自动补齐
@@ -34,14 +34,15 @@ describe('normalizePythonRequirements', () => {
 
   it('strips PEP 440 version specifiers from arbitrary packages', () => {
     const out = normalizePythonRequirements([
-      'cantools==4.3.*', // hallucinated version
+      'fastapi==0.110.*',
       'pandas>=1.5,<2',
       'numpy~=1.26',
       'requests!=2.30',
     ]);
-    expect(out).toEqual(expect.arrayContaining(['cantools', 'pandas', 'numpy', 'requests', 'pytest']));
+    expect(out).toEqual(expect.arrayContaining(['fastapi', 'pandas', 'numpy', 'requests', 'pytest']));
     expect(out.some((r) => /[<>=!~]/.test(r))).toBe(false);
   });
+
 });
 
 describe('sanitizeVenvName', () => {

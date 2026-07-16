@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calibrateDocPaths, calibrateStepShape } from '../src/agents/calibration.js';
+import { calibrateDocPaths, calibrateStepShape, ensureEssentialToolRefs } from '../src/agents/calibration.js';
 import type { Step } from '../src/core/plan.js';
 
 describe('calibrateStepShape', () => {
@@ -37,6 +37,16 @@ describe('calibrateStepShape', () => {
     expect(out[2]!.tools).toEqual(['skill:debugger']);
   });
 
+  it('preserves tester capabilities when a test phase already has a write tool', () => {
+    const tools = ensureEssentialToolRefs({
+      phase: 'UNIT_TEST',
+      tools: ['write_file'],
+      outputs: ['tests/test_app.py', 'docs/05-unit-test.md'],
+    });
+
+    expect(tools).toEqual(expect.arrayContaining(['write_file', 'skill:tester']));
+  });
+
   it('maps role aliases to whitelist (developer -> Coder, qa -> Tester)', () => {
     const raw = [
       { id: 'S001', phase: 'CODE', title: 'x', description: 'x', systemPrompt: 'this is a long enough prompt for code', role: 'developer', outputs: ['src/x.py'] },
@@ -52,6 +62,16 @@ describe('calibrateStepShape', () => {
       { id: 'S001', phase: 'HIGH_LEVEL_DESIGN', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'wizard', outputs: ['docs/02-high-level-design.md'] },
     ] as unknown as Step[];
     expect(calibrateStepShape(raw)[0]!.role).toBe('Architect');
+  });
+
+  it('normalizes valid but phase-incompatible roles back to the phase owner', () => {
+    const raw = [
+      { id: 'S001', phase: 'DETAILED_DESIGN', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['docs/03-detailed-design.md'] },
+      { id: 'S002', phase: 'CODE', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['src/app.py'] },
+    ] as unknown as Step[];
+    const out = calibrateStepShape(raw);
+    expect(out[0]!.role).toBe('Architect');
+    expect(out[1]!.role).toBe('Coder');
   });
 
   it('infers phase from outputs path when LLM writes a junk phase like "---"', () => {
@@ -98,5 +118,34 @@ describe('calibrateStepShape', () => {
       'docs/08-functional-test.md',
       'docs/api-guide.md',
     ]);
+  });
+
+  it('removes test-plan docs from the right-side test phases that do not own them', () => {
+    const raw = [
+      {
+        id: 'S001',
+        phase: 'CODE',
+        title: 'code',
+        description: 'code',
+        systemPrompt: 'x'.repeat(30),
+        role: 'Coder',
+        outputs: ['src/app.py', 'docs/tests/unit-test-plan.md'],
+      },
+      {
+        id: 'S002',
+        phase: 'UNIT_TEST',
+        title: 'unit',
+        description: 'unit',
+        systemPrompt: 'x'.repeat(30),
+        role: 'Tester',
+        outputs: ['docs/tests/unit-test-plan.md', 'tests/test_app.py'],
+        dependsOn: ['S001'],
+      },
+    ] as unknown as Step[];
+
+    const out = calibrateDocPaths(raw, 'application');
+
+    expect(out[0]!.outputs).toContain('docs/tests/unit-test-plan.md');
+    expect(out[1]!.outputs).toEqual(['docs/05-unit-test.md', 'tests/test_app.py']);
   });
 });

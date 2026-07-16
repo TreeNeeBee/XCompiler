@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LLMRouter } from '../src/llm/router.js';
 import { findSharedCoderDebuggerModel, reportRoleModelAdvice } from '../src/llm/role_advice.js';
-import { ScoreStore } from '../src/llm/scores.js';
+import { ScoreStore, scoreStoreOptionsFromConfig } from '../src/llm/scores.js';
 import type { XCompilerConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
 
@@ -10,9 +10,9 @@ function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
     llm: {
       default: 'ollama_code',
       providers: {
-        ollama_code: { api_key: '', base_url: 'http://x', model: 'qwen' },
-        ollama_design: { api_key: '', base_url: 'http://x', model: 'gemma' },
-        openai: { api_key: 'k', base_url: 'http://y', model: 'gpt' },
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
+        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
+        openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
       },
       roles: { Coder: ['ollama_code'], Planner: ['ollama_design'] },
       fallbacks: [],
@@ -55,12 +55,12 @@ describe('LLMRouter fallback chain', () => {
     expect(client.name).toBe('ollama:qwen');
   });
 
-  it('recognizes openapi and mlx provider names as OpenAI-compatible', () => {
+  it('uses explicit provider type instead of provider-name matching', () => {
     const cfg = mkCfg({
-      default: 'openapi_local',
+      default: 'any_vendor_name',
       providers: {
-        openapi_local: { api_key: '', base_url: 'http://127.0.0.1:8080/v1', model: 'local' },
-        mlx_server: { api_key: '', base_url: 'http://127.0.0.1:8081/v1', model: 'mlx' },
+        any_vendor_name: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8080/v1', model: 'local' },
+        another_local_server: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8081/v1', model: 'mlx' },
       },
     });
     const router = new LLMRouter(cfg);
@@ -109,6 +109,118 @@ describe('LLMRouter fallback chain', () => {
     expect(secondCalls).toBe(1);
     expect(selectedProvider).toBe('openai');
   });
+
+  it('retries the same provider once for transient stream failures', async () => {
+    const cfg = mkCfg({});
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    const router = new LLMRouter(cfg, undefined, scores);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let calls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        calls++;
+        if (calls === 1) {
+          throw new Error('detected token loop in OpenAI stream (repeated identical token); aborting');
+        }
+        return 'ok';
+      },
+    });
+
+    const starts: string[] = [];
+    let selectedProvider: string | undefined;
+    const client = router.for('Coder');
+    const out = await client.chat([{ role: 'user', content: 'hi' }], {
+      onProviderStart: (name) => { starts.push(name); },
+      onProvider: (name) => { selectedProvider = name; },
+    });
+
+    expect(out).toBe('ok');
+    expect(calls).toBe(2);
+    expect(starts).toEqual(['ollama_code', 'ollama_code']);
+    expect(selectedProvider).toBe('ollama_code');
+    expect(scores.get('ollama_code')).toBe(ScoreStore.DEFAULT);
+  });
+
+  it('retries stream transport failures once without streaming on the same provider', async () => {
+    const cfg = mkCfg({});
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    const sawStreaming: boolean[] = [];
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async (_messages, options) => {
+        sawStreaming.push(!!options?.onToken);
+        if (sawStreaming.length === 1) {
+          throw new Error('OpenAI stream idle for 300000ms; aborting');
+        }
+        return 'ok';
+      },
+    });
+
+    const chunks: string[] = [];
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+      onToken: (chunk) => chunks.push(chunk),
+    });
+
+    expect(out).toBe('ok');
+    expect(sawStreaming).toEqual([true, false]);
+    expect(chunks).toEqual([]);
+  });
+
+  it('treats fetch failed from a streaming request as a non-stream retry candidate', async () => {
+    const cfg = mkCfg({});
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    const sawStreaming: boolean[] = [];
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async (_messages, options) => {
+        sawStreaming.push(!!options?.onToken);
+        if (sawStreaming.length === 1) {
+          throw new Error('fetch failed');
+        }
+        return 'ok';
+      },
+    });
+
+    await expect(
+      router.for('Coder').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+    ).resolves.toBe('ok');
+    expect(sawStreaming).toEqual([true, false]);
+  });
+
+  it('does not retry non-transient provider failures before fallback', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let firstCalls = 0;
+    let secondCalls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        firstCalls++;
+        throw new Error('invalid request');
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => {
+        secondCalls++;
+        return 'ok';
+      },
+    });
+
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }]);
+
+    expect(out).toBe('ok');
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
+  });
 });
 
 describe('LLMRouter score-sorted chain', () => {
@@ -122,10 +234,29 @@ describe('LLMRouter score-sorted chain', () => {
     const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     scores.set('ollama_code', 0.5, 'flaky');
-    scores.set('openai', 2, 'rocking');
+    scores.set('openai', 0.9, 'rocking');
     const router = new LLMRouter(cfg, undefined, scores);
     const client = router.for('Coder');
     expect(client.name).toBe('chain[openai:gpt>ollama:qwen]');
+  });
+
+  it('keeps cluster fallbacks behind dedicated providers at default scores', () => {
+    const cfg = mkCfg({
+      providers: {
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
+        openrouter_free: {
+          type: 'openai',
+          api_key: 'k',
+          base_url: 'https://openrouter.ai/api/v1',
+          model: 'openrouter/free',
+          tags: ['cluster'],
+        },
+      },
+      roles: { Coder: ['ollama_code', 'openrouter_free'] },
+    });
+    const scores = new ScoreStore('/tmp/x/config.yaml', {}, undefined, scoreStoreOptionsFromConfig(cfg.llm));
+    const router = new LLMRouter(cfg, undefined, scores);
+    expect(router.for('Coder').name).toBe('chain[ollama:qwen>openai:openrouter/free]');
   });
 
   it('skips providers with score=0', () => {
@@ -164,7 +295,7 @@ describe('LLMRouter score-sorted chain', () => {
     const client = router.for('Coder');
     await client.chat([{ role: 'user', content: 'hi' }]);
     expect(scores.get('ollama_code')).toBeCloseTo(ScoreStore.DEFAULT - ScoreStore.DECAY, 5);
-    expect(scores.get('openai')).toBeCloseTo(ScoreStore.DEFAULT + ScoreStore.BOOST, 5);
+    expect(scores.get('openai')).toBe(ScoreStore.DEFAULT);
   });
 
   it('accepts string roles[role] (backward-compat) and treats as single-element array', () => {
@@ -203,7 +334,8 @@ describe('Coder and Debugger model advice', () => {
       },
     });
     const scores = new ScoreStore('/tmp/x/config.yaml');
-    scores.set('ollama_design', 2, 'preferred debugger');
+    scores.set('ollama_code', 0.5, 'lower coder score');
+    scores.set('ollama_design', 1, 'preferred debugger');
     expect(findSharedCoderDebuggerModel(new LLMRouter(cfg, undefined, scores))).toBeUndefined();
   });
 

@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { loadPlan } from '../core/storage.js';
+import { DEFAULT_PLAN_FILE } from '../core/plan.js';
+import { DEFAULT_PHASE_PLAN_FILE } from '../core/phase_plan.js';
+import { loadPlanTarget } from '../core/storage.js';
 import type { Plan, Step } from '../core/plan.js';
 
 export interface LsOptions {
   workspace: string;
-  /** Maximum depth for recursively finding plan.json files. Defaults to 4. */
+  /** Maximum depth for recursively finding phasePlan.json / legacy plan.json files. Defaults to 4. */
   maxDepth?: number;
 }
 
@@ -39,7 +41,8 @@ export async function runLsCommand(opts: LsOptions): Promise<LsResult> {
   for (const file of found) {
     const relativePath = path.relative(root, file) || file;
     try {
-      const plan = await loadPlan(file);
+      const loaded = await loadPlanTarget(file);
+      const plan = loaded.plan;
       const digest = plan.requirementDigest?.split('\n')[0]?.slice(0, 100);
       plans.push({
         path: file,
@@ -90,13 +93,15 @@ export interface ShowResult {
 
 export async function runShowCommand(opts: ShowOptions): Promise<ShowResult> {
   const root = path.resolve(opts.workspace);
-  const planPath = opts.planPath ? path.resolve(opts.planPath) : path.join(root, 'plan.json');
-  const plan = await loadPlan(planPath);
+  const requestedPlanPath = opts.planPath ? path.resolve(opts.planPath) : await defaultInspectPlanPath(root);
+  const loaded = await loadPlanTarget(requestedPlanPath);
+  const planPath = loaded.planPath;
+  const plan = loaded.plan;
   const step = plan.steps.find((s) => s.id === opts.stepId);
   if (!step) {
     return {
       root,
-      planPath,
+      planPath: loaded.phasePlanPath ?? planPath,
       stepId: opts.stepId,
       outputs: [],
       auditEvents: [],
@@ -112,7 +117,7 @@ export async function runShowCommand(opts: ShowOptions): Promise<ShowResult> {
   const auditEvents = await readAuditFor(auditFile, opts.stepId, opts.auditTail ?? 10);
   return {
     root,
-    planPath,
+    planPath: loaded.phasePlanPath ?? planPath,
     stepId: opts.stepId,
     step,
     outputs,
@@ -148,13 +153,25 @@ export async function findPlans(root: string, maxDepth: number): Promise<string[
       if (entry.isDirectory()) {
         if (skip.has(entry.name)) continue;
         await walk(path.join(dir, entry.name), depth + 1);
-      } else if (entry.isFile() && entry.name === 'plan.json') {
+      } else if (entry.isFile() && isInspectablePlanFile(entry.name)) {
         out.push(path.join(dir, entry.name));
       }
     }
   }
   await walk(root, 0);
   return out.sort();
+}
+
+async function defaultInspectPlanPath(root: string): Promise<string> {
+  const phasePlanPath = path.join(root, DEFAULT_PHASE_PLAN_FILE);
+  if (await fileExists(phasePlanPath)) return phasePlanPath;
+  const legacyPlanPath = path.join(root, DEFAULT_PLAN_FILE);
+  if (await fileExists(legacyPlanPath)) return legacyPlanPath;
+  return phasePlanPath;
+}
+
+function isInspectablePlanFile(fileName: string): boolean {
+  return fileName === DEFAULT_PHASE_PLAN_FILE || fileName === DEFAULT_PLAN_FILE;
 }
 
 export async function readAuditFor(file: string, stepId: string, tail: number): Promise<AuditLine[]> {

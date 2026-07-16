@@ -2,13 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { Planner } from '../src/agents/planner.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 
-function fakeLLM(reply: string): LLMClient {
+function fakeLLM(reply: string | string[]): LLMClient {
+  const replies = Array.isArray(reply) ? reply : [reply];
+  let calls = 0;
   return {
     name: 'fake',
     async chat(_messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+      const current = replies[Math.min(calls, replies.length - 1)]!;
+      calls += 1;
       // 模拟 router/Fallback 的行为：先跑 validate，失败立即抛出（让 FallbackClient 切换 provider）。
-      if (options?.validate) options.validate(reply);
-      return reply;
+      if (options?.validate) options.validate(current);
+      return current;
     },
   };
 }
@@ -54,8 +58,8 @@ function vModelSteps(iterationId = 'P1', start = 1, sourcePath = 'src/x.py', mod
     : [iterationDoc(iterationId, '08-functional-test.md'), iterationDoc(iterationId, 'quickstart.md')];
   const specs: Array<[string, string[]]> = [
     ['REQUIREMENT_ANALYSIS', [iterationDoc(iterationId, '01-requirement-analysis.md'), iterationTestPlan(iterationId, 'functional-test-plan.md')]],
-    ['HIGH_LEVEL_DESIGN', [iterationDoc(iterationId, '02-high-level-design.md'), iterationTestPlan(iterationId, 'integration-test-plan.md')]],
-    ['DETAILED_DESIGN', [iterationDoc(iterationId, '03-detailed-design.md'), iterationTestPlan(iterationId, 'module-test-plan.md')]],
+    ['HIGH_LEVEL_DESIGN', [iterationDoc(iterationId, '02-high-level-design.md'), iterationTestPlan(iterationId, 'module-test-plan.md')]],
+    ['DETAILED_DESIGN', [iterationDoc(iterationId, '03-detailed-design.md'), iterationTestPlan(iterationId, 'integration-test-plan.md')]],
     ['CODE', [sourcePath, iterationTestPlan(iterationId, 'unit-test-plan.md')]],
     ['UNIT_TEST', [iterationDoc(iterationId, '05-unit-test.md'), `tests/test_unit_${iterationId.toLowerCase()}.py`]],
     ['INTEGRATION_TEST', [iterationDoc(iterationId, '06-integration-test.md'), `tests/test_integration_${iterationId.toLowerCase()}.py`]],
@@ -96,9 +100,9 @@ const clarifyOptions = [
   { label: 'C', answer: 'Use the smallest demonstrable setting.' },
 ];
 
-const withClarifyOptions = <T extends object>(question: T): T & { options: typeof clarifyOptions } => ({
+const withClarifyOptions = <T extends { options?: typeof clarifyOptions }>(question: T): T & { options: typeof clarifyOptions } => ({
   ...question,
-  options: clarifyOptions,
+  options: question.options ?? clarifyOptions,
 });
 
 const projectShapeQuestions = [
@@ -150,6 +154,17 @@ const projectShapeQuestions = [
     question: 'Which future provider or forecast capability should the design keep stable for?',
     why: 'Defines extension points.',
   },
+  {
+    id: 'Q9',
+    category: 'data',
+    question: 'Do you already have a weather provider API key, token, or auth method for this external API call?',
+    why: 'Determines whether implementation should use user-provided credentials or a public no-key provider.',
+    options: [
+      { label: 'A', answer: 'No credentials are available; use a public no-key/no-token weather API by default.' },
+      { label: 'B', answer: 'Use a user-provided API key or token from environment variables.' },
+      { label: 'C', answer: 'Support both configured credentials and a no-key public fallback.' },
+    ],
+  },
 ].map(withClarifyOptions);
 
 describe('Planner.decompose — V 模型骨架完整性校验', () => {
@@ -173,6 +188,12 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     expect(questions.some((question) => question.question.includes('API library'))).toBe(true);
   });
 
+  it('澄清阶段在外部 API 需求中必须确认凭证或免 key 接口策略', async () => {
+    const questionsWithoutCredential = projectShapeQuestions.filter((question) => question.id !== 'Q9');
+    const p = new Planner(fakeLLM(JSON.stringify(questionsWithoutCredential)));
+    await expect(p.clarify('Build a CLI that fetches weather data from an external API')).rejects.toThrow(/external API credential question/);
+  });
+
   it('拒绝只有 REQUIREMENT_ANALYSIS + HIGH_LEVEL_DESIGN 两步的残缺 plan（用户回放）', async () => {
     const draft = {
       requirementDigest: '批量 DBC → Excel',
@@ -185,6 +206,106 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/Planner draft incomplete/);
+  });
+
+  it('计划契约可修复失败会带反馈重试，而不是直接中止 build', async () => {
+    const sourcePaths = [
+      'src/cli_entry.py',
+      'src/dbc_parser.py',
+      'src/signal_filter.py',
+      'src/excel_exporter.py',
+    ];
+    const testPaths = [
+      'tests/test_module_cli_entry.py',
+      'tests/test_module_dbc_parser.py',
+      'tests/test_module_signal_filter.py',
+      'tests/test_module_excel_exporter.py',
+    ];
+    const steps = vModelSteps('P1', 1, sourcePaths[0], testPaths[0]);
+    const code = steps.find((step) => step.phase === 'CODE')!;
+    code.outputs = [...sourcePaths, 'docs/tests/unit-test-plan.md'];
+    code.subTasks = sourcePaths.map((sourcePath, index) => ({
+      id: `ST${String(index + 1).padStart(3, '0')}`,
+      title: `Implement M00${index + 1}`,
+      description: `Implement ${sourcePath}`,
+      outputs: [sourcePath],
+      subTasks: [],
+    }));
+    const moduleTest = steps.find((step) => step.phase === 'MODULE_TEST')!;
+    moduleTest.outputs = ['docs/07-module-test.md', ...testPaths];
+    const architectureModules = sourcePaths.map((sourcePath, index) => ({
+      id: `M00${index + 1}`,
+      name: `Module ${index + 1}`,
+      responsibility: `Own ${sourcePath}`,
+      sourcePaths: [sourcePath],
+      testPaths: [testPaths[index]!],
+      dependencies: index === 0 ? [] : [`M00${index}`],
+    }));
+    const phasePlan = {
+      requirementDigest: 'DBC CLI parses files, filters signals, and writes Excel output.',
+      globalPrompt: 'Build a DBC to Excel CLI.',
+      projectType: 'application',
+      complexityAssessment: {
+        level: 'moderate',
+        rationale: 'CLI plus parser, filter, and Excel IO modules.',
+        splitRecommended: true,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core DBC export',
+          objective: 'Deliver the core CLI conversion path.',
+          status: 'current',
+          scope: ['parse DBC', 'filter ECU signals', 'write Excel'],
+          deliverables: ['CLI', 'Excel output'],
+          dependsOn: [],
+          verificationGate: {
+            summary: 'Run generated tests and CLI smoke checks.',
+            checks: ['pytest', 'CLI help'],
+            failurePolicy: 'Record issue, send failure log to Debugger, rollback to paired V-model phase, then rerun subsequent phases.',
+          },
+        },
+        {
+          id: 'P2',
+          title: 'Robust reporting',
+          objective: 'Enhance error CSV and performance checks.',
+          status: 'planned',
+          scope: ['error reporting'],
+          deliverables: ['error report'],
+          dependsOn: ['P1'],
+          verificationGate: {
+            summary: 'Run regression and performance checks.',
+            checks: ['pytest'],
+            failurePolicy: 'Record issue and repair through V-model rollback.',
+          },
+        },
+      ],
+    };
+    const invalidStepPlan = {
+      requirementDigest: phasePlan.requirementDigest,
+      globalPrompt: phasePlan.globalPrompt,
+      dependencies: ['pytest', 'openpyxl', 'jsonschema'],
+      architectureModules: architectureModules.slice(0, 3),
+      steps,
+    };
+    const validStepPlan = {
+      ...invalidStepPlan,
+      architectureModules,
+    };
+    const p = new Planner(fakeLLM([
+      JSON.stringify(phasePlan),
+      JSON.stringify(invalidStepPlan),
+      JSON.stringify(validStepPlan),
+    ]));
+
+    const draft = await p.decompose({
+      rawRequirement: '写一个 python CLI，解析 dbc 文件，按 ECU 过滤信号并写入 Excel。',
+      clarifications: [],
+    });
+
+    expect(draft.architectureModules).toHaveLength(4);
+    expect(draft.steps.find((step) => step.phase === 'CODE')?.subTasks).toHaveLength(4);
   });
 
   it('拒绝旧 V 模型阶段名，避免 alias 校准掩盖 planner 输出错误', async () => {
@@ -298,100 +419,65 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     ).rejects.toThrow(/projectType/);
   });
 
-  it('允许 complex 复杂度由 LLM 决定 P1/P2 两个完整可执行迭代', async () => {
-    const p1Steps = vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py').map((step) => {
-      if (step.phase === 'CODE') {
-        return { ...step, outputs: ['src/main.py', 'src/cli.py', iterationTestPlan('P1', 'unit-test-plan.md')] };
-      }
-      if (step.phase === 'MODULE_TEST') {
-        return { ...step, outputs: [iterationDoc('P1', '07-module-test.md'), 'tests/test_main.py', 'tests/test_cli.py'] };
-      }
-      return step;
-    });
-    const p2Steps = vModelSteps('P2', 9, 'src/dashboard.py', 'tests/test_dashboard.py').map((step) => {
-      if (step.phase === 'CODE') {
-        return { ...step, outputs: ['src/dashboard.py', 'src/dashboard_validation.py', iterationTestPlan('P2', 'unit-test-plan.md')] };
-      }
-      if (step.phase === 'MODULE_TEST') {
-        return { ...step, outputs: [iterationDoc('P2', '07-module-test.md'), 'tests/test_dashboard.py', 'tests/test_dashboard_validation.py'] };
-      }
-      return step;
-    });
-    const draft = {
-      requirementDigest: 'Complex reporting platform with API, CLI, persistence, and dashboard.',
+  it('多阶段需求先生成 PhasePlan，再只展开当前 P1 的 V 模型 StepPlan', async () => {
+    const requirementDigest = 'Build a staged number formatting utility. Phase 1 core, Phase 2 polish, Phase 3 scale.';
+    const phasePlan = {
+      requirementDigest,
       globalPrompt: '',
       projectType: 'application',
       complexityAssessment: {
         level: 'complex',
-        rationale: 'multi-surface request',
+        rationale: 'user requested staged delivery across three phases',
         splitRecommended: true,
-        userForcedPhaseSplit: false,
+        userForcedPhaseSplit: true,
       },
-      architectureModules: [
-        {
-          id: 'M001',
-          name: 'Core API and persistence',
-          responsibility: 'Owns the API, CLI, and persistence core for the first usable slice.',
-          sourcePaths: ['src/main.py'],
-          testPaths: ['tests/test_main.py'],
-          dependencies: [],
-        },
-        {
-          id: 'M002',
-          name: 'Dashboard reporting',
-          responsibility: 'Owns the dashboard reporting workflow built after the core slice.',
-          sourcePaths: ['src/dashboard.py'],
-          testPaths: ['tests/test_dashboard.py'],
-          dependencies: ['M001'],
-        },
-        {
-          id: 'M003',
-          name: 'CLI workflow',
-          responsibility: 'Owns command line orchestration that exposes the core reporting workflow.',
-          sourcePaths: ['src/cli.py'],
-          testPaths: ['tests/test_cli.py'],
-          dependencies: ['M001'],
-        },
-        {
-          id: 'M004',
-          name: 'Dashboard validation',
-          responsibility: 'Owns dashboard validation scenarios and user-visible reporting acceptance.',
-          sourcePaths: ['src/dashboard_validation.py'],
-          testPaths: ['tests/test_dashboard_validation.py'],
-          dependencies: ['M002'],
-        },
-      ],
       implementationPhases: [
         {
           id: 'P1',
           title: 'Core functionality',
-          objective: 'Deliver the core slice.',
+          objective: 'Deliver the core formatting slice.',
           status: 'current',
-          scope: ['Core API and persistence'],
-          deliverables: ['Core application'],
+          scope: ['Core formatting workflow'],
+          deliverables: ['Runnable utility'],
           dependsOn: [],
         },
         {
           id: 'P2',
-          title: 'Enhancements',
-          objective: 'Follow-up enhancements after core delivery.',
+          title: 'Polish',
+          objective: 'Improve formatting and configuration after P1.',
           status: 'planned',
-          scope: ['Enhancements'],
-          deliverables: ['Deferred plan'],
+          scope: ['Formatting', 'Configuration'],
+          deliverables: ['Deferred polish plan'],
           dependsOn: ['P1'],
         },
+        {
+          id: 'P3',
+          title: 'Scale',
+          objective: 'Add larger input handling and performance checks.',
+          status: 'planned',
+          scope: ['Scale guardrails'],
+          deliverables: ['Deferred scale plan'],
+          dependsOn: ['P2'],
+        },
       ],
-      dependencies: ['pytest'],
-      steps: [...p1Steps, ...p2Steps],
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
-    const plan = await p.decompose({ rawRequirement: draft.requirementDigest, clarifications: [] });
-    expect(plan.implementationPhases?.map((phase) => phase.id)).toEqual(['P1', 'P2']);
+    const stepPlan = {
+      requirementDigest,
+      globalPrompt: '',
+      dependencies: ['pytest'],
+      steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
+    };
+    const p = new Planner(fakeLLM([JSON.stringify(phasePlan), JSON.stringify(stepPlan)]));
+    const plan = await p.decompose({ rawRequirement: requirementDigest, clarifications: [] });
+    expect(plan.implementationPhases?.map((phase) => phase.id)).toEqual(['P1', 'P2', 'P3']);
+    expect(plan.steps).toHaveLength(8);
+    expect(plan.steps.every((step) => step.iterationId === 'P1')).toBe(true);
   });
 
   it('复杂需求缺少 HIGH_LEVEL_DESIGN 模块契约时拒绝 plan，让 fallback 重新生成', async () => {
-    const draft = {
-      requirementDigest: 'OpenAPI server with CLI import/export and SQLite persistence',
+    const requirementDigest = 'OpenAPI server with CLI import/export and SQLite persistence';
+    const phasePlan = {
+      requirementDigest,
       globalPrompt: '',
       projectType: 'application',
       complexityAssessment: {
@@ -429,16 +515,16 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
           dependsOn: ['P2'],
         },
       ],
-      dependencies: ['pytest'],
-      steps: [
-        ...vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
-        ...vModelSteps('P2', 9, 'src/dashboard.py', 'tests/test_dashboard.py'),
-        ...vModelSteps('P3', 17, 'src/ops.py', 'tests/test_ops.py'),
-      ],
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const stepPlan = {
+      requirementDigest,
+      globalPrompt: '',
+      dependencies: ['pytest'],
+      steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
+    };
+    const p = new Planner(fakeLLM([JSON.stringify(phasePlan), JSON.stringify(stepPlan)]));
     await expect(
-      p.decompose({ rawRequirement: draft.requirementDigest, clarifications: [] }),
+      p.decompose({ rawRequirement: requirementDigest, clarifications: [] }),
     ).rejects.toThrow(/omitted architectureModules/);
   });
 });

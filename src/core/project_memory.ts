@@ -3,7 +3,9 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
 import { DOC_NAMES } from './docs.js';
-import { PlanSchema, type Language, type PlanIntent, type Step } from './plan.js';
+import { DEFAULT_PLAN_FILE, type Language, type PlanIntent, type Step } from './plan.js';
+import { DEFAULT_PHASE_PLAN_FILE } from './phase_plan.js';
+import { loadPlanTarget } from './storage.js';
 
 export const PROJECT_MEMORY_PATH = '.xcompiler/project_memory.json';
 
@@ -212,14 +214,27 @@ async function readPlanMetadata(
   ws: Workspace,
   planPath?: string,
 ): Promise<{ language?: Language; intent?: PlanIntent } | null> {
-  const full = planPath ? path.resolve(planPath) : ws.abs('plan.json');
+  const full = planPath ? path.resolve(planPath) : await defaultPlanMetadataPath(ws.root);
   try {
-    const raw = await fs.readFile(full, 'utf8');
-    const parsed = PlanSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return null;
-    return { language: parsed.data.language, intent: parsed.data.intent };
+    const loaded = await loadPlanTarget(full);
+    return { language: loaded.plan.language, intent: loaded.plan.intent };
   } catch {
     return null;
+  }
+}
+
+async function defaultPlanMetadataPath(root: string): Promise<string> {
+  const phasePlanPath = path.join(root, DEFAULT_PHASE_PLAN_FILE);
+  if (await fileExists(phasePlanPath)) return phasePlanPath;
+  return path.join(root, DEFAULT_PLAN_FILE);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

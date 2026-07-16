@@ -1,5 +1,6 @@
 import {
   PHASES,
+  REQUIRED_V_MODEL_PHASES,
   V_MODEL_SOURCE_TO_TEST_PHASE,
   type ArchitectureModule,
   type Language,
@@ -26,6 +27,7 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
  * 当前覆盖：
  *  - calibratePythonRequirements: 幻觉 PyPI 包名重写 / bullet 清洗 / 强制依赖
  *  - calibrateDocPaths:           V 模型阶段验收文档路径规范化 / 自动补齐 / 禁止项剔除
+ *  - calibrateVModelDependencies: V 模型宏 Step 相邻阶段依赖补齐
  *  - calibrateStepIds:            Step id → S### 形式（同步 dependsOn）
  *  - calibrateStepShape:          补齐 schema 必填项（role/acceptance/systemPrompt/title/description）
  *  - calibrateArchitectureStepMappings:
@@ -38,8 +40,6 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
 
 /**
  * 已知 LLM 幻觉包名 → 真实 PyPI 包映射。
- *  - CAN .dbc 解析的事实标准是 `cantools`，但 LLM 经常臆造 `pydbc` / `pydbcparser` / `python-dbc` 等
- *  - CAN 总线 IO 用 `python-can`，LLM 偶尔写成 `pycan`
  *  - JSON Schema：`jsonschema` 而不是 `json-schema` / `pyjsonschema`
  *  - YAML：`PyYAML`，LLM 常写 `pyyaml`（pip 大小写不敏感，故无需重写，仅作示例不列入）
  *  - HTTP：`requests` 是规范名，`python-requests` / `pyrequests` 不存在
@@ -50,13 +50,6 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
  *  - bs4 真实包名是 `beautifulsoup4`
  */
 export const HALLUCINATED_PACKAGE_MAP: Record<string, string> = {
-  // CAN / 汽车总线
-  pydbc: 'cantools',
-  pydbcparser: 'cantools',
-  'python-dbc': 'cantools',
-  'python-can-tools': 'cantools',
-  pycan: 'python-can',
-
   // 常见错误别名 → import 名 vs PyPI 名错配
   sklearn: 'scikit-learn',
   cv2: 'opencv-python',
@@ -84,8 +77,8 @@ const REQUIRED_PACKAGES = ['pytest'];
  * 清洗 plan.pythonRequirements：
  *  - 去掉 markdown 列表前缀 / 引号 / 空行 / 注释行；
  *  - 把 LLM 常见幻觉包名重写为真实 pip 包；
- *  - **剥离所有版本约束**：LLM 经常臆造不存在的版本号（如 `cantools==4.3.*` 实际只到 41.x，
- *    `pandas==1.5.*` 在某些时间窗失效等），导致 `pip install` 直接 ERROR。
+ *  - **剥离所有版本约束**：LLM 经常臆造不存在的版本号（如 `pandas==1.5.*`
+ *    在某些时间窗失效），导致 `pip install` 直接 ERROR。
  *    生成型项目对版本可重现性需求弱，统一不锁版本，让 pip 解析到任意可用版本即可；
  *    需要锁版本时由用户手动编辑 `requirements.txt`。
  *  - 去重（保持出现顺序）；
@@ -174,6 +167,10 @@ export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'app
     const iterationId = s.iterationId ?? 'P1';
     const inputs = (s.inputs ?? []).map((p) => iterationScopedInput(remap(p), s.phase, iterationId));
     let outputs = (s.outputs ?? []).map((p) => iterationScopedDoc(remap(p), s.phase, iterationId)).filter(dropTopic);
+    outputs = outputs.filter((out) => {
+      const ownerPhase = testPlanOwnerPhase(out, iterationId);
+      return !ownerPhase || ownerPhase === s.phase;
+    });
     const expected = phaseDocForIteration(s.phase, iterationId);
     if (expected && !outputs.includes(expected)) {
       // 仅在该阶段允许有"主验收文档"时自动补齐（CODE/DEBUG 不在表内）。
@@ -190,6 +187,42 @@ export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'app
     }
     return { ...s, inputs, outputs };
   });
+}
+
+/** 补齐同一 iteration 内标准 V 模型宏步骤的相邻顺序依赖。 */
+export function calibrateVModelDependencies(steps: Step[]): Step[] {
+  const out = steps.map((step) => ({ ...step, dependsOn: [...(step.dependsOn ?? [])] }));
+  const byIteration = new Map<string, Step[]>();
+  for (const step of out) {
+    const iterationId = step.iterationId ?? 'P1';
+    const group = byIteration.get(iterationId) ?? [];
+    group.push(step);
+    byIteration.set(iterationId, group);
+  }
+
+  for (const group of byIteration.values()) {
+    for (let index = 1; index < REQUIRED_V_MODEL_PHASES.length; index += 1) {
+      const prevPhase = REQUIRED_V_MODEL_PHASES[index - 1]!;
+      const phase = REQUIRED_V_MODEL_PHASES[index]!;
+      const prevIds = group.filter((step) => step.phase === prevPhase).map((step) => step.id);
+      if (prevIds.length === 0) continue;
+      for (const step of group.filter((candidate) => candidate.phase === phase)) {
+        if (step.dependsOn.some((dep) => prevIds.includes(dep))) continue;
+        step.dependsOn = dedup([...step.dependsOn, ...prevIds]);
+      }
+    }
+  }
+
+  return out;
+}
+
+function testPlanOwnerPhase(path: string, iterationId: string): Step['phase'] | undefined {
+  for (const [sourcePhase, testPhase] of Object.entries(V_MODEL_SOURCE_TO_TEST_PHASE)) {
+    if (path === testPlanDocForIteration(testPhase as Step['phase'], iterationId)) {
+      return sourcePhase as Step['phase'];
+    }
+  }
+  return undefined;
 }
 
 function iterationScopedDoc(path: string, phase: Step['phase'], iterationId: string): string {
@@ -351,13 +384,25 @@ const PHASE_DEFAULT_TOOLS: Record<string, string[]> = {
   DEBUG: ['skill:debugger'],
 };
 
+const PHASE_DEFAULT_TOOLS_REQUIRED = new Set([
+  'UNIT_TEST',
+  'INTEGRATION_TEST',
+  'MODULE_TEST',
+  'FUNCTIONAL_TEST',
+  'DEBUG',
+]);
+
 export function ensureEssentialToolRefs(step: Pick<Step, 'phase' | 'tools' | 'outputs'>): string[] {
   const tools = Array.isArray(step.tools) ? [...step.tools] : [];
   const outputs = Array.isArray(step.outputs) ? step.outputs : [];
   const needsWritableOutputs = outputs.some((out) => typeof out === 'string' && !out.endsWith('/'));
-  const hasWriteCapability = tools.some((tool) => WRITE_CAPABLE_TOOL_REFS.has(tool));
-  if (!needsWritableOutputs || hasWriteCapability) return dedup(tools);
-  return dedup([...tools, ...(PHASE_DEFAULT_TOOLS[step.phase] ?? ['write_file'])]);
+  const phaseDefaults = PHASE_DEFAULT_TOOLS[step.phase] ?? [];
+  const baseTools = PHASE_DEFAULT_TOOLS_REQUIRED.has(step.phase)
+    ? dedup([...tools, ...phaseDefaults])
+    : tools;
+  const hasWriteCapability = baseTools.some((tool) => WRITE_CAPABLE_TOOL_REFS.has(tool));
+  if (!needsWritableOutputs || hasWriteCapability) return dedup(baseTools);
+  return dedup([...baseTools, ...(phaseDefaults.length > 0 ? phaseDefaults : ['write_file'])]);
 }
 
 /**
@@ -416,9 +461,10 @@ export function calibrateStepShape(steps: Step[]): Step[] {
     const title = (typeof s.title === 'string' && s.title.trim()) || `${phase} Step`;
     const description = (typeof s.description === 'string' && s.description.trim()) || title;
 
-    // role 最终兜底：仍非法则按 phase 默认
-    if (!VALID_ROLES.has(role)) {
-      role = PHASE_DEFAULT_ROLE[phase] ?? 'Coder';
+    // role 最终兜底：合法但与阶段职责不匹配也按 phase 默认收敛，避免 DLD=Coder 这类职能漂移。
+    const phaseDefaultRole = PHASE_DEFAULT_ROLE[phase] ?? 'Coder';
+    if (!VALID_ROLES.has(role) || role !== phaseDefaultRole) {
+      role = phaseDefaultRole;
     }
 
     // acceptance 兜底
@@ -515,22 +561,35 @@ export function calibrateArchitectureStepMappings(
 ): Step[] {
   if (!modules || modules.length === 0) return steps;
 
+  const stepById = new Map(steps.map((step) => [step.id, step]));
+  const initialOutputs = new Set(steps.flatMap((step) => step.outputs));
+  const moduleTestPaths = new Set(modules.flatMap((module) => module.testPaths));
   const ownerByModule = new Map<string, string>();
+  const modulesByCodeStep = new Map<string, ArchitectureModule[]>();
   for (const step of steps.filter((item) => item.phase === 'CODE')) {
     const ownedModules = modules.filter((module) =>
       module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
     );
-    for (const module of ownedModules) ownerByModule.set(module.id, step.id);
+    modulesByCodeStep.set(step.id, ownedModules);
+    for (const module of ownedModules) {
+      if (!ownerByModule.has(module.id)) ownerByModule.set(module.id, step.id);
+    }
   }
 
   return steps.map((step) => {
     let dependsOn = step.dependsOn;
+    if (isNonModuleTestPhase(step.phase)) {
+      let outputs = step.outputs.filter((out) => !moduleTestPaths.has(out));
+      if (outputs.length !== step.outputs.length && !outputs.some(isTestImplementationPath)) {
+        outputs = [...outputs, uniquePhaseTestPath(step, modules, initialOutputs)];
+      }
+      return { ...step, outputs };
+    }
+
     if (step.phase === 'CODE') {
-      const ownedModules = modules.filter((module) =>
-        module.sourcePaths.every((sourcePath) => pathCoveredByOutputs(sourcePath, step.outputs)),
-      );
+      const ownedModules = modulesByCodeStep.get(step.id) ?? [];
       const moduleDependencyOwners = ownedModules
-        .flatMap((module) => module.dependencies)
+        .flatMap((module) => [...module.dependencies, module.id])
         .map((moduleId) => ownerByModule.get(moduleId))
         .filter((owner): owner is string => Boolean(owner) && owner !== step.id);
       dependsOn = dedup([...dependsOn, ...moduleDependencyOwners]);
@@ -538,18 +597,95 @@ export function calibrateArchitectureStepMappings(
     }
 
     if (step.phase === 'MODULE_TEST') {
-      const testedModules = modules.filter((module) =>
+      const explicitModules = modules.filter((module) =>
         module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, step.outputs)),
       );
+      const dependencyIds = collectTransitiveDependencyIds(step, stepById);
+      const dependencyModules = [...dependencyIds].flatMap((dep) => modulesByCodeStep.get(dep) ?? []);
+      const testedModules =
+        explicitModules.length > 0
+          ? dedupModules(explicitModules)
+          : dedupModules(dependencyModules);
       const testedOwners = testedModules
         .map((module) => ownerByModule.get(module.id))
         .filter((owner): owner is string => Boolean(owner));
       dependsOn = dedup([...dependsOn, ...testedOwners]);
-      return withModuleSubTasks({ ...step, dependsOn }, testedModules, 'MODULE_TEST');
+      const moduleOwnedOutputs = step.outputs.filter(
+        (out) => !isTestImplementationPath(out) || moduleTestPaths.has(out),
+      );
+      const outputs = dedup([...moduleOwnedOutputs, ...testedModules.flatMap((module) => module.testPaths)]);
+      return withModuleSubTasks({ ...step, dependsOn, outputs }, testedModules, 'MODULE_TEST');
     }
 
     return { ...step, dependsOn };
   });
+}
+
+function dedupModules(modules: ArchitectureModule[]): ArchitectureModule[] {
+  const seen = new Set<string>();
+  const out: ArchitectureModule[] = [];
+  for (const module of modules) {
+    if (seen.has(module.id)) continue;
+    seen.add(module.id);
+    out.push(module);
+  }
+  return out;
+}
+
+function isTestImplementationPath(path: string): boolean {
+  return /^tests\/.+\.(?:py|ts|tsx)$/i.test(path);
+}
+
+function isNonModuleTestPhase(phase: Step['phase']): boolean {
+  return phase === 'UNIT_TEST' || phase === 'INTEGRATION_TEST' || phase === 'FUNCTIONAL_TEST';
+}
+
+function uniquePhaseTestPath(
+  step: Step,
+  modules: ArchitectureModule[],
+  usedPaths: ReadonlySet<string>,
+): string {
+  const extension = inferUnitTestExtension(modules);
+  const prefix = testPathPrefixForPhase(step.phase);
+  const base =
+    extension === '.test.ts'
+      ? `tests/${prefix}_${step.id.toLowerCase()}`
+      : `tests/test_${prefix}_${step.id.toLowerCase()}`;
+  let candidate = `${base}${extension}`;
+  let suffix = 2;
+  while (usedPaths.has(candidate)) {
+    candidate = `${base}_${suffix}${extension}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function testPathPrefixForPhase(phase: Step['phase']): string {
+  if (phase === 'INTEGRATION_TEST') return 'integration';
+  if (phase === 'FUNCTIONAL_TEST') return 'functional';
+  return 'unit';
+}
+
+function inferUnitTestExtension(modules: ArchitectureModule[]): '.py' | '.test.ts' {
+  return modules.some((module) => module.testPaths.some((path) => /\.tsx?$/i.test(path)))
+    ? '.test.ts'
+    : '.py';
+}
+
+function collectTransitiveDependencyIds(
+  step: Step,
+  stepById: ReadonlyMap<string, Step>,
+): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...step.dependsOn];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const dep = stepById.get(id);
+    if (dep) stack.push(...dep.dependsOn);
+  }
+  return seen;
 }
 
 function withModuleSubTasks(
@@ -607,7 +743,9 @@ function flattenSubTaskTexts(tasks: StepSubtask[]): string[] {
  * 真正的目标是让 LLM 输出残缺时 buildPlan 不会一开始就 lint 失败导致整盘重跑。
  */
 export function calibratePlanCoverage(steps: Step[], language: Language = 'python'): Step[] {
-  const stepById = new Map(steps.map((s) => [s.id, s] as const));
+  const withRunnableTestOutputs = ensureRunnableTestPhaseOutputs(steps, language);
+  const stepsChanged = withRunnableTestOutputs !== steps;
+  const stepById = new Map(withRunnableTestOutputs.map((s) => [s.id, s] as const));
   const isInitOnly = (s: Step): boolean =>
     s.outputs.length > 0 && s.outputs.every((o) => o === '__init__.py' || o.endsWith('/__init__.py'));
   const iterationIdOf = (s: Step): string => s.iterationId ?? 'P1';
@@ -627,8 +765,8 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     return false;
   };
 
-  const codeSteps = steps.filter((s) => s.phase === 'CODE' && !isInitOnly(s));
-  const testSteps = steps.filter((s) => s.phase === 'UNIT_TEST');
+  const codeSteps = withRunnableTestOutputs.filter((s) => s.phase === 'CODE' && !isInitOnly(s));
+  const testSteps = withRunnableTestOutputs.filter((s) => s.phase === 'UNIT_TEST');
   const uncoveredByIteration = new Map<string, Step[]>();
   for (const codeStep of codeSteps) {
     const iterationId = iterationIdOf(codeStep);
@@ -641,10 +779,10 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
       uncoveredByIteration.set(iterationId, bucket);
     }
   }
-  if (uncoveredByIteration.size === 0) return steps;
+  if (uncoveredByIteration.size === 0) return stepsChanged ? withRunnableTestOutputs : steps;
 
   // 取末位编号 + 1 作为新 UNIT_TEST id（保留 S### 三位前导零）
-  let maxNum = steps.reduce((m, s) => {
+  let maxNum = withRunnableTestOutputs.reduce((m, s) => {
     const mm = String(s.id).match(/^S(\d{3,})$/);
     return mm ? Math.max(m, parseInt(mm[1]!, 10)) : m;
   }, 0);
@@ -697,7 +835,7 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     });
   }
   const syntheticByIteration = new Map(syntheticSteps.map((step) => [iterationIdOf(step), step]));
-  const rewired = steps.map((step) => {
+  const rewired = withRunnableTestOutputs.map((step) => {
     if (!(['INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'] as Step['phase'][]).includes(step.phase)) return step;
     const alreadyDependsOnTest = step.dependsOn.some((depId) => stepById.get(depId)?.phase === 'UNIT_TEST');
     if (alreadyDependsOnTest) return step;
@@ -712,6 +850,54 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
   });
 
   return [...rewired, ...syntheticSteps];
+}
+
+const RUNNABLE_TEST_PHASES = new Set<Step['phase']>([
+  'UNIT_TEST',
+  'INTEGRATION_TEST',
+  'MODULE_TEST',
+  'FUNCTIONAL_TEST',
+]);
+
+function ensureRunnableTestPhaseOutputs(steps: Step[], language: Language): Step[] {
+  const used = new Set(steps.flatMap((step) => step.outputs));
+  let changed = false;
+  const out = steps.map((step) => {
+    if (!RUNNABLE_TEST_PHASES.has(step.phase)) return step;
+    if (step.outputs.some(isTestImplementationPath)) return step;
+    const testOutput = uniqueRunnableTestPath(step, language, used);
+    used.add(testOutput);
+    changed = true;
+    const outputs = dedup([...step.outputs, testOutput]);
+    const testCommand = language === 'typescript' ? 'npm test / Vitest' : 'pytest';
+    return {
+      ...step,
+      outputs,
+      systemPrompt:
+        `${step.systemPrompt}\n\n测试产物要求：本 ${step.phase} Step 必须创建或维护 ${testOutput}，` +
+        `并通过 ${testCommand} 验证；该路径已加入 writable allowlist。`,
+      acceptance:
+        `${step.acceptance} ${testOutput} 存在且对应 ${testCommand} 测试通过；不得只写测试报告而不提供可执行测试。`,
+      tools: ensureEssentialToolRefs({ phase: step.phase, tools: step.tools, outputs }),
+    };
+  });
+  return changed ? out : steps;
+}
+
+function uniqueRunnableTestPath(step: Step, language: Language, usedPaths: ReadonlySet<string>): string {
+  const prefix = testPathPrefixForPhase(step.phase);
+  const stepId = step.id.toLowerCase();
+  const base = language === 'typescript'
+    ? `tests/${prefix}_${stepId}`
+    : `tests/test_${prefix}_${stepId}`;
+  const extension = language === 'typescript' ? '.test.ts' : '.py';
+  let candidate = `${base}${extension}`;
+  let suffix = 2;
+  while (usedPaths.has(candidate)) {
+    candidate = `${base}_${suffix}${extension}`;
+    suffix += 1;
+  }
+  return candidate;
 }
 
 // =============================================================================
@@ -738,8 +924,33 @@ interface SuggestionRule {
   severity: 1 | 2 | 3;
   /** 用 RegExp 数组匹配 failureLog；任一命中即触发。 */
   patterns: RegExp[];
+  /** 可选排除条件；用于避免基础设施 LLM provider 错误被业务网络 API 规则误吸收。 */
+  skip?: (text: string) => boolean;
   /** 由匹配组生成 hint；m 为第一条命中正则的 RegExpExecArray。 */
   build: (m: RegExpExecArray) => string;
+}
+
+function networkApiStatusGuidance(log: string): string {
+  const status = log.match(/\b(401|403|404|408|409|410|422|429|5\d\d)\b/)?.[1];
+  if (!status) {
+    return '先区分是认证/权限、URL 不存在、限流、超时还是服务端故障；';
+  }
+  if (status === '401' || status === '403') {
+    return `HTTP ${status} 表示认证/权限不可用：若用户未提供 key/token，必须切换到公开免 key/token API；若用户提供了凭证，先修正鉴权头/参数；`;
+  }
+  if (status === '404' || status === '410') {
+    return `HTTP ${status} 表示 URL/资源不可用：不要重试同一地址，必须更换仍维护的 endpoint 或 API；`;
+  }
+  if (status === '429') {
+    return 'HTTP 429 表示限流：优先切换免 key 且限流更宽的候选 API，或实现退避/缓存并用测试覆盖限流分支；';
+  }
+  if (status === '408') {
+    return 'HTTP 408/超时表示当前接口时延不可接受：尝试更稳定的 API，并设置显式 timeout 与失败分支；';
+  }
+  if (/^5/u.test(status)) {
+    return `HTTP ${status} 表示服务端故障：不要把它当成功降级，需切换可用 API 或提供明确失败退出路径；`;
+  }
+  return `HTTP ${status} 表示接口契约或请求参数不匹配：先核对参数/响应 schema，不匹配则切换更适合的 API；`;
 }
 
 /**
@@ -788,6 +999,8 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
         `若是项目内模块缺失：用 \`read_file\` 确认 outputs 是否真的写入了 ${mod.replace(/\./g, '/')}.py，` +
         `否则用 \`write_file\` 创建。` +
         `若是第三方包：用 \`add_dependency\` 把真实 PyPI 包名（不是 import 名！例如 cv2→opencv-python, sklearn→scikit-learn, PIL→pillow）写进 requirements.txt。` +
+        `若当前代码 import 的库与 HIGH_LEVEL_DESIGN 的库选型不一致，优先改回设计选定的真实库并同步 add_dependency。` +
+        `**严禁**在生产 src/ 代码里 try/except ImportError 后伪造 module、写 fallback fake class/function，或用 mock 代码绕过缺失依赖。` +
         `**绝不要**用 \`replace_in_file\` 提交 find===replace 的"假修复"。`
       );
     },
@@ -831,15 +1044,56 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
       `tests/ 也一样。请 \`read_file\` 确认 import 行，再 \`replace_in_file\` 把 "from src." 改为 "from "。证据: ${m[0]}`,
   },
   {
-    code: 'network-api-failure',
+    code: 'stale-date-test-data',
     severity: 1,
     patterns: [
-      /Network API failure detected/i,
-      /\b(?:api|http|request|fetch|network|connection|timeout|timed out)\b[^\n]{0,120}\b(?:failed|error|timeout|unreachable|unavailable|404|429|5\d\d)\b/i,
-      /(?:网络|接口|API|HTTP|请求|连接|超时|限流|不可用)[^\n]{0,120}(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)/,
+      /20\d{2}-\d{2}-\d{2}[\s\S]{0,1800}No upcoming holidays? found/i,
+      /No upcoming holidays? found[\s\S]{0,1800}20\d{2}-\d{2}-\d{2}/i,
     ],
     build: () =>
+      `[测试数据日期已过期] 失败是 hard-coded 日期相对当前日期已经变成过去时间，不是外部 API 不可用。` +
+      `用 \`read_file\` 打开失败测试，把固定日期改成基于 \`datetime.now().date() + timedelta(days=N)\` 生成的未来日期；` +
+      `随后 \`run_tests\` 验证。只有出现真实 HTTP 状态码、DNS/连接/超时异常时，才按网络 API 失败切换接口。`,
+  },
+  {
+    code: 'llm-context-too-large',
+    severity: 1,
+    patterns: [
+      /prefill_memory_exceeded/i,
+      /(?:prefill memory guard|dynamic ceiling|context length|context window|token limit|too many tokens|prompt too long|max(?:imum)? context|input[^\n]{0,80}tokens)/i,
+    ],
+    build: () =>
+      `[LLM/provider 上下文超限] 当前失败来自 XCompiler 到 LLM provider 的 prompt/token 容量限制，` +
+      `不是项目业务代码缺陷。请压缩 Debug 历史、裁剪 failureLog/上下文片段、拆分过大的 Step 或降低一次性注入的文件内容后重跑当前 step；` +
+      `不要让 Debugger 为此修改业务代码，也不要把该错误回退到 V 模型业务阶段。`,
+  },
+  {
+    code: 'llm-transport-failure',
+    severity: 1,
+    patterns: [
+	      /^TypeError:\s*fetch failed\s*$/m,
+	      /(?:LLM|provider|OpenAI|Ollama)[^\n]{0,120}(?:fetch failed|connection|timeout|unreachable)/i,
+	      /(?:LLM|provider|OpenAI|Ollama|OpenRouter)[^\n]{0,180}(?:HTTP 429|rate[- ]?limit|rate limited|rate-limited|retry-after|retry_after_seconds)/i,
+	      /(?:response_format|json_object|json_schema)[^\n]{0,220}(?:not support|unsupported|invalid_request_body|supported formats)/i,
+	    ],
+	    build: () =>
+	      `[LLM/provider 传输或协议能力失败] 当前失败没有项目 API URL 或 HTTP 状态，优先按 XCompiler 到 LLM provider 的连接/能力问题处理：` +
+	      `检查 \`OPENAI_BASE_URL\` / \`OPENROUTER_BASE_URL\` / provider base_url、模型服务是否可达、限流/配额、超时设置、网络权限，以及 provider 是否支持当前结构化输出格式。` +
+	      `不要把这个错误当成项目源码缺陷，也不要让 Debugger 为此修改业务代码；恢复 provider 后重新运行当前 step。`,
+  },
+  {
+    code: 'network-api-failure',
+    severity: 1,
+    skip: isLlmProviderFailureText,
+    patterns: [
+      /Network API failure detected/i,
+      /https?:\/\/[^\s'")]+[^\n]{0,160}\b(?:failed|error|timeout|unreachable|unavailable|401|403|404|429|5\d\d)\b/i,
+      /\b(?:api|http|request|network|connection|timeout|timed out)\b[^\n]{0,120}\b(?:401|403|404|429|5\d\d)\b/i,
+      /(?:网络|接口|API|HTTP|请求|连接|超时|限流|不可用)[^\n]{0,120}(?:失败|错误|异常|超时|拒绝|不可达|不可用|限流)/,
+    ],
+    build: (m) =>
       `[网络 API 调用失败] 本任务必须判定失败，禁止用静态假数据、吞异常或仅展示“降级成功”来过关。` +
+      networkApiStatusGuidance(m.input) +
       `请先定位失败的 API URL 与响应/异常；若接口不可达、格式不符、限流或返回错误状态，必须更换为当前可用且适合需求的 API，` +
       `并补充测试覆盖成功路径与失败路径。最多连续做 2 次 \`http_fetch\` 探测；一旦确认候选接口可用且 body 非空/格式可解析，` +
       `必须立刻 \`read_file\` 定位源码并用 \`apply_patch\` / \`replace_in_file\` 修改真实集成，随后 \`run_program\` 验证入口不再输出 API 失败。`,
@@ -867,6 +1121,34 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
     build: (m) =>
       `[NameError: ${m[1]}] 先 \`code_search\` 这个名字看是否漏 import 或拼写错；` +
       `再 \`read_file\` 当前文件检查作用域。修复手段：补 import 或改名。`,
+  },
+  {
+    code: 'AttributeError-module-api',
+    severity: 1,
+    patterns: [
+      /AttributeError:\s*module ['"]([^'"]+)['"] has no attribute ['"]([^'"]+)['"]/,
+      /module ['"]([^'"]+)['"] has no attribute ['"]([^'"]+)['"]/,
+    ],
+    build: (m) => {
+      const mod = m[1] ?? '<module>';
+      const attr = m[2] ?? '<attribute>';
+      return (
+        `[第三方库 API 不存在: ${mod}.${attr}] 当前导入的库没有这个入口。` +
+        `先用 \`code_search\` 查找 "${mod}.${attr}" 调用点，再 \`read_file\` 打开对应源码；` +
+        `若是库选型错误，改用 HIGH_LEVEL_DESIGN 中确认且真实支持该领域格式的库，并用 \`add_dependency\` 写入真实包名；` +
+        `若只是 API 名称错误，替换为该库真实存在的等价 API。` +
+        `禁止在生产 src/ 里伪造 fallback/mock 来绕过该错误。`
+      );
+    },
+  },
+  {
+    code: 'mock-patch-target-src-prefix',
+    severity: 1,
+    patterns: [/@patch\(['"]src\./, /patch\(['"]src\./],
+    build: () =>
+      `[测试 patch 目标使用了 src. 前缀] 测试文件按 XCompiler 约定应导入裸模块名，因此 mock 也必须 patch 运行时实际引用的模块名。` +
+      `用 \`read_file\` 对照测试 import 与被测文件 import，把 \`@patch('src.<module>.<name>')\` 改成 \`@patch('<module>.<name>')\` 或 patch 调用方模块里的符号。` +
+      `不要为了让 mock 通过而削弱断言；应修正 patch 目标与真实导入契约。`,
   },
   {
     code: 'AttributeError',
@@ -902,7 +1184,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
   {
     code: 'FileNotFoundError-test-fixture',
     severity: 1,
-    // 命中：traceback 含 tests/ 路径且缺失文件是相对裸名（典型测试 fixture，如 'test.dbc'）。
+    // 命中：traceback 含 tests/ 路径且缺失文件是相对裸名（典型测试 fixture，如 'sample.csv'）。
     // 同时支持 Python 标准 traceback `File "tests/x.py"` 与 pytest 短格式 `tests/x.py:NN:`。
     patterns: [
       /(?:File\s+["']|^|\s)[^"'\s]*tests\/[^"'\s]+\.py(?:["']|:)[^]*?FileNotFoundError:[^\n]*['"]([^'"/\\:]+\.[A-Za-z0-9]+)['"]/,
@@ -911,13 +1193,12 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
       const f = m[1] ?? '<fixture>';
       return (
         `[测试用 fixture 文件未生成: ${f}] 测试代码引用了真实磁盘文件但没人创建它。可选修复（按推荐顺序）：` +
-        `(1) **首选**用 pytest 的 \`tmp_path\` / \`tmpdir\` fixture 在测试里临时构造该文件，` +
-        `例如把 ${f} 内容用 Python 写入 tmp_path 后传入被测函数，避免污染仓库；` +
-        `(2) 若该文件是被测模块的"标准样例"，应当作为产物落到 tests/fixtures/${f}，` +
-        `用 \`write_file\` 创建该 fixture（**测试/DEBUG 阶段 tests/fixtures/ 已默认放开写权限**，` +
-        `子目录会自动 mkdir -p，无需提前在 outputs 登记）；` +
-        `(3) 若被测函数允许 mock，用 \`unittest.mock.mock_open\` 或猴补 \`builtins.open\` 绕过真实 IO。` +
-        `**严禁**单纯把硬编码路径改成另一个不存在的路径敷衍过去。`
+        `(1) 先 \`list_dir\` / \`read_file\` 查找用户或工作区是否已有同类型真实样例；若有，用它作为测试输入或复制到 tests/fixtures/${f}；` +
+        `(2) 若这是第三方/行业标准格式且工作区无样例，用 \`http_fetch\` 获取官方文档、上游仓库或公开示例中的小型参考文件，` +
+        `保存到 tests/fixtures/${f}，并在测试报告或测试注释中记录来源；` +
+        `(3) 只有 CSV/JSON/INI 等简单文本格式，且能立即 \`run_tests\` 验证时，才可用 pytest \`tmp_path\` 构造最小样例；` +
+        `(4) 网络不可用、用户未提供样例且无法确认格式标准时，应明确报告 blocker 请求用户提供样例。` +
+        `**严禁**凭记忆反复编造复杂领域 fixture，或单纯把硬编码路径改成另一个不存在的路径。`
       );
     },
   },
@@ -932,7 +1213,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
 
   // —— Fixture 内容格式错误 ——————————————————————————————
   // 测试已运行，但被测函数在解析 fixture 时报"Invalid syntax / Parse error / Malformed"。
-  // LLM 反应模式常常是"反复重跑测试"——其实根因是 fixture 文件本身写错了（DBC/CSV/JSON 不合法）。
+  // LLM 反应模式常常是"反复重跑测试"或凭记忆重写复杂样例；这里强制先找真实/权威参考。
   {
     code: 'fixture-content-malformed',
     severity: 1,
@@ -946,11 +1227,11 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
       return (
         `[Fixture 内容格式错误${where}] 测试已经能跑起来，但被测函数在解析输入文件时拒绝了内容——` +
         `这通常意味着**fixture 文件本身写错了**（不是被测代码的 bug，也不是测试逻辑的 bug）。修复路径：` +
-        `(1) 用 \`read_file\` 打开 tests/fixtures/<file> 看看你之前 write_file 落进去的内容；` +
-        `(2) 对照该格式的最小合法样例（DBC: BO_/SG_ 行；CSV: 列头+逗号；JSON: 严格双引号）` +
-        `用 \`write_file\` **整文件重写**为合法内容，不要逐字符 \`replace_in_file\` 修补；` +
-        `(3) 重写后再 \`run_tests\` 验证。**严禁**因为这条错误就去改被测模块或测试断言——` +
-        `先确认 fixture 是合法的，再质疑实现。`
+        `(1) 用 \`read_file\` 打开测试文件和 tests/fixtures/<file> 看清 fixture 的真实内容；如果样例是测试里的内联常量，也要修该测试文件里的常量；` +
+        `(2) 根据扩展名、被测解析库和错误信息确认格式标准，先查找工作区/用户提供的真实样例；` +
+        `(3) 若本地没有可靠样例，用 \`http_fetch\` 下载官方文档、上游测试仓库或公开标准示例中的小型参考文件，再用 \`write_file\` 整文件重写 tests/fixtures/<file>；` +
+        `(4) 只有简单文本格式才允许自己构造最小样例，并且必须马上 \`run_tests\` 验证；复杂领域格式连续失败后必须停止编造并请求用户提供样例或网络参考。` +
+        `**严禁**因为这条错误就去改被测模块或测试断言，也严禁凭记忆反复生成复杂格式 fixture。`
       );
     },
   },
@@ -997,24 +1278,12 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
   },
 ];
 
-/**
- * 把 Debugger 的失败日志（含 reason / pytest tail / tool calls）解析为一组建议。
- * 调用方应把结果拼到下一轮 Debugger 的 system / user prompt 中，引导其走出循环。
- *
- * - 同一 code 只保留首条命中
- * - 按 severity 升序、原命中顺序输出
- * - 最多返回 6 条，避免淹没真正的 traceback
- */
-export function calibrateDebugSuggestions(
-  failureLog: string,
-  reason?: string,
-): DebugSuggestion[] {
-  const text = `${reason ?? ''}\n${failureLog ?? ''}`;
-  if (!text.trim()) return [];
+function collectDebugSuggestions(text: string): DebugSuggestion[] {
   const out: DebugSuggestion[] = [];
   const seen = new Set<string>();
   for (const rule of PYTHON_ERROR_RULES) {
     if (seen.has(rule.code)) continue;
+    if (rule.skip?.(text)) continue;
     for (const re of rule.patterns) {
       const m = re.exec(text);
       if (m) {
@@ -1030,7 +1299,48 @@ export function calibrateDebugSuggestions(
     }
   }
   out.sort((a, b) => a.severity - b.severity);
-  return out.slice(0, 6);
+  return out;
+}
+
+function isLlmProviderFailureText(text: string): boolean {
+  return /(?:OpenAI|Ollama|OpenRouter|LLM|provider|response_format|json_object|json_schema)[^\n]{0,260}(?:HTTP\s+(?:401|403|408|409|429|5\d\d)|rate[- ]?limit|rate limited|rate-limited|retry-after|retry_after_seconds|fetch failed|stream (?:wall-clock|idle)|context (?:length|window)|token limit|prompt too long|prefill_memory_exceeded|not support|unsupported|invalid_request_body|supported formats)/i.test(text);
+}
+
+function latestFailureSlice(text: string): string {
+  const markers = [
+    /(?:^|\n)\s*-\s*(?:run_tests|run_program)\s+(?:失败|failed\b|FAIL\b)/giu,
+    /(?:^|\n)\s*(?:run_tests|run_program)[^\n]*(?:失败|failed\b|FAIL\b)/giu,
+  ];
+  let last = -1;
+  for (const marker of markers) {
+    let match: RegExpExecArray | null;
+    while ((match = marker.exec(text)) !== null) {
+      last = Math.max(last, match.index);
+    }
+  }
+  if (last < 0) return '';
+  return text.slice(last).trim();
+}
+
+/**
+ * 把 Debugger 的失败日志（含 reason / pytest tail / tool calls）解析为一组建议。
+ * 调用方应把结果拼到下一轮 Debugger 的 system / user prompt 中，引导其走出循环。
+ *
+ * - 同一 code 只保留首条命中
+ * - 先聚焦最后一次工具失败段，避免历史错误覆盖当前失败证据
+ * - 按 severity 升序、规则顺序输出
+ * - 最多返回 6 条，避免淹没真正的 traceback
+ */
+export function calibrateDebugSuggestions(
+  failureLog: string,
+  reason?: string,
+): DebugSuggestion[] {
+  const text = `${reason ?? ''}\n${failureLog ?? ''}`;
+  if (!text.trim()) return [];
+  const focused = latestFailureSlice(text);
+  const focusedSuggestions = focused ? collectDebugSuggestions(focused) : [];
+  const suggestions = focusedSuggestions.length > 0 ? focusedSuggestions : collectDebugSuggestions(text);
+  return suggestions.slice(0, 6);
 }
 
 /** 把建议数组渲染成可直接拼入 prompt 的 markdown 段（含编号 + 证据）。 */

@@ -13,58 +13,99 @@ const OptionalProviderStringSchema = ProviderStringScalarSchema.nullish().transf
 const RequiredProviderStringSchema = ProviderStringScalarSchema.transform((v) => String(v)).pipe(
   z.string().min(1),
 );
+const ProviderAccessTypeSchema = z.enum(['openai', 'ollama']);
+const JsonResponseFormatSchema = z.enum(['json_object', 'json_schema', 'none']);
+const ProviderTagsSchema = z.array(z.string().min(1)).optional().transform((tags) =>
+  tags?.map((tag) => tag.trim().toLowerCase()).filter(Boolean),
+);
 
 const ProviderSchema = z.object({
+  /**
+   * Transport/API family used by this provider.
+   *  - openai: OpenAI-compatible /v1/chat/completions endpoint, including OpenRouter, vLLM, mlx-server.
+   *  - ollama: native Ollama /api/chat endpoint.
+   */
+  type: ProviderAccessTypeSchema,
   api_key: OptionalProviderStringSchema,
   base_url: OptionalProviderStringSchema,
   model: RequiredProviderStringSchema,
-  /** 请求 wall-clock 总超时（毫秒）。默认 10 分钟。0 = 不限制。 */
+  /**
+   * Provider labels used by runtime policy.
+   * - cluster: aggregated/route provider such as OpenRouter free routes. These are
+   *   useful backups but should start below dedicated providers in score ranking.
+   */
+  tags: ProviderTagsSchema,
+  /** 请求 wall-clock 总超时（毫秒）。默认 15 分钟。0 = 不限制。 */
   request_timeout_ms: z.number().int().nonnegative().optional(),
-  /** 流式空闲超时（毫秒）。默认 60s。0 = 不限制。 */
+  /** 流式空闲超时（毫秒）。默认 5 分钟。0 = 不限制。 */
   stream_idle_timeout_ms: z.number().int().nonnegative().optional(),
   /** 流式输出字符上限。默认 200000。0 = 不限制。 */
   max_output_chars: z.number().int().nonnegative().optional(),
+  /**
+   * OpenAI-compatible structured JSON response format.
+   * Some providers (for example selected OpenRouter routes) do not support
+   * `json_object` but do support `json_schema`.
+   */
+  json_response_format: JsonResponseFormatSchema.optional(),
   /** Ollama thinking 模型是否启用长思考；弱服务器上的结构化任务可设为 false。 */
   think: z.boolean().optional(),
 });
 
 const LocaleSchema = z.enum(['en', 'zh']);
 
+const LlmSchema = z.object({
+  default: z.string(),
+  providers: z.record(z.string(), ProviderSchema),
+  /**
+   * 角色 → provider 数组的映射。
+   * 兼容旧格式：单字符串 `Coder: ollama_code` 自动归一化为 `[ollama_code]`。
+   * 数组形式 `Coder: [ollama_code, openai]` 表示该角色的候选 LLM 池；
+   * 实际选择顺序由 `llm.scores` 评分降序决定；用户显式设置评分=0 的 provider 直接跳过。
+   */
+  roles: z
+    .record(z.string(), z.union([z.string(), z.array(z.string())]))
+    .default({})
+    .transform((obj) => {
+      const out: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(obj)) {
+        out[k] = Array.isArray(v) ? [...v] : [v];
+      }
+      return out;
+    }),
+  /** 全局 fallback 链：当主 provider 调用报错时依次尝试 */
+  fallbacks: z.array(z.string()).default([]),
+  /** 可选：按角色指定 fallback 链（覆盖全局） */
+  role_fallbacks: z.record(z.string(), z.array(z.string())).default({}),
+  /**
+   * Provider 评分快照（启动时从 sidecar 文件加载，运行时由 ScoreStore 维护并自动落盘）。
+   * 配置文件里也可以手工设置初始值；不存在的 provider 默认评分 = 1。
+   * 用户手工设置评分 = 0 表示禁用；运行时自动评分只在 0.1～1.0 范围内调整。
+   */
+  scores: z.record(z.string(), z.number().min(0)).default({}),
+  /**
+   * Providers tagged `cluster` (for example aggregated free routes) use this
+   * narrower dynamic score range so they naturally remain backup choices.
+   */
+  cluster_score_min: z.number().min(0.1).max(1).optional(),
+  cluster_score_max: z.number().min(0.1).max(1).optional(),
+}).superRefine((llm, ctx) => {
+  const min = llm.cluster_score_min ?? 0.2;
+  const max = llm.cluster_score_max ?? 0.5;
+  if (min > max) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cluster_score_min'],
+      message: 'cluster_score_min must be less than or equal to cluster_score_max',
+    });
+  }
+});
+
 const ConfigSchema = z.object({
   /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
   locale: LocaleSchema.optional(),
   /** @deprecated use `locale` instead. Kept as a backwards-compatible alias. */
   ui_language: LocaleSchema.optional(),
-  llm: z.object({
-    default: z.string(),
-    providers: z.record(z.string(), ProviderSchema),
-    /**
-     * 角色 → provider 数组的映射。
-     * 兼容旧格式：单字符串 `Coder: ollama_code` 自动归一化为 `[ollama_code]`。
-     * 数组形式 `Coder: [ollama_code, openai]` 表示该角色的候选 LLM 池；
-     * 实际选择顺序由 `llm.scores` 评分降序决定，评分=0 的 provider 直接跳过。
-     */
-    roles: z
-      .record(z.string(), z.union([z.string(), z.array(z.string())]))
-      .default({})
-      .transform((obj) => {
-        const out: Record<string, string[]> = {};
-        for (const [k, v] of Object.entries(obj)) {
-          out[k] = Array.isArray(v) ? [...v] : [v];
-        }
-        return out;
-      }),
-    /** 全局 fallback 链：当主 provider 调用报错时依次尝试 */
-    fallbacks: z.array(z.string()).default([]),
-    /** 可选：按角色指定 fallback 链（覆盖全局） */
-    role_fallbacks: z.record(z.string(), z.array(z.string())).default({}),
-    /**
-     * Provider 评分快照（启动时从 sidecar 文件加载，运行时由 ScoreStore 维护并自动落盘）。
-     * 配置文件里也可以手工设置初始值；不存在的 provider 默认评分 = 1。
-     * 评分 = 0 表示禁用（preflight 检测到模型不在 ollama 服务器时也会置 0）。
-     */
-    scores: z.record(z.string(), z.number().min(0)).default({}),
-  }),
+  llm: LlmSchema,
   agent: z.object({
     language: z.enum(['python', 'typescript']).default('python'),
     max_steps: z.number().int().positive().default(50),

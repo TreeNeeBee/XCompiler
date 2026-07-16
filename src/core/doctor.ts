@@ -17,7 +17,7 @@ import { execRaw } from '../sandbox/subprocess.js';
 import { isRunningInContainer } from '../sandbox/factory.js';
 import { buildDefaultRegistry } from '../tools/index.js';
 import { buildDefaultSkills } from '../skills/skill.js';
-import { ScoreStore } from '../llm/scores.js';
+import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { t } from '../i18n/index.js';
 
 export type CheckLevel = 'ok' | 'warn' | 'fail';
@@ -74,7 +74,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<DoctorReport>
   }
   sections.push(cfgSection);
 
-  const scores = opts.scoreStore ?? new ScoreStore(cfgPath, cfg.llm.scores ?? {});
+  const scores = opts.scoreStore ?? new ScoreStore(cfgPath, cfg.llm.scores ?? {}, undefined, scoreStoreOptionsFromConfig(cfg.llm));
   await scores.load().catch(() => undefined);
 
   // 2) LLM
@@ -127,12 +127,12 @@ async function checkLlm(
   const ollamaByUrl = new Map<string, Array<{ name: string; model: string }>>();
   const openaiList: Array<{ name: string; baseUrl: string; apiKey: string; model: string; requiresApiKey: boolean }> = [];
   for (const [name, p] of providers) {
-    if (isOllamaProvider(name)) {
+    if (isOllamaProvider(p)) {
       const url = normalizeBaseUrl(p.base_url, 'http://localhost:11434');
       const arr = ollamaByUrl.get(url) ?? [];
       arr.push({ name, model: p.model });
       ollamaByUrl.set(url, arr);
-    } else if (isOpenAICompatibleProvider(name)) {
+    } else if (isOpenAICompatibleProvider(p)) {
       const baseUrl = normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1');
       openaiList.push({
         name,
@@ -214,13 +214,13 @@ async function checkLlm(
       if (scores.get(n) === 0) return false;
       const prov = cfg.llm.providers[n];
       if (!prov) return false;
-      if (isOllamaProvider(n)) {
+      if (isOllamaProvider(prov)) {
         const url = normalizeBaseUrl(prov.base_url, 'http://localhost:11434');
         const tags = ollamaTags.get(url);
         if (!tags) return false;
         return tags.includes(prov.model);
       }
-      if (isOpenAICompatibleProvider(n)) {
+      if (isOpenAICompatibleProvider(prov)) {
         const baseUrl = normalizeBaseUrl(prov.base_url, 'https://api.openai.com/v1');
         return !isOpenAICloudEndpoint(baseUrl) || (prov.api_key ?? '').length > 0;
       }

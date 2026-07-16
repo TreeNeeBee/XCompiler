@@ -12,7 +12,7 @@ import {
   type PlanIntent,
   type StepStatus,
 } from './plan.js';
-import { loadPlan } from './storage.js';
+import { loadPlanTarget } from './storage.js';
 
 export const XCOMPILER_PROJECT_KIND = 'xcompiler.project';
 export const XCOMPILER_PROJECT_VERSION = '1';
@@ -245,7 +245,7 @@ async function readExistingProjectFile(filePath: string): Promise<XCompilerProje
 
 async function tryLoadPlan(planPath: string): Promise<Plan | undefined> {
   try {
-    return await loadPlan(planPath);
+    return (await loadPlanTarget(planPath)).plan;
   } catch {
     return undefined;
   }

@@ -47,8 +47,9 @@ export function lintPlan(plan: Plan): LintIssue[] {
 
   const implementationPhases = plan.implementationPhases ?? [];
   const implementationPhaseIds = new Set(implementationPhases.map((phase) => phase.id));
-  const executableImplementationPhases = implementationPhases.filter((phase) => phase.status !== 'deferred');
-  const executableIterationIds = new Set(executableImplementationPhases.map((phase) => phase.id));
+  const plannedOrCurrentImplementationPhases = implementationPhases.filter((phase) => phase.status !== 'deferred');
+  const currentImplementationPhases = implementationPhases.filter((phase) => phase.status === 'current');
+  const currentIterationIds = new Set(currentImplementationPhases.map((phase) => phase.id));
   const iterationOrder = new Map(implementationPhases.map((phase, index) => [phase.id, index]));
   const stepIterationId = (step: Step): string => step.iterationId ?? 'P1';
   const stepIterationOrder = (step: Step): number => iterationOrder.get(stepIterationId(step)) ?? 0;
@@ -62,16 +63,18 @@ export function lintPlan(plan: Plan): LintIssue[] {
         message: `Step iterationId ${iterationId} is not declared in implementationPhases.`,
       });
     }
-    if (implementationPhases.length > 0 && !executableIterationIds.has(iterationId)) {
+    if (implementationPhases.length > 0 && !currentIterationIds.has(iterationId)) {
       issues.push({
         level: 'error',
         stepId: step.id,
-        message: `Step belongs to deferred implementation phase ${iterationId}; deferred phases must not contain executable Steps.`,
+        message:
+          `Step belongs to non-current implementation phase ${iterationId}; ` +
+          `planned/deferred phases stay in PhasePlan until loaded as the current phase.`,
       });
     }
   }
 
-  for (const iteration of executableImplementationPhases) {
+  for (const iteration of currentImplementationPhases) {
     const iterationSteps = plan.steps.filter((step) => stepIterationId(step) === iteration.id);
     const phases = new Set(iterationSteps.map((s) => s.phase));
     for (const phase of REQUIRED_V_MODEL_PHASES) {
@@ -104,7 +107,11 @@ export function lintPlan(plan: Plan): LintIssue[] {
           s.phase === 'DEBUG' &&
           prevStep !== undefined &&
           transitivelyDependsOn(s, prev, stepByIdEarly);
-        if (!allowModify) {
+        const allowIterativeModify =
+          prevStep !== undefined &&
+          stepIterationOrder(prevStep) < stepIterationOrder(s) &&
+          transitivelyDependsOn(s, prev, stepByIdEarly);
+        if (!allowModify && !allowIterativeModify) {
           issues.push({
             level: 'error',
             stepId: s.id,
@@ -273,7 +280,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
   }
 
   // 10. 每个迭代周期都必须产出各阶段规范验收文档；左侧阶段同步产出对应测试计划。
-  for (const iteration of executableImplementationPhases) {
+  for (const iteration of currentImplementationPhases) {
     for (const phase of REQUIRED_V_MODEL_PHASES) {
       const expected = phaseDocForIteration(phase, iteration.id);
       if (!expected) continue;
@@ -398,7 +405,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
         message: 'implementationPhases must have exactly one current phase and it must be P1.',
       });
     }
-    for (const phase of executableImplementationPhases) {
+    for (const phase of plannedOrCurrentImplementationPhases) {
       if (!phase.verificationGate || phase.verificationGate.checks.length === 0) {
         issues.push({
           level: 'error',
@@ -410,12 +417,12 @@ export function lintPlan(plan: Plan): LintIssue[] {
   }
   if (plan.complexityAssessment) {
     const requiredPhaseCount = requiredImplementationPhaseCount(plan.complexityAssessment);
-    if (executableImplementationPhases.length > 0 && executableImplementationPhases.length < requiredPhaseCount) {
+    if (plannedOrCurrentImplementationPhases.length > 0 && plannedOrCurrentImplementationPhases.length < requiredPhaseCount) {
       issues.push({
-        level: 'error',
-        message:
-          `complexityAssessment.level=${plan.complexityAssessment.level} requires at least ` +
-          `${requiredPhaseCount} executable implementation iteration(s).`,
+          level: 'error',
+          message:
+            `complexityAssessment.level=${plan.complexityAssessment.level} requires at least ` +
+          `${requiredPhaseCount} planned/current implementation iteration(s).`,
       });
     }
     if (plan.complexityAssessment.level !== 'simple' && !plan.complexityAssessment.splitRecommended) {
@@ -424,17 +431,17 @@ export function lintPlan(plan: Plan): LintIssue[] {
         message: 'moderate/complex complexityAssessment requires splitRecommended=true.',
       });
     }
-    if (plan.complexityAssessment?.splitRecommended && executableImplementationPhases.length < 2) {
+    if (plan.complexityAssessment?.splitRecommended && plannedOrCurrentImplementationPhases.length < 2) {
       issues.push({
         level: 'error',
-        message: 'complexityAssessment.splitRecommended requires at least two executable implementation iterations.',
+        message: 'complexityAssessment.splitRecommended requires at least two planned/current implementation iterations.',
       });
     }
     if (
       plan.complexityAssessment.level === 'simple' &&
       !plan.complexityAssessment.splitRecommended &&
       !plan.complexityAssessment.userForcedPhaseSplit &&
-      executableImplementationPhases.length > 1
+      plannedOrCurrentImplementationPhases.length > 1
     ) {
       issues.push({
         level: 'error',
@@ -447,7 +454,8 @@ export function lintPlan(plan: Plan): LintIssue[] {
 }
 
 function requiredImplementationPhaseCount(assessment: ComplexityAssessment): number {
-  if (assessment.level !== 'simple' || assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
+  if (assessment.level === 'complex') return 3;
+  if (assessment.level === 'moderate' || assessment.splitRecommended || assessment.userForcedPhaseSplit) return 2;
   return 1;
 }
 

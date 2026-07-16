@@ -36,4 +36,29 @@ describe('GitService', () => {
     const recent = await git.recentXCompilerCommits();
     expect(recent.some((c) => c.message.includes('init workspace'))).toBe(true);
   });
+
+  it('does not track sandbox runtime artifacts in snapshots', async () => {
+    await git.ensureRepo();
+    await ws.writeFile('.sandbox/test/bin/python', 'runtime shim\n');
+
+    await git.snapshot('S001', 0, 'runtime artifact');
+
+    const tracked = await git.raw().raw(['ls-files']);
+    expect(tracked).not.toContain('.sandbox/test/bin/python');
+    await expect(ws.exists('.sandbox/test/bin/python')).resolves.toBe(true);
+  });
+
+  it('removes already tracked sandbox artifacts from the index without deleting files', async () => {
+    await git.ensureRepo();
+    await ws.writeFile('.sandbox/test/bin/python', 'runtime shim\n');
+    await git.raw().raw(['add', '-f', '.sandbox/test/bin/python']);
+    await git.raw().commit('track sandbox runtime artifact');
+    expect(await git.raw().raw(['ls-files'])).toContain('.sandbox/test/bin/python');
+
+    await git.snapshot('S002', 0, 'clean runtime artifact');
+
+    const tracked = await git.raw().raw(['ls-files']);
+    expect(tracked).not.toContain('.sandbox/test/bin/python');
+    await expect(ws.exists('.sandbox/test/bin/python')).resolves.toBe(true);
+  });
 });

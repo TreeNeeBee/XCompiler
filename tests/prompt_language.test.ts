@@ -28,6 +28,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(py).toContain("current development module's position in the whole system");
     expect(py).toContain('external APIs, third-party library choices, dependency confirmation');
     expect(py).toContain('module-internal functions, data structures, algorithms');
+    expect(py).toContain('do not invent parser/export APIs from package names alone');
     expect(ts).toContain('system-level external interfaces and dependencies');
     expect(ts).toContain('module-internal functions, types, data structures');
 
@@ -36,6 +37,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(zh).toContain('当前开发模块在整体系统中的定位');
     expect(zh).toContain('外部 API、第三方库选型、依赖确认');
     expect(zh).toContain('模块内部的具体功能实现和架构');
+    expect(zh).toContain('禁止仅凭包名臆造不存在的解析/导出 API');
   });
 
   it('requires the functional documentation bundle and project type classification', () => {
@@ -131,6 +133,8 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('option count is not fixed');
     expect(prompt).toContain('A-B, A-C, A-D, or A-E');
     expect(prompt).toContain('custom free-form answer');
+    expect(prompt).toContain('external APIs, URLs, or third-party data sources');
+    expect(prompt).toContain('no-key/no-token');
   });
 
   it('adds an explicit project-shape clarification when the topic is ambiguous', () => {
@@ -156,5 +160,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('选项数量不是固定值');
     expect(prompt).toContain('A-B、A-C、A-D 或 A-E');
     expect(prompt).toContain('自定义回答内容');
+    expect(prompt).toContain('外部 API/URL/第三方数据源');
+    expect(prompt).toContain('免 key/token');
   });
 });

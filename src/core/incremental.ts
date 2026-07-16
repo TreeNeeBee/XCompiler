@@ -2,8 +2,10 @@ import { promises as fs } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
-import { PlanSchema, type Language, type PlanIntent } from './plan.js';
+import { DEFAULT_PLAN_FILE, PlanSchema, type Language, type PlanIntent } from './plan.js';
+import { DEFAULT_PHASE_PLAN_FILE, PhasePlanSchema } from './phase_plan.js';
 import { PROJECT_MEMORY_PATH, refreshProjectMemory } from './project_memory.js';
+import { loadPlanTarget } from './storage.js';
 
 export interface IncrementalBaseline {
   summary: string;
@@ -26,15 +28,15 @@ export async function loadIncrementalBaseline(
   let language: Language | undefined;
   let languageSource: string | undefined;
 
-  const relPlan = relInsideWorkspace(ws.root, opts.planPath);
-  const planSource = opts.planPath ? path.resolve(opts.planPath) : path.join(ws.root, 'plan.json');
+  const planSource = opts.planPath ? path.resolve(opts.planPath) : await defaultBaselinePlanPath(ws.root);
+  const relPlan = relInsideWorkspace(ws.root, planSource);
   const planLabel = relPlan ?? path.relative(ws.root, planSource).replace(/\\/g, '/');
-  const plan = await loadPlanSummary(ws, planSource, planLabel || 'plan.json');
+  const plan = await loadPlanSummary(ws, planSource, planLabel || DEFAULT_PHASE_PLAN_FILE);
   if (plan) {
     sections.push(plan.text);
-    sources.push(planLabel || 'plan.json');
+    sources.push(planLabel || DEFAULT_PHASE_PLAN_FILE);
     language = plan.language;
-    languageSource = plan.language ? planLabel || 'plan.json' : undefined;
+    languageSource = plan.language ? planLabel || DEFAULT_PHASE_PLAN_FILE : undefined;
   }
 
   const memory = await refreshProjectMemory(ws, {
@@ -97,7 +99,42 @@ async function loadPlanSummary(
 ): Promise<{ text: string; language?: Language; intent?: PlanIntent } | null> {
   try {
     const raw = await fs.readFile(planPath, 'utf8');
-    const parsed = PlanSchema.safeParse(JSON.parse(raw));
+    const json = JSON.parse(raw);
+    const phasePlanParsed = PhasePlanSchema.safeParse(json);
+    if (phasePlanParsed.success) {
+      try {
+        const loaded = await loadPlanTarget(planPath);
+        const phasePlan = phasePlanParsed.data;
+        const currentPhase =
+          phasePlan.phases.find((phase) => phase.id === phasePlan.currentPhaseId) ??
+          phasePlan.phases.find((phase) => phase.status === 'current') ??
+          phasePlan.phases[0];
+        return {
+          text: [
+            '## Existing phase plan summary',
+            `- path: ${label}`,
+            `- language: ${phasePlan.language}`,
+            `- intent: ${phasePlan.intent}`,
+            `- phases: ${phasePlan.phases.length}`,
+            `- currentPhase: ${phasePlan.currentPhaseId}`,
+            currentPhase ? `- currentObjective: ${currentPhase.objective}` : '- currentObjective: (unknown)',
+            `- currentPlan: ${path.relative(path.dirname(planPath), loaded.planPath).replace(/\\/g, '/') || path.basename(loaded.planPath)}`,
+            `- currentSteps: ${loaded.plan.steps.length}`,
+            `- requirementDigest: ${phasePlan.requirementDigest}`,
+            `- updatedAt: ${phasePlan.updatedAt}`,
+          ].join('\n'),
+          language: loaded.plan.language,
+          intent: loaded.plan.intent,
+        };
+      } catch {
+        return {
+          text: `## Existing phase plan summary\n- path: ${label}\n- status: current phase plan is unreadable`,
+          language: phasePlanParsed.data.language,
+          intent: phasePlanParsed.data.intent,
+        };
+      }
+    }
+    const parsed = PlanSchema.safeParse(json);
     if (!parsed.success) {
       return {
         text: `## Existing plan summary\n- path: ${label}\n- status: unreadable by current schema`,
@@ -119,6 +156,21 @@ async function loadPlanSummary(
     };
   } catch {
     return null;
+  }
+}
+
+async function defaultBaselinePlanPath(root: string): Promise<string> {
+  const phasePlanPath = path.join(root, DEFAULT_PHASE_PLAN_FILE);
+  if (await fileExists(phasePlanPath)) return phasePlanPath;
+  return path.join(root, DEFAULT_PLAN_FILE);
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

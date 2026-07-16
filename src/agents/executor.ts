@@ -31,10 +31,14 @@ export interface ExecutorOptions {
   llm: LLMClient;
   /** 同一 Step 内最多对话轮数，避免无限循环。 */
   maxRounds?: number;
+  /** run_tests 连续/累计失败达到该预算后提前停止，让外层 V 模型回退处理。 */
+  maxFailedTestRuns?: number;
 }
 
 export interface ExecutorRunInput {
   step: Step;
+  /** Runtime execution role. Debug retries keep the same source step but execute as Debugger. */
+  executionRole?: Step['role'];
   /** 仅暴露给 LLM 的工具子集（已按 step.tools 过滤）。 */
   tools: Tool[];
   ctx: ToolContext;
@@ -81,7 +85,7 @@ interface LLMAction {
 }
 interface LLMTurn {
   thoughts?: string;
-  actions?: LLMAction[];
+  actions?: unknown;
   done?: boolean;
 }
 
@@ -96,6 +100,7 @@ export class StepExecutor {
 
   async run(inp: ExecutorRunInput): Promise<ExecutorRunResult> {
     const maxRounds = this.opts.maxRounds ?? 6;
+    const role = inp.executionRole ?? inp.step.role;
     const toolMap = new Map(inp.tools.map((t) => [t.name, t]));
     const toolDocs = inp.tools
       .map((t) => `- ${t.name}: ${describeToolForStep(t, inp.ctx)} args=${JSON.stringify(t.argsSchema)}`)
@@ -131,10 +136,12 @@ export class StepExecutor {
     const actionFingerprints = new Map<string, number>();
     const unresolvedToolFailures = new Map<string, string>();
     let actualRounds = 0;
+    let consecutiveReadOnlyRounds = 0;
+    let failedTestRunRounds = 0;
 
     for (let round = 1; round <= maxRounds; round++) {
       const rep = makeStreamReporter(
-        `${inp.step.id} ${inp.step.role} round ${round}`,
+        `${inp.step.id} ${role} round ${round}`,
         this.opts.llm.name,
       );
       // 另起一份本轮完整原始输出的拼接，以便 llm.chat 报错/超时/loop 被 abort 时仔细存证。
@@ -161,7 +168,7 @@ export class StepExecutor {
         rep.done('failed');
         const errMsg = (err as Error).message;
         // 把部分流落盘到 .xcompiler/llm-stream/<step>-<role>-r<n>.txt
-        const dumpRel = `.xcompiler/llm-stream/${inp.step.id}-${inp.step.role}-r${round}.txt`;
+        const dumpRel = `.xcompiler/llm-stream/${inp.step.id}-${role}-r${round}.txt`;
         try {
           const dumpAbs = inp.ctx.ws.abs(dumpRel);
           await fs.mkdir(path.dirname(dumpAbs), { recursive: true });
@@ -173,7 +180,7 @@ export class StepExecutor {
         } catch {
           /* best-effort */
         }
-        await inp.ctx.audit?.executorTurn(inp.step.id, inp.step.role, round, {
+        await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
           thoughts: t().audit.llmChatFailedThought(errMsg),
           actions: [],
           done: false,
@@ -186,7 +193,7 @@ export class StepExecutor {
           {
             messageId: 'audit.llm_chat_aborted',
             stepId: inp.step.id,
-            role: inp.step.role,
+            role,
             round,
             partialDump: dumpRel,
             partialBytes: rawAggregate.length,
@@ -197,7 +204,26 @@ export class StepExecutor {
       rep.done();
       const turn = parseTurn(text);
       finalThought = turn.thoughts;
-      const actions = turn.actions ?? [];
+      const normalizedActions = normalizeActions(turn.actions);
+      const actions = normalizedActions.actions;
+      if (normalizedActions.invalid.length > 0) {
+        parseFailures++;
+        await inp.ctx.audit?.event(
+          'note',
+          `ignored ${normalizedActions.invalid.length} invalid action item(s) from LLM turn`,
+          {
+            messageId: 'audit.executor_invalid_actions_ignored',
+            stepId: inp.step.id,
+            role,
+            round,
+            invalidActions: normalizedActions.invalid.map((item) => ({
+              index: item.index,
+              error: item.result.error,
+              raw: item.raw,
+            })),
+          },
+        );
+      }
       actualRounds = round;
       // 解析失败 / 空响应：关键的"不健康"信号。
       if (!turn || (turn.thoughts === undefined && actions.length === 0 && turn.done === undefined)) {
@@ -220,15 +246,26 @@ export class StepExecutor {
       }
       // 一轮里有 ≥ 2 个 action 是旧指纹的重复 → 强信号；只 1 个不计入避免误伤。
       if (perActionRepeats >= 2) repeatedTurns++;
+      if (actions.length > 0 && actions.every(isReadOnlyOrProbeAction)) {
+        consecutiveReadOnlyRounds++;
+      } else if (actions.length > 0) {
+        consecutiveReadOnlyRounds = 0;
+      }
       // 把 LLM 本轮的"思考过程 + 计划行动"写入审计，作为交付时的可追溯材料
-      await inp.ctx.audit?.executorTurn(inp.step.id, inp.step.role, round, {
+      await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
         thoughts: turn.thoughts,
         actions,
         done: turn.done === true,
         raw: text,
         provider,
       });
-      const turnResults: Array<ToolResult & { tool: string }> = [];
+      const turnResults: Array<ToolResult & { tool: string }> = normalizedActions.invalid.map((item) => ({
+        ...item.result,
+        tool: item.result.tool,
+      }));
+      for (const item of normalizedActions.invalid) {
+        calls.push({ tool: item.result.tool, ok: false, error: item.result.error });
+      }
       for (const a of actions) {
         const selectedTool = toolMap.get(a.tool);
         if (!selectedTool) {
@@ -318,6 +355,9 @@ export class StepExecutor {
         turnResults.push({ ...r, tool: a.tool });
       }
       const verify = await verifyOutputs(inp);
+      if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok)) {
+        failedTestRunRounds++;
+      }
       if (turn.done && verify.ok && unresolvedToolFailures.size === 0) {
         const metrics = computeMetrics({
           rounds: actualRounds,
@@ -329,7 +369,52 @@ export class StepExecutor {
         });
         return { success: true, rounds: round, toolCalls: calls, finalThought, metrics };
       }
-      messages.push({ role: 'assistant', content: text });
+      if (this.opts.maxFailedTestRuns && failedTestRunRounds >= this.opts.maxFailedTestRuns) {
+        const metrics = computeMetrics({
+          rounds: actualRounds,
+          parseFailures,
+          repeatedTurns,
+          calls,
+          initialMissing,
+          currentMissing: verify.missing.length,
+        });
+        const error =
+          `run_tests failed ${failedTestRunRounds} time(s) in this step; ` +
+          'stopping the test step so the V-model rollback can repair the paired source phase.';
+        await inp.ctx.audit?.event('note', error, {
+          messageId: 'audit.executor_test_gate_limit',
+          stepId: inp.step.id,
+          round,
+          failedTestRunRounds,
+          maxFailedTestRuns: this.opts.maxFailedTestRuns,
+        });
+        return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
+      }
+      if (consecutiveReadOnlyRounds >= 3) {
+        repeatedTurns++;
+        const metrics = computeMetrics({
+          rounds: actualRounds,
+          parseFailures,
+          repeatedTurns,
+          calls,
+          initialMissing,
+          currentMissing: verify.missing.length,
+        });
+        const targets = actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', ');
+        const error =
+          `repeated read-only/probe actions without progress for ${consecutiveReadOnlyRounds} rounds` +
+          (targets ? ` (last target: ${targets})` : '') +
+          '; next attempt must patch/write an allowed file, run verification, or stop with a concrete blocker.';
+        await inp.ctx.audit?.event('note', error, {
+          messageId: 'audit.executor_loop_guard',
+          stepId: inp.step.id,
+          round,
+          consecutiveReadOnlyRounds,
+          actions,
+        });
+        return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
+      }
+      messages.push({ role: 'assistant', content: compactTurnForHistory(turn) });
       messages.push({
         role: 'user',
         content: renderFeedback(turnResults, verify, {
@@ -363,6 +448,56 @@ export class StepExecutor {
   }
 }
 
+function isReadOnlyOrProbeAction(action: LLMAction): boolean {
+  if (action.tool === 'read_file' || action.tool === 'list_dir' || action.tool === 'code_search') return true;
+  if (action.tool === 'analyze_error') return true;
+  return action.tool === 'http_fetch' && typeof action.args.saveAs !== 'string';
+}
+
+function compactTurnForHistory(turn: LLMTurn): string {
+  const normalized = normalizeActions(turn.actions);
+  return JSON.stringify({
+    thoughts: truncate(turn.thoughts ?? '', 500),
+    actions: normalized.actions.map((action) => ({
+      tool: action.tool,
+      args: compactActionArgs(action.tool, action.args),
+    })),
+    invalidActions: normalized.invalid.map((item) => ({
+      index: item.index,
+      error: item.result.error,
+    })),
+    done: turn.done === true,
+  });
+}
+
+function compactActionArgs(tool: string, args: unknown): Record<string, unknown> {
+  if (!isPlainRecord(args)) {
+    return { invalidArgs: args ?? null };
+  }
+  const compact: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === 'string') {
+      if (key === 'content' || key === 'patch' || key === 'body') {
+        compact[`${key}Bytes`] = Buffer.byteLength(value);
+      } else {
+        compact[key] = truncate(value, 500);
+      }
+    } else if (Array.isArray(value)) {
+      compact[key] = value.map((item) => typeof item === 'string' ? truncate(item, 200) : item);
+    } else if (value && typeof value === 'object') {
+      const encoded = JSON.stringify(value);
+      compact[key] = encoded.length > 800 ? `${encoded.slice(0, 800)}... [truncated ${encoded.length - 800} chars]` : value;
+    } else {
+      compact[key] = value;
+    }
+  }
+  if (!('path' in compact)) {
+    const targets = actionTargetPaths(tool, args);
+    if (targets.length > 0) compact.targets = targets;
+  }
+  return compact;
+}
+
 function updateUnresolvedToolFailures(
   unresolved: Map<string, string>,
   action: LLMAction,
@@ -371,10 +506,20 @@ function updateUnresolvedToolFailures(
   const keys = actionResolutionKeys(action);
   if (result.ok) {
     for (const key of keys) unresolved.delete(key);
+    unresolved.delete(`tool:${action.tool}`);
     return;
   }
-  const detail = `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`;
+  if (isIgnorableReadOnlyToolFailure(action, result)) return;
+  const detail = truncate(
+    `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`,
+    1500,
+  );
   for (const key of keys) unresolved.set(key, detail);
+}
+
+function isIgnorableReadOnlyToolFailure(action: LLMAction, result: ToolResult): boolean {
+  if (!result.error?.includes('tool not allowed for this step')) return false;
+  return action.tool === 'read_file' || action.tool === 'list_dir' || action.tool === 'code_search';
 }
 
 function actionResolutionKeys(action: LLMAction): string[] {
@@ -383,7 +528,8 @@ function actionResolutionKeys(action: LLMAction): string[] {
   return [`tool:${action.tool}`];
 }
 
-function actionTargetPaths(tool: string, args: Record<string, unknown>): string[] {
+function actionTargetPaths(tool: string, args: unknown): string[] {
+  if (!isPlainRecord(args)) return [];
   if (tool === 'write_file' || tool === 'append_file' || tool === 'replace_in_file') {
     return typeof args.path === 'string' ? [normalizeRelPath(args.path)] : [];
   }
@@ -415,10 +561,11 @@ function normalizeRelPath(p: string): string {
 
 function buildPermissionRequest(
   tool: string,
-  args: Record<string, unknown>,
+  args: unknown,
   stepId: string,
   language: ToolContext['language'],
 ): ToolPermissionRequest | undefined {
+  const argRecord = isPlainRecord(args) ? args : {};
   const target = actionTargetPaths(tool, args).join(', ');
   const runtime = language === 'typescript' ? 'npm' : 'python';
   if (tool === 'write_file' || tool === 'append_file' || tool === 'replace_in_file' || tool === 'apply_patch') {
@@ -452,7 +599,7 @@ function buildPermissionRequest(
   if (tool === 'install_deps' || tool === 'pip_install') {
     return {
       operationType: 'install_dependency',
-      target: Array.isArray(args.packages) ? args.packages.join(', ') : '(packages)',
+      target: Array.isArray(argRecord.packages) ? argRecord.packages.join(', ') : '(packages)',
       reason: `Step ${stepId} requested dependency installation.`,
       risk: 'This may execute package manager scripts and download code from registries.',
       scope: 'current workspace sandbox',
@@ -480,7 +627,7 @@ function buildPermissionRequest(
   if (tool === 'run_program' || tool === 'run_python') {
     return {
       operationType: 'shell_command',
-      target: `${runtime} ${Array.isArray(args.args) ? args.args.join(' ') : ''}`.trim(),
+      target: `${runtime} ${Array.isArray(argRecord.args) ? argRecord.args.join(' ') : ''}`.trim(),
       reason: `Step ${stepId} requested program execution.`,
       risk: 'This executes project code in the configured sandbox.',
       scope: 'current workspace sandbox',
@@ -494,7 +641,7 @@ function buildPermissionRequest(
   if (tool === 'http_fetch') {
     return {
       operationType: 'network_access',
-      target: typeof args.url === 'string' ? args.url : '(url)',
+      target: typeof argRecord.url === 'string' ? argRecord.url : '(url)',
       reason: `Step ${stepId} requested network access.`,
       risk: 'This contacts an external HTTP endpoint from the host process.',
       scope: 'network',
@@ -508,7 +655,8 @@ function buildPermissionRequest(
   return undefined;
 }
 
-function redactLargeArgs(args: Record<string, unknown>): Record<string, unknown> {
+function redactLargeArgs(args: unknown): Record<string, unknown> {
+  if (!isPlainRecord(args)) return { value: args ?? null };
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (typeof value === 'string' && value.length > 500) {
@@ -520,12 +668,67 @@ function redactLargeArgs(args: Record<string, unknown>): Record<string, unknown>
   return out;
 }
 
-function changedFilesForAction(tool: string, args: Record<string, unknown>, result: ToolResult): string[] {
+function changedFilesForAction(tool: string, args: unknown, result: ToolResult): string[] {
   if (tool === 'apply_patch' && result.data && typeof result.data === 'object') {
     const changed = (result.data as { changedFiles?: unknown }).changedFiles;
     if (Array.isArray(changed)) return changed.filter((x): x is string => typeof x === 'string');
   }
   return actionTargetPaths(tool, args);
+}
+
+function normalizeActions(raw: unknown): {
+  actions: LLMAction[];
+  invalid: Array<{ index: number; raw: unknown; result: ToolResult & { tool: string } }>;
+} {
+  if (raw === undefined || raw === null) return { actions: [], invalid: [] };
+  if (!Array.isArray(raw)) {
+    return {
+      actions: [],
+      invalid: [{
+        index: -1,
+        raw,
+        result: {
+          tool: 'invalid_action',
+          ok: false,
+          error: 'invalid actions field: expected an array of tool calls',
+        },
+      }],
+    };
+  }
+  const actions: LLMAction[] = [];
+  const invalid: Array<{ index: number; raw: unknown; result: ToolResult & { tool: string } }> = [];
+  raw.forEach((item, index) => {
+    if (!isPlainRecord(item)) {
+      invalid.push({
+        index,
+        raw: item,
+        result: { tool: 'invalid_action', ok: false, error: `invalid action at index ${index}: expected object` },
+      });
+      return;
+    }
+    if (typeof item.tool !== 'string' || item.tool.trim().length === 0) {
+      invalid.push({
+        index,
+        raw: item,
+        result: { tool: 'invalid_action', ok: false, error: `invalid action at index ${index}: missing string tool` },
+      });
+      return;
+    }
+    if (!isPlainRecord(item.args)) {
+      invalid.push({
+        index,
+        raw: item,
+        result: { tool: item.tool, ok: false, error: `invalid action at index ${index}: args must be an object` },
+      });
+      return;
+    }
+    actions.push({ tool: item.tool, args: item.args });
+  });
+  return { actions, invalid };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function describeToolForStep(tool: Tool, ctx: ToolContext): string {
@@ -584,6 +787,7 @@ export async function verifyOutputs(inp: ExecutorRunInput): Promise<{ ok: boolea
 }
 
 function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
+  const role = inp.executionRole ?? inp.step.role;
   const ctxBlock = (inp.contextSnippets ?? [])
     .map((s) =>
       `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.xcompiler/architecture-contract.json' ? 8000 : 2200)}\n\`\`\``,
@@ -596,7 +800,7 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
   return [
     `# Step ${inp.step.id} — ${inp.step.title}`,
     `phase: ${inp.step.phase}`,
-    `role: ${inp.step.role}`,
+    `role: ${role}`,
     `acceptance: ${inp.step.acceptance}`,
     '',
     '## description',
@@ -649,7 +853,7 @@ function renderFeedback(
   const M = t().prompts;
   const lines: string[] = [M.executorFeedbackHeader];
   for (const r of results) {
-    lines.push(`- ${r.tool}: ${r.ok ? 'OK' : 'FAIL'} — ${r.summary ?? r.error ?? ''}`);
+    lines.push(`- ${r.tool}: ${r.ok ? 'OK' : 'FAIL'} — ${truncate(r.summary ?? r.error ?? '', 1800)}`);
   }
   if (verify.ok) {
     lines.push(M.executorFeedbackVerifyOk);
@@ -664,7 +868,15 @@ function renderFeedback(
     }
   }
   if (turn.unresolvedFailures && turn.unresolvedFailures.length > 0) {
-    lines.push(`Unresolved tool failures remain: ${turn.unresolvedFailures.join('; ')}`);
+    lines.push(
+      `Unresolved tool failures remain: ${turn.unresolvedFailures.map((failure) => truncate(failure, 1200)).join('; ')}`,
+    );
+    if (turn.unresolvedFailures.some((failure) => /content must be a string/i.test(failure))) {
+      lines.push(
+        'Tool contract violation: write_file/append_file require args.content to be a literal string. ' +
+        'Do not send contentBytes, arrays, objects, or omitted content; retry the same target with a valid content string.',
+      );
+    }
     if (turn.declaredDone) {
       lines.push(
         `Invalid completion: do not return done=true until each failed tool call is corrected ` +

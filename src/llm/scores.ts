@@ -3,25 +3,45 @@ import path from 'node:path';
 import YAML from 'yaml';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
+import type { XCompilerConfig } from '../config/config.js';
+
+export const CLUSTER_PROVIDER_TAG = 'cluster';
+
+export interface ScoreStoreOptions {
+  /** Providers tagged as aggregated/route pools such as OpenRouter free mode. */
+  clusterProviderNames?: string[];
+  /** Dynamic score floor for cluster providers. Defaults to 0.2. */
+  clusterScoreMin?: number;
+  /** Dynamic score cap and default score for cluster providers. Defaults to 0.5. */
+  clusterScoreMax?: number;
+}
 
 /**
  * 每个 LLM provider 的运行时评分（默认 1.0）。
  *
  * 设计动机：
  *  - 配置允许给一个角色挂多个 provider；运行时按评分降序选择当前"最可信"的。
- *  - 评分会随成功/失败动态调整：失败 -0.5 直到 0（=禁用）；成功 +0.1 直到 cap=10。
- *  - preflight 检测到 ollama 服务器上**模型不存在**会直接把评分置 0。
+ *  - 评分会随成功/失败动态调整：失败 -0.5 直到 0.1；成功 +0.1 直到 cap=1。
+ *  - 只有用户在配置中显式设置 score=0 才表示禁用；运行时自动评分不会写出 0。
+ *  - preflight 检测到 ollama 服务器上**模型不存在**会在当前运行跳过该 provider，并把评分降到 0.1。
  *  - 持久化到 config 同目录的 sidecar 文件 `llm_scores.yaml`，避免改写用户的 config.yaml
  *    （会丢注释）。配置里 `llm.scores` 段作为 sidecar 缺失时的初值。
  */
 export class ScoreStore {
   static readonly DEFAULT = 1.0;
-  static readonly MIN = 0;
-  static readonly MAX = 10;
+  static readonly DISABLED = 0;
+  static readonly MIN = 0.1;
+  static readonly MAX = 1.0;
+  static readonly CLUSTER_MIN = 0.2;
+  static readonly CLUSTER_MAX = 0.5;
   static readonly DECAY = 0.5;
   static readonly BOOST = 0.1;
 
   private readonly scores = new Map<string, number>();
+  private readonly userDisabled = new Set<string>();
+  private readonly clusterProviders: Set<string>;
+  private readonly clusterMin: number;
+  private readonly clusterMax: number;
   private dirty = false;
   private writeQueue: Promise<void> = Promise.resolve();
   private readonly sidecarPath: string;
@@ -30,10 +50,17 @@ export class ScoreStore {
     configPath: string,
     initial: Record<string, number> = {},
     private readonly audit?: AuditLogger,
+    opts: ScoreStoreOptions = {},
   ) {
     this.sidecarPath = path.join(path.dirname(configPath), 'llm_scores.yaml');
+    this.clusterProviders = new Set(opts.clusterProviderNames ?? []);
+    const bounds = normalizeClusterBounds(opts.clusterScoreMin, opts.clusterScoreMax);
+    this.clusterMin = bounds.min;
+    this.clusterMax = bounds.max;
     for (const [k, v] of Object.entries(initial)) {
-      this.scores.set(k, clamp(v));
+      const score = this.clampConfigured(k, v);
+      this.scores.set(k, score);
+      if (score === ScoreStore.DISABLED) this.userDisabled.add(k);
     }
   }
 
@@ -45,7 +72,8 @@ export class ScoreStore {
       if (parsed && typeof parsed === 'object') {
         for (const [k, v] of Object.entries(parsed)) {
           if (typeof v === 'number' && Number.isFinite(v)) {
-            this.scores.set(k, clamp(v));
+            if (this.userDisabled.has(k)) continue;
+            this.scores.set(k, this.clampDynamic(k, v));
           }
         }
       }
@@ -61,12 +89,13 @@ export class ScoreStore {
   }
 
   get(name: string): number {
-    return this.scores.has(name) ? this.scores.get(name)! : ScoreStore.DEFAULT;
+    return this.scores.has(name) ? this.scores.get(name)! : this.defaultFor(name);
   }
 
-  /** 主动设置评分（如 preflight 把不存在的模型置 0）。 */
+  /** 主动设置评分；value=0 仅用于显式禁用，其它值会归一到动态范围。 */
   set(name: string, value: number, reason?: string): void {
-    const v = clamp(value);
+    if (this.userDisabled.has(name) && value !== ScoreStore.DISABLED) return;
+    const v = value === ScoreStore.DISABLED ? ScoreStore.DISABLED : this.clampDynamic(name, value);
     const prev = this.scores.get(name);
     if (prev === v) return;
     this.scores.set(name, v);
@@ -78,13 +107,20 @@ export class ScoreStore {
   }
 
   decay(name: string, reason: string): void {
-    this.set(name, this.get(name) - ScoreStore.DECAY, reason);
+    if (this.get(name) === ScoreStore.DISABLED) return;
+    this.set(name, Math.max(this.minFor(name), this.get(name) - ScoreStore.DECAY), reason);
   }
 
   boost(name: string, reason: string): void {
     const cur = this.get(name);
-    if (cur >= ScoreStore.MAX) return;
-    this.set(name, cur + ScoreStore.BOOST, reason);
+    if (cur === ScoreStore.DISABLED) return;
+    if (cur >= this.maxFor(name)) return;
+    this.set(name, Math.min(this.maxFor(name), cur + ScoreStore.BOOST), reason);
+  }
+
+  /** True only for providers explicitly disabled by user config (`llm.scores.<provider>: 0`). */
+  isUserDisabled(name: string): boolean {
+    return this.userDisabled.has(name);
   }
 
   /** 全量快照（用于测试与 audit 输出）。 */
@@ -120,11 +156,57 @@ export class ScoreStore {
     await fs.writeFile(tmp, yaml, 'utf8');
     await fs.rename(tmp, this.sidecarPath);
   }
+
+  private defaultFor(name: string): number {
+    return this.isClusterProvider(name) ? this.clusterMax : ScoreStore.DEFAULT;
+  }
+
+  private minFor(name: string): number {
+    return this.isClusterProvider(name) ? this.clusterMin : ScoreStore.MIN;
+  }
+
+  private maxFor(name: string): number {
+    return this.isClusterProvider(name) ? this.clusterMax : ScoreStore.MAX;
+  }
+
+  private isClusterProvider(name: string): boolean {
+    return this.clusterProviders.has(name);
+  }
+
+  private clampConfigured(name: string, v: number): number {
+    if (!Number.isFinite(v)) return this.defaultFor(name);
+    if (v === ScoreStore.DISABLED) return ScoreStore.DISABLED;
+    return this.clampDynamic(name, v);
+  }
+
+  private clampDynamic(name: string, v: number): number {
+    if (!Number.isFinite(v)) return this.defaultFor(name);
+    if (v <= ScoreStore.DISABLED) return this.minFor(name);
+    if (v < this.minFor(name)) return this.minFor(name);
+    if (v > this.maxFor(name)) return this.maxFor(name);
+    return v;
+  }
 }
 
-function clamp(v: number): number {
-  if (!Number.isFinite(v)) return ScoreStore.DEFAULT;
+function normalizeClusterBounds(rawMin?: number, rawMax?: number): { min: number; max: number } {
+  const min = clampBound(rawMin ?? ScoreStore.CLUSTER_MIN);
+  const max = clampBound(rawMax ?? ScoreStore.CLUSTER_MAX);
+  return min <= max ? { min, max } : { min: max, max: min };
+}
+
+function clampBound(v: number): number {
+  if (!Number.isFinite(v)) return ScoreStore.CLUSTER_MIN;
   if (v < ScoreStore.MIN) return ScoreStore.MIN;
   if (v > ScoreStore.MAX) return ScoreStore.MAX;
   return v;
+}
+
+export function scoreStoreOptionsFromConfig(llm: XCompilerConfig['llm']): ScoreStoreOptions {
+  return {
+    clusterProviderNames: Object.entries(llm.providers)
+      .filter(([, provider]) => (provider.tags ?? []).includes(CLUSTER_PROVIDER_TAG))
+      .map(([name]) => name),
+    clusterScoreMin: llm.cluster_score_min,
+    clusterScoreMax: llm.cluster_score_max,
+  };
 }

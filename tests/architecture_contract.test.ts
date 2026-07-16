@@ -44,23 +44,7 @@ function complexPlan(): Plan {
     testPaths: [spec[4]],
     dependencies: index === 0 ? moduleSpecs.slice(1).map((item) => item[0]) : index >= 2 ? ['M002'] : [],
   }));
-  const p2Module: ArchitectureModule = {
-    id: 'M007',
-    name: 'ops',
-    responsibility: 'Operational health checks and runtime diagnostics for the generated application.',
-    sourcePaths: ['src/ops.py'],
-    testPaths: ['tests/test_ops.py'],
-    dependencies: ['M001'],
-  };
-  const p3Module: ArchitectureModule = {
-    id: 'M008',
-    name: 'scale',
-    responsibility: 'Scale-oriented batch execution helpers and performance guardrails.',
-    sourcePaths: ['src/scale.py'],
-    testPaths: ['tests/test_scale.py'],
-    dependencies: ['M001', 'M007'],
-  };
-  const architectureModules: ArchitectureModule[] = [...p1Modules, p2Module, p3Module];
+  const architectureModules: ArchitectureModule[] = p1Modules;
   const codeSteps = moduleSpecs.map((spec, index) =>
     step({
       id: `S${String(index + 4).padStart(3, '0')}`,
@@ -151,14 +135,14 @@ function complexPlan(): Plan {
         id: 'S002',
         phase: 'HIGH_LEVEL_DESIGN',
         role: 'Architect',
-        outputs: ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md'],
+        outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'],
         dependsOn: ['S001'],
       }),
       step({
         id: 'S003',
         phase: 'DETAILED_DESIGN',
         role: 'Architect',
-        outputs: ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'],
+        outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'],
         dependsOn: ['S002'],
       }),
       ...codeSteps,
@@ -178,22 +162,6 @@ function complexPlan(): Plan {
       }),
       moduleTestStep,
       step({ id: 'S013', phase: 'FUNCTIONAL_TEST', outputs: [...baseDeliveryDocs], dependsOn: ['S012'] }),
-      step({ id: 'S014', iterationId: 'P2', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/iterations/P2/01-requirement-analysis.md', 'docs/iterations/P2/tests/functional-test-plan.md'], dependsOn: ['S013'] }),
-      step({ id: 'S015', iterationId: 'P2', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/iterations/P2/02-high-level-design.md', 'docs/iterations/P2/tests/integration-test-plan.md'], dependsOn: ['S014'] }),
-      step({ id: 'S016', iterationId: 'P2', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/iterations/P2/03-detailed-design.md', 'docs/iterations/P2/tests/module-test-plan.md'], dependsOn: ['S015'] }),
-      step({ id: 'S017', iterationId: 'P2', phase: 'CODE', outputs: ['src/ops.py', 'docs/iterations/P2/tests/unit-test-plan.md'], dependsOn: ['S016'] }),
-      step({ id: 'S018', iterationId: 'P2', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/iterations/P2/05-unit-test.md', 'tests/test_ops_unit.py'], dependsOn: ['S017'] }),
-      step({ id: 'S019', iterationId: 'P2', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/iterations/P2/06-integration-test.md', 'tests/test_ops_integration.py'], dependsOn: ['S018'] }),
-      step({ id: 'S020', iterationId: 'P2', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/iterations/P2/07-module-test.md', 'tests/test_ops.py'], dependsOn: ['S019', 'S017'] }),
-      step({ id: 'S021', iterationId: 'P2', phase: 'FUNCTIONAL_TEST', outputs: ['docs/iterations/P2/08-functional-test.md', 'docs/iterations/P2/quickstart.md'], dependsOn: ['S020'] }),
-      step({ id: 'S022', iterationId: 'P3', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/iterations/P3/01-requirement-analysis.md', 'docs/iterations/P3/tests/functional-test-plan.md'], dependsOn: ['S021'] }),
-      step({ id: 'S023', iterationId: 'P3', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/iterations/P3/02-high-level-design.md', 'docs/iterations/P3/tests/integration-test-plan.md'], dependsOn: ['S022'] }),
-      step({ id: 'S024', iterationId: 'P3', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/iterations/P3/03-detailed-design.md', 'docs/iterations/P3/tests/module-test-plan.md'], dependsOn: ['S023'] }),
-      step({ id: 'S025', iterationId: 'P3', phase: 'CODE', outputs: ['src/scale.py', 'docs/iterations/P3/tests/unit-test-plan.md'], dependsOn: ['S024'] }),
-      step({ id: 'S026', iterationId: 'P3', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/iterations/P3/05-unit-test.md', 'tests/test_scale_unit.py'], dependsOn: ['S025'] }),
-      step({ id: 'S027', iterationId: 'P3', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/iterations/P3/06-integration-test.md', 'tests/test_scale_integration.py'], dependsOn: ['S026'] }),
-      step({ id: 'S028', iterationId: 'P3', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/iterations/P3/07-module-test.md', 'tests/test_scale.py'], dependsOn: ['S027', 'S025'] }),
-      step({ id: 'S029', iterationId: 'P3', phase: 'FUNCTIONAL_TEST', outputs: ['docs/iterations/P3/08-functional-test.md', 'docs/iterations/P3/quickstart.md'], dependsOn: ['S028'] }),
     ],
   };
 }
@@ -316,6 +284,21 @@ describe('V-model architecture contract', () => {
     plan.steps = plan.steps.filter((step) => !step.outputs.includes('src/domain.py') || step.id === entryStep.id);
     const errors = lintPlan(plan).filter((issue) => issue.level === 'error');
     expect(errors.some((issue) => issue.message.includes('owns 2 architecture modules'))).toBe(true);
+  });
+
+  it('rejects planned phase Steps materialized in the current phase plan', () => {
+    const plan = complexPlan();
+    plan.steps.push(
+      step({
+        id: 'S014',
+        iterationId: 'P2',
+        phase: 'CODE',
+        outputs: ['src/ops.py', 'docs/iterations/P2/tests/unit-test-plan.md'],
+        dependsOn: ['S013'],
+      }),
+    );
+    const errors = lintPlan(plan).filter((issue) => issue.level === 'error');
+    expect(errors.some((issue) => issue.message.includes('non-current implementation phase P2'))).toBe(true);
   });
 
   it('detects a HIGH_LEVEL_DESIGN document that silently omits module paths', () => {
