@@ -194,7 +194,9 @@ class FallbackClient implements LLMClient {
             break;
           }
         }
-        this.scores?.boost(c.name, `success in role ${this.role}`);
+        if (options?.scoreSuccess !== false) {
+          this.scores?.boost(c.name, `success in role ${this.role}`);
+        }
         try { options?.onProvider?.(c.name); } catch { /* observability must not fail the call */ }
         return out;
       }

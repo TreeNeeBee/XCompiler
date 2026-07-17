@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { isAllowedWrite, type Tool } from './types.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 /**
  * 字符串替换工具：在已有文件内查找 `find` 并替换为 `replace`。
@@ -15,6 +16,8 @@ export const replaceInFileTool: Tool<
   description: '把当前 Step writable allowlist 内目标文件的 find 字符串精确替换为 replace（默认要求出现 1 次）。',
   argsSchema: { path: 'string', find: 'string', replace: 'string', expectedCount: 'number?' },
   async run(args, ctx) {
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'replace_in_file', { forWrite: true });
+    if (!resolved.ok) return { ok: false, error: resolved.error };
     if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
       return { ok: false, error: `write denied: ${args.path}` };
     }
@@ -26,7 +29,7 @@ export const replaceInFileTool: Tool<
           'no-op edit refused: find === replace（替换前后字符串完全相同）。请确认你真正要修改的差异；如只想读取文件请改用 read_file，如要整文件重写请用 write_file。',
       };
     }
-    const abs = ctx.ws.abs(args.path);
+    const abs = resolved.abs;
     let original: string;
     try {
       original = await fs.readFile(abs, 'utf8');
@@ -91,7 +94,9 @@ export const codeSearchTool: Tool<
   argsSchema: { query: 'string', root: 'string?', maxResults: 'number?', ext: 'string[]?' },
   async run(args, ctx) {
     if (!args.query) return { ok: false, error: 'query empty' };
-    const root = ctx.ws.abs(args.root ?? '.');
+    const resolved = await resolveWorkspacePath(ctx.ws, args.root ?? '.', 'code_search', { mustExist: true });
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    const root = resolved.abs;
     const max = args.maxResults ?? 50;
     const exts = args.ext && args.ext.length > 0 ? new Set(args.ext.map((e) => (e.startsWith('.') ? e : '.' + e))) : null;
     const matches: Array<{ path: string; line: number; text: string }> = [];

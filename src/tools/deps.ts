@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import type { Tool } from './types.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 /**
  * add_dependency：把一组依赖追加到语言对应的依赖清单并重建沙盒。
@@ -17,7 +18,9 @@ export const addDependencyTool: Tool<
   argsSchema: { packages: 'string[]' },
   async run(args, ctx) {
     const manifestPath = ctx.language === 'typescript' ? 'package.json' : 'requirements.txt';
-    const abs = ctx.ws.abs(manifestPath);
+    const resolved = await resolveWorkspacePath(ctx.ws, manifestPath, 'add_dependency', { forWrite: true });
+    if (!resolved.ok) return { ok: false, error: resolved.error };
+    const abs = resolved.abs;
     const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
     const added: string[] = [];
     let final: string[];

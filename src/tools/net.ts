@@ -2,6 +2,7 @@ import type { Tool } from './types.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { t } from '../i18n/index.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 /**
  * Network access tools.
@@ -72,7 +73,11 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
     const maxBytes = args.maxBytes ?? DEFAULT_MAX_BYTES;
 
     // Enforce allowedWrites for saveAs (same guard as fs tools).
+    let saveAsAbs: string | undefined;
     if (args.saveAs) {
+      const resolved = await resolveWorkspacePath(ctx.ws, args.saveAs, 'http_fetch.saveAs', { forWrite: true });
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      saveAsAbs = resolved.abs;
       const { isAllowedWrite } = await import('./types.js');
       if (!isAllowedWrite(args.saveAs, ctx.allowedWrites)) {
         return {
@@ -110,7 +115,7 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
       const buf = Buffer.from(await res.arrayBuffer());
       if (timer) clearTimeout(timer);
       const trimmed = buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
-      const abs = ctx.ws.abs(args.saveAs);
+      const abs = saveAsAbs!;
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, trimmed);
       await ctx.audit?.event('tool.call', t().audit.httpFetchSaved(method, args.url, args.saveAs, trimmed.length), {

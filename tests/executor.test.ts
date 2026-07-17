@@ -400,6 +400,258 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.calls).toBe(3);
   });
 
+  it('warns before the read-only loop guard trips so the model can repair in the next round', async () => {
+    class ReadTwiceThenWriteLLM implements LLMClient {
+      readonly name = 'read-warning';
+      calls = 0;
+      sawWarning = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls <= 2) {
+          return JSON.stringify({
+            thoughts: 'inspect first',
+            actions: [{ tool: 'read_file', args: { path: 'src/source.py' } }],
+            done: false,
+          });
+        }
+        this.sawWarning = messages[messages.length - 1]?.content.includes('Loop guard warning') ?? false;
+        return JSON.stringify({
+          thoughts: 'repair after warning',
+          actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 2\n' } }],
+          done: true,
+        });
+      }
+    }
+    await ws.writeFile('src/source.py', 'value = 1\n');
+    const llm = new ReadTwiceThenWriteLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 4 });
+    const r = await exec.run({ step: baseStep, tools: [readFileTool, writeFileTool], ctx });
+    expect(r.success).toBe(true);
+    expect(llm.sawWarning).toBe(true);
+    expect(await ws.readFile('src/x.py')).toBe('x = 2\n');
+  });
+
+  it('tightens read-only recovery after a previous probe-loop debug failure', async () => {
+    class RecoveryReadLoopLLM implements LLMClient {
+      readonly name = 'read-recovery-loop';
+      calls = 0;
+      sawRecoveryWarning = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls === 2) {
+          this.sawRecoveryWarning = messages[messages.length - 1]?.content.includes('Read-only recovery mode') ?? false;
+        }
+        return JSON.stringify({
+          thoughts: 'inspect again despite recovery warning',
+          actions: [{ tool: 'read_file', args: { path: 'src/source.py' } }],
+          done: false,
+        });
+      }
+    }
+    await ws.writeFile('src/source.py', 'value = 1\n');
+    const llm = new RecoveryReadLoopLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [readFileTool],
+      ctx,
+      debugContext: {
+        reason: 'repeated read-only/probe actions without progress for 3 rounds',
+        failureLog: 'previous attempt only read files and made no repair',
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('read-only recovery mode repeated probe actions');
+    expect(llm.calls).toBe(2);
+    expect(llm.sawRecoveryWarning).toBe(true);
+  });
+
+  it('asks the provider chain to reject read-only Debugger turns during recovery mode', async () => {
+    class RecoveryValidationLLM implements LLMClient {
+      readonly name = 'read-recovery-validation';
+      sawValidation = false;
+      async chat(_messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+        const readOnly = JSON.stringify({
+          thoughts: 'inspect again despite recovery warning',
+          actions: [{ tool: 'read_file', args: { path: 'src/source.py' } }],
+          done: false,
+        });
+        expect(options?.validate).toBeTypeOf('function');
+        expect(() => options!.validate!('{')).toThrow(/empty or unparseable JSON/u);
+        expect(() => options!.validate!('{ "thoughts": "')).toThrow(/no valid tool actions/u);
+        expect(() => options!.validate!(readOnly)).toThrow(/read-only\/probe actions/u);
+        expect(() =>
+          options!.validate!(
+            JSON.stringify({
+              thoughts: 'use a shorthand tool that is not available',
+              actions: [{ tool: 'read', args: { path: 'src/source.py' } }],
+              done: false,
+            }),
+          ),
+        ).toThrow(/no allowed tool actions/u);
+        this.sawValidation = true;
+        return JSON.stringify({
+          thoughts: 'switch to an actual repair after provider validation',
+          actions: [{ tool: 'write_file', args: { path: 'src/source.py', content: 'value = 2\n' } }],
+          done: true,
+        });
+      }
+    }
+    await ws.writeFile('src/source.py', 'value = 1\n');
+    const llm = new RecoveryValidationLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const r = await exec.run({
+      step: { ...baseStep, outputs: ['src/source.py'] },
+      executionRole: 'Debugger',
+      tools: [readFileTool, writeFileTool],
+      ctx,
+      debugContext: {
+        reason: 'read-only recovery mode repeated probe actions for 2 rounds',
+        failureLog: 'previous attempt only read files and made no repair',
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(llm.sawValidation).toBe(true);
+    expect(await ws.readFile('src/source.py')).toBe('value = 2\n');
+  });
+
+  it('does not accept DEBUG completion until repair or verification evidence exists', async () => {
+    class DebugReadThenWriteLLM implements LLMClient {
+      readonly name = 'debug-repair-gate';
+      calls = 0;
+      sawRepairGate = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            thoughts: 'inspect and incorrectly claim done',
+            actions: [{ tool: 'read_file', args: { path: 'src/x.py' } }],
+            done: true,
+          });
+        }
+        this.sawRepairGate = messages[messages.length - 1]?.content.includes('Invalid DEBUG completion') ?? false;
+        return JSON.stringify({
+          thoughts: 'now provide real repair evidence',
+          actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 3\n' } }],
+          done: true,
+        });
+      }
+    }
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    const llm = new DebugReadThenWriteLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [readFileTool, writeFileTool],
+      ctx,
+      debugContext: {
+        reason: 'unit test failed',
+        failureLog: 'pytest failed',
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(llm.sawRepairGate).toBe(true);
+    expect(await ws.readFile('src/x.py')).toBe('x = 3\n');
+  });
+
+  it('does not let advisory tool failures poison a later successful repair', async () => {
+    class AdvisoryFailureThenWriteLLM implements LLMClient {
+      readonly name = 'advisory-failure';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'a stale replace miss should not block the real design update',
+          actions: [
+            { tool: 'replace_in_file', args: { path: 'tests/test_integration.py', find: 'old', replace: 'new' } },
+            { tool: 'write_file', args: { path: 'docs/03-detailed-design.md', content: '# Revised Design\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const replaceMissTool: Tool = {
+      name: 'replace_in_file',
+      description: 'fake replace miss',
+      argsSchema: {},
+      async run() {
+        return {
+          ok: false,
+          error: 'expected 1 occurrences of find, found 0 in tests/test_integration.py',
+        };
+      },
+    };
+    const designStep: Step = {
+      ...baseStep,
+      phase: 'DETAILED_DESIGN',
+      role: 'Architect',
+      tools: ['replace_in_file', 'write_file'],
+      outputs: ['docs/03-detailed-design.md'],
+    };
+    const llm = new AdvisoryFailureThenWriteLLM();
+    const exec = new StepExecutor({
+      llm,
+      maxRounds: 1,
+      advisoryFailureRules: [
+        { tool: 'replace_in_file', errorIncludes: 'expected 1 occurrences of find, found 0' },
+      ],
+    });
+    const r = await exec.run({
+      step: designStep,
+      executionRole: 'Debugger',
+      tools: [replaceMissTool, writeFileTool],
+      ctx: { ...ctx, allowedWrites: ['docs/', 'tests/'] },
+      debugContext: {
+        reason: 'integration test failed',
+        failureLog: 'replace miss was diagnostic; design needs an update',
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.some((call) => call.tool === 'replace_in_file' && !call.ok)).toBe(true);
+    expect(await ws.readFile('docs/03-detailed-design.md')).toBe('# Revised Design\n');
+  });
+
+  it('normalizes common shorthand tool arguments from weaker models', async () => {
+    class ShorthandArgsLLM implements LLMClient {
+      readonly name = 'shorthand-args';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'use shorthand args that should be normalized',
+          actions: [
+            { tool: 'read_file', args: 'src/source.py' },
+            { tool: 'run_tests', args: ['tests/test_unit.py', '-x', '-v'] },
+          ],
+          done: true,
+        });
+      }
+    }
+    let capturedRunArgs: unknown;
+    const runTestsTool: Tool = {
+      name: 'run_tests',
+      description: 'fake pytest',
+      argsSchema: {},
+      async run(args) {
+        capturedRunArgs = args;
+        return { ok: true, summary: 'pytest passed' };
+      },
+    };
+    await ws.writeFile('src/source.py', 'value = 1\n');
+    const llm = new ShorthandArgsLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const r = await exec.run({
+      step: { ...baseStep, tools: ['read_file', 'run_tests'], outputs: ['src/source.py'] },
+      tools: [readFileTool, runTestsTool],
+      ctx,
+    });
+    expect(r.success).toBe(true);
+    expect(capturedRunArgs).toEqual({ args: ['tests/test_unit.py', '-x', '-v'] });
+    expect(r.toolCalls.every((call) => call.ok)).toBe(true);
+  });
+
   it('compacts large write content out of assistant history before the next round', async () => {
     class LargeWriteThenInspectLLM implements LLMClient {
       readonly name = 'large-history';

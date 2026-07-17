@@ -110,6 +110,63 @@ describe('LLMRouter fallback chain', () => {
     expect(selectedProvider).toBe('openai');
   });
 
+  it('falls back when validate rejects a superficially successful response', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    const router = new LLMRouter(cfg, undefined, scores);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let firstCalls = 0;
+    let secondCalls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        firstCalls++;
+        return 'read-only probe';
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => {
+        secondCalls++;
+        return 'repair patch';
+      },
+    });
+
+    let selectedProvider: string | undefined;
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+      validate: (text) => {
+        if (text.includes('read-only')) throw new Error('low-quality read-only response');
+      },
+      onProvider: (name) => { selectedProvider = name; },
+    });
+
+    expect(out).toBe('repair patch');
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
+    expect(selectedProvider).toBe('openai');
+    expect(scores.get('ollama_code')).toBeLessThan(ScoreStore.DEFAULT);
+  });
+
+  it('can disable success score boosts for workflow-level LLM calls', async () => {
+    const cfg = mkCfg({});
+    const scores = new ScoreStore('/tmp/x/config.yaml', { ollama_code: 0.4 });
+    const router = new LLMRouter(cfg, undefined, scores);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => 'syntactically valid but not yet task success',
+    });
+
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+      scoreSuccess: false,
+    });
+
+    expect(out).toBe('syntactically valid but not yet task success');
+    expect(scores.get('ollama_code')).toBe(0.4);
+  });
+
   it('retries the same provider once for transient stream failures', async () => {
     const cfg = mkCfg({});
     const scores = new ScoreStore('/tmp/x/config.yaml');

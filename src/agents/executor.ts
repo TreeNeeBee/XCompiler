@@ -33,6 +33,10 @@ export interface ExecutorOptions {
   maxRounds?: number;
   /** run_tests 连续/累计失败达到该预算后提前停止，让外层 V 模型回退处理。 */
   maxFailedTestRuns?: number;
+  /** Tools whose failed calls are diagnostic only for this attempt and should not block completion. */
+  advisoryFailureTools?: string[];
+  /** Fine-grained failed calls that should be treated as diagnostics instead of blocking completion. */
+  advisoryFailureRules?: AdvisoryFailureRule[];
 }
 
 export interface ExecutorRunInput {
@@ -47,7 +51,7 @@ export interface ExecutorRunInput {
   /** 来自 Skill 的提示词，拼接到 system prompt 后。 */
   skillHints?: string[];
   /** debug 模式下传入上一轮失败记录（错误文本 / 失败测试 / 上下文）。 */
-  debugContext?: { reason: string; failureLog: string; suggestions?: string };
+  debugContext?: { reason: string; failureLog: string; suggestions?: string; repairRequired?: boolean };
   /** Plan 级别的全局 system prompt（xcompiler build 沉淀）。 */
   globalPrompt?: string;
   /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
@@ -83,6 +87,13 @@ interface LLMAction {
   tool: string;
   args: Record<string, unknown>;
 }
+
+export interface AdvisoryFailureRule {
+  tool?: string;
+  pathPrefix?: string;
+  errorIncludes?: string;
+}
+
 interface LLMTurn {
   thoughts?: string;
   actions?: unknown;
@@ -93,6 +104,9 @@ interface TurnFeedbackContext {
   declaredDone: boolean;
   actionCount: number;
   unresolvedFailures?: string[];
+  readOnlyLoopWarning?: { rounds: number; targets: string };
+  readOnlyRecoveryWarning?: boolean;
+  repairEvidenceMissing?: boolean;
 }
 
 export class StepExecutor {
@@ -138,6 +152,12 @@ export class StepExecutor {
     let actualRounds = 0;
     let consecutiveReadOnlyRounds = 0;
     let failedTestRunRounds = 0;
+    let repairEvidence = false;
+    const repairRequired = inp.debugContext?.repairRequired === true;
+    const readOnlyRecoveryMode = isReadOnlyLoopFailure(inp.debugContext?.reason ?? '');
+    let readOnlyRecoveryRounds = 0;
+    const advisoryFailureTools = new Set(this.opts.advisoryFailureTools ?? []);
+    const advisoryFailureRules = this.opts.advisoryFailureRules ?? [];
 
     for (let round = 1; round <= maxRounds; round++) {
       const rep = makeStreamReporter(
@@ -154,6 +174,11 @@ export class StepExecutor {
         text = await this.opts.llm.chat(messages, {
           responseFormat: 'json',
           temperature: 0.1,
+          scoreSuccess: false,
+          validate:
+            role === 'Debugger' && readOnlyRecoveryMode
+              ? (text) => validateDebuggerRecoveryTurn(text, toolMap)
+              : undefined,
           onProvider: (name) => { provider = name; },
           onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
           streamStopWhen: isCompleteTurnJson,
@@ -246,10 +271,15 @@ export class StepExecutor {
       }
       // 一轮里有 ≥ 2 个 action 是旧指纹的重复 → 强信号；只 1 个不计入避免误伤。
       if (perActionRepeats >= 2) repeatedTurns++;
-      if (actions.length > 0 && actions.every(isReadOnlyOrProbeAction)) {
+      const readOnlyRound = actions.length > 0 && actions.every(isReadOnlyOrProbeAction);
+      if (readOnlyRound) {
         consecutiveReadOnlyRounds++;
+        if (readOnlyRecoveryMode) {
+          readOnlyRecoveryRounds++;
+        }
       } else if (actions.length > 0) {
         consecutiveReadOnlyRounds = 0;
+        readOnlyRecoveryRounds = 0;
       }
       // 把 LLM 本轮的"思考过程 + 计划行动"写入审计，作为交付时的可追溯材料
       await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
@@ -270,7 +300,7 @@ export class StepExecutor {
         const selectedTool = toolMap.get(a.tool);
         if (!selectedTool) {
           const r = { ok: false, error: `tool not allowed for this step: ${a.tool}` };
-          updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
+          updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
           calls.push({ tool: a.tool, ok: false, error: r.error });
           turnResults.push({ ...r, tool: a.tool });
           await inp.ctx.audit?.event('tool.call', t().audit.toolDenied(a.tool), {
@@ -297,7 +327,7 @@ export class StepExecutor {
               error: `permission denied for ${permission.operationType}: ${permission.target}` +
                 (decision.reason ? ` (${decision.reason})` : ''),
             };
-            updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
+            updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
             await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, false, r.error), {
               messageId: 'audit.tool_result',
               stepId: inp.step.id,
@@ -334,7 +364,10 @@ export class StepExecutor {
         );
         const r = await safeRunTool(selectedTool, a.args, inp.ctx);
         toolReporter.done(r.ok ? 'done' : 'failed');
-        updateUnresolvedToolFailures(unresolvedToolFailures, a, r);
+        updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
+        if (r.ok && isRepairEvidenceTool(a.tool)) {
+          repairEvidence = true;
+        }
         await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, r.ok, r.summary ?? r.error ?? ''), {
           messageId: 'audit.tool_result',
           stepId: inp.step.id,
@@ -355,10 +388,11 @@ export class StepExecutor {
         turnResults.push({ ...r, tool: a.tool });
       }
       const verify = await verifyOutputs(inp);
-      if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok)) {
+      if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok) && !advisoryFailureTools.has('run_tests')) {
         failedTestRunRounds++;
       }
-      if (turn.done && verify.ok && unresolvedToolFailures.size === 0) {
+      const repairGateOk = !repairRequired || repairEvidence;
+      if (turn.done && verify.ok && unresolvedToolFailures.size === 0 && repairGateOk) {
         const metrics = computeMetrics({
           rounds: actualRounds,
           parseFailures,
@@ -390,7 +424,8 @@ export class StepExecutor {
         });
         return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
       }
-      if (consecutiveReadOnlyRounds >= 3) {
+      const readOnlyRecoveryViolation = readOnlyRecoveryMode && readOnlyRecoveryRounds >= 2;
+      if (consecutiveReadOnlyRounds >= 3 || readOnlyRecoveryViolation) {
         repeatedTurns++;
         const metrics = computeMetrics({
           rounds: actualRounds,
@@ -402,7 +437,9 @@ export class StepExecutor {
         });
         const targets = actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', ');
         const error =
-          `repeated read-only/probe actions without progress for ${consecutiveReadOnlyRounds} rounds` +
+          (readOnlyRecoveryViolation
+            ? `read-only recovery mode repeated probe actions for ${readOnlyRecoveryRounds} rounds`
+            : `repeated read-only/probe actions without progress for ${consecutiveReadOnlyRounds} rounds`) +
           (targets ? ` (last target: ${targets})` : '') +
           '; next attempt must patch/write an allowed file, run verification, or stop with a concrete blocker.';
         await inp.ctx.audit?.event('note', error, {
@@ -421,6 +458,19 @@ export class StepExecutor {
           declaredDone: turn.done === true,
           actionCount: actions.length,
           unresolvedFailures: [...unresolvedToolFailures.values()],
+          readOnlyLoopWarning: consecutiveReadOnlyRounds >= 2
+            ? {
+                rounds: consecutiveReadOnlyRounds,
+                targets: actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', '),
+              }
+            : undefined,
+          readOnlyRecoveryWarning: readOnlyRecoveryMode && readOnlyRound,
+          repairEvidenceMissing:
+            repairRequired &&
+            turn.done === true &&
+            verify.ok &&
+            unresolvedToolFailures.size === 0 &&
+            !repairEvidence,
         }),
       });
     }
@@ -440,6 +490,9 @@ export class StepExecutor {
       toolCalls: calls,
       finalThought,
       error:
+        repairRequired && finalVerify.ok && unresolvedToolFailures.size === 0 && !repairEvidence
+          ? 'DEBUG retry ended without repair evidence; run a successful patch/write/dependency change or verification command before done=true.'
+          :
         finalVerify.ok && unresolvedToolFailures.size > 0
           ? `unresolved tool failures remain: ${[...unresolvedToolFailures.values()].join('; ')}`
           : 'max rounds exceeded without satisfying outputs',
@@ -452,6 +505,70 @@ function isReadOnlyOrProbeAction(action: LLMAction): boolean {
   if (action.tool === 'read_file' || action.tool === 'list_dir' || action.tool === 'code_search') return true;
   if (action.tool === 'analyze_error') return true;
   return action.tool === 'http_fetch' && typeof action.args.saveAs !== 'string';
+}
+
+function isReadOnlyLoopFailure(reason: string): boolean {
+  return /repeated read-only\/probe actions without progress/i.test(reason) ||
+    /read-only recovery mode repeated probe actions/i.test(reason);
+}
+
+function validateDebuggerRecoveryTurn(text: string, toolMap: Map<string, Tool>): void {
+  const turn = parseTurn(text);
+  const normalized = normalizeActions(turn.actions);
+  const actions = normalized.actions;
+  const allowedActions = actions.filter((action) => toolMap.has(action.tool));
+  const emptyOrUnparsed =
+    turn.thoughts === undefined &&
+    actions.length === 0 &&
+    normalized.invalid.length === 0 &&
+    turn.done === undefined;
+  if (emptyOrUnparsed) {
+    throw new Error(
+      'low-quality Debugger response: empty or unparseable JSON turn in read-only recovery mode; ' +
+      'produce valid JSON with a repair action, verification action, or concrete blocker',
+    );
+  }
+  if (normalized.invalid.length > 0 && actions.length === 0) {
+    throw new Error(
+      'low-quality Debugger response: invalid tool actions in read-only recovery mode; ' +
+      'produce valid tool arguments for a repair action, verification action, or concrete blocker',
+    );
+  }
+  if (actions.length === 0) {
+    throw new Error(
+      'low-quality Debugger response: no valid tool actions in read-only recovery mode; ' +
+      'produce a repair action, verification action, or concrete blocker instead',
+    );
+  }
+  if (allowedActions.length === 0) {
+    const unknownTools = [...new Set(actions.map((action) => action.tool))].join(', ');
+    throw new Error(
+      'low-quality Debugger response: no allowed tool actions in read-only recovery mode; ' +
+      `unknown or unavailable tools: ${unknownTools || 'none'}; ` +
+      'produce an allowed repair action, verification action, or concrete blocker instead',
+    );
+  }
+  if (allowedActions.every(isReadOnlyOrProbeAction)) {
+    throw new Error(
+      'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
+      'produce a repair action, verification action, or concrete blocker instead',
+    );
+  }
+}
+
+const REPAIR_EVIDENCE_TOOLS = new Set([
+  'add_dependency',
+  'append_file',
+  'apply_patch',
+  'replace_in_file',
+  'run_program',
+  'run_python',
+  'run_tests',
+  'write_file',
+]);
+
+function isRepairEvidenceTool(tool: string): boolean {
+  return REPAIR_EVIDENCE_TOOLS.has(tool);
 }
 
 function compactTurnForHistory(turn: LLMTurn): string {
@@ -502,6 +619,8 @@ function updateUnresolvedToolFailures(
   unresolved: Map<string, string>,
   action: LLMAction,
   result: ToolResult,
+  advisoryFailureTools: Set<string>,
+  advisoryFailureRules: AdvisoryFailureRule[] = [],
 ): void {
   const keys = actionResolutionKeys(action);
   if (result.ok) {
@@ -509,12 +628,33 @@ function updateUnresolvedToolFailures(
     unresolved.delete(`tool:${action.tool}`);
     return;
   }
+  if (advisoryFailureTools.has(action.tool)) return;
+  if (matchesAdvisoryFailureRule(action, result, advisoryFailureRules)) return;
   if (isIgnorableReadOnlyToolFailure(action, result)) return;
   const detail = truncate(
     `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`,
     1500,
   );
   for (const key of keys) unresolved.set(key, detail);
+}
+
+function matchesAdvisoryFailureRule(
+  action: LLMAction,
+  result: ToolResult,
+  rules: AdvisoryFailureRule[],
+): boolean {
+  if (rules.length === 0) return false;
+  const detail = `${result.error ?? ''}\n${result.summary ?? ''}`.toLowerCase();
+  const targets = actionTargetPaths(action.tool, action.args);
+  return rules.some((rule) => {
+    if (rule.tool && rule.tool !== action.tool) return false;
+    if (rule.errorIncludes && !detail.includes(rule.errorIncludes.toLowerCase())) return false;
+    if (rule.pathPrefix) {
+      const prefix = normalizeRelPath(rule.pathPrefix);
+      if (!targets.some((target) => normalizeRelPath(target).startsWith(prefix))) return false;
+    }
+    return true;
+  });
 }
 
 function isIgnorableReadOnlyToolFailure(action: LLMAction, result: ToolResult): boolean {
@@ -714,18 +854,55 @@ function normalizeActions(raw: unknown): {
       });
       return;
     }
-    if (!isPlainRecord(item.args)) {
+    const normalizedArgs = normalizeActionArgs(item.tool, item.args);
+    if (!normalizedArgs.ok) {
       invalid.push({
         index,
         raw: item,
-        result: { tool: item.tool, ok: false, error: `invalid action at index ${index}: args must be an object` },
+        result: { tool: item.tool, ok: false, error: `invalid action at index ${index}: ${normalizedArgs.error}` },
       });
       return;
     }
-    actions.push({ tool: item.tool, args: item.args });
+    actions.push({ tool: item.tool, args: normalizedArgs.args });
   });
   return { actions, invalid };
 }
+
+function normalizeActionArgs(
+  tool: string,
+  rawArgs: unknown,
+): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
+  if (isPlainRecord(rawArgs)) return { ok: true, args: rawArgs };
+  if (rawArgs === undefined || rawArgs === null) return { ok: true, args: {} };
+
+  if (typeof rawArgs === 'string') {
+    const key = STRING_ARG_TOOL_KEYS[tool];
+    if (key) return { ok: true, args: { [key]: rawArgs } };
+  }
+
+  if (Array.isArray(rawArgs)) {
+    if (tool === 'run_tests' || tool === 'run_program') {
+      const args = rawArgs.filter((item): item is string => typeof item === 'string');
+      if (args.length === rawArgs.length) return { ok: true, args: { args } };
+    }
+    const key = STRING_ARG_TOOL_KEYS[tool];
+    if (key && typeof rawArgs[0] === 'string') {
+      const out: Record<string, unknown> = { [key]: rawArgs[0] };
+      if (tool === 'read_file' && typeof rawArgs[1] === 'number') out.maxBytes = rawArgs[1];
+      return { ok: true, args: out };
+    }
+  }
+
+  return { ok: false, error: 'args must be an object' };
+}
+
+const STRING_ARG_TOOL_KEYS: Record<string, string> = {
+  apply_patch: 'patch',
+  code_search: 'query',
+  http_fetch: 'url',
+  list_dir: 'path',
+  read_file: 'path',
+};
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -857,6 +1034,9 @@ function renderFeedback(
   }
   if (verify.ok) {
     lines.push(M.executorFeedbackVerifyOk);
+    if (turn.repairEvidenceMissing) {
+      lines.push(M.executorFeedbackRepairEvidenceMissing);
+    }
   } else {
     lines.push(M.executorFeedbackVerifyMissing(verify.missing.join(', ')));
     if (turn.declaredDone && turn.actionCount === 0) {
@@ -866,6 +1046,17 @@ function renderFeedback(
         `Do not return done=true with actions=[] until those files exist.`,
       );
     }
+  }
+  if (turn.readOnlyLoopWarning) {
+    lines.push(
+      M.executorFeedbackReadOnlyLoopWarning(
+        turn.readOnlyLoopWarning.rounds,
+        turn.readOnlyLoopWarning.targets,
+      ),
+    );
+  }
+  if (turn.readOnlyRecoveryWarning) {
+    lines.push(M.executorFeedbackReadOnlyRecoveryRequired);
   }
   if (turn.unresolvedFailures && turn.unresolvedFailures.length > 0) {
     lines.push(

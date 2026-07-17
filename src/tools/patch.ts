@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { isAllowedWrite, type Tool } from './types.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 /**
  * 极简的 unified-diff patcher。仅支持：
@@ -20,10 +21,12 @@ export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }>
     if (fileDiffs.length === 0) return { ok: false, error: 'no file diff parsed' };
     const changed: string[] = [];
     for (const fd of fileDiffs) {
+      const resolved = await resolveWorkspacePath(ctx.ws, fd.target, 'apply_patch', { forWrite: true });
+      if (!resolved.ok) return { ok: false, error: resolved.error };
       if (!isAllowedWrite(fd.target, ctx.allowedWrites)) {
         return { ok: false, error: `write denied: ${fd.target} not in step writable allowlist` };
       }
-      const abs = ctx.ws.abs(fd.target);
+      const abs = resolved.abs;
       let original = '';
       try {
         original = await fs.readFile(abs, 'utf8');

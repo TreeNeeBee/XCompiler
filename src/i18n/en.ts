@@ -818,8 +818,12 @@ Return strict JSON StepPlan for the current phase only.`,
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
       'DEBUG may edit upstream source files and tests within the current allowedWrites. If the failure reveals a real implementation, contract, or downstream integration mismatch, fix that real defect; do not pass by weakening assertions, skipping tests, deleting failing cases, or merely accommodating an incorrect test. ' +
+      'If this rollback is in a design/requirements step and the concrete code change belongs to a later V-model step outside the current allowedWrites, update the current contract, test plan, or diagnostic artifact and finish this step so the later CODE step can implement it; do not attempt denied writes. ' +
       'If the failure is a missing third-party dependency or wrong library choice, use add_dependency with the real package name or change the source back to the real library selected by HIGH_LEVEL_DESIGN; never add try/except ImportError fake modules, fake classes/functions, empty implementations, or fallback mocks in production src/ code to bypass the error. ' +
       'Begin with read_file / code_search to localise the issue, then make the smallest possible fix via apply_patch / replace_in_file / add_dependency, and finally run_tests to verify. ' +
+      'A DEBUG retry cannot be marked complete from read-only inspection alone: it must produce a successful repair action or a successful verification command in this retry. ' +
+      'If the previous failure reason mentions repeated read-only/probe actions, use the existing failure log as sufficient context and make the next action a patch/write/dependency change or a verification command. ' +
+      'When a test executes and fails an assertion about returned behaviour, do not repeatedly rewrite fixtures or samples. Only edit fixtures when the evidence is missing-file, malformed-fixture, or parse-error in the fixture itself; otherwise patch the implementation, interface contract, dependency choice, or test expectation that is actually wrong. ' +
       'If the failure log shows a network/API failure, do not stop at probing endpoints: use at most two consecutive http_fetch probes, reject 2xx responses with empty or unusable bodies, then patch the real integration and verify with run_program plus run_tests. Do not set done=true while the entrypoint still reports a network/API failure.' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
@@ -831,6 +835,14 @@ Return strict JSON StepPlan for the current phase only.`,
       'outputs verified. If you are done, set done=true and actions=[].',
     executorFeedbackVerifyMissing: (paths: string) =>
       `outputs still missing: ${paths}. Please continue.`,
+    executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) =>
+      `Loop guard warning: the last ${rounds} round(s) used only read/probe tools` +
+      (targets ? ` (${targets})` : '') +
+      '. Next response must include a successful repair action (apply_patch / replace_in_file / write_file / add_dependency) or a concrete verification action (run_tests / run_program). Do not continue with only read_file, list_dir, code_search, or http_fetch.',
+    executorFeedbackReadOnlyRecoveryRequired:
+      'Read-only recovery mode is active because the previous attempt already failed from probing. The next response must use existing failure evidence to patch/write/change dependency or run verification; one more read-only-only response will fail this retry.',
+    executorFeedbackRepairEvidenceMissing:
+      'Invalid DEBUG completion: this retry has not produced repair evidence yet. Before done=true, perform at least one successful repair action or successful verification run; otherwise stop only with a concrete blocker in thoughts.',
   },
   skills: {
     patcher: 'Use apply_patch / replace_in_file for small in-place edits to existing files; never overwrite a whole file.',
@@ -849,6 +861,7 @@ Return strict JSON StepPlan for the current phase only.`,
     debugger:
       'First run_tests / run_python to reproduce the error → analyze_error → patch / replace_in_file / add_dependency to fix → run_tests again. Make the smallest possible change each round. ' +
       '[Missing dependencies] Add the real dependency or use the real library selected by the design; never fake modules/classes/functions, empty implementations, or fallback mocks in production src/ code. ' +
+      '[Fixture discipline] If tests fail with behavioural assertions, do not keep rewriting fixtures. Only change fixtures for clear missing-file, malformed-fixture, or fixture parse errors; otherwise fix source code, contracts, dependencies, or the incorrect assertion. ' +
       '[Network/API failures] Locate the failing URL, try only a small number of replacement API probes, then patch the source and run_program to prove the entrypoint no longer emits API failure. ' +
       '[Important] If replace_in_file on the same file fails ≥ 2 times in a row, switch to read_file and then patch or rewrite within the current runtime chunk limit; stop guessing the find string. ' +
       '[No no-ops] replace_in_file find and replace must differ — if you only want to "verify" a snippet, use read_file; do not submit identical-string replacements.',
