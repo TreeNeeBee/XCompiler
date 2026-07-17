@@ -1,5 +1,6 @@
-import type { Tool } from './types.js';
+import type { Tool, ToolContext } from './types.js';
 import { detectNetworkApiFailureInExec } from '../core/network_api_gate.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 /** 截取多行文本最后 N 行，用于在 ToolResult.summary 里给 LLM 直接看的失败上下文。
  * 仅在失败时调用——成功路径上 stdout 通常很长且无价值，没必要塞回 prompt。 */
@@ -39,7 +40,9 @@ export const runProgramTool: Tool<
     '在沙盒内运行工程入口程序，args 传给运行时（Python: python <args>；TypeScript: npx tsx <args>）。',
   argsSchema: { args: 'string[]', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
-    const r = await ctx.sandbox.runProgram(args.args, { cwd: args.cwd, timeoutMs: args.timeoutMs });
+    const cwd = await resolveSandboxCwd(ctx, args.cwd, 'run_program.cwd');
+    if (!cwd.ok) return { ok: false, error: cwd.error };
+    const r = await ctx.sandbox.runProgram(args.args, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     const networkFailure = detectNetworkApiFailureInExec(r);
     const ok = r.exitCode === 0 && !r.timedOut && !networkFailure;
     const cmd = ctx.language === 'typescript' ? 'npx tsx' : 'python';
@@ -70,7 +73,9 @@ export const runTestsTool: Tool<
     '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
   argsSchema: { args: 'string[]?', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
-    const r = await ctx.sandbox.runTests(args.args ?? [], { cwd: args.cwd, timeoutMs: args.timeoutMs });
+    const cwd = await resolveSandboxCwd(ctx, args.cwd, 'run_tests.cwd');
+    if (!cwd.ok) return { ok: false, error: cwd.error };
+    const r = await ctx.sandbox.runTests(args.args ?? [], { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     const networkFailure = detectNetworkApiFailureInExec(r);
     const passed = r.exitCode === 0 && !r.timedOut && !networkFailure;
     const cmd = ctx.language === 'typescript' ? 'npm test' : 'pytest';
@@ -90,6 +95,17 @@ export const runTestsTool: Tool<
     };
   },
 };
+
+async function resolveSandboxCwd(
+  ctx: ToolContext,
+  cwd: string | undefined,
+  operation: string,
+): Promise<{ ok: true; abs?: string } | { ok: false; error: string }> {
+  if (!cwd) return { ok: true };
+  const resolved = await resolveWorkspacePath(ctx.ws, cwd, operation, { mustExist: true });
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  return { ok: true, abs: resolved.abs };
+}
 
 export const installDepsTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {
   name: 'install_deps',

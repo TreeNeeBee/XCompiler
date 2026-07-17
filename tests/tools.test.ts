@@ -113,6 +113,43 @@ describe('read_file & list_dir', () => {
     expect(l.ok).toBe(true);
     expect((l.data as { entries: string[] }).entries).toContain('m.py');
   });
+
+  it('rejects reads, writes, and listings outside the project directory', async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-'));
+    const outsideFile = path.join(outsideDir, 'secret.txt');
+    await fs.writeFile(outsideFile, 'secret', 'utf8');
+
+    const read = await readFileTool.run({ path: outsideFile }, ctx);
+    expect(read.ok).toBe(false);
+    expect(read.error).toContain('outside the project directory');
+
+    const list = await listDirTool.run({ path: outsideDir }, ctx);
+    expect(list.ok).toBe(false);
+    expect(list.error).toContain('outside the project directory');
+
+    ctx.allowedWrites = [outsideFile, 'src/'];
+    const write = await writeFileTool.run({ path: outsideFile, content: 'leak' }, ctx);
+    expect(write.ok).toBe(false);
+    expect(write.error).toContain('outside the project directory');
+    expect(await fs.readFile(outsideFile, 'utf8')).toBe('secret');
+  });
+
+  it('rejects project-internal symlinks that resolve outside the project directory', async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-'));
+    const outsideFile = path.join(outsideDir, 'secret.py');
+    await fs.writeFile(outsideFile, 'secret = True\n', 'utf8');
+    await ws.ensure('src');
+    await fs.symlink(outsideFile, ws.abs('src/link.py'));
+
+    const read = await readFileTool.run({ path: 'src/link.py' }, ctx);
+    expect(read.ok).toBe(false);
+    expect(read.error).toContain('outside the project directory');
+
+    const write = await writeFileTool.run({ path: 'src/link.py', content: 'secret = False\n' }, ctx);
+    expect(write.ok).toBe(false);
+    expect(write.error).toContain('outside the project directory');
+    expect(await fs.readFile(outsideFile, 'utf8')).toBe('secret = True\n');
+  });
 });
 
 describe('parseUnifiedDiff', () => {
@@ -152,6 +189,14 @@ describe('apply_patch tool', () => {
     const r = await applyPatchTool.run({ patch }, ctx);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/write denied/);
+  });
+
+  it('rejects patch targets outside the project directory before allowlist checks', async () => {
+    ctx.allowedWrites = ['../escape.py'];
+    const patch = `--- /dev/null\n+++ b/../escape.py\n@@ -0,0 +1,1 @@\n+x\n`;
+    const r = await applyPatchTool.run({ patch }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('outside the project directory');
   });
 
   it('reports context mismatch instead of silently corrupting', async () => {
@@ -243,5 +288,34 @@ describe('runTestsTool / runPythonTool summary', () => {
     const r = await runTestsTool.run({}, fakeCtx);
     expect(r.ok).toBe(true);
     expect(r.summary).toBe('pytest exit=0');
+  });
+
+  it('resolves run_tests cwd inside the project and rejects external cwd', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    await ws.ensure('tests');
+    let seenCwd = '';
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests(_args, extra) {
+          seenCwd = extra?.cwd ?? '';
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S001',
+      language: 'python',
+    };
+
+    const ok = await runTestsTool.run({ cwd: 'tests' }, fakeCtx);
+    expect(ok.ok).toBe(true);
+    expect(seenCwd).toBe(path.join(await fs.realpath(ws.root), 'tests'));
+
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-'));
+    const denied = await runTestsTool.run({ cwd: outsideDir }, fakeCtx);
+    expect(denied.ok).toBe(false);
+    expect(denied.error).toContain('outside the project directory');
   });
 });

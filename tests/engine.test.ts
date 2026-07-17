@@ -151,6 +151,34 @@ class UnitRollbackSandbox implements Sandbox {
   }
 }
 
+class FirstFailThenPassSandbox implements Sandbox {
+  readonly kind = 'subprocess' as const;
+  private testRuns = 0;
+
+  async build(): Promise<{ rebuilt: boolean; reason: string }> {
+    return { rebuilt: false, reason: 'stubbed' };
+  }
+
+  async exec(): Promise<ExecResult> {
+    return okExec();
+  }
+
+  async runProgram(): Promise<ExecResult> {
+    return okExec({ stdout: 'usage: flaky app\n' });
+  }
+
+  async runTests(): Promise<ExecResult> {
+    this.testRuns += 1;
+    return this.testRuns === 1
+      ? okExec({ exitCode: 1, stderr: 'first test run failed before repair\n' })
+      : okExec({ stdout: 'second test run passed\n' });
+  }
+
+  async installDeps(): Promise<ExecResult> {
+    return okExec();
+  }
+}
+
 class DebugPreserveSandbox implements Sandbox {
   readonly kind = 'subprocess' as const;
   constructor(private readonly workspace: Workspace) {}
@@ -589,6 +617,47 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(scopedSandbox.testArgs).toContainEqual(['tests/test_unit_s005.py']);
   });
 
+  it('does not roll back a test phase when a later run_tests call succeeds in the same attempt', async () => {
+    const plan = fakePlan();
+    const unitStep = plan.steps.find((step) => step.phase === 'UNIT_TEST')!;
+    plan.steps = [{
+      ...unitStep,
+      dependsOn: [],
+      tools: ['write_file', 'run_tests'],
+      outputs: ['docs/05-unit-test.md', 'tests/test_unit_s005.py'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    const router = new FakeRouter({
+      Tester: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'write unit test outputs, observe one failure, then verify the repair',
+          actions: [
+            { tool: 'write_file', args: { path: 'docs/05-unit-test.md', content: '# Unit Test\n' } },
+            { tool: 'write_file', args: { path: 'tests/test_unit_s005.py', content: 'def test_unit():\n    assert True\n' } },
+            { tool: 'run_tests', args: { args: ['tests/test_unit_s005.py'] } },
+            { tool: 'run_tests', args: { args: ['tests/test_unit_s005.py'] } },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new FirstFailThenPassSandbox(),
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBeUndefined();
+    expect(plan.steps[0]?.status).toBe('DONE');
+  });
+
   it('rolls back a test-phase run_tests tool failure to the paired CODE step', async () => {
     const plan = fakePlan();
     const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
@@ -799,6 +868,81 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(issueLog).toContain('"targetStepId":"S003"');
     expect(issueLog).toContain('"targetPhase":"DETAILED_DESIGN"');
     expect(issueLog).not.toContain('"targetStepId":"S006"');
+  });
+
+  it('resumes a cached source Debugger from the latest actionable failure instead of the final read-only loop', async () => {
+    const plan = fakePlan();
+    const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [codeStep];
+    codeStep.dependsOn = [];
+    codeStep.status = 'FAILED';
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await fs.mkdir(path.join(tmp, '.xcompiler'), { recursive: true });
+    await fs.writeFile(
+      path.join(tmp, '.xcompiler/debug_cache.json'),
+      JSON.stringify({
+        version: 1,
+        steps: {
+          S004: {
+            lastUpdated: new Date().toISOString(),
+            lastStatus: 'FAILED',
+            lastReason: 'read-only recovery mode repeated probe actions for 2 rounds',
+            attempts: [
+              {
+                attempt: 1,
+                ts: new Date().toISOString(),
+                reason: 'unresolved tool failures remain: run_tests FAIL pytest exit=1',
+                failureLogTail: 'pytest exit=1\nSyntaxError: unterminated string literal in src/hello.py',
+              },
+              {
+                attempt: 2,
+                ts: new Date().toISOString(),
+                reason: 'read-only recovery mode repeated probe actions for 2 rounds',
+                failureLogTail: 'read_file src/hello.py\nread_file tests/test_hello.py',
+              },
+              {
+                attempt: 3,
+                ts: new Date().toISOString(),
+                reason: 'request timed out after 900000ms',
+                failureLogTail: 'Error: request timed out after 900000ms',
+              },
+            ],
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    const debuggerLlm = new CapturingScriptedLLM([
+      JSON.stringify({
+        thoughts: 'repair from cached pytest syntax failure',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/hello.py', content: 'def hi():\n    return "fixed"\n' } },
+          { tool: 'write_file', args: { path: 'docs/tests/unit-test-plan.md', content: '# unit plan\n' } },
+        ],
+        done: true,
+      }),
+    ]);
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: new FakeRouter({ Debugger: debuggerLlm }) as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBeUndefined();
+    const failureBlock = debuggerLlm.lastUser.match(/## debug failure log\n```\n([\s\S]*?)\n```/u)?.[1] ?? '';
+    expect(failureBlock).toContain('SyntaxError: unterminated string literal');
+    expect(failureBlock).not.toContain('request timed out after 900000ms');
+    expect(debuggerLlm.lastUser).toContain('read-only recovery mode repeated probe actions');
+    expect(plan.steps[0]?.status).toBe('DONE');
   });
 
   it('marks step FAILED and reverts when LLM never produces outputs', async () => {
@@ -1135,7 +1279,7 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(auditLog).toContain('engine.debug_failed_attempt_preserved');
   });
 
-  it('does not resolve completed-phase debug without a patch or rewrite', async () => {
+  it('does not resolve completed-phase debug without a mutation or successful verification', async () => {
     const plan = fakePlan();
     const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
     plan.steps = [{
@@ -1200,7 +1344,137 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     const issueLog = await ws.readFile('.xcompiler/issues/issues.jsonl');
     expect(issueLog).toContain('"event":"unresolved"');
     expect(issueLog).not.toContain('"event":"resolved"');
-    expect(issueLog).toContain('without a successful patch or rewrite');
+    expect(issueLog).toContain('without a successful repair mutation or verification tool call');
+  });
+
+  it('resolves completed-phase debug with successful verification evidence', async () => {
+    const plan = fakePlan();
+    const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{
+      ...codeStep,
+      dependsOn: [],
+      status: 'DONE',
+      outputs: ['src/hello.py'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('src/hello.py', 'def hi():\n    return "fixed"\n');
+
+    const router = new FakeRouter({
+      Debugger: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'inspect and verify the completed source phase',
+          actions: [
+            { tool: 'read_file', args: { path: 'src/hello.py' } },
+            { tool: 'run_tests', args: { args: ['tests/test_hello.py'] } },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new UnitRollbackSandbox(ws),
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+      maxDebugRetries: 1,
+    });
+
+    const ok = await (engine as unknown as {
+      executeStepWithDebug: (
+        p: Plan,
+        s: Plan['steps'][number],
+        opts: {
+          initialDebug: {
+            failureLog: string;
+            reason: string;
+            completedBeforeDebug: boolean;
+            contextMode: string;
+          };
+        },
+      ) => Promise<boolean>;
+    }).executeStepWithDebug(plan, plan.steps[0]!, {
+      initialDebug: {
+        failureLog: 'unit regression failed before retry',
+        reason: 'test gate failed',
+        completedBeforeDebug: true,
+        contextMode: 'test-rollback',
+      },
+    });
+
+    expect(ok).toBe(true);
+    expect(plan.steps[0]?.status).toBe('DONE');
+    const auditLog = await ws.readFile('.xcompiler/audit.jsonl');
+    expect(auditLog).toContain('tool run_tests');
+    expect(auditLog).not.toContain('without a successful repair mutation or verification tool call');
+  });
+
+  it('treats run_tests as advisory during design-phase Debugger repair', async () => {
+    const plan = fakePlan();
+    const designStep = plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')!;
+    plan.steps = [{
+      ...designStep,
+      dependsOn: [],
+      status: 'DONE',
+      tools: ['replace_in_file', 'write_file', 'run_tests'],
+      outputs: ['docs/03-detailed-design.md'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('docs/03-detailed-design.md', '# Old Design\n');
+
+    const router = new FakeRouter({
+      Debugger: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'update the design contract and keep the failing downstream test as diagnostic evidence',
+          actions: [
+            { tool: 'replace_in_file', args: { path: 'src/hello.py', find: 'return "broken"', replace: 'return "fixed"' } },
+            { tool: 'write_file', args: { path: 'docs/03-detailed-design.md', content: '# Revised Design\n\nCODE must handle empty ECU lists explicitly.\n' } },
+            { tool: 'run_tests', args: { args: ['tests/test_integration.py'] } },
+          ],
+          done: true,
+        }),
+      ]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new FirstFailThenPassSandbox(),
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 1,
+    });
+
+    const ok = await (engine as unknown as {
+      executeStepWithDebug: (
+        p: Plan,
+        s: Plan['steps'][number],
+        opts: {
+          initialDebug: {
+            failureLog: string;
+            reason: string;
+            completedBeforeDebug: boolean;
+            contextMode: string;
+          };
+        },
+      ) => Promise<boolean>;
+    }).executeStepWithDebug(plan, plan.steps[0]!, {
+      initialDebug: {
+        failureLog: 'integration test still fails before CODE is rerun',
+        reason: 'INTEGRATION_TEST failed; rolling back to DETAILED_DESIGN.',
+        completedBeforeDebug: true,
+        contextMode: 'test-rollback',
+      },
+    });
+
+    expect(ok).toBe(true);
+    expect(plan.steps[0]?.status).toBe('DONE');
+    expect(await ws.readFile('docs/03-detailed-design.md')).toContain('empty ECU lists');
   });
 
   it('keeps the original test rollback failure visible across Debugger retries', async () => {
@@ -1269,6 +1543,146 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(secondPrompt).toContain('test_parse_dbc_ecu_filtering');
     expect(secondPrompt).toContain('assert 0 > 0');
     expect(secondPrompt).toContain('latest Debugger attempt failure');
+  });
+
+  it('records the original test rollback failure in source Debugger cache after failed retries', async () => {
+    const plan = fakePlan();
+    const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{
+      ...codeStep,
+      dependsOn: [],
+      status: 'DONE',
+      outputs: ['src/hello.py'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('src/hello.py', 'def hi():\n    return "broken"\n');
+
+    const router = new FakeRouter({
+      Debugger: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'inspect only and incorrectly claim done',
+          actions: [{ tool: 'read_file', args: { path: 'src/hello.py' } }],
+          done: true,
+        }),
+        JSON.stringify({
+          thoughts: 'inspect only again and still incorrectly claim done',
+          actions: [{ tool: 'read_file', args: { path: 'src/hello.py' } }],
+          done: true,
+        }),
+      ]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 2,
+      maxDebugRetries: 1,
+    });
+
+    const ok = await (engine as unknown as {
+      executeStepWithDebug: (
+        p: Plan,
+        s: Plan['steps'][number],
+        opts: {
+          initialDebug: {
+            failureLog: string;
+            reason: string;
+            completedBeforeDebug: boolean;
+            contextMode: string;
+          };
+        },
+      ) => Promise<boolean>;
+    }).executeStepWithDebug(plan, plan.steps[0]!, {
+      initialDebug: {
+        failureLog: 'pytest exit=1\nFAILED tests/test_unit.py::test_parse_dbc_malformed_raises\nDID NOT RAISE <DBCParseError>',
+        reason: 'UNIT_TEST failed; rolling back to paired CODE phase for Debugger repair, then rerunning subsequent V-model phases.',
+        completedBeforeDebug: true,
+        contextMode: 'test-rollback',
+      },
+    });
+
+    expect(ok).toBe(false);
+    const cache = JSON.parse(await ws.readFile('.xcompiler/debug_cache.json')) as {
+      steps: Record<string, { lastStatus: string; attempts: Array<{ failureLogTail: string }> }>;
+    };
+    const logs = cache.steps.S004!.attempts.map((attempt) => attempt.failureLogTail).join('\n');
+    expect(cache.steps.S004!.lastStatus).toBe('FAILED');
+    expect(logs).toContain('test_parse_dbc_malformed_raises');
+    expect(logs).toContain('DID NOT RAISE <DBCParseError>');
+    expect(logs).toContain('latest Debugger attempt failure');
+  });
+
+  it('stops Debugger retries immediately on provider rate-limit infrastructure failures', async () => {
+    const plan = fakePlan();
+    const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{
+      ...codeStep,
+      dependsOn: [],
+      status: 'DONE',
+      outputs: ['src/hello.py'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await ws.writeFile('src/hello.py', 'def hi():\n    return "broken"\n');
+
+    class InspectThenRateLimitLLM implements LLMClient {
+      readonly name = 'rate-limit-after-inspect';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            thoughts: 'inspect but do not repair yet',
+            actions: [{ tool: 'read_file', args: { path: 'src/hello.py' } }],
+            done: true,
+          });
+        }
+        throw new Error(
+          'OpenAI HTTP 429: {"error":{"message":"Rate limit exceeded: free-models-per-day","code":429}}',
+        );
+      }
+    }
+    const llm = new InspectThenRateLimitLLM();
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox,
+      router: new FakeRouter({ Debugger: llm }) as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 3,
+    });
+
+    const ok = await (engine as unknown as {
+      executeStepWithDebug: (
+        p: Plan,
+        s: Plan['steps'][number],
+        opts: {
+          initialDebug: {
+            failureLog: string;
+            reason: string;
+            completedBeforeDebug: boolean;
+            contextMode: string;
+          };
+        },
+      ) => Promise<boolean>;
+    }).executeStepWithDebug(plan, plan.steps[0]!, {
+      initialDebug: {
+        failureLog: 'pytest exit=1\nFAILED tests/test_unit.py::test_hi',
+        reason: 'UNIT_TEST failed; rolling back to paired CODE phase for Debugger repair, then rerunning subsequent V-model phases.',
+        completedBeforeDebug: true,
+        contextMode: 'test-rollback',
+      },
+    });
+
+    expect(ok).toBe(false);
+    expect(llm.calls).toBe(2);
+    expect(plan.steps[0]?.status).toBe('FAILED');
   });
 
   it('rolls UNIT_TEST gate failures back to CODE and reruns subsequent V-model phases', async () => {

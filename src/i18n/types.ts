@@ -445,6 +445,9 @@ export interface Messages {
     executorFeedbackHeader: string;
     executorFeedbackVerifyOk: string;
     executorFeedbackVerifyMissing: (paths: string) => string;
+    executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) => string;
+    executorFeedbackReadOnlyRecoveryRequired: string;
+    executorFeedbackRepairEvidenceMissing: string;
   };
 
   // ───────── Skill prompts ─────────

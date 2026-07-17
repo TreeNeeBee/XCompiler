@@ -814,8 +814,12 @@ ${opts.phasePlan}
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\n正处于 DEBUG 重试模式。上一轮失败原因: ${reason}\n` +
       'DEBUG 可以修改当前 allowedWrites 内的上游源码与测试文件；若失败暴露的是实现、契约或下游调用不一致，必须修真实缺陷，禁止通过削弱断言、跳过测试、删除失败用例或只迎合错误测试来过关。' +
+      '如果本次回退处于需求/设计阶段，而具体源码修改属于后续 V 模型 Step 且目标文件不在当前 allowedWrites 内，应更新当前契约、测试计划或诊断产物并完成当前 Step，让后续 CODE Step 实现；不要尝试被拒绝的越权写入。' +
       '若失败是第三方依赖缺失或库选型错误，必须用 add_dependency 写入真实包名，或把源码改回 HIGH_LEVEL_DESIGN 选定的真实库；严禁在 src/ 生产代码里 try/except ImportError 后伪造 module、fake class/function、空实现或 fallback mock 来绕过错误。' +
       '请包含 read_file/code_search 先定位问题，再以 apply_patch / replace_in_file / add_dependency 作最小修改，最后 run_tests 验证。' +
+      'DEBUG 重试不能只靠只读检查就标记完成：本次重试必须产生一次成功的修复动作，或一次成功的验证命令。' +
+      '如果上一轮失败原因包含 repeated read-only/probe actions，请把已有 failure log 视为足够上下文，下一步直接 patch/write/改依赖或执行验证命令。' +
+      '当测试已正常执行但失败点是返回行为断言时，禁止反复重写 fixture 或样例。只有证据明确是文件缺失、fixture 格式错误或 fixture 本身解析失败时才修改 fixture；否则应修实现、接口契约、依赖选型或确实错误的断言。' +
       '如果失败日志显示网络/API 调用失败，不允许只停留在探测接口：最多连续执行 2 次 http_fetch 探测；HTTP 2xx 但 body 为空或格式不可用不算可用接口；随后必须 patch 真实集成代码，并用 run_program 和 run_tests 验证。入口仍输出网络/API 失败时不得 done=true。' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
@@ -825,6 +829,14 @@ ${opts.phasePlan}
     executorFeedbackHeader: '本轮工具结果：',
     executorFeedbackVerifyOk: 'outputs 校验通过。如已完成，请把 done 设为 true 且 actions=[]。',
     executorFeedbackVerifyMissing: (paths: string) => `outputs 仍缺失：${paths}。请继续。`,
+    executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) =>
+      `循环门禁警告：最近 ${rounds} 轮只调用了读取/探测工具` +
+      (targets ? `（${targets}）` : '') +
+      '。下一轮必须包含一次成功的修复动作（apply_patch / replace_in_file / write_file / add_dependency）或明确的验证动作（run_tests / run_program）。不要继续只调用 read_file、list_dir、code_search 或 http_fetch。',
+    executorFeedbackReadOnlyRecoveryRequired:
+      '只读恢复模式已启用：上一轮已经因为持续探测失败。本轮必须基于已有 failure log 直接 patch/write/改依赖或执行验证；如果下一轮仍然只有只读/探测动作，本次重试会失败并回退。',
+    executorFeedbackRepairEvidenceMissing:
+      'DEBUG 完成无效：本次重试还没有产生修复证据。设置 done=true 前，必须至少完成一次成功的修复动作或成功的验证运行；否则只能在 thoughts 中给出具体 blocker 后停止。',
   },
   skills: {
     patcher: '通过 apply_patch / replace_in_file 对已有文件做小改动，禁止整文件覆盖。',
@@ -841,7 +853,7 @@ ${opts.phasePlan}
       '复杂领域格式连续失败后必须停止凭记忆生成，改为请求用户样例或网络参考；严禁去改被测模块或断言。',
     dep_resolver: '当出现 ModuleNotFoundError 时，用 add_dependency 写回 requirements.txt 并重建沙盒。',
     debugger:
-      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file/add_dependency 修复 → 再次 run_tests。每次只做最小修改。【依赖缺失】必须添加真实依赖或改用设计选定的真实库，禁止在 src/ 生产代码里伪造 module、fake class/function、空实现或 fallback mock。【网络/API 失败】定位失败 URL 后，只允许少量探测替代 API，随后必须 patch 源码并用 run_program 证明入口不再输出 API 失败。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即 read_file，再用 patch 或在当前运行时 chunk limit 内整文件重写，不要反复猜测 find 字符串。【禁止 no-op】replace_in_file 的 find 与 replace 必须不同——若你只是想"确认"某段代码，请用 read_file，不要提交相同字符串的替换。',
+      '先 run_tests / run_python 复现错误 → analyze_error → patch/replace_in_file/add_dependency 修复 → 再次 run_tests。每次只做最小修改。【依赖缺失】必须添加真实依赖或改用设计选定的真实库，禁止在 src/ 生产代码里伪造 module、fake class/function、空实现或 fallback mock。【Fixture 纪律】如果测试失败是行为断言失败，不要持续重写 fixture；只有明确缺文件、fixture 格式错误或 fixture 解析错误时才改 fixture，否则修源码、契约、依赖或错误断言。【网络/API 失败】定位失败 URL 后，只允许少量探测替代 API，随后必须 patch 源码并用 run_program 证明入口不再输出 API 失败。【重要】同一文件上 replace_in_file 连续失败 2 次以上请立即 read_file，再用 patch 或在当前运行时 chunk limit 内整文件重写，不要反复猜测 find 字符串。【禁止 no-op】replace_in_file 的 find 与 replace 必须不同——若你只是想"确认"某段代码，请用 read_file，不要提交相同字符串的替换。',
     refactorer: '重构必须保证行为不变；先跑回归测试 → 修改 → 再跑回归测试。',
   },
   doctor: {

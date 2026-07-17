@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { isAllowedWrite, type Tool } from './types.js';
+import { resolveWorkspacePath } from './path_guard.js';
 
 export const readFileTool: Tool<{ path: string; maxBytes?: number }, { content: string }> = {
   name: 'read_file',
@@ -8,7 +9,9 @@ export const readFileTool: Tool<{ path: string; maxBytes?: number }, { content: 
   argsSchema: { path: 'string', maxBytes: 'number?' },
   async run(args, ctx) {
     try {
-      const abs = ctx.ws.abs(args.path);
+      const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'read_file', { mustExist: true });
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const abs = resolved.abs;
       const stat = await fs.stat(abs);
       if (!stat.isFile()) return { ok: false, error: 'not a file' };
       const buf = await fs.readFile(abs);
@@ -82,6 +85,8 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
   async run(args, ctx) {
     const argError = validateTextFileArgs('write_file', args);
     if (argError) return { ok: false, error: argError };
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'write_file', { forWrite: true });
+    if (!resolved.ok) return { ok: false, error: resolved.error };
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return {
         ok: false,
@@ -104,7 +109,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
       };
     }
     try {
-      const abs = ctx.ws.abs(args.path);
+      const abs = resolved.abs;
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, args.content, 'utf8');
       return {
@@ -132,6 +137,8 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
   async run(args, ctx) {
     const argError = validateTextFileArgs('append_file', args);
     if (argError) return { ok: false, error: argError };
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'append_file', { forWrite: true });
+    if (!resolved.ok) return { ok: false, error: resolved.error };
     if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
       return { ok: false, error: 'append denied: requirements.txt 由 add_dependency 维护。' };
     }
@@ -147,7 +154,7 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
       };
     }
     try {
-      const abs = ctx.ws.abs(args.path);
+      const abs = resolved.abs;
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.appendFile(abs, args.content, 'utf8');
       let total = size;
@@ -185,7 +192,9 @@ export const listDirTool: Tool<{ path?: string }, { entries: string[] }> = {
   argsSchema: { path: 'string?' },
   async run(args, ctx) {
     try {
-      const abs = ctx.ws.abs(args.path ?? '.');
+      const resolved = await resolveWorkspacePath(ctx.ws, args.path ?? '.', 'list_dir', { mustExist: true });
+      if (!resolved.ok) return { ok: false, error: resolved.error };
+      const abs = resolved.abs;
       const entries = await fs.readdir(abs, { withFileTypes: true });
       return {
         ok: true,
