@@ -1,10 +1,20 @@
-# XCompiler — AI 软件工厂运行时
+<p align="center">
+  <img src="docs/assets/xcompiler-icon.png" alt="XCompiler logo" width="128" height="128" />
+</p>
+
+<h1 align="center">XCompiler</h1>
+
+<p align="center">
+  <strong>AI 软件工厂运行时</strong>
+</p>
 
 > 通过迭代式 V 模型流程，把自然语言需求转成可运行、可测试、可交付的 Python 或 TypeScript 工程。
 
-[![npm](https://img.shields.io/npm/v/@xcompiler/cli.svg)](https://www.npmjs.com/package/@xcompiler/cli)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@xcompiler/cli"><img src="https://img.shields.io/npm/v/@xcompiler/cli.svg" alt="npm package" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license" /></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" alt="Node.js >= 24" /></a>
+</p>
 
 语言: [EN](README.md) (默认) · **简体中文**
 
@@ -30,31 +40,9 @@ XCompiler 是一个可复用的 AI 软件工厂运行时。它先把产品需求
 
 XCompiler 把 Phase 迭代模型和 V 模型结合起来。Planner 先生成总览级 `phasePlan.json`，再只展开当前阶段为具体 `plan.P<N>.json`。每个当前阶段都执行完整 V 模型；未来阶段只保留目标，等激活后再展开细节计划。
 
-```mermaid
-flowchart TB
-  req["自然语言需求"] --> clarify["需求澄清\n每题 2-5 个优先级选项"]
-  clarify --> gate1["Gate 1\n确认 topic.md"]
-  gate1 --> phasePlan["PhasePlan\nP1 当前阶段 + P2..Pn 按复杂度规划"]
-  phasePlan --> active["当前阶段计划\nplan.P1.json"]
-
-  subgraph iteration["每个实现阶段 / 迭代周期"]
-    active --> ra["1. 需求分析"]
-    ra --> hld["2. 概要设计\n系统定位、外部 API、依赖"]
-    hld --> dld["3. 详细设计\n模块内部结构"]
-    dld --> code["4. 编码"]
-    code --> unit["5. 单元测试"]
-    unit --> integ["6. 集成测试"]
-    integ --> module["7. 模块测试"]
-    module --> functional["8. 功能测试"]
-  end
-
-  functional --> gate["迭代门禁\n所有验证通过?"]
-  gate -->|通过| next["进入下一个计划阶段\n或完成交付"]
-  gate -->|失败| issues["记录 issue\n阶段 + 错误 + 日志 + 产物"]
-  issues --> route["路由到对应 V 模型源阶段"]
-  route --> debug["Debugger 提交 patch/rewrite\n再重跑后续阶段"]
-  debug --> code
-```
+<p align="center">
+  <img src="docs/assets/iterative-v-model-pipeline.svg" alt="Iterative V-Model Pipeline" />
+</p>
 
 V 模型行为：
 
@@ -69,35 +57,9 @@ V 模型行为：
 
 ## 系统架构
 
-```mermaid
-flowchart TB
-  subgraph adapters["Adapters"]
-    cli["CLI\nbuild/run/load/append/evolve/acp"]
-    acp["ACP Code Agent\nstdio JSON-RPC"]
-    future["未来接入\nREST / GUI / SDK"]
-  end
-
-  cli --> runtime
-  acp --> runtime
-  future --> runtime
-
-  subgraph runtime["XCompiler Runtime\n唯一业务入口"]
-    events["Runtime events\nprogress / warning / error / result / permission"]
-    build["Build service\n澄清 + 阶段规划"]
-    run["Run service\n阶段执行 + 断点恢复"]
-    workflow["Workflow engine\n迭代 + V 模型状态机"]
-    plugins["PluginHost\nhooks + tools + skills"]
-    memory["Project memory\n.xcompiler 状态"]
-  end
-
-  runtime --> planner["Planner"]
-  runtime --> engine["PhaseEngine"]
-  engine --> agents["Agents / Skills\nPlanner · Architect · Coder · Tester · Debugger · Author"]
-  agents --> tools["受控工具\nread/write/patch/tests/program/http/git"]
-  agents --> llm["LLM Router\nroles + scores + fallbacks"]
-  tools --> sandbox["Sandbox\nsubprocess 或 docker"]
-  tools --> workspace["Workspace\ngit snapshots + audit + .xc"]
-```
+<p align="center">
+  <img src="docs/assets/system-architecture.svg" alt="XCompiler System Architecture" />
+</p>
 
 各层职责：
 

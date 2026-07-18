@@ -42,6 +42,7 @@
     "dist/acp",
     "config.example.yaml",
     ".env.example",
+    "docs/assets",
     "docs/acp.md",
     "docs/openrouter.md",
     "docs/plugin_api.md",

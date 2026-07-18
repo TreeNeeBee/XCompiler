@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="940" viewBox="0 0 1280 940" role="img" aria-labelledby="title desc">
+  <title id="title">XCompiler system architecture</title>
+  <desc id="desc">Layered architecture where CLI, ACP, and future adapters call the XCompiler Runtime as the only business entry point. Runtime coordinates workflow, agents, tools, memory, plugins, LLM routing, sandboxing, workspace state, and audit logs.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 34px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .layer { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 18; }
+      .layer-name { font: 800 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; letter-spacing: 0; }
+      .box { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.4; rx: 12; }
+      .adapter { fill: #eff6ff; stroke: #2563eb; }
+      .runtime { fill: #f5f3ff; stroke: #7c3aed; }
+      .workflow { fill: #ecfeff; stroke: #0891b2; }
+      .execution { fill: #f0fdf4; stroke: #16a34a; }
+      .infra { fill: #fffbeb; stroke: #d97706; }
+      .label { font: 700 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .small { font: 500 12px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .note { font: 700 13px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #7c2d12; }
+      .line { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+      .event { fill: none; stroke: #7c3aed; stroke-width: 2; stroke-dasharray: 6 6; marker-end: url(#arrow); }
+      .boundary { fill: none; stroke: #7c3aed; stroke-width: 2; stroke-dasharray: 10 8; rx: 16; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1280" height="940"/>
+  <text class="title" x="640" y="48" text-anchor="middle">System Architecture</text>
+  <text class="subtitle" x="640" y="76" text-anchor="middle">Adapters handle protocols and user surfaces. Runtime owns all business behavior and emits events outward.</text>
+
+  <rect class="layer" x="54" y="104" width="1172" height="118"/>
+  <text class="layer-name" x="84" y="136">Adapter layer</text>
+  <rect class="box adapter" x="170" y="150" width="220" height="48"/>
+  <text class="label" x="280" y="170" text-anchor="middle">CLI Adapter</text>
+  <text class="small" x="280" y="188" text-anchor="middle">build / run / load / append / evolve</text>
+  <rect class="box adapter" x="530" y="150" width="220" height="48"/>
+  <text class="label" x="640" y="170" text-anchor="middle">ACP Code Agent</text>
+  <text class="small" x="640" y="188" text-anchor="middle">stdio JSON-RPC for IDEs</text>
+  <rect class="box adapter" x="890" y="150" width="220" height="48"/>
+  <text class="label" x="1000" y="170" text-anchor="middle">Future Adapters</text>
+  <text class="small" x="1000" y="188" text-anchor="middle">REST / GUI / SDK</text>
+
+  <rect class="layer" x="54" y="262" width="1172" height="182"/>
+  <text class="layer-name" x="84" y="294">Runtime layer</text>
+  <rect class="boundary" x="136" y="306" width="1008" height="104"/>
+  <text class="note" x="640" y="330" text-anchor="middle">XCompiler Runtime: single business entry point</text>
+  <rect class="box runtime" x="170" y="348" width="160" height="40"/>
+  <text class="label" x="250" y="373" text-anchor="middle">Runtime API</text>
+  <rect class="box runtime" x="380" y="348" width="160" height="40"/>
+  <text class="label" x="460" y="373" text-anchor="middle">Build Service</text>
+  <rect class="box runtime" x="560" y="348" width="160" height="40"/>
+  <text class="label" x="640" y="373" text-anchor="middle">Run Service</text>
+  <rect class="box runtime" x="740" y="348" width="160" height="40"/>
+  <text class="label" x="820" y="373" text-anchor="middle">Events</text>
+  <rect class="box runtime" x="950" y="348" width="160" height="40"/>
+  <text class="label" x="1030" y="373" text-anchor="middle">Permissions</text>
+  <text class="small" x="640" y="428" text-anchor="middle">progress, warning, error, result, confirmation, authorization, file change, patch proposal</text>
+
+  <rect class="layer" x="54" y="484" width="1172" height="118"/>
+  <text class="layer-name" x="84" y="516">Workflow and planning layer</text>
+  <rect class="box workflow" x="176" y="532" width="220" height="46"/>
+  <text class="label" x="286" y="551" text-anchor="middle">Phase Planner</text>
+  <text class="small" x="286" y="568" text-anchor="middle">complexity, priority, gates</text>
+  <rect class="box workflow" x="530" y="532" width="220" height="46"/>
+  <text class="label" x="640" y="551" text-anchor="middle">V-Model Engine</text>
+  <text class="small" x="640" y="568" text-anchor="middle">stage order, rollback, resume</text>
+  <rect class="box workflow" x="884" y="532" width="220" height="46"/>
+  <text class="label" x="994" y="551" text-anchor="middle">Issue Router</text>
+  <text class="small" x="994" y="568" text-anchor="middle">stage-aware debug routing</text>
+
+  <rect class="layer" x="54" y="642" width="1172" height="126"/>
+  <text class="layer-name" x="84" y="674">Execution capability layer</text>
+  <rect class="box execution" x="126" y="696" width="198" height="46"/>
+  <text class="label" x="225" y="715" text-anchor="middle">Agents / Skills</text>
+  <text class="small" x="225" y="732" text-anchor="middle">Planner, Coder, Tester, Debugger</text>
+  <rect class="box execution" x="386" y="696" width="178" height="46"/>
+  <text class="label" x="475" y="715" text-anchor="middle">Tool Guard</text>
+  <text class="small" x="475" y="732" text-anchor="middle">read, write, shell, http, git</text>
+  <rect class="box execution" x="624" y="696" width="178" height="46"/>
+  <text class="label" x="713" y="715" text-anchor="middle">PluginHost</text>
+  <text class="small" x="713" y="732" text-anchor="middle">hooks, tools, skills</text>
+  <rect class="box execution" x="862" y="696" width="250" height="46"/>
+  <text class="label" x="987" y="715" text-anchor="middle">Project Memory</text>
+  <text class="small" x="987" y="732" text-anchor="middle">.xc progress and .xcompiler state</text>
+
+  <rect class="layer" x="54" y="808" width="1172" height="98"/>
+  <text class="layer-name" x="84" y="840">Infrastructure layer</text>
+  <rect class="box infra" x="150" y="854" width="220" height="36"/>
+  <text class="label" x="260" y="877" text-anchor="middle">LLM Router + Providers</text>
+  <rect class="box infra" x="426" y="854" width="180" height="36"/>
+  <text class="label" x="516" y="877" text-anchor="middle">Sandbox</text>
+  <rect class="box infra" x="662" y="854" width="220" height="36"/>
+  <text class="label" x="772" y="877" text-anchor="middle">Workspace Files</text>
+  <rect class="box infra" x="938" y="854" width="190" height="36"/>
+  <text class="label" x="1033" y="877" text-anchor="middle">Audit Logs</text>
+
+  <path class="line" d="M280 198 C280 245, 250 295, 250 348"/>
+  <path class="line" d="M640 198 L640 348"/>
+  <path class="line" d="M1000 198 C1000 245, 1030 295, 1030 348"/>
+  <path class="line" d="M640 388 L640 532"/>
+  <path class="line" d="M460 388 C415 438, 334 486, 286 532"/>
+  <path class="line" d="M820 388 C890 438, 955 486, 994 532"/>
+  <path class="line" d="M640 578 L225 696"/>
+  <path class="line" d="M640 578 L475 696"/>
+  <path class="line" d="M640 578 L713 696"/>
+  <path class="line" d="M994 578 L987 696"/>
+  <path class="line" d="M475 742 C460 790, 516 812, 516 854"/>
+  <path class="line" d="M225 742 C230 790, 260 812, 260 854"/>
+  <path class="line" d="M987 742 C975 790, 772 812, 772 854"/>
+  <path class="line" d="M987 742 C1020 790, 1033 812, 1033 854"/>
+  <path class="event" d="M820 348 C900 280, 1040 260, 1110 198"/>
+  <text class="small" x="965" y="270" text-anchor="middle">events flow back to adapters</text>
+</svg>
