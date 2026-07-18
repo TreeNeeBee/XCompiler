@@ -97,6 +97,7 @@ export const codeSearchTool: Tool<
     const resolved = await resolveWorkspacePath(ctx.ws, args.root ?? '.', 'code_search', { mustExist: true });
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const root = resolved.abs;
+    const workspaceRoot = await fs.realpath(ctx.ws.root).catch(() => ctx.ws.root);
     const max = args.maxResults ?? 50;
     const exts = args.ext && args.ext.length > 0 ? new Set(args.ext.map((e) => (e.startsWith('.') ? e : '.' + e))) : null;
     const matches: Array<{ path: string; line: number; text: string }> = [];
@@ -112,7 +113,7 @@ export const codeSearchTool: Tool<
       } catch {
         return;
       }
-      const rel = path.relative(ctx.ws.root, abs);
+      const rel = path.relative(workspaceRoot, abs);
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if ((lines[i] ?? '').includes(args.query)) {

@@ -200,7 +200,34 @@ describe('OllamaClient streaming', () => {
     }
   });
 
-  it('aborts streaming when output exceeds maxOutputChars', async () => {
+  it('does not abort valid long output just because it exceeds maxOutputChars', async () => {
+    const payload = Array.from({ length: 350 }, (_, i) => `item-${i}`).join(',');
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      res.write(JSON.stringify({ message: { role: 'assistant', content: '{"thoughts":"' } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: payload } }) + '\n');
+      res.write(JSON.stringify({ message: { role: 'assistant', content: '","actions":[],"done":true}' }, done: true }) + '\n');
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OllamaClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        model: 'm',
+        requestTimeoutMs: 5000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 1000,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).resolves.toContain('item-349');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('aborts repeated streaming output as a token loop', async () => {
     let stop = false;
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
@@ -224,9 +251,8 @@ describe('OllamaClient streaming', () => {
       await expect(
         client.chat([{ role: 'user', content: 'hi' }], {
           onToken: () => {},
-          // 让 detectLoop 不要先触发：每次内容都不一样
         }),
-      ).rejects.toThrow(/output exceeded|token loop/);
+      ).rejects.toThrow(/token loop/);
     } finally {
       stop = true;
       await new Promise<void>((r) => server.close(() => r()));

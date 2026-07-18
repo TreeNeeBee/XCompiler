@@ -14,7 +14,7 @@ export interface OpenAIConfig {
   requestTimeoutMs?: number;
   /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 5 分钟，0 关闭。 */
   streamIdleTimeoutMs?: number;
-  /** 流式模式下输出字符上限，超过即中断（防 token-loop 撑爆内存）；默认 200_000，0 关闭。 */
+  /** 流式异常保护阈值；真实有效输出不会因长度本身被截断，loop/无效输出由 watchdog 中断。 */
   maxOutputChars?: number;
 }
 
@@ -99,11 +99,16 @@ export class OpenAIClient implements LLMClient {
           )
         : null;
     let idleTimer: NodeJS.Timeout | null = null;
+    let streamedContentChars = 0;
     const armIdle = () => {
       if (idleTimeoutMs <= 0) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(
-        () => abort(new Error(`OpenAI stream idle for ${idleTimeoutMs}ms; aborting`)),
+        () => abort(new Error(
+          streamedContentChars === 0
+            ? `OpenAI stream idle before first token for ${idleTimeoutMs}ms; aborting`
+            : `OpenAI stream idle for ${idleTimeoutMs}ms; aborting`,
+        )),
         idleTimeoutMs,
       );
     };
@@ -182,6 +187,7 @@ export class OpenAIClient implements LLMClient {
           const piece = choice.delta?.content ?? choice.message?.content ?? '';
           if (!piece) continue;
           aggregate += piece;
+          streamedContentChars += piece.length;
           armIdle();
           options.onToken?.(piece);
           if (expectsJsonObject && hasDegenerateJsonPrefix(aggregate)) {
@@ -193,10 +199,8 @@ export class OpenAIClient implements LLMClient {
           if (detectCyclicTokenLoop(aggregate)) {
             throw new Error('detected cyclic token loop in OpenAI stream (periodic tail); aborting');
           }
-          if (maxOutputChars > 0 && aggregate.length > maxOutputChars) {
-            throw new Error(
-              `OpenAI stream output exceeded ${maxOutputChars} chars (likely token loop); aborting`,
-            );
+          if (maxOutputChars > 0 && expectsJsonObject && aggregate.length > maxOutputChars && hasInvalidJsonPrefix(aggregate)) {
+            throw new Error(`OpenAI stream exceeded ${maxOutputChars} chars without a valid JSON prefix; aborting`);
           }
           if (shouldStopByContent()) {
             done = true;
@@ -305,6 +309,13 @@ function hasDegenerateJsonPrefix(text: string): boolean {
   for (const char of chars) counts.set(char, (counts.get(char) ?? 0) + 1);
   const max = Math.max(...counts.values());
   return max / chars.length >= 0.85;
+}
+
+function hasInvalidJsonPrefix(text: string): boolean {
+  const trimmed = text.trimStart();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false;
+  return trimmed.length >= 1024;
 }
 
 function findSseSeparator(buf: string): { index: number; length: number } | null {

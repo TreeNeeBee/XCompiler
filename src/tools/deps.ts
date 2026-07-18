@@ -17,11 +17,17 @@ export const addDependencyTool: Tool<
   description: '向依赖清单追加依赖（python: requirements.txt；typescript: package.json）并重建沙盒。',
   argsSchema: { packages: 'string[]' },
   async run(args, ctx) {
+    if (!args || !Array.isArray(args.packages) || !args.packages.every((p) => typeof p === 'string')) {
+      return { ok: false, error: 'invalid add_dependency args: packages must be a non-empty string[]' };
+    }
+    const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
+    if (normalized.length === 0) {
+      return { ok: false, error: 'invalid add_dependency args: packages must include at least one package name' };
+    }
     const manifestPath = ctx.language === 'typescript' ? 'package.json' : 'requirements.txt';
     const resolved = await resolveWorkspacePath(ctx.ws, manifestPath, 'add_dependency', { forWrite: true });
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const abs = resolved.abs;
-    const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
     const added: string[] = [];
     let final: string[];
 

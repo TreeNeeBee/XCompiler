@@ -236,6 +236,51 @@ describe('runTestsTool / runPythonTool summary', () => {
     expect(r.summary).toContain('503 Service Unavailable');
   });
 
+  it('reports TypeScript run_program project commands without wrapping npm/npx/node in tsx', async () => {
+    const { runProgramTool } = await import('../src/tools/sandbox.js');
+    let seenArgs: string[] = [];
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runProgram(args: string[]) {
+          seenArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runTests() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S004',
+      language: 'typescript',
+    };
+
+    const tsc = await runProgramTool.run({ args: ['npx', 'tsc', '--noEmit'] }, fakeCtx);
+    expect(seenArgs).toEqual(['npx', 'tsc', '--noEmit']);
+    expect(tsc.summary).toBe('npx tsc --noEmit exit=0');
+
+    const entry = await runProgramTool.run({ args: ['src/index.ts', '--help'] }, fakeCtx);
+    expect(entry.summary).toBe('npx tsx src/index.ts --help exit=0');
+  });
+
+  it('normalizes TypeScript run_program commands for sandbox execution', async () => {
+    const { resolveTypeScriptProgramCommand } = await import('../src/sandbox/program_args.js');
+    expect(resolveTypeScriptProgramCommand(['npx', 'tsc', '--noEmit'])).toEqual({
+      cmd: 'npx',
+      argv: ['tsc', '--noEmit'],
+      display: 'npx tsc --noEmit',
+    });
+    expect(resolveTypeScriptProgramCommand(['tsc', '--noEmit'])).toEqual({
+      cmd: 'npx',
+      argv: ['tsc', '--noEmit'],
+      display: 'npx tsc --noEmit',
+    });
+    expect(resolveTypeScriptProgramCommand(['src/index.ts', '--help'])).toEqual({
+      cmd: 'npx',
+      argv: ['tsx', 'src/index.ts', '--help'],
+      display: 'npx tsx src/index.ts --help',
+    });
+  });
+
   it('embeds stderr/stdout tail in summary on failure (so LLM can see the real error)', async () => {
     const { runTestsTool } = await import('../src/tools/sandbox.js');
     const fakeCtx: ToolContext = {
@@ -288,6 +333,78 @@ describe('runTestsTool / runPythonTool summary', () => {
     const r = await runTestsTool.run({}, fakeCtx);
     expect(r.ok).toBe(true);
     expect(r.summary).toBe('pytest exit=0');
+  });
+
+  it('uses scoped default test args when TypeScript run_tests receives only Vitest run tokens', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    let seenArgs: string[] = [];
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests(args = []) {
+          seenArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S005',
+      language: 'typescript',
+      defaultTestArgs: ['tests/unit/parser.test.ts'],
+    };
+    const r = await runTestsTool.run({ args: ['run'] }, fakeCtx);
+    expect(r.ok).toBe(true);
+    expect(seenArgs).toEqual(['tests/unit/parser.test.ts']);
+    expect(r.summary).toBe('npm test exit=0 args=tests/unit/parser.test.ts');
+  });
+
+  it('preserves explicit TypeScript test filters instead of replacing them with defaults', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    let seenArgs: string[] = [];
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests(args = []) {
+          seenArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S007',
+      language: 'typescript',
+      defaultTestArgs: ['tests/module/parser.test.ts'],
+    };
+    const r = await runTestsTool.run({ args: ['run', 'tests/unit'] }, fakeCtx);
+    expect(r.ok).toBe(true);
+    expect(seenArgs).toEqual(['tests/unit']);
+    expect(r.summary).toBe('npm test exit=0 args=tests/unit');
+  });
+
+  it('combines TypeScript runner flags with scoped default test args', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    let seenArgs: string[] = [];
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests(args = []) {
+          seenArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S005',
+      language: 'typescript',
+      defaultTestArgs: ['tests/unit/parser.test.ts'],
+    };
+    const r = await runTestsTool.run({ args: ['--reporter=verbose'] }, fakeCtx);
+    expect(r.ok).toBe(true);
+    expect(seenArgs).toEqual(['tests/unit/parser.test.ts', '--reporter=verbose']);
+    expect(r.summary).toBe('npm test exit=0 args=tests/unit/parser.test.ts --reporter=verbose');
   });
 
   it('resolves run_tests cwd inside the project and rejects external cwd', async () => {

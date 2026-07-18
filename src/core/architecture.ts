@@ -30,21 +30,34 @@ const COMPLEXITY_SURFACES: Array<{ name: string; pattern: RegExp }> = [
   {
     name: 'api',
     // “调用第三方 API”属于 integration，不应额外计为“本项目暴露 API/服务端接口”。
+    // 中文里的“接口”也常指普通函数/API 文档；只有 HTTP/API/REST/路由/服务端等语义才计为 api surface。
     pattern:
-      /\b(openapi|endpoint|http\s+server|api\s+(?:server|endpoint|gateway|route)|server|router|rest|graphql)\b|(?:提供|暴露|实现|构建|创建|开发)[^。！？；;\n]{0,32}(?:\bapi\b|接口)|接口|服务端|路由/u,
+      /\b(openapi|endpoint|http\s+server|api\s+(?:server|endpoint|gateway|route)|server|router|rest|graphql)\b|(?:提供|暴露|实现|构建|创建|开发)[^。！？；;\n]{0,32}(?:http\s*api|rest\s*api|graphql|api\s*(?:server|endpoint|gateway|route))|(?:http|rest|graphql|api|服务端|对外|开放)[^。！？；;\n]{0,12}(?:接口|端点|路由)|服务端|路由/u,
   },
   { name: 'cli', pattern: /\b(cli|command|subcommand|terminal|console)\b|命令行|终端|子命令/u },
   { name: 'persistence', pattern: /\b(sqlite|postgres|mysql|database|persist|storage|repository)\b|数据库|持久化|存储|仓储/u },
-  { name: 'auth', pattern: /\b(auth|login|oauth|permission|role|session|token)\b|认证|登录|权限|角色|会话|令牌/u },
+  {
+    name: 'auth',
+    // API key/token 是外部服务凭证，不代表本项目要实现登录/权限/会话模块。
+    pattern: /\b(auth(?:entication|orization)?|login|oauth|permission|role|session|rbac|access\s+control)\b|(?:用户)?(?:认证|鉴权|登录|权限|角色|会话)|访问控制/u,
+  },
   { name: 'io', pattern: /\b(import|export|csv|excel|pdf|report|upload|download)\b|导入|导出|报表|上传|下载/u },
-  { name: 'integration', pattern: /\b(webhook|github|slack|third[- ]party|external|integration|sdk)\b|第三方|外部集成|外部系统|钩子/u },
+  {
+    name: 'integration',
+    pattern:
+      /\b(webhook|github|slack|third[- ]party|external|integration|sdk|rss|feed|scrap(?:e|ing)|crawl(?:er|ing)?|public\s+(?:web|site|source|data))\b|第三方|外部集成|外部系统|钩子|RSS|网页抓取|爬取|抓取(?:网上|网页|网站|公开|公共)|数据源/u,
+  },
   { name: 'streaming', pattern: /\b(stream|streaming|sse|websocket|realtime)\b|流式|实时|长连接/u },
   { name: 'ui', pattern: /\b(ui|frontend|page|screen|react|view|dashboard)\b|前端|页面|界面|仪表盘/u },
   { name: 'workflow', pattern: /\b(workflow|pipeline|orchestration|scheduler|queue|worker)\b|工作流|流程编排|调度|队列|任务执行/u },
   { name: 'catalog', pattern: /\b(catalog|product|inventory|sku)\b|商品|产品目录|库存/u },
   { name: 'ordering', pattern: /\b(order|checkout|cart|fulfillment)\b|订单|购物车|履约/u },
   { name: 'billing', pattern: /\b(payment|billing|invoice|refund)\b|支付|计费|发票|退款/u },
-  { name: 'notification', pattern: /\b(notification|email|sms|push)\b|通知|邮件|短信|推送/u },
+  {
+    name: 'notification',
+    pattern:
+      /\b(notification|email\s+(?:notification|delivery|sender|service)|sms|push(?:\s+notification)?)\b|消息通知|(?:发送|推送|投递)[^。！？；;\n]{0,12}(?:邮件|邮箱|短信|通知|推送)|(?:邮件|短信|邮箱)[^。！？；;\n]{0,12}(?:通知|推送|订阅|告警)/u,
+  },
 ];
 
 const EXPLICIT_COMPLEXITY = /\b(complex|platform|enterprise|end[- ]to[- ]end|multi[- ]module)\b|复杂(?:任务|系统|工程)?|完整系统|平台|端到端|多模块/u;
@@ -192,11 +205,17 @@ function extractMarkdownSection(text: string, titlePattern: RegExp): string {
 
 function extractClarificationAnswers(text: string): string {
   const answers: string[] = [];
-  const answerLine =
-    /^\s*(?:[-*]\s*)?(?:\*\*)?A\d*\s*(?:\*\*)?\s*(?:[·:：-]\s*)?(.+?)\s*$/gimu;
-  for (const match of text.matchAll(answerLine)) {
-    const answer = stripMarkdownNoise(match[1] ?? '');
-    if (answer) answers.push(answer);
+  const selectedAnswerLines = [
+    // Frozen topic files render the user's selected/custom answer as "- **A** ...".
+    /^\s*(?:[-*]\s*)?\*\*A\d*\*\*\s*(?:[·:：-]\s*)?(.+?)\s*$/gimu,
+    // Compatibility for older topic files that used "- A: ..." / "- A - ...".
+    /^\s*(?:[-*]\s*)?A\d*\s*[·:：-]\s*(.+?)\s*$/gimu,
+  ];
+  for (const answerLine of selectedAnswerLines) {
+    for (const match of text.matchAll(answerLine)) {
+      const answer = stripMarkdownNoise(match[1] ?? '');
+      if (answer) answers.push(answer);
+    }
   }
   return answers.join('\n');
 }
@@ -208,6 +227,7 @@ function stripMarkdownNoise(text: string): string {
     .filter(Boolean)
     .join('\n');
 }
+
 
 /**
  * 复杂度关键词只在肯定语义下生效。需求边界经常写成“无数据库/不使用第三方集成”；
@@ -224,7 +244,7 @@ function isNegatedMention(text: string, mentionIndex: number): boolean {
   const scope = prefix.split(/(?:[.!?;。！？；\n]|\b(?:but|however|whereas)\b|但(?:是)?|不过)/u).at(-1) ?? '';
   const negations = [
     /\b(?:no|without|excluding?|avoid(?:ing)?|forbid(?:den)?|disable[ds]?|do(?:es)?\s+not\s+(?:use|require|include)|don't\s+(?:use|require|include)|not\s+(?:using|required|included|supported|allowed))\b/giu,
-    /(?:不使用|不需要|无需|不要|不得|禁止|禁用|排除|不含|不支持|没有|无)(?:任何)?/gu,
+    /(?:不使用|不需要|无需|不要|不得|禁止|禁用|排除|不包含|不含|不支持|没有|无)(?:任何)?/gu,
   ];
   let lastNegationEnd = -1;
   for (const negation of negations) {

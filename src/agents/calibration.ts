@@ -16,6 +16,8 @@ import {
   testPlanDocForIteration,
 } from '../core/docs.js';
 import { pathCoveredByOutputs } from '../core/architecture.js';
+import { getLanguageProfile } from '../core/language.js';
+import { isTestAssertionDiagnosticLine } from '../core/network_api_gate.js';
 
 /**
  * 统一的 LLM 输出校准层（"calibration"）。
@@ -32,6 +34,8 @@ import { pathCoveredByOutputs } from '../core/architecture.js';
  *  - calibrateStepShape:          补齐 schema 必填项（role/acceptance/systemPrompt/title/description）
  *  - calibrateArchitectureStepMappings:
  *                                   将 architectureModules 映射到 CODE / MODULE_TEST 宏 Step 的 subTasks
+ *  - calibrateLanguageStepOwnership:
+ *                                   归位语言级 manifest / test outputs，避免 CODE 与测试阶段抢产物
  */
 
 // =============================================================================
@@ -214,6 +218,96 @@ export function calibrateVModelDependencies(steps: Step[]): Step[] {
   }
 
   return out;
+}
+
+// =============================================================================
+// 3. 语言级产物归属校准
+// =============================================================================
+
+/**
+ * 修正常见的 LLM StepPlan 产物归属漂移：
+ *  - TypeScript greenfield 的 package.json / tsconfig.json 必须由 HIGH_LEVEL_DESIGN 拥有；
+ *  - CODE 只拥有产品源码与 unit-test-plan，不拥有 tests/** 测试文件；
+ *  - 若 CODE 混入测试文件，将其移动到同 iteration 的合适测试阶段。
+ *
+ * 这是 lint 前的机械校准，不改变需求语义，也不为具体样例硬编码文件名。
+ */
+export function calibrateLanguageStepOwnership(
+  steps: Step[],
+  args: {
+    language: Language;
+    intent?: string;
+    architectureModules?: ArchitectureModule[];
+  },
+): Step[] {
+  const profile = getLanguageProfile(args.language);
+  const out = steps.map((step) => ({
+    ...step,
+    outputs: dedup([...(step.outputs ?? [])]),
+  }));
+
+  if (args.language === 'typescript') {
+    const projectConfigOutputs = [profile.manifestFile, 'tsconfig.json'];
+    const hld = out.find((step) => step.phase === 'HIGH_LEVEL_DESIGN');
+    for (const step of out) {
+      if (step.phase === 'HIGH_LEVEL_DESIGN') continue;
+      step.outputs = step.outputs.filter((output) =>
+        !projectConfigOutputs.some((configOutput) => isSameOrNestedPath(output, configOutput)),
+      );
+    }
+    if (args.intent === 'greenfield' && hld) {
+      const missingConfigOutputs = projectConfigOutputs.filter((configOutput) =>
+        !hld.outputs.some((output) => isSameOrNestedPath(output, configOutput)),
+      );
+      hld.outputs = dedup([...hld.outputs, ...missingConfigOutputs]);
+    }
+  }
+
+  const movedTests: Array<{ from: Step; output: string }> = [];
+  for (const step of out) {
+    if (step.phase !== 'CODE') continue;
+    const kept: string[] = [];
+    for (const output of step.outputs) {
+      if (isTestSourceOutput(output, profile.codeExtensions)) {
+        movedTests.push({ from: step, output });
+      } else {
+        kept.push(output);
+      }
+    }
+    step.outputs = dedup(kept);
+  }
+
+  for (const item of movedTests) {
+    const targetPhase = preferredTestOwnerPhase(item.output, args.architectureModules ?? []);
+    const target = findIterationStep(out, item.from.iterationId ?? 'P1', targetPhase) ??
+      findIterationStep(out, item.from.iterationId ?? 'P1', 'UNIT_TEST');
+    if (!target) continue;
+    target.outputs = dedup([...target.outputs, item.output]);
+  }
+
+  return out;
+}
+
+function isSameOrNestedPath(output: string, targetPath: string): boolean {
+  return output === targetPath || output.endsWith(`/${targetPath}`);
+}
+
+function isTestSourceOutput(output: string, codeExtensions: readonly string[]): boolean {
+  return output.startsWith('tests/') && codeExtensions.some((extension) => output.endsWith(extension));
+}
+
+function preferredTestOwnerPhase(output: string, modules: ArchitectureModule[]): Step['phase'] {
+  if (/(^|\/)functional[-_/]|functional[-_]?test/i.test(output)) return 'FUNCTIONAL_TEST';
+  if (/(^|\/)integration[-_/]|integration[-_]?test/i.test(output)) return 'INTEGRATION_TEST';
+  if (/(^|\/)modules?[-_/]|module[-_]?test/i.test(output)) return 'MODULE_TEST';
+  if (modules.some((module) => module.testPaths.some((testPath) => pathCoveredByOutputs(testPath, [output])))) {
+    return 'MODULE_TEST';
+  }
+  return 'UNIT_TEST';
+}
+
+function findIterationStep(steps: Step[], iterationId: string, phase: Step['phase']): Step | undefined {
+  return steps.find((step) => (step.iterationId ?? 'P1') === iterationId && step.phase === phase);
 }
 
 function testPlanOwnerPhase(path: string, iterationId: string): Step['phase'] | undefined {
@@ -401,8 +495,18 @@ export function ensureEssentialToolRefs(step: Pick<Step, 'phase' | 'tools' | 'ou
     ? dedup([...tools, ...phaseDefaults])
     : tools;
   const hasWriteCapability = baseTools.some((tool) => WRITE_CAPABLE_TOOL_REFS.has(tool));
-  if (!needsWritableOutputs || hasWriteCapability) return dedup(baseTools);
-  return dedup([...baseTools, ...(phaseDefaults.length > 0 ? phaseDefaults : ['write_file'])]);
+  const withChunkedWritePair = ensureChunkedWritePair(baseTools);
+  if (!needsWritableOutputs || hasWriteCapability) return withChunkedWritePair;
+  return ensureChunkedWritePair([...baseTools, ...(phaseDefaults.length > 0 ? phaseDefaults : ['write_file'])]);
+}
+
+function ensureChunkedWritePair(tools: string[]): string[] {
+  const out = [...tools];
+  const hasWriteFile = out.includes('write_file');
+  const hasAppendFile = out.includes('append_file');
+  if (hasWriteFile && !hasAppendFile) out.push('append_file');
+  if (hasAppendFile && !hasWriteFile) out.push('write_file');
+  return dedup(out);
 }
 
 /**
@@ -926,6 +1030,8 @@ interface SuggestionRule {
   patterns: RegExp[];
   /** 可选排除条件；用于避免基础设施 LLM provider 错误被业务网络 API 规则误吸收。 */
   skip?: (text: string) => boolean;
+  /** 可选单次命中排除条件；用于忽略测试断言里的 mock HTTP 文本等局部误报。 */
+  ignoreMatch?: (m: RegExpExecArray, text: string) => boolean;
   /** 由匹配组生成 hint；m 为第一条命中正则的 RegExpExecArray。 */
   build: (m: RegExpExecArray) => string;
 }
@@ -1085,6 +1191,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
     code: 'network-api-failure',
     severity: 1,
     skip: isLlmProviderFailureText,
+    ignoreMatch: (m, text) => isTestAssertionDiagnosticLine(lineAtIndex(text, m.index)),
     patterns: [
       /Network API failure detected/i,
       /https?:\/\/[^\s'")]+[^\n]{0,160}\b(?:failed|error|timeout|unreachable|unavailable|401|403|404|429|5\d\d)\b/i,
@@ -1286,7 +1393,7 @@ function collectDebugSuggestions(text: string): DebugSuggestion[] {
     if (rule.skip?.(text)) continue;
     for (const re of rule.patterns) {
       const m = re.exec(text);
-      if (m) {
+      if (m && !rule.ignoreMatch?.(m, text)) {
         seen.add(rule.code);
         out.push({
           code: rule.code,
@@ -1304,6 +1411,12 @@ function collectDebugSuggestions(text: string): DebugSuggestion[] {
 
 function isLlmProviderFailureText(text: string): boolean {
   return /(?:OpenAI|Ollama|OpenRouter|LLM|provider|response_format|json_object|json_schema)[^\n]{0,260}(?:HTTP\s+(?:401|403|408|409|429|5\d\d)|rate[- ]?limit|rate limited|rate-limited|retry-after|retry_after_seconds|fetch failed|stream (?:wall-clock|idle)|context (?:length|window)|token limit|prompt too long|prefill_memory_exceeded|not support|unsupported|invalid_request_body|supported formats)/i.test(text);
+}
+
+function lineAtIndex(text: string, index: number): string {
+  const start = text.lastIndexOf('\n', index - 1) + 1;
+  const end = text.indexOf('\n', index);
+  return text.slice(start, end < 0 ? undefined : end);
 }
 
 function latestFailureSlice(text: string): string {

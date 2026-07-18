@@ -39,7 +39,7 @@ const ProviderSchema = z.object({
   request_timeout_ms: z.number().int().nonnegative().optional(),
   /** 流式空闲超时（毫秒）。默认 5 分钟。0 = 不限制。 */
   stream_idle_timeout_ms: z.number().int().nonnegative().optional(),
-  /** 流式输出字符上限。默认 200000。0 = 不限制。 */
+  /** 流式异常保护阈值。真实有效输出不会因长度本身被截断；0 = 关闭该阈值。 */
   max_output_chars: z.number().int().nonnegative().optional(),
   /**
    * OpenAI-compatible structured JSON response format.

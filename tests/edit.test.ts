@@ -99,6 +99,13 @@ describe('analyze_error', () => {
 });
 
 describe('add_dependency', () => {
+  it('returns a tool-contract error for missing package args instead of throwing', async () => {
+    const r = await addDependencyTool.run({} as never, ctx);
+
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/invalid add_dependency args/);
+  });
+
   it('appends new packages and dedupes', async () => {
     await ws.writeFile('requirements.txt', 'pytest\nrequests\n');
     let buildCalls = 0;

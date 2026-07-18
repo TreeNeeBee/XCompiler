@@ -110,6 +110,28 @@ describe('LLMRouter fallback chain', () => {
     expect(selectedProvider).toBe('openai');
   });
 
+  it('reports all provider failures when the whole chain fails', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        throw new Error('validation rejected read-only response');
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => {
+        throw new Error('OpenAI HTTP 429: free-models-per-day');
+      },
+    });
+
+    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow(/all LLM providers failed.*ollama_code\/fake-primary.*openai\/fake-secondary.*429/su);
+  });
+
   it('falls back when validate rejects a superficially successful response', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
     const scores = new ScoreStore('/tmp/x/config.yaml');
@@ -225,6 +247,50 @@ describe('LLMRouter fallback chain', () => {
     expect(out).toBe('ok');
     expect(sawStreaming).toEqual([true, false]);
     expect(chunks).toEqual([]);
+  });
+
+  it('does not retry without streaming when the stream idles before the first token', async () => {
+    const cfg = mkCfg({});
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    const sawStreaming: boolean[] = [];
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async (_messages, options) => {
+        sawStreaming.push(!!options?.onToken);
+        throw new Error('OpenAI stream idle before first token for 90000ms; aborting');
+      },
+    });
+
+    await expect(
+      router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+        onToken: () => {},
+      }),
+    ).rejects.toThrow(/before first token/u);
+    expect(sawStreaming).toEqual([true]);
+  });
+
+  it('waits and retries short provider 429 retry-after errors once', async () => {
+    const cfg = mkCfg({});
+    const router = new LLMRouter(cfg);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let calls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        calls++;
+        if (calls === 1) {
+          throw new Error('OpenAI HTTP 429: Rate limit reached. Please try again in 0.01s.');
+        }
+        return 'ok';
+      },
+    });
+
+    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }]))
+      .resolves.toBe('ok');
+    expect(calls).toBe(2);
   });
 
   it('treats fetch failed from a streaming request as a non-stream retry candidate', async () => {
