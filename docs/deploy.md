@@ -64,7 +64,7 @@ xcompiler --version
 ```
 
 > **不想 `npm link`？** 直接用 `npx`：`npx -p . xcompiler --help`，
-> 或在开发期 `npm run dev -- c -i workspace/intake.md`（tsx 直跑 TS）。
+> 或在开发期 `npm run dev -- build -i workspace/intake.md`（tsx 直跑 TS）。
 
 ### 1.4 烟测
 
@@ -183,7 +183,7 @@ cd xcompiler-linux-x64
 cp config.example.yaml ~/.xc/config.yaml      # 按需编辑
 ./xcompiler --help
 ./xcompiler build -i intake.md -o ~/myproj --yes
-./xcompiler run ~/myproj/plan.json
+./xcompiler run ~/myproj/phasePlan.json
 ```
 
 **Windows**（PowerShell）：
@@ -196,7 +196,7 @@ cd xcompiler-win-x64
 copy config.example.yaml $env:USERPROFILE\.xc\config.yaml
 .\xcompiler.exe --help
 .\xcompiler.exe build -i intake.md -o C:\myproj --yes
-.\xcompiler.exe run C:\myproj\plan.json
+.\xcompiler.exe run C:\myproj\phasePlan.json
 ```
 
 ### 1.7.4 实现细节（如何打的包）
@@ -259,16 +259,16 @@ mkdir -p workspace
 # 看帮助
 docker compose run --rm xcompiler --help
 
-# 编译需求 -> plan.json（写到指定输出目录）
+# 编译需求 -> phasePlan.json + 当前阶段 plan.P<N>.json（写到指定输出目录）
 docker compose run --rm xcompiler build \
   -i /workspace/intake.md \
   -c /home/xcompiler/app/config.yaml \
   -o /workspace/hello-demo \
   --yes
 
-# 执行 plan
+# 执行当前阶段计划
 docker compose run --rm xcompiler run \
-  /workspace/<project>/plan.json \
+  /workspace/<project>/phasePlan.json \
   -c /home/xcompiler/app/config.yaml
 ```
 
@@ -350,7 +350,7 @@ docker rmi xcompiler:latest
 | `EACCES: /var/run/docker.sock` | `xcompiler` 用户不在宿主 docker 组 | `DOCKER_GID=$(stat -c '%g' /var/run/docker.sock) docker compose ...` |
 | 长时 LLM 调用后 `audit.jsonl` 没事件 | （已修）旧版异步 appendFile 排队丢失 | 升级到当前版本：审计已改为 `appendFileSync` |
 | `Plan schema 校验失败` | LLM 返回 plan 字段类型异常 | 查看 `<workspace>/docs/.draft/plan.invalid.json` 定位字段，必要时调高 `agent.max_rounds_per_step` 或换更强模型作为 Planner |
-| TEST 步骤一直被 DEBUG 重试到 max | 实现层 bug，DEBUG 也修不动 | 看 `<workspace>/.xcompiler/audit.jsonl` 里 `pytest stderr (tail)`；必要时手动改 SUT 后 `xcompiler run --from S<id>` 续跑 |
+| 测试阶段一直被 DEBUG 重试到 max | 实现层 bug，DEBUG 也修不动 | 看 `<workspace>/.xcompiler/audit.jsonl` 里 `pytest stderr (tail)`；必要时手动改 SUT 后 `xcompiler run --from S<id>` 续跑 |
 
 ---
 
@@ -362,7 +362,8 @@ docker rmi xcompiler:latest
 <workspace>/
 ├── intake.md                # 需求输入（用户提供）
 ├── config.yaml              # 本次运行的配置
-├── plan.json                # xcompiler build 产出
+├── phasePlan.json           # 阶段总览与当前阶段指针
+├── plan.P1.json             # 当前阶段的 V 模型执行计划
 ├── requirements.txt         # 由 pythonRequirements 在 xcompiler run 启动时种入
 ├── docs/
 │   ├── requirements.md
@@ -374,7 +375,7 @@ docker rmi xcompiler:latest
 │   ├── history/             # 同名旧文档归档
 │   └── .draft/              # 失败 plan 等中间产物
 ├── src/                     # CODE 阶段产出
-├── tests/                   # TEST 阶段产出
+├── tests/                   # UNIT / INTEGRATION / MODULE / FUNCTIONAL 测试产出
 ├── .sandbox/venv/           # subprocess 沙盒虚拟环境
 └── .xcompiler/audit.jsonl        # 审计事件流（同步落盘）
 ```

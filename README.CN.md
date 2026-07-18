@@ -64,8 +64,8 @@ V 模型行为：
 各层职责：
 
 - **Adapters**：参数/协议解析、配置加载、用户交互、输出渲染、Exit Code。
-- **Runtime**：Build、Run、Workflow、Agent、Tool、Plugin、Memory、Permission 的唯一业务 API。
-- **Workflow engine**：Phase 迭代、V 模型调度、回退/Debug 路由、迭代门禁、断点恢复。
+- **Runtime**：Runtime API、Build Service、Run Service、Event Stream、Permission Broker，是唯一业务入口。
+- **Workflow and planning**：Phase 迭代、V 模型调度、回退/Debug 路由、迭代门禁、断点恢复。
 - **Agents / Skills**：每个阶段的角色化 prompt 与工具白名单。
 - **Tools**：文件编辑、程序/测试执行、API fetch、依赖修改、git 快照，全部受门禁约束。
 - **LLM Router**：角色链、动态评分、cluster fallback、OpenAI-compatible/Ollama 客户端、审计。
@@ -197,7 +197,6 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | [docs/versioning.md](docs/versioning.md) | 版本源、release 脚本、tag 策略 |
 | [docs/self_bootstrap.md](docs/self_bootstrap.md) | 自举开发与 qualification gates |
 | [docs/deploy.md](docs/deploy.md) | 本地、Docker、native package 部署 |
-| [docs/dev_audit_log.md](docs/dev_audit_log.md) | 历史开发交付日志 |
 
 ---
 

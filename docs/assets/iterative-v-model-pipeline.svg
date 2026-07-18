@@ -1,138 +1,169 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="820" viewBox="0 0 1280 820" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="900" viewBox="0 0 1360 900" role="img" aria-labelledby="title desc">
   <title id="title">XCompiler iterative V-model pipeline</title>
-  <desc id="desc">A phase iteration plan expands one active phase into a V-model workflow, then uses test gates and issue routing to continue, debug, or advance to the next phase.</desc>
+  <desc id="desc">A phase iteration plan expands one active phase into a V-model workflow. Failed verification stages feed back to paired upstream stages, while issue recording and debug patching are shown as generic recovery steps.</desc>
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
-    </marker>
+    <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="panel-fill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f8fafc"/>
+    </linearGradient>
+    <linearGradient id="v-spine" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#a5f3fc" stop-opacity="0.55"/>
+      <stop offset="50%" stop-color="#ddd6fe" stop-opacity="0.62"/>
+      <stop offset="100%" stop-color="#bbf7d0" stop-opacity="0.55"/>
+    </linearGradient>
     <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#2563eb"/>
     </marker>
+    <marker id="arrow-dark" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#dc2626"/>
+    </marker>
     <style>
-      .bg { fill: #f8fafc; }
+      .bg { fill: #f6f8fb; }
       .title { font: 700 34px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
       .subtitle { font: 500 16px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
-      .section-title { font: 700 16px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; letter-spacing: 0; }
+      .section { font: 800 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; letter-spacing: 0; }
       .label { font: 700 15px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
       .small { font: 500 12px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
       .tiny { font: 600 11px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
-      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 18; }
+      .tag-text { font: 700 11px Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #b91c1c; }
+      .panel { fill: url(#panel-fill); stroke: #cbd5e1; stroke-width: 1.4; rx: 18; filter: url(#soft-shadow); }
       .phase { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.5; rx: 12; }
       .future { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.5; rx: 12; }
-      .left { fill: #ecfeff; stroke: #0891b2; stroke-width: 1.5; rx: 12; }
-      .code { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 1.5; rx: 12; }
-      .right { fill: #f0fdf4; stroke: #16a34a; stroke-width: 1.5; rx: 12; }
+      .design { fill: #ecfeff; stroke: #0891b2; stroke-width: 1.5; rx: 12; }
+      .coding { fill: #f5f3ff; stroke: #7c3aed; stroke-width: 1.5; rx: 12; }
+      .test { fill: #f0fdf4; stroke: #16a34a; stroke-width: 1.5; rx: 12; }
       .gate { fill: #fffbeb; stroke: #d97706; stroke-width: 1.5; rx: 12; }
       .issue { fill: #fef2f2; stroke: #dc2626; stroke-width: 1.5; rx: 12; }
       .debug { fill: #fff7ed; stroke: #ea580c; stroke-width: 1.5; rx: 12; }
-      .line { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
-      .flow { fill: none; stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); }
-      .dash { fill: none; stroke: #94a3b8; stroke-width: 1.8; stroke-dasharray: 7 7; }
-      .fail { fill: none; stroke: #dc2626; stroke-width: 2.2; marker-end: url(#arrow); }
+      .tag { fill: #fff; stroke: #fecaca; stroke-width: 1; rx: 8; }
+      .flow { fill: none; stroke: #2563eb; stroke-width: 2.5; marker-end: url(#arrow-blue); }
+      .line { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow-dark); }
+      .fail { fill: none; stroke: #dc2626; stroke-width: 2.3; marker-end: url(#arrow-red); }
+      .fail-soft { fill: none; stroke: #dc2626; stroke-width: 2.1; stroke-dasharray: 7 8; marker-end: url(#arrow-red); }
+      .expectation { fill: none; stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 7 8; opacity: 0.65; }
+      .spine { fill: none; stroke: url(#v-spine); stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
     </style>
   </defs>
 
-  <rect class="bg" width="1280" height="820"/>
-  <text class="title" x="640" y="48" text-anchor="middle">Iterative V-Model Pipeline</text>
-  <text class="subtitle" x="640" y="76" text-anchor="middle">Phase planning stays high level; only the active phase expands into a full V-model implementation cycle.</text>
+  <rect class="bg" width="1360" height="900"/>
+  <text class="title" x="680" y="48" text-anchor="middle">Iterative V-Model Pipeline</text>
+  <text class="subtitle" x="680" y="76" text-anchor="middle">Phase planning stays lightweight; each active phase runs a complete V-model cycle with paired recovery.</text>
 
-  <rect class="panel" x="42" y="105" width="1196" height="126"/>
-  <text class="section-title" x="72" y="137">Phase iteration planning</text>
-  <rect class="future" x="70" y="158" width="168" height="48"/>
-  <text class="label" x="154" y="178" text-anchor="middle">Requirement</text>
-  <text class="small" x="154" y="196" text-anchor="middle">natural language</text>
+  <rect class="panel" x="48" y="106" width="1264" height="126"/>
+  <text class="section" x="78" y="138">Phase iteration planning</text>
 
-  <rect class="future" x="285" y="158" width="168" height="48"/>
-  <text class="label" x="369" y="178" text-anchor="middle">Clarify</text>
-  <text class="small" x="369" y="196" text-anchor="middle">2-5 choices / QA</text>
+  <rect class="future" x="86" y="158" width="166" height="50"/>
+  <text class="label" x="169" y="178" text-anchor="middle">Requirement</text>
+  <text class="small" x="169" y="197" text-anchor="middle">natural language</text>
 
-  <rect class="phase" x="500" y="150" width="184" height="64"/>
-  <text class="label" x="592" y="175" text-anchor="middle">phasePlan.json</text>
-  <text class="small" x="592" y="194" text-anchor="middle">P1 current, P2..Pn goals</text>
+  <rect class="future" x="302" y="158" width="166" height="50"/>
+  <text class="label" x="385" y="178" text-anchor="middle">Clarify</text>
+  <text class="small" x="385" y="197" text-anchor="middle">ranked QA choices</text>
 
-  <rect class="phase" x="732" y="150" width="170" height="64"/>
-  <text class="label" x="817" y="175" text-anchor="middle">plan.P1.json</text>
-  <text class="small" x="817" y="194" text-anchor="middle">active phase detail</text>
+  <rect class="phase" x="518" y="150" width="198" height="66"/>
+  <text class="label" x="617" y="176" text-anchor="middle">phasePlan.json</text>
+  <text class="small" x="617" y="195" text-anchor="middle">P1 active + P2..Pn goals</text>
 
-  <rect class="future" x="948" y="150" width="220" height="64"/>
-  <text class="label" x="1058" y="175" text-anchor="middle">Future phases</text>
-  <text class="small" x="1058" y="194" text-anchor="middle">expanded after each gate</text>
+  <rect class="phase" x="782" y="150" width="182" height="66"/>
+  <text class="label" x="873" y="176" text-anchor="middle">plan.P&lt;N&gt;.json</text>
+  <text class="small" x="873" y="195" text-anchor="middle">active phase detail</text>
 
-  <path class="line" d="M238 182 L285 182"/>
-  <path class="line" d="M453 182 L500 182"/>
-  <path class="line" d="M684 182 L732 182"/>
-  <path class="line" d="M902 182 L948 182"/>
+  <rect class="future" x="1042" y="150" width="190" height="66"/>
+  <text class="label" x="1137" y="176" text-anchor="middle">Planned phases</text>
+  <text class="small" x="1137" y="195" text-anchor="middle">expanded later</text>
 
-  <rect class="panel" x="42" y="260" width="1196" height="510"/>
-  <text class="section-title" x="72" y="294">Active phase V-model cycle</text>
-  <text class="tiny" x="926" y="294">Dashed links are test expectations generated by earlier design stages.</text>
+  <path class="line" d="M252 183 L302 183"/>
+  <path class="line" d="M468 183 L518 183"/>
+  <path class="line" d="M716 183 L782 183"/>
+  <path class="line" d="M964 183 L1042 183"/>
+  <path class="line" d="M873 216 C873 236 873 246 873 268"/>
 
-  <rect class="left" x="78" y="340" width="190" height="68"/>
-  <text class="label" x="173" y="365" text-anchor="middle">1. Requirement</text>
-  <text class="small" x="173" y="385" text-anchor="middle">analysis</text>
+  <rect class="panel" x="48" y="268" width="1264" height="588"/>
+  <text class="section" x="78" y="304">Active phase V-model</text>
 
-  <rect class="left" x="220" y="462" width="200" height="72"/>
-  <text class="label" x="320" y="487" text-anchor="middle">2. High-level</text>
-  <text class="small" x="320" y="507" text-anchor="middle">interfaces, APIs, deps</text>
+  <path class="spine" d="M222 360 C246 410 272 444 282 484 C302 538 325 578 337 608 C346 650 354 682 358 704 C438 742 642 742 722 704 C728 682 736 650 743 608 C755 556 780 520 798 484 C828 434 848 400 858 360"/>
 
-  <rect class="left" x="368" y="585" width="200" height="72"/>
-  <text class="label" x="468" y="610" text-anchor="middle">3. Detailed</text>
-  <text class="small" x="468" y="630" text-anchor="middle">module internals</text>
+  <path class="expectation" d="M352 344 L738 344"/>
+  <path class="expectation" d="M407 468 L673 468"/>
+  <path class="expectation" d="M447 592 L633 592"/>
 
-  <rect class="code" x="590" y="660" width="164" height="62"/>
-  <text class="label" x="672" y="686" text-anchor="middle">4. Coding</text>
-  <text class="small" x="672" y="706" text-anchor="middle">patch / rewrite</text>
+  <rect class="design" x="92" y="326" width="260" height="68"/>
+  <text class="label" x="222" y="351" text-anchor="middle">1. Requirement analysis</text>
+  <text class="small" x="222" y="371" text-anchor="middle">goals, constraints, acceptance</text>
 
-  <rect class="right" x="808" y="585" width="176" height="72"/>
-  <text class="label" x="896" y="610" text-anchor="middle">5. Unit test</text>
-  <text class="small" x="896" y="630" text-anchor="middle">implementation checks</text>
+  <rect class="design" x="157" y="450" width="250" height="68"/>
+  <text class="label" x="282" y="475" text-anchor="middle">2. High-level design</text>
+  <text class="small" x="282" y="495" text-anchor="middle">interfaces, APIs, dependencies</text>
 
-  <rect class="right" x="940" y="462" width="200" height="72"/>
-  <text class="label" x="1040" y="487" text-anchor="middle">6. Integration</text>
-  <text class="small" x="1040" y="507" text-anchor="middle">dependencies, APIs</text>
+  <rect class="design" x="227" y="574" width="220" height="68"/>
+  <text class="label" x="337" y="599" text-anchor="middle">3. Detailed design</text>
+  <text class="small" x="337" y="619" text-anchor="middle">module internals</text>
 
-  <rect class="right" x="990" y="340" width="190" height="68"/>
-  <text class="label" x="1085" y="365" text-anchor="middle">7. Module test</text>
-  <text class="small" x="1085" y="385" text-anchor="middle">module contract</text>
+  <rect class="coding" x="268" y="674" width="180" height="60"/>
+  <text class="label" x="358" y="697" text-anchor="middle">4. Coding</text>
+  <text class="small" x="358" y="716" text-anchor="middle">patch / rewrite</text>
 
-  <rect class="right" x="782" y="340" width="178" height="68"/>
-  <text class="label" x="871" y="365" text-anchor="middle">8. Functional</text>
-  <text class="small" x="871" y="385" text-anchor="middle">user acceptance</text>
+  <rect class="test" x="632" y="674" width="180" height="60"/>
+  <text class="label" x="722" y="697" text-anchor="middle">5. Unit test</text>
+  <text class="small" x="722" y="716" text-anchor="middle">implementation checks</text>
 
-  <path class="flow" d="M268 374 C302 404, 280 425, 220 462"/>
-  <path class="flow" d="M420 498 C455 535, 430 552, 368 585"/>
-  <path class="flow" d="M568 621 C606 642, 613 652, 590 660"/>
-  <path class="flow" d="M754 691 C790 669, 802 647, 808 621"/>
-  <path class="flow" d="M984 621 C1036 584, 1048 552, 1040 534"/>
-  <path class="flow" d="M1085 462 L1085 408"/>
-  <path class="flow" d="M990 374 L960 374"/>
+  <rect class="test" x="633" y="574" width="220" height="68"/>
+  <text class="label" x="743" y="599" text-anchor="middle">6. Integration test</text>
+  <text class="small" x="743" y="619" text-anchor="middle">APIs and dependencies</text>
 
-  <path class="dash" d="M268 374 C420 292, 650 292, 782 374"/>
-  <path class="dash" d="M420 498 C575 425, 790 425, 940 498"/>
-  <path class="dash" d="M568 621 C640 560, 730 560, 808 621"/>
+  <rect class="test" x="673" y="450" width="250" height="68"/>
+  <text class="label" x="798" y="475" text-anchor="middle">7. Module test</text>
+  <text class="small" x="798" y="495" text-anchor="middle">module-level behavior</text>
 
-  <rect class="gate" x="850" y="682" width="166" height="58"/>
-  <text class="label" x="933" y="705" text-anchor="middle">Iteration gate</text>
-  <text class="small" x="933" y="724" text-anchor="middle">all checks pass?</text>
+  <rect class="test" x="738" y="326" width="240" height="68"/>
+  <text class="label" x="858" y="351" text-anchor="middle">8. Functional test</text>
+  <text class="small" x="858" y="371" text-anchor="middle">user-visible result</text>
 
-  <rect class="future" x="1060" y="680" width="132" height="62"/>
-  <text class="label" x="1126" y="705" text-anchor="middle">Pass</text>
-  <text class="small" x="1126" y="724" text-anchor="middle">next phase / done</text>
+  <rect class="gate" x="1098" y="326" width="180" height="68"/>
+  <text class="label" x="1188" y="351" text-anchor="middle">Iteration gate</text>
+  <text class="small" x="1188" y="371" text-anchor="middle">pass to phase plan</text>
 
-  <rect class="issue" x="914" y="570" width="176" height="58"/>
-  <text class="label" x="1002" y="593" text-anchor="middle">Issue record</text>
-  <text class="small" x="1002" y="612" text-anchor="middle">stage, logs, artifacts</text>
+  <path class="flow" d="M250 394 C268 416 278 432 282 450"/>
+  <path class="flow" d="M326 518 C336 540 338 556 337 574"/>
+  <path class="flow" d="M378 642 C368 657 362 666 358 674"/>
+  <path class="flow" d="M448 704 L632 704"/>
+  <path class="flow" d="M722 674 C728 656 736 646 743 642"/>
+  <path class="flow" d="M790 574 C802 548 802 532 798 518"/>
+  <path class="flow" d="M840 450 C856 428 858 410 858 394"/>
+  <path class="line" d="M978 360 L1098 360"/>
+  <path class="line" d="M1188 326 L1188 268"/>
 
-  <rect class="debug" x="612" y="548" width="160" height="62"/>
-  <text class="label" x="692" y="572" text-anchor="middle">Debugger</text>
-  <text class="small" x="692" y="591" text-anchor="middle">patch / rewrite</text>
+  <path class="fail-soft" d="M738 380 L352 380"/>
+  <path class="fail-soft" d="M673 504 L407 504"/>
+  <path class="fail-soft" d="M633 628 L447 628"/>
+  <path class="fail-soft" d="M632 726 C580 760 500 760 448 726"/>
+  <rect class="tag" x="468" y="364" width="154" height="22"/>
+  <text class="tag-text" x="545" y="379" text-anchor="middle">Acceptance failed</text>
+  <rect class="tag" x="456" y="488" width="160" height="22"/>
+  <text class="tag-text" x="536" y="503" text-anchor="middle">Module test failed</text>
+  <rect class="tag" x="465" y="612" width="150" height="22"/>
+  <text class="tag-text" x="540" y="627" text-anchor="middle">Integration failed</text>
+  <rect class="tag" x="471" y="748" width="138" height="22"/>
+  <text class="tag-text" x="540" y="763" text-anchor="middle">TestCase failed</text>
 
-  <path class="line" d="M933 682 L933 657"/>
-  <path class="line" d="M1016 711 L1060 711"/>
-  <path class="fail" d="M930 682 C930 650, 950 635, 980 628"/>
-  <path class="fail" d="M914 599 L772 579"/>
-  <path class="fail" d="M692 610 C665 632, 660 646, 672 660"/>
-
-  <text class="tiny" x="1082" y="667" text-anchor="middle">advance</text>
-  <text class="tiny" x="836" y="566" text-anchor="middle">route to paired source stage</text>
+  <rect class="future" x="1098" y="472" width="180" height="284"/>
+  <text class="section" x="1188" y="498" text-anchor="middle">Generic error</text>
+  <text class="section" x="1188" y="517" text-anchor="middle">handling</text>
+  <rect class="issue" x="1113" y="540" width="150" height="36"/>
+  <text class="label" x="1188" y="563" text-anchor="middle">Record issue</text>
+  <rect class="issue" x="1113" y="596" width="150" height="36"/>
+  <text class="label" x="1188" y="619" text-anchor="middle">Classify stage</text>
+  <rect class="debug" x="1113" y="652" width="150" height="36"/>
+  <text class="label" x="1188" y="675" text-anchor="middle">Patch / rewrite</text>
+  <rect class="debug" x="1113" y="708" width="150" height="36"/>
+  <text class="label" x="1188" y="731" text-anchor="middle">Re-run checks</text>
+  <path class="fail" d="M1188 576 L1188 596"/>
+  <path class="fail" d="M1188 632 L1188 652"/>
+  <path class="fail" d="M1188 688 L1188 708"/>
 </svg>
