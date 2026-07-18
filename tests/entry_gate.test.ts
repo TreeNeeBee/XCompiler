@@ -150,6 +150,24 @@ describe('probeEntrypoint', () => {
     expect(probe.ok).toBe(true);
   });
 
+  it('falls back to src/cli.py when no standard Python main entry exists', async () => {
+    const { ws } = await tmpWs();
+    await ws.ensure('src');
+    await ws.writeFile(
+      'src/cli.py',
+      'import argparse\n\ndef main():\n    argparse.ArgumentParser(description="demo").parse_args()\n\nif __name__ == "__main__":\n    main()\n',
+    );
+    const calls: string[][] = [];
+    const sb = new FakeSandbox((argv) => {
+      calls.push(argv);
+      return { exitCode: 0, stdout: 'usage: cli.py [-h]\n', stderr: '', timedOut: false, durationMs: 1 };
+    });
+    const probe = await probeEntrypoint(ws, sb);
+    expect(probe.ok).toBe(true);
+    expect(probe.command).toBe('python src/cli.py --help');
+    expect(calls).toEqual([['src/cli.py', '--help'], ['src/cli.py']]);
+  });
+
   it('fails when no-arg smoke detects a network API failure even if --help works', async () => {
     const { ws } = await tmpWs();
     await ws.ensure('src');

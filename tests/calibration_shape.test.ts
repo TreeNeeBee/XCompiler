@@ -47,6 +47,20 @@ describe('calibrateStepShape', () => {
     expect(tools).toEqual(expect.arrayContaining(['write_file', 'skill:tester']));
   });
 
+  it('pairs explicit write_file and append_file so chunked authoring is available in old plans', () => {
+    expect(ensureEssentialToolRefs({
+      phase: 'CODE',
+      tools: ['write_file'],
+      outputs: ['src/app.ts'],
+    })).toEqual(['write_file', 'append_file']);
+
+    expect(ensureEssentialToolRefs({
+      phase: 'CODE',
+      tools: ['append_file'],
+      outputs: ['src/app.ts'],
+    })).toEqual(['append_file', 'write_file']);
+  });
+
   it('maps role aliases to whitelist (developer -> Coder, qa -> Tester)', () => {
     const raw = [
       { id: 'S001', phase: 'CODE', title: 'x', description: 'x', systemPrompt: 'this is a long enough prompt for code', role: 'developer', outputs: ['src/x.py'] },

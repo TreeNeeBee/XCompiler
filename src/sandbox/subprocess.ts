@@ -7,6 +7,8 @@ import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
+import { normalizeTypeScriptTestArgs } from './test_args.js';
+import { resolveTypeScriptProgramCommand } from './program_args.js';
 
 export type { SandboxLimits, ExecResult } from './types.js';
 
@@ -252,7 +254,8 @@ export class SubprocessSandbox implements Sandbox {
   /** 运行工程入口程序。Python → venv python；TypeScript → npx tsx。 */
   async runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult> {
     if (this.language === 'typescript') {
-      return this.exec('npx', ['tsx', ...args], extra);
+      const command = resolveTypeScriptProgramCommand(args);
+      return this.exec(command.cmd, command.argv, extra);
     }
     return this.exec(this.pythonInVenv, args, extra);
   }
@@ -260,7 +263,8 @@ export class SubprocessSandbox implements Sandbox {
   /** 运行测试。Python → pytest；TypeScript → npm test（Vitest）。 */
   async runTests(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
     if (this.language === 'typescript') {
-      const argv = args.length > 0 ? ['test', '--silent', '--', ...args] : ['test', '--silent'];
+      const normalizedArgs = normalizeTypeScriptTestArgs(args);
+      const argv = normalizedArgs.length > 0 ? ['test', '--silent', '--', ...normalizedArgs] : ['test', '--silent'];
       return this.exec('npm', argv, extra);
     }
     return this.exec(this.pythonInVenv, ['-m', 'pytest', ...args], extra);

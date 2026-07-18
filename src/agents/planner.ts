@@ -31,6 +31,7 @@ import {
   calibrateStepIds,
   calibrateStepShape,
   calibratePlanCoverage,
+  calibrateLanguageStepOwnership,
 } from './calibration.js';
 
 /** @deprecated kept for back-compat; use `calibratePythonRequirements`. */
@@ -389,13 +390,21 @@ export function buildPlan(
     draft.steps.find((step) => step.iterationId)?.iterationId ??
     'P1';
   const iterated = normalizeStepIterations(draft.steps, implementationPhases);
-  const shaped = calibrateVModelDependencies(
-    calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType),
+  const shaped = calibrateLanguageStepOwnership(
+    calibrateVModelDependencies(
+      calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType),
+    ),
+    {
+      language,
+      intent: opts.intent ?? 'greenfield',
+      architectureModules: draft.architectureModules ?? [],
+    },
   );
   const mapped = calibrateArchitectureStepMappings(shaped, draft.architectureModules ?? []);
   const contracted = injectArchitectureContractPrompts(mapped, draft.architectureModules ?? []);
+  const languageContracted = injectLanguageContractPrompts(contracted, language);
   // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
-  const steps = calibratePlanCoverage(contracted, language);
+  const steps = calibratePlanCoverage(languageContracted, language);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
     language === 'python'
@@ -418,6 +427,21 @@ export function buildPlan(
     createdAt: new Date().toISOString(),
     steps,
   };
+}
+
+function injectLanguageContractPrompts(steps: Step[], language: Language): Step[] {
+  if (language !== 'typescript') return steps;
+  const contractBlock =
+    '\n\nTypeScript runtime/test contract（强制，覆盖本 Step 其它相反描述）：\n' +
+    '- 测试框架必须使用 Vitest：测试文件从 `vitest` 导入 `describe/it/expect/vi`，禁止 Jest API、`jest.fn`、`jest.spyOn`、`jest.mock`。\n' +
+    '- `package.json` 必须使用 `"test": "vitest run"`，`"build": "tsc --noEmit"`，并包含 `type: "module"`。\n' +
+    '- greenfield 项目的 HIGH_LEVEL_DESIGN 必须输出 `package.json` 与 `tsconfig.json`；CODE 阶段只输出产品源码与单元测试计划，不再补写基础工程配置。\n' +
+    '- `devDependencies` 使用 `typescript`、`tsx`、`vitest`、`@types/node`；禁止新增或要求 `jest`、`ts-jest`、`@types/jest`、`ts-node`、`nodemon`。\n' +
+    '- 本地源码导入必须使用显式 `.ts` ESM specifier，代码需兼容 Node 原生 TypeScript type stripping。';
+  return steps.map((step) => {
+    if (step.systemPrompt.includes('TypeScript runtime/test contract')) return step;
+    return { ...step, systemPrompt: `${step.systemPrompt}${contractBlock}` };
+  });
 }
 
 function injectArchitectureContractPrompts(

@@ -167,6 +167,7 @@ Mandatory rules:
 2. Every current/planned implementation phase is a complete V-model iteration containing all eight canonical phases.
 3. Each macro Step may contain \`subTasks\` nested at most two levels.
 4. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration; module testPaths from architectureModules must be produced by MODULE_TEST.
+   CODE outputs must contain product source files under src/ plus docs/tests/unit-test-plan.md only; never list tests/**/*.test.ts or other tests/** files as CODE outputs.
 5. Design phases must not output src/ or tests/ files. HIGH_LEVEL_DESIGN is the only phase that may output \`package.json\` / \`tsconfig.json\`.
 6. Exactly one HIGH_LEVEL_DESIGN Step must output \`package.json\` for greenfield TypeScript plans; ensure one HIGH_LEVEL_DESIGN Step output \`package.json\`. It must include scripts for \`build\`, \`test\`, and preferably \`lint\`.
 7. Local TypeScript source imports must use explicit \`.ts\` ESM specifiers. Configure \`allowImportingTsExtensions: true\` and use \`tsc --noEmit\`. Generated TypeScript must be compatible with Node native type stripping: avoid enums, namespaces, parameter properties, and transform-required syntax.
@@ -175,6 +176,7 @@ Mandatory rules:
 10. complexityAssessment and implementationPhases follow the same rules as Python: simple => P1, moderate => at least P1+P2, complex => at least P1+P2+P3, forced phase split => set userForcedPhaseSplit=true.
 11. verificationGate failurePolicy must say: Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
 12. For non-trivial work, return architectureModules with sourcePaths and testPaths; CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
+13. TypeScript tests must use Vitest only. Never request Jest, ts-jest, @types/jest, ts-node, or nodemon in Step prompts or package.json; package.json must use "test": "vitest run" and "build": "tsc --noEmit".
 
 Output JSON shape is identical to Python and must include \`"projectType": "application | library | mixed"\`, with TypeScript paths such as \`src/example.ts\` and \`tests/example.test.ts\`; the first Step phase must be \`REQUIREMENT_ANALYSIS\`, not \`REQUIREMENT\`. There is no CLI project-type override.`;
 
@@ -257,6 +259,12 @@ Phase responsibilities:
 - DETAILED_DESIGN defines module-internal functions/classes, data structures, algorithms, control flow, error handling, and internal architecture, and synchronously emits the module test plan.
 - CODE implements only the current phase and synchronously emits the unit test plan.
 - UNIT_TEST / INTEGRATION_TEST / MODULE_TEST / FUNCTIONAL_TEST verify their paired left-side phases.
+
+Strict output ownership:
+- CODE outputs may include only product source files under src/ and the unit-test-plan document; do not put tests/** files in CODE outputs.
+- UNIT_TEST owns unit test files; INTEGRATION_TEST owns integration test files; MODULE_TEST owns architectureModules.testPaths; FUNCTIONAL_TEST owns end-to-end/functional test files and delivery docs.
+- For greenfield TypeScript, exactly one HIGH_LEVEL_DESIGN Step must output package.json with scripts, dependencies, and devDependencies. CODE must not output package.json.
+- For TypeScript package.json, use Vitest only: "test": "vitest run", "build": "tsc --noEmit", devDependencies include typescript/tsx/vitest/@types/node. Do not mention or request Jest, ts-jest, @types/jest, ts-node, or nodemon.
 
 Return only the current phase's dependencies, architectureModules, and steps. Complex or multi-concern work must declare architectureModules for the current phase and map module-level work under CODE/MODULE_TEST subTasks. Each Step's subTasks may nest at most two levels.
 
@@ -635,7 +643,7 @@ const messages: Messages = {
     testGateReason: (exitCode, timedOut) => `Test gate: tests exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
     deliveryGateReason: (command, exitCode, timedOut) => `FUNCTIONAL_TEST gate: \`${command}\` exit=${exitCode}${timedOut ? ' (timeout)' : ''}`,
     missingPythonEntrypoint:
-      'missing Python entrypoint: expected src/main.py or src/<package>/__main__.py',
+      'missing Python entrypoint: expected src/main.py, src/<package>/__main__.py, or an explicit CLI file such as src/cli.py',
     missingTypeScriptEntrypoint:
       'missing TypeScript entrypoint: expected package.json start/bin or one of src/main.ts, src/index.ts, src/main.tsx',
     invalidPythonEntrypointSource: (path) =>

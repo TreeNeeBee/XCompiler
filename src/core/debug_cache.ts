@@ -44,6 +44,7 @@ const EMPTY: CacheShape = { version: 1, steps: {} };
 export function sanitizeDebugFailureLogForPrompt(log: string): string {
   const lines = log.split(/\r?\n/u);
   const out: string[] = [];
+  const seenReasonLines = new Set<string>();
   let mode: 'keep' | 'skip-history' | 'skip-suggestions' = 'keep';
   for (const line of lines) {
     if (/^##\s+历史\s+DEBUG\s+尝试/u.test(line)) {
@@ -73,9 +74,22 @@ export function sanitizeDebugFailureLogForPrompt(log: string): string {
       }
     }
     if (/^\s*suggestions:\s/u.test(line)) continue;
+    if (/^(原因：|Reason:)/u.test(line)) {
+      const normalized = line.trim();
+      if (seenReasonLines.has(normalized)) continue;
+      seenReasonLines.add(normalized);
+    }
     out.push(line);
   }
   const cleaned = out.join('\n').trim();
+  return cleaned.length > 0 ? cleaned : log;
+}
+
+export function stripNestedLatestDebuggerFailures(log: string): string {
+  const marker = /^##\s+(?:latest Debugger attempt failure|paired source phase latest failure\b)/m;
+  const match = marker.exec(log);
+  if (!match) return log;
+  const cleaned = log.slice(0, match.index).trim();
   return cleaned.length > 0 ? cleaned : log;
 }
 
@@ -140,11 +154,14 @@ export class DebugCache {
       const lines = (s ?? '').split('\n');
       return lines.length <= this.maxLogLines ? s : lines.slice(-this.maxLogLines).join('\n');
     };
+    const cleanedFailureLog = stripNestedLatestDebuggerFailures(
+      sanitizeDebugFailureLogForPrompt(entry.failureLogTail ?? ''),
+    );
     const e: DebugAttemptEntry = {
       attempt: entry.attempt,
       ts: entry.ts ?? new Date().toISOString(),
       reason: (entry.reason ?? '').slice(0, 500),
-      failureLogTail: tail(sanitizeDebugFailureLogForPrompt(entry.failureLogTail ?? '')),
+      failureLogTail: tail(cleanedFailureLog),
       suggestions: entry.suggestions,
       snapshotSha: entry.snapshotSha,
       metrics: entry.metrics,
@@ -203,10 +220,12 @@ export class DebugCache {
    * 把历史 attempts 渲染成一段供 Debugger system prompt 使用的中文摘要，
    * 强调"上一次会话已经试过的修复方向，请勿重复"。
    */
-  renderPriorAttemptsForPrompt(stepId: string, maxItems = 6): string {
+  renderPriorAttemptsForPrompt(stepId: string, maxItems = 3): string {
     const list = this.attempts(stepId);
     if (list.length === 0) return '';
-    const tail = list.slice(-maxItems);
+    const actionable = list.filter((entry) => !isNoisyDebugReason(entry.reason));
+    const noisyCount = list.length - actionable.length;
+    const tail = actionable.slice(-maxItems);
     const lines = tail.map((e) => {
       const m = e.metrics
         ? ` [health=${e.metrics.healthScore.toFixed(2)} parseFail=${e.metrics.parseFailures} repeat=${e.metrics.repeatedTurns}]`
@@ -216,8 +235,17 @@ export class DebugCache {
         : '';
       return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${sugg}`;
     });
+    const omitted = [
+      noisyCount > 0 ? `- omitted ${noisyCount} noisy provider/read-only/recovery attempt(s); keep focus on the current actionable failure.` : '',
+      actionable.length > tail.length ? `- omitted ${actionable.length - tail.length} older actionable attempt(s).` : '',
+    ].filter(Boolean);
+    const noActionable = actionable.length === 0
+      ? ['- no actionable prior Debugger attempt remains; use the current test/tool failure log as the source of truth.']
+      : [];
     return [
       '## 历史 DEBUG 尝试（来自上一次/本次 xcompiler run，请勿重复同样的修复思路）',
+      ...omitted,
+      ...noActionable,
       ...lines,
       '请基于以上历史，提出**新的诊断假设**与**新的修改方向**；优先 read_file 看真实代码，再做最小修改。',
     ].join('\n');
@@ -227,4 +255,20 @@ export class DebugCache {
     await fs.mkdir(path.dirname(this.file), { recursive: true });
     await fs.writeFile(this.file, JSON.stringify(this.data, null, 2), 'utf8');
   }
+}
+
+function isNoisyDebugReason(reason: string): boolean {
+  const text = reason.toLowerCase();
+  return (
+    /repeated read-only\/probe actions without progress/u.test(text) ||
+    /read-only recovery mode repeated probe actions/u.test(text) ||
+    /low-quality debugger response/u.test(text) ||
+    /without repair evidence/u.test(text) ||
+    /had an unresolved failure from a previous run.*rolling back/u.test(text) ||
+    /tool verification failed.*rolling back/u.test(text) ||
+    /openai http (?:400|401|403|408|409|429|5\d\d)/u.test(text) ||
+    /rate limit exceeded|free-models-per-day|retry_after_seconds|retry-after/u.test(text) ||
+    /response_format|json_object|json_schema|invalid_request_body/u.test(text) ||
+    /stream (?:wall-clock|idle)|request timed out|fetch failed/u.test(text)
+  );
 }

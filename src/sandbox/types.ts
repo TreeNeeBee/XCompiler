@@ -57,7 +57,7 @@ export interface Sandbox {
   /**
    * 运行工程入口程序。
    *  - Python：`python <args>`（自动选用 venv 内解释器）。
-   *  - TypeScript：`npx tsx <args>`。
+   *  - TypeScript：默认 `npx tsx <entry>`；当 args 以 `npm`/`npx`/`node`/`tsx`/`tsc` 开头时执行对应项目命令。
    */
   runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult>;
 

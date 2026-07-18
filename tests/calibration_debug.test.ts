@@ -192,6 +192,15 @@ describe('calibrateDebugSuggestions', () => {
     expect(fix.hint).toMatch(/切换/);
   });
 
+  it('does not suggest API switching for mocked HTTP status text inside test assertions', () => {
+    const sugs = calibrateDebugSuggestions(
+      "AssertionError: expected [Function] to throw error matching /Failed to fetch/ but got 'Request failed with status code 404'\n" +
+        ' × tests/unit/parser.test.ts > parseHTML extracts title/summary/link correctly\n' +
+        '   → expected [] to have a length of 1 but got +0',
+    );
+    expect(sugs.find((s) => s.code === 'network-api-failure')).toBeUndefined();
+  });
+
   it('detects network API probe loops and stops endpoint enumeration', () => {
     const sugs = calibrateDebugSuggestions(
       `tool calls:\n` +

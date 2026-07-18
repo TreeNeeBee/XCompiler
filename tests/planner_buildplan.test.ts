@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildPlan } from '../src/agents/planner.js';
+import { lintPlan } from '../src/core/lint.js';
 import { PlanSchema } from '../src/core/plan.js';
 import { renderPlanMarkdown } from '../src/core/render.js';
 import type { Step } from '../src/core/plan.js';
@@ -85,6 +86,80 @@ describe('buildPlan — Step id 规整', () => {
     expect(synthetic?.phase).toBe('UNIT_TEST');
     expect(synthetic?.description).toContain('Vitest');
     expect(synthetic?.acceptance).toContain('npm test');
+  });
+
+  it('校准 TypeScript greenfield 的 package.json 与测试文件产物归属', () => {
+    const draft = {
+      requirementDigest: 'TypeScript CLI news briefing tool',
+      globalPrompt: 'Fetch public news pages, generate markdown briefing, and expose a CLI.',
+      projectType: 'application' as const,
+      complexityAssessment: {
+        level: 'simple' as const,
+        rationale: 'single-iteration fixture',
+        splitRecommended: false,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core functionality',
+          objective: 'Deliver the runnable CLI news briefing slice.',
+          status: 'current' as const,
+          scope: ['CLI', 'fetcher', 'brief generation'],
+          deliverables: ['Runnable TypeScript CLI'],
+          dependsOn: [],
+          verificationGate: {
+            summary: 'P1 gate',
+            checks: ['tests pass'],
+            failurePolicy: 'Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.',
+          },
+        },
+      ],
+      dependencies: ['vitest', 'tsx', 'typescript'],
+      architectureModules: [
+        {
+          id: 'M001',
+          name: 'news-fetcher',
+          responsibility: 'Fetch and normalize public news items.',
+          sourcePaths: ['src/news-fetcher.ts'],
+          testPaths: ['tests/news-fetcher.test.ts'],
+          dependencies: [],
+        },
+      ],
+      steps: [
+        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
+        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
+        baseStep({
+          id: 'S004',
+          phase: 'CODE',
+          role: 'Coder',
+          outputs: ['src/news-fetcher.ts', 'tests/news-fetcher.test.ts', 'docs/tests/unit-test-plan.md', 'package.json', 'tsconfig.json'],
+          dependsOn: ['S003'],
+        }),
+        baseStep({ id: 'S005', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/05-unit-test.md'], dependsOn: ['S004'] }),
+        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md', 'tests/integration/news-cli.test.ts'], dependsOn: ['S005'] }),
+        baseStep({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md', 'tests/news-fetcher.test.ts'], dependsOn: ['S006'] }),
+        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'], dependsOn: ['S007'] }),
+      ],
+    };
+
+    const plan = buildPlan(draft, { language: 'typescript', intent: 'greenfield' });
+    const hld = plan.steps.find((step) => step.phase === 'HIGH_LEVEL_DESIGN');
+    const code = plan.steps.find((step) => step.phase === 'CODE');
+    const moduleTest = plan.steps.find((step) => step.phase === 'MODULE_TEST');
+
+    expect(hld?.outputs).toContain('package.json');
+    expect(hld?.outputs).toContain('tsconfig.json');
+    expect(hld?.systemPrompt).toContain('TypeScript runtime/test contract');
+    expect(hld?.systemPrompt).toContain('"test": "vitest run"');
+    expect(hld?.systemPrompt).toContain('`tsconfig.json`');
+    expect(hld?.systemPrompt).toContain('禁止新增或要求 `jest`');
+    expect(code?.outputs).not.toContain('package.json');
+    expect(code?.outputs).not.toContain('tsconfig.json');
+    expect(code?.outputs).not.toContain('tests/news-fetcher.test.ts');
+    expect(moduleTest?.outputs).toContain('tests/news-fetcher.test.ts');
+    expect(lintPlan(plan).filter((issue) => issue.level === 'error')).toEqual([]);
   });
 
   it('补齐同一 iteration 内 V 模型宏 Step 的相邻依赖链', () => {

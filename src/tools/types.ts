@@ -65,6 +65,8 @@ export interface ToolContext {
   language?: Language;
   /** 当前 Step 的 write_file / append_file 单次 content 字节预算。 */
   writeChunkBytes?: number;
+  /** run_tests 未提供有效过滤参数时使用的当前阶段默认测试范围。 */
+  defaultTestArgs?: string[];
   /** Optional protocol/UI permission hook for sensitive tool operations. */
   requestPermission?: ToolPermissionRequester;
   /** Optional protocol/UI event hook for tool calls and file changes. */

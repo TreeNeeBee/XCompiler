@@ -123,6 +123,7 @@ class FallbackClient implements LLMClient {
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     let lastErr: unknown;
+    const failures: string[] = [];
     for (let i = 0; i < this.chain.length; i++) {
       const c = this.chain[i]!;
       let attemptOptions = options;
@@ -133,6 +134,7 @@ class FallbackClient implements LLMClient {
           out = await c.client.chat(messages, attemptOptions);
         } catch (err) {
           lastErr = err;
+          const retryDelayMs = retryDelayForLLMError(err);
           if (
             providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS &&
             isRetryableLLMError(err)
@@ -153,11 +155,16 @@ class FallbackClient implements LLMClient {
                 providerAttempt,
                 remaining: this.chain.length - i - 1,
                 error: errorMessage(err),
+                retryDelayMs,
               },
             );
+            if (retryDelayMs > 0) {
+              await delay(retryDelayMs);
+            }
             continue;
           }
           this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
+          failures.push(formatProviderFailure(c.name, c.client.name, err));
           await this.audit?.event(
             'llm.error',
             t().llm.providerCallFailed(this.role, c.client.name),
@@ -191,6 +198,7 @@ class FallbackClient implements LLMClient {
             );
             this.scores?.decay(c.name, `validate failed in role ${this.role}`);
             lastErr = vErr;
+            failures.push(formatProviderFailure(c.name, c.client.name, vErr));
             break;
           }
         }
@@ -201,12 +209,25 @@ class FallbackClient implements LLMClient {
         return out;
       }
     }
+    if (failures.length > 0) {
+      throw new Error(
+        `all LLM providers failed for role ${this.role}: ${failures.map((f) => truncateFailure(f, 500)).join(' | ')}`,
+      );
+    }
     throw lastErr instanceof Error ? lastErr : new Error('all LLM providers failed');
   }
 }
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function formatProviderFailure(provider: string, model: string, err: unknown): string {
+  return `${provider}/${model}: ${errorMessage(err)}`;
+}
+
+function truncateFailure(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}... [truncated ${text.length - max} chars]`;
 }
 
 function withoutStreamingOptions(options?: ChatOptions): ChatOptions | undefined {
@@ -220,6 +241,7 @@ function withoutStreamingOptions(options?: ChatOptions): ChatOptions | undefined
 function shouldRetryWithoutStreaming(err: unknown, options?: ChatOptions): boolean {
   if (!options?.onToken) return false;
   const msg = errorMessage(err).toLowerCase();
+  if (msg.includes('stream idle before first token')) return false;
   return (
     msg.includes('stream idle') ||
     msg.includes('degenerate non-json prefix') ||
@@ -232,7 +254,9 @@ function shouldRetryWithoutStreaming(err: unknown, options?: ChatOptions): boole
 
 function isRetryableLLMError(err: unknown): boolean {
   const msg = errorMessage(err).toLowerCase();
+  if (msg.includes('stream idle before first token')) return false;
   return (
+    retryDelayForLLMError(err) > 0 ||
     msg.includes('token loop') ||
     msg.includes('degenerate non-json prefix') ||
     msg.includes('stream idle') ||
@@ -241,6 +265,23 @@ function isRetryableLLMError(err: unknown): boolean {
     msg.includes('fetch failed') ||
     msg.includes('terminated')
   );
+}
+
+function retryDelayForLLMError(err: unknown): number {
+  const msg = errorMessage(err);
+  if (!/\b(?:http\s*)?429\b/i.test(msg)) return 0;
+  if (/free-models-per-day|insufficient credits|quota exceeded/i.test(msg)) return 0;
+  const seconds =
+    msg.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)s/i)?.[1] ??
+    msg.match(/retry_after_seconds["']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i)?.[1] ??
+    msg.match(/retry-after["']?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/i)?.[1];
+  if (!seconds) return 0;
+  const ms = Math.ceil(Number(seconds) * 1000) + 250;
+  return Number.isFinite(ms) && ms > 0 && ms <= 60_000 ? ms : 0;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMClient {

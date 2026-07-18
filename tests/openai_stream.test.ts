@@ -140,6 +140,31 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
+  it('labels idle timeout before the first streamed token', async () => {
+    let open: import('node:http').ServerResponse | null = null;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      open = res;
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'slow-first-token-model',
+        requestTimeoutMs: 0,
+        streamIdleTimeoutMs: 150,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/idle before first token/u);
+    } finally {
+      if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('does not reset idle timeout on empty OpenAI-compatible stream chunks', async () => {
     const originalFetch = globalThis.fetch;
     const encoder = new TextEncoder();
@@ -290,7 +315,36 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
-  it('aborts when streamed output exceeds maxOutputChars (token loop)', async () => {
+  it('does not abort valid long JSON output just because it exceeds maxOutputChars', async () => {
+    const payload = Array.from({ length: 350 }, (_, i) => `item-${i}`).join(',');
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '{"thoughts":"' } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: payload } }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: '","actions":[],"done":true}' } }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'mlx-model',
+        requestTimeoutMs: 5000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 1000,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { responseFormat: 'json', onToken: () => {} }),
+      ).resolves.toContain('item-349');
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('aborts repeated streamed output as a token loop', async () => {
     let stop = false;
     const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -314,7 +368,7 @@ describe('OpenAI-compatible streaming', () => {
       });
       await expect(
         client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
-      ).rejects.toThrow(/output exceeded/);
+      ).rejects.toThrow(/token loop/);
     } finally {
       stop = true;
       await new Promise<void>((r) => server.close(() => r()));

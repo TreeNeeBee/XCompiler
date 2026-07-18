@@ -10,6 +10,19 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('TypeScript / Node.js only');
     expect(prompt).not.toContain('Output language: Python only');
     expect(prompt).toContain('one HIGH_LEVEL_DESIGN Step output `package.json`');
+    expect(prompt).toContain('never list tests/**/*.test.ts');
+    expect(prompt).toContain('Vitest only');
+    expect(prompt).toContain('Never request Jest');
+  });
+
+  it('keeps TypeScript StepPlan output ownership explicit in the two-level planner prompt', () => {
+    const prompt = t().prompts.plannerPhaseDecomposeSystem(getLanguageProfile('typescript'));
+    expect(prompt).toContain('CODE outputs may include only product source files under src/');
+    expect(prompt).toContain('MODULE_TEST owns architectureModules.testPaths');
+    expect(prompt).toContain('HIGH_LEVEL_DESIGN Step must output package.json');
+    expect(prompt).toContain('CODE must not output package.json');
+    expect(prompt).toContain('"test": "vitest run"');
+    expect(prompt).toContain('Do not mention or request Jest');
   });
 
   it('uses the canonical V-model phases and rollback semantics', () => {

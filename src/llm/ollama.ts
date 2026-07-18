@@ -14,7 +14,7 @@ export interface OllamaConfig {
   requestTimeoutMs?: number;
   /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 5 分钟。 */
   streamIdleTimeoutMs?: number;
-  /** 流式模式下输出字符上限，超过即中断（防 token-loop 撑爆内存）；默认 200_000。 */
+  /** 流式异常保护阈值；真实有效输出不会因长度本身被截断，loop/无效输出由 watchdog 中断。 */
   maxOutputChars?: number;
   /** 是否启用 Ollama thinking；不设置时遵循模型默认值。 */
   think?: boolean;
@@ -98,7 +98,7 @@ export interface StreamWatchdog {
   timeoutMs: number;
   /** 连续多久没有新 token 即视为卡死。0 关闭。 */
   idleTimeoutMs: number;
-  /** 输出字符上限。0 关闭。 */
+  /** 异常保护阈值。0 关闭。 */
   maxOutputChars: number;
 }
 
@@ -235,15 +235,8 @@ export function streamPostNdjson(
             } catch {
               /* ignore partial-output stop predicate failures */
             }
-            // watchdog: 输出上限
-            if (watchdog.maxOutputChars > 0 && aggregate.length > watchdog.maxOutputChars) {
-              fail(
-                new Error(
-                  `stream output exceeded ${watchdog.maxOutputChars} chars (likely token loop); aborting`,
-                ),
-              );
-              return;
-            }
+            // watchdog.maxOutputChars is now a guard threshold for invalid/looping streams.
+            // Do not abort valid long outputs by length alone; real large tool JSON can be legitimate.
             // watchdog: token loop
             if (detectCyclicTokenLoop(aggregate)) {
               fail(new Error('detected token loop in stream; aborting'));

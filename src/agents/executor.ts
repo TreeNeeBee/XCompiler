@@ -114,6 +114,7 @@ export class StepExecutor {
 
   async run(inp: ExecutorRunInput): Promise<ExecutorRunResult> {
     const maxRounds = this.opts.maxRounds ?? 6;
+    let roundLimit = maxRounds;
     const role = inp.executionRole ?? inp.step.role;
     const toolMap = new Map(inp.tools.map((t) => [t.name, t]));
     const toolDocs = inp.tools
@@ -143,6 +144,7 @@ export class StepExecutor {
 
     // 健康度信号采集
     const initialMissing = (await verifyOutputs(inp)).missing.length;
+    const hardRoundLimit = Math.max(maxRounds, maxRounds + Math.min(12, Math.max(4, initialMissing * 2)));
     let parseFailures = 0;
     let repeatedTurns = 0;
     let lastActionsKey: string | null = null;
@@ -155,11 +157,15 @@ export class StepExecutor {
     let repairEvidence = false;
     const repairRequired = inp.debugContext?.repairRequired === true;
     const readOnlyRecoveryMode = isReadOnlyLoopFailure(inp.debugContext?.reason ?? '');
+    const directRepairMode =
+      role === 'Debugger' &&
+      repairRequired &&
+      (initialMissing > 0 || hasActionableDebuggerFailure(inp.debugContext));
     let readOnlyRecoveryRounds = 0;
     const advisoryFailureTools = new Set(this.opts.advisoryFailureTools ?? []);
     const advisoryFailureRules = this.opts.advisoryFailureRules ?? [];
 
-    for (let round = 1; round <= maxRounds; round++) {
+    for (let round = 1; round <= roundLimit; round++) {
       const rep = makeStreamReporter(
         `${inp.step.id} ${role} round ${round}`,
         this.opts.llm.name,
@@ -171,12 +177,16 @@ export class StepExecutor {
       let provider: string | undefined;
       let text: string;
       try {
-        text = await this.opts.llm.chat(messages, {
+        const chatMessages = compactMessagesForChat(messages, !!inp.debugContext);
+        text = await this.opts.llm.chat(chatMessages, {
           responseFormat: 'json',
           temperature: 0.1,
           scoreSuccess: false,
           validate:
-            role === 'Debugger' && readOnlyRecoveryMode
+            role === 'Debugger' && (
+              (readOnlyRecoveryMode && readOnlyRecoveryRounds >= 1) ||
+              (directRepairMode && consecutiveReadOnlyRounds >= 1)
+            )
               ? (text) => validateDebuggerRecoveryTurn(text, toolMap)
               : undefined,
           onProvider: (name) => { provider = name; },
@@ -391,8 +401,11 @@ export class StepExecutor {
       if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok) && !advisoryFailureTools.has('run_tests')) {
         failedTestRunRounds++;
       }
-      const repairGateOk = !repairRequired || repairEvidence;
-      if (turn.done && verify.ok && unresolvedToolFailures.size === 0 && repairGateOk) {
+      const repairGateOk = !repairRequired ||
+        repairEvidence ||
+        canAcceptOutputCompletionRecovery(inp, initialMissing);
+      const verifiedCompletion = !turn.done && hasSuccessfulCompletionVerification(calls);
+      if ((turn.done || verifiedCompletion) && verify.ok && unresolvedToolFailures.size === 0 && repairGateOk) {
         const metrics = computeMetrics({
           rounds: actualRounds,
           parseFailures,
@@ -425,7 +438,8 @@ export class StepExecutor {
         return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
       }
       const readOnlyRecoveryViolation = readOnlyRecoveryMode && readOnlyRecoveryRounds >= 2;
-      if (consecutiveReadOnlyRounds >= 3 || readOnlyRecoveryViolation) {
+      const readOnlyRoundLimit = directRepairMode ? 2 : 3;
+      if (consecutiveReadOnlyRounds >= readOnlyRoundLimit || readOnlyRecoveryViolation) {
         repeatedTurns++;
         const metrics = computeMetrics({
           rounds: actualRounds,
@@ -451,6 +465,31 @@ export class StepExecutor {
         });
         return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
       }
+      if (
+        round >= roundLimit &&
+        roundLimit < hardRoundLimit &&
+        shouldExtendProductiveRun({
+          parseFailures,
+          repeatedTurns,
+          calls,
+          initialMissing,
+          currentMissing: verify.missing.length,
+          consecutiveReadOnlyRounds,
+          unresolvedFailures: unresolvedToolFailures.size,
+        })
+      ) {
+        const nextLimit = Math.min(hardRoundLimit, roundLimit + 2);
+        await inp.ctx.audit?.event('note', `productive step progress detected; extending round budget ${roundLimit}→${nextLimit}`, {
+          messageId: 'audit.executor_productive_round_extension',
+          stepId: inp.step.id,
+          round,
+          previousLimit: roundLimit,
+          nextLimit,
+          initialMissing,
+          currentMissing: verify.missing.length,
+        });
+        roundLimit = nextLimit;
+      }
       messages.push({ role: 'assistant', content: compactTurnForHistory(turn) });
       messages.push({
         role: 'user',
@@ -464,7 +503,7 @@ export class StepExecutor {
                 targets: actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', '),
               }
             : undefined,
-          readOnlyRecoveryWarning: readOnlyRecoveryMode && readOnlyRound,
+          readOnlyRecoveryWarning: (readOnlyRecoveryMode || directRepairMode) && readOnlyRound,
           repairEvidenceMissing:
             repairRequired &&
             turn.done === true &&
@@ -477,7 +516,7 @@ export class StepExecutor {
 
     const finalVerify = await verifyOutputs(inp);
     const metrics = computeMetrics({
-      rounds: actualRounds || maxRounds,
+      rounds: actualRounds || roundLimit,
       parseFailures,
       repeatedTurns,
       calls,
@@ -486,11 +525,15 @@ export class StepExecutor {
     });
     return {
       success: false,
-      rounds: maxRounds,
+      rounds: actualRounds || roundLimit,
       toolCalls: calls,
       finalThought,
       error:
-        repairRequired && finalVerify.ok && unresolvedToolFailures.size === 0 && !repairEvidence
+        repairRequired &&
+          finalVerify.ok &&
+          unresolvedToolFailures.size === 0 &&
+          !repairEvidence &&
+          !canAcceptOutputCompletionRecovery(inp, initialMissing)
           ? 'DEBUG retry ended without repair evidence; run a successful patch/write/dependency change or verification command before done=true.'
           :
         finalVerify.ok && unresolvedToolFailures.size > 0
@@ -510,6 +553,36 @@ function isReadOnlyOrProbeAction(action: LLMAction): boolean {
 function isReadOnlyLoopFailure(reason: string): boolean {
   return /repeated read-only\/probe actions without progress/i.test(reason) ||
     /read-only recovery mode repeated probe actions/i.test(reason);
+}
+
+function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugContext']): boolean {
+  if (!debugContext) return false;
+  const text = [
+    debugContext.reason,
+    debugContext.failureLog,
+    debugContext.suggestions ?? '',
+  ].join('\n');
+  return /content must be a string/i.test(text) ||
+    /invalid (?:write_file|append_file|replace_in_file|apply_patch) args/i.test(text) ||
+    /outputs?\s+(?:still\s+missing|missing)/i.test(text) ||
+    /outputs?\s*(?:仍缺失|缺失)/u.test(text) ||
+    /仍缺失[:：]/u.test(text);
+}
+
+function canAcceptOutputCompletionRecovery(inp: ExecutorRunInput, initialMissing: number): boolean {
+  if (inp.executionRole !== 'Debugger') return false;
+  if (inp.debugContext?.repairRequired !== true) return false;
+  if (initialMissing !== 0) return false;
+  return isOutputCompletionFailure(inp.debugContext.reason, inp.debugContext.failureLog);
+}
+
+function isOutputCompletionFailure(reason = '', failureLog = ''): boolean {
+  const text = `${reason}\n${failureLog}`;
+  return /max rounds exceeded without satisfying outputs/i.test(text) ||
+    /outputs?\s+(?:still\s+)?missing/i.test(text) ||
+    /missing\s+required\s+outputs?/i.test(text) ||
+    /outputs?\s*仍缺失/u.test(text) ||
+    /仍缺失[:：]/u.test(text);
 }
 
 function validateDebuggerRecoveryTurn(text: string, toolMap: Map<string, Tool>): void {
@@ -534,6 +607,7 @@ function validateDebuggerRecoveryTurn(text: string, toolMap: Map<string, Tool>):
       'produce valid tool arguments for a repair action, verification action, or concrete blocker',
     );
   }
+  if (actions.length === 0 && turn.done === true) return;
   if (actions.length === 0) {
     throw new Error(
       'low-quality Debugger response: no valid tool actions in read-only recovery mode; ' +
@@ -569,6 +643,35 @@ const REPAIR_EVIDENCE_TOOLS = new Set([
 
 function isRepairEvidenceTool(tool: string): boolean {
   return REPAIR_EVIDENCE_TOOLS.has(tool);
+}
+
+const COMPLETION_VERIFICATION_TOOLS = new Set([
+  'run_program',
+  'run_python',
+  'run_tests',
+]);
+
+function hasSuccessfulCompletionVerification(calls: ExecutorRunResult['toolCalls']): boolean {
+  return calls.some((call) => call.ok && COMPLETION_VERIFICATION_TOOLS.has(call.tool));
+}
+
+function shouldExtendProductiveRun(p: {
+  parseFailures: number;
+  repeatedTurns: number;
+  calls: ExecutorRunResult['toolCalls'];
+  initialMissing: number;
+  currentMissing: number;
+  consecutiveReadOnlyRounds: number;
+  unresolvedFailures: number;
+}): boolean {
+  if (p.initialMissing <= 0) return false;
+  if (p.currentMissing >= p.initialMissing) return false;
+  if (p.parseFailures > 0 || p.repeatedTurns > 0 || p.consecutiveReadOnlyRounds > 0) return false;
+  const totalCalls = p.calls.length;
+  const failedCalls = p.calls.filter((call) => !call.ok).length;
+  const toolFailRatio = totalCalls > 0 ? failedCalls / totalCalls : 0;
+  if (toolFailRatio > 0.25 || p.unresolvedFailures > 0) return false;
+  return p.calls.some((call) => call.ok && isRepairEvidenceTool(call.tool));
 }
 
 function compactTurnForHistory(turn: LLMTurn): string {
@@ -670,6 +773,15 @@ function actionResolutionKeys(action: LLMAction): string[] {
 
 function actionTargetPaths(tool: string, args: unknown): string[] {
   if (!isPlainRecord(args)) return [];
+  if (tool === 'read_file') {
+    return typeof args.path === 'string' ? [normalizeRelPath(args.path)] : [];
+  }
+  if (tool === 'list_dir') {
+    return typeof args.path === 'string' ? [normalizeRelPath(args.path)] : ['.'];
+  }
+  if (tool === 'code_search') {
+    return typeof args.root === 'string' ? [normalizeRelPath(args.root)] : ['.'];
+  }
   if (tool === 'write_file' || tool === 'append_file' || tool === 'replace_in_file') {
     return typeof args.path === 'string' ? [normalizeRelPath(args.path)] : [];
   }
@@ -812,6 +924,15 @@ function changedFilesForAction(tool: string, args: unknown, result: ToolResult):
   if (tool === 'apply_patch' && result.data && typeof result.data === 'object') {
     const changed = (result.data as { changedFiles?: unknown }).changedFiles;
     if (Array.isArray(changed)) return changed.filter((x): x is string => typeof x === 'string');
+  }
+  if (
+    tool !== 'write_file' &&
+    tool !== 'append_file' &&
+    tool !== 'replace_in_file' &&
+    tool !== 'http_fetch' &&
+    tool !== 'add_dependency'
+  ) {
+    return [];
   }
   return actionTargetPaths(tool, args);
 }
@@ -965,13 +1086,17 @@ export async function verifyOutputs(inp: ExecutorRunInput): Promise<{ ok: boolea
 
 function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
   const role = inp.executionRole ?? inp.step.role;
+  const compactContext = !!inp.debugContext;
+  const snippetLimit = compactContext ? 900 : 2200;
+  const architectureLimit = compactContext ? 3000 : 8000;
+  const failureLogLimit = compactContext ? 2200 : 4000;
   const ctxBlock = (inp.contextSnippets ?? [])
     .map((s) =>
-      `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.xcompiler/architecture-contract.json' ? 8000 : 2200)}\n\`\`\``,
+      `### ${s.path}\n\`\`\`\n${truncate(s.content, s.path === '.xcompiler/architecture-contract.json' ? architectureLimit : snippetLimit)}\n\`\`\``,
     )
     .join('\n\n');
   const dbg = inp.debugContext
-    ? `## debug failure log\n\`\`\`\n${truncate(inp.debugContext.failureLog, 4000)}\n\`\`\`\n` +
+    ? `## debug failure log\n\`\`\`\n${truncate(inp.debugContext.failureLog, failureLogLimit)}\n\`\`\`\n` +
       (inp.debugContext.suggestions ? `\n${inp.debugContext.suggestions}\n` : '')
     : '';
   return [
@@ -1022,6 +1147,18 @@ function renderStepSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number)
     .join('\n');
 }
 
+function compactMessagesForChat<T extends { role: 'system' | 'user' | 'assistant'; content: string }>(
+  messages: T[],
+  compact: boolean,
+): T[] {
+  if (!compact || messages.length <= 6) return messages;
+  const system = messages[0];
+  const initialUser = messages[1];
+  if (!system || !initialUser) return messages;
+  const recent = messages.slice(-4);
+  return [system, initialUser, ...recent];
+}
+
 function renderFeedback(
   results: Array<ToolResult & { tool: string }>,
   verify: { ok: boolean; missing: string[] },
@@ -1029,8 +1166,14 @@ function renderFeedback(
 ): string {
   const M = t().prompts;
   const lines: string[] = [M.executorFeedbackHeader];
+  let detailBudget = 12_000;
   for (const r of results) {
     lines.push(`- ${r.tool}: ${r.ok ? 'OK' : 'FAIL'} — ${truncate(r.summary ?? r.error ?? '', 1800)}`);
+    const detail = renderToolResultDetail(r, detailBudget);
+    if (detail) {
+      lines.push(detail.text);
+      detailBudget -= detail.used;
+    }
   }
   if (verify.ok) {
     lines.push(M.executorFeedbackVerifyOk);
@@ -1057,15 +1200,41 @@ function renderFeedback(
   }
   if (turn.readOnlyRecoveryWarning) {
     lines.push(M.executorFeedbackReadOnlyRecoveryRequired);
+    if (!verify.ok && verify.missing.length > 0) {
+      lines.push(
+        `Direct repair target: required outputs are still missing: ${verify.missing.join(', ')}. ` +
+        `Next response must create or update those exact paths with write_file/apply_patch/replace_in_file, ` +
+        `or run a concrete verification command if they already exist. Do not spend another round only reading files.`,
+      );
+    }
   }
   if (turn.unresolvedFailures && turn.unresolvedFailures.length > 0) {
     lines.push(
       `Unresolved tool failures remain: ${turn.unresolvedFailures.map((failure) => truncate(failure, 1200)).join('; ')}`,
     );
+    if (turn.unresolvedFailures.some((failure) => /replace_in_file FAIL .*expected 1 occurrences of find, found 0/i.test(failure))) {
+      lines.push(
+        'Replace miss recovery: the find string does not match the current file. ' +
+        'Do not retry the same find text. Next response must use the exact current file bytes shown by read_file/tool hints, ' +
+        'or switch to apply_patch/write_file on the same target with a minimal repair, then run verification.',
+      );
+    }
     if (turn.unresolvedFailures.some((failure) => /content must be a string/i.test(failure))) {
       lines.push(
         'Tool contract violation: write_file/append_file require args.content to be a literal string. ' +
         'Do not send contentBytes, arrays, objects, or omitted content; retry the same target with a valid content string.',
+      );
+    }
+    if (turn.unresolvedFailures.some((failure) => /path must be a non-empty string/i.test(failure))) {
+      lines.push(
+        'Tool contract violation: file write/read tools require args.path to be a non-empty relative workspace path. ' +
+        'Retry with an explicit path from the current Step outputs or writable allowlist.',
+      );
+    }
+    if (turn.unresolvedFailures.some((failure) => /invalid add_dependency args/i.test(failure))) {
+      lines.push(
+        'Tool contract violation: add_dependency requires args.packages as a non-empty string array, ' +
+        'for example {"packages":["cheerio"]}.',
       );
     }
     if (turn.declaredDone) {
@@ -1078,6 +1247,42 @@ function renderFeedback(
   return lines.join('\n');
 }
 
+function renderToolResultDetail(
+  result: ToolResult & { tool: string },
+  remainingBudget: number,
+): { text: string; used: number } | undefined {
+  if (!result.ok || remainingBudget <= 200) return undefined;
+  const budget = Math.min(remainingBudget, result.tool === 'read_file' ? 6000 : 3000);
+  const data = isPlainRecord(result.data) ? result.data : undefined;
+  if (result.tool === 'read_file' && typeof data?.content === 'string') {
+    const content = truncate(data.content, budget);
+    return {
+      text: ['  content:', '<<<BEGIN read_file content', content, 'END read_file content>>>'].join('\n'),
+      used: content.length,
+    };
+  }
+  if (result.tool === 'list_dir' && Array.isArray(data?.entries)) {
+    const entries = data.entries.filter((entry): entry is string => typeof entry === 'string');
+    if (entries.length === 0) return { text: '  entries: (empty)', used: 18 };
+    const text = `  entries:\n${truncate(entries.map((entry) => `  - ${entry}`).join('\n'), budget)}`;
+    return { text, used: text.length };
+  }
+  if (result.tool === 'code_search' && Array.isArray(data?.matches)) {
+    const matches = data.matches
+      .filter((match): match is { path: string; line: number; text: string } =>
+        isPlainRecord(match) &&
+        typeof match.path === 'string' &&
+        typeof match.line === 'number' &&
+        typeof match.text === 'string',
+      )
+      .map((match) => `${match.path}:${match.line}: ${match.text}`);
+    if (matches.length === 0) return undefined;
+    const text = `  matches:\n${truncate(matches.map((match) => `  - ${match}`).join('\n'), budget)}`;
+    return { text, used: text.length };
+  }
+  return undefined;
+}
+
 function parseTurn(text: string): LLMTurn {
   const cleaned = stripFence(text).trim();
   // 1) 直接解析最常见的"单一 JSON 对象"输出
@@ -1088,7 +1293,11 @@ function parseTurn(text: string): LLMTurn {
   const first = extractFirstJsonObject(cleaned);
   if (first) {
     const parsed = tryParseTurnCandidate(first);
-    if (parsed) return parsed;
+    if (parsed) {
+      const firstEnd = cleaned.indexOf(first) + first.length;
+      const hasTrailingDone = /"done"\s*:/u.test(cleaned.slice(firstEnd));
+      if (typeof parsed.done === 'boolean' || !hasTrailingDone) return parsed;
+    }
   }
   // 3) 终极兜底：原来的 first-{ to last-} 切片
   const a = cleaned.indexOf('{');
@@ -1097,7 +1306,40 @@ function parseTurn(text: string): LLMTurn {
     const parsed = tryParseTurnCandidate(cleaned.slice(a, b + 1));
     if (parsed) return parsed;
   }
+  const salvaged = salvageMalformedTurn(cleaned);
+  if (salvaged) return salvaged;
   return {};
+}
+
+function salvageMalformedTurn(text: string): LLMTurn | null {
+  const actions: unknown[] = [];
+  const re = /\{\s*"tool"\s*:/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const candidate = extractJsonObjectAt(text, match.index);
+    if (!candidate) continue;
+    const parsed = tryParseJson(repairJsonCandidate(candidate));
+    if (isPlainRecord(parsed) && typeof parsed.tool === 'string') {
+      actions.push(parsed);
+    }
+    re.lastIndex = match.index + Math.max(1, candidate.length);
+  }
+  if (actions.length === 0) return null;
+  const thoughtMatch = text.match(/"thoughts"\s*:\s*"((?:\\.|[^"\\])*)"/u);
+  const doneMatch = [...text.matchAll(/"done"\s*:\s*(true|false)/gu)].at(-1);
+  return {
+    thoughts: thoughtMatch ? parseJsonStringLiteral(thoughtMatch[1] ?? '') : undefined,
+    actions,
+    done: doneMatch ? doneMatch[1] === 'true' : false,
+  };
+}
+
+function parseJsonStringLiteral(value: string): string | undefined {
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return undefined;
+  }
 }
 
 function isCompleteTurnJson(text: string): boolean {
@@ -1117,6 +1359,32 @@ function isCompleteTurnJson(text: string): boolean {
 function extractFirstJsonObject(s: string): string | null {
   const start = s.indexOf('{');
   if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i]!;
+    if (inStr) {
+      if (escape) escape = false;
+      else if (ch === '\\') escape = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) return s.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** 返回 s 中从 start 开始的语法上完整 `{...}` 子串。 */
+function extractJsonObjectAt(s: string, start: number): string | null {
+  if (s[start] !== '{') return null;
   let depth = 0;
   let inStr = false;
   let escape = false;

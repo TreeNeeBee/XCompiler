@@ -18,6 +18,8 @@ export function detectNetworkApiFailure(text: string): NetworkApiFailure | null 
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
+    if (isTestRunnerStatusLine(line)) continue;
+    if (isTestAssertionDiagnosticLine(line)) continue;
     if (FAILURE_LINE_RE.test(line) || EXCEPTION_RE.test(line) || HTTP_STATUS_RE.test(line)) {
       return {
         message:
@@ -27,6 +29,22 @@ export function detectNetworkApiFailure(text: string): NetworkApiFailure | null 
     }
   }
   return null;
+}
+
+export function isTestAssertionDiagnosticLine(line: string): boolean {
+  const text = line.trim();
+  if (!text) return false;
+  if (/^(?:[→>-]\s*)?expected\b/iu.test(text)) return true;
+  if (/\bAssertionError\b/iu.test(text) && /\bexpected\b/iu.test(text)) return true;
+  return /\bexpected\b[\s\S]{0,240}\b(?:got|received|to\s+(?:be|equal|throw|contain|have|match))\b/iu.test(text);
+}
+
+function isTestRunnerStatusLine(line: string): boolean {
+  if (/^[✓✔]\s/u.test(line) || /\bPASSED\b/u.test(line) || /\bPASS\b\s+[\w./:-]+/u.test(line)) {
+    return true;
+  }
+  return /^(?:FAIL|FAILED|×|✕|✖)\s+[\w./:-]+(?:\s*::|\s+>|\s+\(|\s*$)/u.test(line) ||
+    /^❯\s+[\w./:-]+(?:\s*::|\s+>|\s+\(|\s*$)/u.test(line);
 }
 
 export function detectNetworkApiFailureInExec(result: ExecResult): NetworkApiFailure | null {

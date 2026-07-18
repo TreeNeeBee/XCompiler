@@ -145,7 +145,8 @@ function validatePythonEntrypointSource(rel: string, content: string): string | 
  * 优先级：
  *   1. \`python src/main.py --help\`
  *   2. \`python -m <pkg> --help\`（取 src/ 下第一个含 \`__main__.py\` 的子包）
- *   3. 若都不存在 → 返回 ok=false。入口是 FUNCTIONAL_TEST 的强制验收项，不能依赖
+ *   3. \`python src/cli.py --help\` / \`python src/app.py --help\`（显式 CLI 文件兜底）
+ *   4. 若都不存在 → 返回 ok=false。入口是 FUNCTIONAL_TEST 的强制验收项，不能依赖
  *      Planner 提示词或文档 lint 间接兜底。
  *
  * exit !=0 / timeout / 包含典型的 ModuleNotFoundError 文本 → ok=false，
@@ -156,37 +157,8 @@ export async function probeEntrypoint(
   sandbox: Sandbox,
 ): Promise<EntrypointProbe> {
   const tail = (s: string): string => s.split('\n').slice(-30).join('\n');
-  let cmd: string | null = null;
-  let entryPath: string | null = null;
-  let argv: string[] = [];
-  let smokeCmd: string | null = null;
-  let smokeArgv: string[] = [];
-  if (await ws.exists('src/main.py')) {
-    cmd = 'python src/main.py --help';
-    entryPath = 'src/main.py';
-    argv = ['src/main.py', '--help'];
-    smokeCmd = 'python src/main.py';
-    smokeArgv = ['src/main.py'];
-  } else {
-    try {
-      const fs = await import('node:fs/promises');
-      const entries = await fs.readdir(ws.abs('src'), { withFileTypes: true });
-      for (const e of entries) {
-        if (!e.isDirectory()) continue;
-        if (await ws.exists(`src/${e.name}/__main__.py`)) {
-          cmd = `python -m src.${e.name} --help`;
-          entryPath = `src/${e.name}/__main__.py`;
-          argv = ['-m', `src.${e.name}`, '--help'];
-          smokeCmd = `python -m src.${e.name}`;
-          smokeArgv = ['-m', `src.${e.name}`];
-          break;
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-  if (!cmd) {
+  const entry = await detectPythonEntrypoint(ws);
+  if (!entry) {
     return {
       ok: false,
       command: 'python src/main.py --help',
@@ -196,26 +168,24 @@ export async function probeEntrypoint(
       stderrTail: t().engine.missingPythonEntrypoint,
     };
   }
-  if (entryPath) {
-    const sourceProblem = validatePythonEntrypointSource(entryPath, await ws.readFile(entryPath));
-    if (sourceProblem) {
-      return {
-        ok: false,
-        command: cmd,
-        exitCode: -1,
-        timedOut: false,
-        stdoutTail: '',
-        stderrTail: sourceProblem,
-      };
-    }
+  const sourceProblem = validatePythonEntrypointSource(entry.path, await ws.readFile(entry.path));
+  if (sourceProblem) {
+    return {
+      ok: false,
+      command: entry.command,
+      exitCode: -1,
+      timedOut: false,
+      stdoutTail: '',
+      stderrTail: sourceProblem,
+    };
   }
   let r: ExecResult;
   try {
-    r = await sandbox.runProgram(argv, { timeoutMs: 30_000 });
+    r = await sandbox.runProgram(entry.argv, { timeoutMs: 30_000 });
   } catch (err) {
     return {
       ok: false,
-      command: cmd,
+      command: entry.command,
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
@@ -226,7 +196,7 @@ export async function probeEntrypoint(
   if (helpNetworkFailure) {
     return {
       ok: false,
-      command: cmd,
+      command: entry.command,
       exitCode: r.exitCode,
       timedOut: r.timedOut ?? false,
       stdoutTail: tail(r.stdout),
@@ -234,14 +204,14 @@ export async function probeEntrypoint(
     };
   }
   const ok = r.exitCode === 0 && !r.timedOut && helpOutputLooksMeaningful(r.stdout, r.stderr);
-  if (ok && smokeCmd && smokeArgv.length > 0) {
+  if (ok) {
     try {
-      const smoke = await sandbox.runProgram(smokeArgv, { timeoutMs: 30_000 });
+      const smoke = await sandbox.runProgram(entry.smokeArgv, { timeoutMs: 30_000 });
       const smokeNetworkFailure = detectNetworkApiFailureInExec(smoke);
       if (smokeNetworkFailure) {
         return {
           ok: false,
-          command: smokeCmd,
+          command: entry.smokeCommand,
           exitCode: smoke.exitCode,
           timedOut: smoke.timedOut ?? false,
           stdoutTail: tail(smoke.stdout),
@@ -253,7 +223,7 @@ export async function probeEntrypoint(
       if (smokeNetworkFailure) {
         return {
           ok: false,
-          command: smokeCmd,
+          command: entry.smokeCommand,
           exitCode: -1,
           timedOut: false,
           stdoutTail: '',
@@ -264,12 +234,58 @@ export async function probeEntrypoint(
   }
   return {
     ok,
-    command: cmd,
+    command: entry.command,
     exitCode: r.exitCode,
     timedOut: r.timedOut ?? false,
     stdoutTail: tail(r.stdout),
-    stderrTail: ok ? tail(r.stderr) : tail(r.stderr || t().engine.entrypointHelpOutputMissing(cmd)),
+    stderrTail: ok ? tail(r.stderr) : tail(r.stderr || t().engine.entrypointHelpOutputMissing(entry.command)),
   };
+}
+
+type PythonEntryCandidate = {
+  path: string;
+  command: string;
+  argv: string[];
+  smokeCommand: string;
+  smokeArgv: string[];
+};
+
+async function detectPythonEntrypoint(ws: Workspace): Promise<PythonEntryCandidate | null> {
+  const fileCandidate = (rel: string): PythonEntryCandidate => ({
+    path: rel,
+    command: `python ${rel} --help`,
+    argv: [rel, '--help'],
+    smokeCommand: `python ${rel}`,
+    smokeArgv: [rel],
+  });
+
+  if (await ws.exists('src/main.py')) return fileCandidate('src/main.py');
+  if (await ws.exists('src/__main__.py')) return fileCandidate('src/__main__.py');
+
+  try {
+    const fs = await import('node:fs/promises');
+    const entries = await fs.readdir(ws.abs('src'), { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const rel = `src/${e.name}/__main__.py`;
+      if (await ws.exists(rel)) {
+        return {
+          path: rel,
+          command: `python -m src.${e.name} --help`,
+          argv: ['-m', `src.${e.name}`, '--help'],
+          smokeCommand: `python -m src.${e.name}`,
+          smokeArgv: ['-m', `src.${e.name}`],
+        };
+      }
+    }
+  } catch {
+    /* src/ 不存在或不可枚举 → 继续尝试显式 CLI 文件 */
+  }
+
+  for (const rel of ['src/cli.py', 'src/app.py']) {
+    if (await ws.exists(rel)) return fileCandidate(rel);
+  }
+  return null;
 }
 
 void path; // 避免 path 被 tree-shake 警告

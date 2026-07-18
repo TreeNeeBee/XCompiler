@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DebugCache, sanitizeDebugFailureLogForPrompt } from '../src/core/debug_cache.js';
+import {
+  DebugCache,
+  sanitizeDebugFailureLogForPrompt,
+  stripNestedLatestDebuggerFailures,
+} from '../src/core/debug_cache.js';
 
 async function tmp(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-dbgcache-'));
@@ -72,6 +76,128 @@ describe('DebugCache', () => {
     expect(cleaned).toContain('E AttributeError: current error');
     expect(cleaned).not.toContain('stale dependency advice');
     expect(cleaned).not.toContain('stale suggestion');
+  });
+
+  it('renders prior attempts with noisy provider and read-only failures summarized', async () => {
+    const dir = await tmp();
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
+    const c = new DebugCache(file);
+    await c.load();
+
+    await c.recordAttempt('S004', {
+      attempt: 1,
+      reason: 'OpenAI HTTP 429: free-models-per-day',
+      failureLogTail: 'rate limited',
+    });
+    await c.recordAttempt('S004', {
+      attempt: 2,
+      reason: 'repeated read-only/probe actions without progress for 3 rounds',
+      failureLogTail: 'read only',
+      metrics: { healthScore: 0.4, parseFailures: 0, repeatedTurns: 3, progressRatio: 1, rounds: 3 },
+    });
+    await c.recordAttempt('S004', {
+      attempt: 3,
+      reason: 'pytest exit=1: AttributeError sig.start_bit',
+      failureLogTail: 'real failure',
+      metrics: { healthScore: 0.7, parseFailures: 0, repeatedTurns: 0, progressRatio: 1, rounds: 2 },
+    });
+
+    const prompt = c.renderPriorAttemptsForPrompt('S004');
+
+    expect(prompt).toContain('omitted 2 noisy provider/read-only/recovery attempt');
+    expect(prompt).toContain('attempt #3');
+    expect(prompt).toContain('AttributeError sig.start_bit');
+    expect(prompt).not.toContain('free-models-per-day');
+    expect(prompt).not.toContain('repeated read-only/probe actions');
+  });
+
+  it('does not replay noisy attempts when no actionable debug history exists', async () => {
+    const dir = await tmp();
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
+    const c = new DebugCache(file);
+    await c.load();
+
+    await c.recordAttempt('S004', {
+      attempt: 1,
+      reason: 'OpenAI HTTP 429: free-models-per-day',
+      failureLogTail: 'provider quota exhausted',
+    });
+    await c.recordAttempt('S004', {
+      attempt: 2,
+      reason: 'low-quality Debugger response: read-only/probe actions in read-only recovery mode',
+      failureLogTail: 'read_file src/x.py',
+    });
+    await c.recordAttempt('S004', {
+      attempt: 3,
+      reason: 'UNIT_TEST had an unresolved failure from a previous run; rolling back to the paired V-model source phase instead of resuming same-phase Debugger.',
+      failureLogTail: 'pytest failure is carried in the current root log',
+    });
+
+    const prompt = c.renderPriorAttemptsForPrompt('S004');
+
+    expect(prompt).toContain('omitted 3 noisy provider/read-only/recovery attempt');
+    expect(prompt).toContain('no actionable prior Debugger attempt remains');
+    expect(prompt).not.toContain('free-models-per-day');
+    expect(prompt).not.toContain('low-quality Debugger response');
+    expect(prompt).not.toContain('unresolved failure from a previous run');
+  });
+
+  it('strips nested latest Debugger sections before composing new retry logs', () => {
+    const raw = [
+      'pytest exit=1',
+      'FAILED tests/test_unit.py::test_hi',
+      '## latest Debugger attempt failure',
+      'reason: old read-only loop',
+      'old noisy details',
+    ].join('\n');
+
+    const cleaned = stripNestedLatestDebuggerFailures(raw);
+
+    expect(cleaned).toContain('pytest exit=1');
+    expect(cleaned).toContain('FAILED tests/test_unit.py::test_hi');
+    expect(cleaned).not.toContain('old read-only loop');
+  });
+
+  it('strips paired source failure sections before composing retry logs', () => {
+    const raw = [
+      'pytest exit=1',
+      'FAILED tests/test_unit.py::test_hi',
+      '## paired source phase latest failure (S004)',
+      'metrics and noisy old retry detail',
+    ].join('\n');
+
+    const cleaned = stripNestedLatestDebuggerFailures(raw);
+
+    expect(cleaned).toContain('pytest exit=1');
+    expect(cleaned).toContain('FAILED tests/test_unit.py::test_hi');
+    expect(cleaned).not.toContain('paired source phase');
+    expect(cleaned).not.toContain('noisy old retry detail');
+  });
+
+  it('strips nested debugger sections before storing attempt logs', async () => {
+    const dir = await tmp();
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
+    const c = new DebugCache(file);
+    await c.load();
+
+    await c.recordAttempt('S004', {
+      attempt: 1,
+      reason: 'pytest exit=1',
+      failureLogTail: [
+        'pytest exit=1',
+        'FAILED tests/test_unit.py::test_hi',
+        '## latest Debugger attempt failure',
+        'reason: stale read-only loop',
+        'old noisy detail',
+      ].join('\n'),
+    });
+
+    const stored = c.attempts('S004')[0]?.failureLogTail ?? '';
+
+    expect(stored).toContain('pytest exit=1');
+    expect(stored).toContain('FAILED tests/test_unit.py::test_hi');
+    expect(stored).not.toContain('stale read-only loop');
+    expect(stored).not.toContain('old noisy detail');
   });
 
   it('markDone clears the step entry so next run starts fresh', async () => {

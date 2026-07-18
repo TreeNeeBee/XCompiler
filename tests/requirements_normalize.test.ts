@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { normalizePythonRequirements } from '../src/agents/planner.js';
 import { sanitizeVenvName } from '../src/sandbox/subprocess.js';
+import { normalizeTypeScriptTestArgs } from '../src/sandbox/test_args.js';
 
 describe('normalizePythonRequirements', () => {
   it('rewrites common hallucinated Python package aliases and strips version pins', () => {
@@ -54,5 +55,23 @@ describe('sanitizeVenvName', () => {
     expect(sanitizeVenvName('hello world!@#')).toBe('hello-world');
     expect(sanitizeVenvName('---')).toBe('venv');
     expect(sanitizeVenvName('')).toBe('venv');
+  });
+});
+
+describe('normalizeTypeScriptTestArgs', () => {
+  it('drops redundant Vitest run tokens that npm would pass as file filters', () => {
+    expect(normalizeTypeScriptTestArgs(['run'])).toEqual([]);
+    expect(normalizeTypeScriptTestArgs(['--run'])).toEqual([]);
+    expect(normalizeTypeScriptTestArgs(['vitest', 'run'])).toEqual([]);
+    expect(normalizeTypeScriptTestArgs(['npm', 'test', '--', 'run'])).toEqual([]);
+    expect(normalizeTypeScriptTestArgs(['npm', 'run', 'test', '--', '--run'])).toEqual([]);
+  });
+
+  it('keeps real test file filters after command normalization', () => {
+    expect(normalizeTypeScriptTestArgs(['run', 'tests/unit'])).toEqual(['tests/unit']);
+    expect(normalizeTypeScriptTestArgs(['npm', 'test', '--', 'tests/unit/parser.test.ts'])).toEqual([
+      'tests/unit/parser.test.ts',
+    ]);
+    expect(normalizeTypeScriptTestArgs(['vitest', 'run', 'tests/module'])).toEqual(['tests/module']);
   });
 });
