@@ -1,10 +1,20 @@
-# XCompiler — AI Software Factory Runtime
+<p align="center">
+  <img src="docs/assets/xcompiler-icon.png" alt="XCompiler logo" width="128" height="128" />
+</p>
+
+<h1 align="center">XCompiler</h1>
+
+<p align="center">
+  <strong>AI Software Factory Runtime</strong>
+</p>
 
 > Turn natural-language requirements into runnable, tested Python or TypeScript projects through an iterative V-model workflow.
 
-[![npm](https://img.shields.io/npm/v/@xcompiler/cli.svg)](https://www.npmjs.com/package/@xcompiler/cli)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
+<p align="center">
+  <a href="https://www.npmjs.com/package/@xcompiler/cli"><img src="https://img.shields.io/npm/v/@xcompiler/cli.svg" alt="npm package" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0 license" /></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg" alt="Node.js >= 24" /></a>
+</p>
 
 Languages: **EN** (default) · [简体中文](README.CN.md)
 
@@ -30,31 +40,9 @@ The current architecture treats **Runtime as the only business entry point**. CL
 
 XCompiler combines a phase iteration model with the V-model. The planner first creates a high-level `phasePlan.json`, then expands only the active phase into a concrete `plan.P<N>.json`. Each current phase runs a full V-model cycle; future phases stay as goals until they become active.
 
-```mermaid
-flowchart TB
-  req["Natural-language requirement"] --> clarify["Clarification\n2-5 prioritized choices per question"]
-  clarify --> gate1["Gate 1\nconfirmed topic.md"]
-  gate1 --> phasePlan["PhasePlan\nP1 current + P2..Pn planned by complexity"]
-  phasePlan --> active["Active phase plan\nplan.P1.json"]
-
-  subgraph iteration["Each implementation phase / iteration"]
-    active --> ra["1. Requirement analysis"]
-    ra --> hld["2. High-level design\nsystem role, external APIs, dependencies"]
-    hld --> dld["3. Detailed design\nmodule internals"]
-    dld --> code["4. Coding"]
-    code --> unit["5. Unit test"]
-    unit --> integ["6. Integration test"]
-    integ --> module["7. Module test"]
-    module --> functional["8. Functional test"]
-  end
-
-  functional --> gate["Iteration gate\nall required checks pass?"]
-  gate -->|pass| next["Advance to next planned phase\nor finish delivery"]
-  gate -->|fail| issues["Record issues\nstage + error + logs + artifacts"]
-  issues --> route["Route issue to paired V-model source stage"]
-  route --> debug["Debugger submits patch/rewrite\nthen reruns downstream stages"]
-  debug --> code
-```
+<p align="center">
+  <img src="docs/assets/iterative-v-model-pipeline.svg" alt="Iterative V-Model Pipeline" />
+</p>
 
 V-model behavior:
 
@@ -69,35 +57,9 @@ V-model behavior:
 
 ## System Architecture
 
-```mermaid
-flowchart TB
-  subgraph adapters["Adapters"]
-    cli["CLI\nbuild/run/load/append/evolve/acp"]
-    acp["ACP Code Agent\nstdio JSON-RPC"]
-    future["Future adapters\nREST / GUI / SDK"]
-  end
-
-  cli --> runtime
-  acp --> runtime
-  future --> runtime
-
-  subgraph runtime["XCompiler Runtime\nsingle business entry point"]
-    events["Runtime events\nprogress / warning / error / result / permission"]
-    build["Build service\nclarify + phase planning"]
-    run["Run service\nphase execution + resume"]
-    workflow["Workflow engine\niteration + V-model state machine"]
-    plugins["PluginHost\nhooks + tools + skills"]
-    memory["Project memory\n.xcompiler state"]
-  end
-
-  runtime --> planner["Planner"]
-  runtime --> engine["PhaseEngine"]
-  engine --> agents["Agents / Skills\nPlanner · Architect · Coder · Tester · Debugger · Author"]
-  agents --> tools["Guarded tools\nread/write/patch/tests/program/http/git"]
-  agents --> llm["LLM Router\nroles + scores + fallbacks"]
-  tools --> sandbox["Sandbox\nsubprocess or docker"]
-  tools --> workspace["Workspace\ngit snapshots + audit + .xc"]
-```
+<p align="center">
+  <img src="docs/assets/system-architecture.svg" alt="XCompiler System Architecture" />
+</p>
 
 Layer responsibilities:
 
