@@ -55,6 +55,7 @@
     "version:check": "node scripts/version.mjs check",
     "version:sync": "node scripts/version.mjs sync",
     "version:set": "node scripts/version.mjs set",
+    "release:local": "bash scripts/release-local.sh",
     "prepack": "npm run version:check",
     "prebuild": "npm run version:check",
     "build": "tsup",
