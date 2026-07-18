@@ -40,6 +40,8 @@
     "dist/plugins",
     "dist/runtime",
     "dist/acp",
+    "config.example.yaml",
+    ".env.example",
     "docs/acp.md",
     "docs/openrouter.md",
     "docs/plugin_api.md",

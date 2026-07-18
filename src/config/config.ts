@@ -222,7 +222,8 @@ export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedC
   throw new Error(
     `No config file found. Tried (in order):\n  ${tried.join('\n  ')}\n` +
       `\nHint: set XC_PATH to point at a directory containing config.yaml, ` +
-      `or run from a directory that contains config.yaml.`,
+      `or create a local config.yaml from config.example.yaml before running XCompiler. ` +
+      `The npm package ships config.example.yaml as a template; config.yaml is your local runtime config.`,
   );
 }
 

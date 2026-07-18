@@ -139,7 +139,7 @@ async function checkLlm(
         baseUrl,
         apiKey: p.api_key ?? '',
         model: p.model,
-        requiresApiKey: isOpenAICloudEndpoint(baseUrl),
+        requiresApiKey: openAIEndpointRequiresApiKey(baseUrl),
       });
     }
   }
@@ -222,7 +222,7 @@ async function checkLlm(
       }
       if (isOpenAICompatibleProvider(prov)) {
         const baseUrl = normalizeBaseUrl(prov.base_url, 'https://api.openai.com/v1');
-        return !isOpenAICloudEndpoint(baseUrl) || (prov.api_key ?? '').length > 0;
+        return !openAIEndpointRequiresApiKey(baseUrl) || (prov.api_key ?? '').length > 0;
       }
       return false;
     });
@@ -274,9 +274,10 @@ async function fetchOpenAIModels(baseUrl: string, apiKey: string, timeoutMs: num
   }
 }
 
-function isOpenAICloudEndpoint(baseUrl: string): boolean {
+function openAIEndpointRequiresApiKey(baseUrl: string): boolean {
   try {
-    return new URL(baseUrl).hostname === 'api.openai.com';
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === 'api.openai.com' || host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
   } catch {
     return false;
   }

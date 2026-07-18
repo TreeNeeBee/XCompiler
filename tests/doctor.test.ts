@@ -74,6 +74,54 @@ describe('doctor', () => {
     expect(llm.items.some((i) => i.level === 'fail' && /api_key empty/i.test(i.message))).toBe(true);
   });
 
+  it('flags OpenRouter provider with empty api_key', async () => {
+    const cfgPath = await writeCfg({
+      llm: {
+        default: 'openrouter_free',
+        providers: {
+          openrouter_free: {
+            type: 'openai',
+            api_key: '',
+            base_url: 'https://openrouter.ai/api/v1',
+            model: 'openrouter/free',
+          },
+        },
+        roles: { Coder: ['openrouter_free'] },
+        fallbacks: [],
+        role_fallbacks: {},
+        scores: {},
+      },
+    });
+    const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
+    const llm = r.sections.find((s) => s.title === '[LLM]')!;
+    expect(llm.items.some((i) => i.level === 'fail' && /api_key empty/i.test(i.message))).toBe(true);
+    expect(llm.items.some((i) => i.level === 'fail' && /no live provider/i.test(i.message))).toBe(true);
+  });
+
+  it('allows local OpenAI-compatible provider without api_key', async () => {
+    const cfgPath = await writeCfg({
+      llm: {
+        default: 'local_openai',
+        providers: {
+          local_openai: {
+            type: 'openai',
+            api_key: '',
+            base_url: 'http://127.0.0.1:8000/v1',
+            model: 'local-model',
+          },
+        },
+        roles: { Coder: ['local_openai'] },
+        fallbacks: [],
+        role_fallbacks: {},
+        scores: {},
+      },
+    });
+    const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
+    const llm = r.sections.find((s) => s.title === '[LLM]')!;
+    expect(llm.items.some((i) => /api_key empty/i.test(i.message))).toBe(false);
+    expect(llm.items.some((i) => i.level === 'ok' && /local_openai/u.test(i.message))).toBe(true);
+  });
+
   it('only warns for an unused openai provider with empty api_key', async () => {
     const cfgPath = await writeCfg({
       llm: {

@@ -5,6 +5,7 @@ export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface OpenAIConfig {
+  providerName?: string;
   apiKey: string;
   baseUrl: string;
   model: string;
@@ -67,11 +68,13 @@ export class OpenAIClient implements LLMClient {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`OpenAI HTTP ${res.status}: ${text}`);
+        throw buildHttpError(this.cfg, res.status, res.statusText, text);
       }
       const json = (await res.json()) as OpenAIChatResponse;
       if (json.error) throw new Error(`OpenAI error: ${json.error.message}`);
       return json.choices?.[0]?.message?.content ?? '';
+    } catch (err) {
+      throw wrapOpenAIError(this.cfg, err, 'non-stream');
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -132,7 +135,7 @@ export class OpenAIClient implements LLMClient {
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`OpenAI HTTP ${res.status}: ${text}`);
+        throw buildHttpError(this.cfg, res.status, res.statusText, text);
       }
       if (!res.body) throw new Error('OpenAI stream response has no body');
 
@@ -245,10 +248,129 @@ export class OpenAIClient implements LLMClient {
         throw abortReason ?? (err as Error);
       }
       return aggregate;
+    } catch (err) {
+      throw wrapOpenAIError(this.cfg, err, 'stream');
     } finally {
       cleanup();
     }
   }
+}
+
+interface OpenAIHttpFailure {
+  __openAIHttpFailure: true;
+  status: number;
+  statusText: string;
+  body: string;
+}
+
+function buildHttpError(
+  cfg: OpenAIConfig,
+  status: number,
+  statusText: string,
+  body: string,
+): Error & OpenAIHttpFailure {
+  const err = new Error(`OpenAI HTTP ${status}: ${sanitizeErrorText(body)}`) as Error & OpenAIHttpFailure;
+  err.__openAIHttpFailure = true;
+  err.status = status;
+  err.statusText = statusText;
+  err.body = body;
+  return err;
+}
+
+function wrapOpenAIError(cfg: OpenAIConfig, err: unknown, mode: 'stream' | 'non-stream'): Error {
+  if (isWrappedOpenAIError(err)) return err;
+  const cause = err instanceof Error ? err : new Error(String(err));
+  const provider = cfg.providerName ?? 'unnamed';
+  const baseUrl = cfg.baseUrl.replace(/\/$/, '');
+  const parts = [
+    `OpenAI-compatible provider request failed`,
+    `provider=${provider}`,
+    `model=${cfg.model}`,
+    `base_url=${baseUrl}`,
+    `mode=${mode}`,
+  ];
+  if (isHttpFailure(cause)) {
+    parts.push(`status=${cause.status}${cause.statusText ? ` ${cause.statusText}` : ''}`);
+  }
+  const detail = errorDetail(cause);
+  const hint = hintForOpenAIError(cfg, cause);
+  const wrapped = new Error(`${parts.join(' ')}: ${detail}. ${hint}`, { cause });
+  wrapped.name = 'OpenAICompatibleRequestError';
+  return wrapped;
+}
+
+function isWrappedOpenAIError(err: unknown): err is Error {
+  return err instanceof Error && err.name === 'OpenAICompatibleRequestError';
+}
+
+function isHttpFailure(err: Error): err is Error & OpenAIHttpFailure {
+  return (err as Partial<OpenAIHttpFailure>).__openAIHttpFailure === true;
+}
+
+function errorDetail(err: Error): string {
+  if (isHttpFailure(err)) {
+    const body = sanitizeErrorText(err.body);
+    return body ? `OpenAI HTTP ${err.status}: ${body}` : `OpenAI HTTP ${err.status}`;
+  }
+  const message = sanitizeErrorText(err.message || err.name);
+  const cause = (err as Error & { cause?: unknown }).cause;
+  if (cause instanceof Error && cause.message && !message.includes(cause.message)) {
+    return `${message}; cause=${sanitizeErrorText(cause.message)}`;
+  }
+  return message;
+}
+
+function hintForOpenAIError(cfg: OpenAIConfig, err: Error): string {
+  const baseUrl = cfg.baseUrl.replace(/\/$/, '');
+  const host = hostnameOf(baseUrl);
+  const message = `${err.message}\n${isHttpFailure(err) ? err.body : ''}`.toLowerCase();
+  const hints: string[] = [];
+  if (!cfg.apiKey && knownCloudEndpointRequiresApiKey(host)) {
+    hints.push('set the required API key (for OpenRouter use OPENROUTER_API_KEY or llm.providers.<name>.api_key)');
+  } else if (!cfg.apiKey) {
+    hints.push('this OpenAI-compatible endpoint was called without an API key; that is valid only for local/no-auth servers');
+  }
+  if (isHttpFailure(err)) {
+    if (err.status === 401 || err.status === 403) hints.push('check authentication, account access, and model permissions');
+    else if (err.status === 404) hints.push('check base_url path and model id');
+    else if (err.status === 408 || err.status === 429) hints.push('check provider quota/rate limits and retry later or switch provider');
+    else if (err.status >= 500) hints.push('provider server failed; retry later or switch provider');
+    else hints.push('check request format, model id, and provider-specific capability limits');
+  }
+  if (message.includes('json_object') || message.includes('json_schema') || message.includes('response_format')) {
+    hints.push('if the provider rejects structured output, set json_response_format: json_schema or none for this provider');
+  }
+  if (message.includes('fetch failed') || message.includes('econnrefused') || message.includes('enotfound')) {
+    hints.push('check base_url, network access, DNS/proxy settings, and whether the local server is running');
+  }
+  if (message.includes('timed out') || message.includes('idle')) {
+    hints.push('increase request_timeout_ms/stream_idle_timeout_ms only if the provider is still producing valid output');
+  }
+  if (hints.length === 0) {
+    hints.push('check base_url, model id, provider quota, network access, and response_format support');
+  }
+  return `Hint: ${[...new Set(hints)].join('; ')}.`;
+}
+
+function knownCloudEndpointRequiresApiKey(host: string): boolean {
+  return host === 'api.openai.com' || host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+}
+
+function hostnameOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function sanitizeErrorText(text: string): string {
+  const redacted = text
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/sk-[A-Za-z0-9._-]{12,}/g, 'sk-[REDACTED]')
+    .replace(/sk-or-v1-[A-Za-z0-9._-]{12,}/g, 'sk-or-v1-[REDACTED]')
+    .replace(/gsk_[A-Za-z0-9._-]{12,}/g, 'gsk_[REDACTED]');
+  return redacted.length <= 2000 ? redacted : `${redacted.slice(0, 2000)}... [truncated ${redacted.length - 2000} chars]`;
 }
 
 function buildJsonResponseFormat(

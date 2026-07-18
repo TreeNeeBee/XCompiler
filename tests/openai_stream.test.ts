@@ -70,6 +70,60 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
+  it('wraps OpenAI-compatible HTTP failures with provider diagnostics and redacted details', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(
+      '{"error":{"message":"missing auth Bearer very-secret-token"}}',
+      { status: 401, statusText: 'Unauthorized' },
+    ));
+    try {
+      const client = new OpenAIClient({
+        providerName: 'openrouter_free',
+        apiKey: '',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/free',
+        requestTimeoutMs: 5000,
+      });
+      let message = '';
+      try {
+        await client.chat([{ role: 'user', content: 'hi' }]);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/OpenAI-compatible provider request failed/u);
+      expect(message).toContain('provider=openrouter_free');
+      expect(message).toContain('model=openrouter/free');
+      expect(message).toContain('base_url=https://openrouter.ai/api/v1');
+      expect(message).toContain('status=401 Unauthorized');
+      expect(message).toContain('OPENROUTER_API_KEY');
+      expect(message).toContain('Bearer [REDACTED]');
+      expect(message).not.toContain('very-secret-token');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps local no-auth OpenAI-compatible failure hints distinct from cloud API key failures', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError('fetch failed', { cause: new Error('ECONNREFUSED 127.0.0.1') });
+    });
+    try {
+      const client = new OpenAIClient({
+        providerName: 'local_openai',
+        apiKey: '',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        model: 'local-model',
+        requestTimeoutMs: 5000,
+      });
+      await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(
+        /local\/no-auth servers|base_url|local server is running/u,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('can request json_schema response format for OpenAI-compatible providers', async () => {
     let responseFormat: unknown;
     const server = createServer((req, res) => {

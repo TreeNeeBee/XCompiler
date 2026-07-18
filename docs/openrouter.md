@@ -12,8 +12,19 @@ Official references:
 
 ## 1. Create Local Environment
 
+From a source checkout:
+
 ```bash
 cp .env.example .env
+cp config.example.yaml config.yaml
+```
+
+From the published npm package:
+
+```bash
+npm install -g @xcompiler/cli
+cp "$(npm root -g)/@xcompiler/cli/.env.example" .env
+cp "$(npm root -g)/@xcompiler/cli/config.example.yaml" config.yaml
 ```
 
 Edit `.env` locally:
@@ -21,10 +32,11 @@ Edit `.env` locally:
 ```bash
 OPENROUTER_API_KEY=<your-openrouter-api-key>
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=qwen/qwen3-coder:free
+OPENROUTER_MODEL=openrouter/free
 ```
 
 `.env` is ignored by git. Do not commit real API keys.
+`config.yaml` and `llm_scores.yaml` are local runtime files; keep them outside commits. The package ships `config.example.yaml` and `.env.example` only as templates.
 
 ## 2. Configure XCompiler
 
@@ -37,7 +49,7 @@ llm:
     openrouter_free:
       type: openai
       api_key: ${OPENROUTER_API_KEY}
-      base_url: ${OPENROUTER_BASE_URL}
+      base_url: https://openrouter.ai/api/v1
       model: openrouter/free
       tags: [cluster]
       request_timeout_ms: 900000
@@ -54,6 +66,9 @@ llm:
 
 `type: openai` means XCompiler will use the OpenAI-compatible chat completions client. This is also the correct type for local `/v1` endpoints such as vLLM or mlx-server.
 `tags: [cluster]` marks the provider as an aggregated route. XCompiler scores those providers in a lower default band (`0.2..0.5`) so they behave as backups rather than replacing dedicated role models too early.
+OpenRouter requires `OPENROUTER_API_KEY`. Local OpenAI-compatible endpoints may leave `api_key` empty when they run without authentication.
+
+If an OpenAI-compatible request fails, XCompiler reports the provider, model, base URL, request mode, HTTP status/body when available, and a concrete hint such as setting `OPENROUTER_API_KEY`, changing `json_response_format`, checking quota/rate limits, or switching provider.
 
 ## 3. Choose A Free Model
 
@@ -65,12 +80,12 @@ providers:
   openrouter_coder:
     type: openai
     api_key: ${OPENROUTER_API_KEY}
-    base_url: ${OPENROUTER_BASE_URL}
+    base_url: https://openrouter.ai/api/v1
     model: qwen/qwen3-coder:free
   openrouter_free:
     type: openai
     api_key: ${OPENROUTER_API_KEY}
-    base_url: ${OPENROUTER_BASE_URL}
+    base_url: https://openrouter.ai/api/v1
     model: openrouter/free
     tags: [cluster]
 ```
@@ -103,6 +118,8 @@ local_openai:
   base_url: ${LOCAL_OPENAI_BASE_URL}
   model: ${LOCAL_OPENAI_MODEL}
 ```
+
+For no-auth local servers, set `LOCAL_OPENAI_API_KEY=` or leave the provider `api_key` empty.
 
 Ollama native endpoints:
 
