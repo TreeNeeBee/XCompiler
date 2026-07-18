@@ -4,6 +4,7 @@ dist/
 *.log
 .env
 .env.local
+config.yaml
 llm_scores.yaml
 .sandbox/
 workspace/.draft/

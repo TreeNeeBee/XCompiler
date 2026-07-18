@@ -8,7 +8,7 @@ llm:
     openrouter_free:
       type: openai
       api_key: ${OPENROUTER_API_KEY}
-      base_url: ${OPENROUTER_BASE_URL}
+      base_url: https://openrouter.ai/api/v1
       model: openrouter/free
       tags: [cluster]
       # If a provider rejects json_object, set: json_response_format: json_schema
@@ -16,26 +16,27 @@ llm:
       stream_idle_timeout_ms: 300000
 
     # Backup: local OpenAI-compatible endpoint, e.g. mlx-server or vLLM.
+    # Local/no-auth servers may leave api_key empty; cloud providers usually require one.
     # local_openai:
     #   type: openai
-    #   api_key: <LOCAL_OPENAI_API_KEY>
-    #   base_url: <LOCAL_OPENAI_BASE_URL>
-    #   model: <LOCAL_OPENAI_MODEL>
+    #   api_key: ${LOCAL_OPENAI_API_KEY}
+    #   base_url: ${LOCAL_OPENAI_BASE_URL}
+    #   model: ${LOCAL_OPENAI_MODEL}
     #   request_timeout_ms: 900000
     #   stream_idle_timeout_ms: 300000
 
     # Backup: local Ollama models.
     # ollama_design:
     #   type: ollama
-    #   base_url: <OLLAMA_BASE_URL>
-    #   model: <OLLAMA_DESIGN_MODEL>
+    #   base_url: ${OLLAMA_BASE_URL}
+    #   model: ${OLLAMA_DESIGN_MODEL}
     #   request_timeout_ms: 900000
     #   stream_idle_timeout_ms: 300000
     #   think: false
     # ollama_code:
     #   type: ollama
-    #   base_url: <OLLAMA_BASE_URL>
-    #   model: <OLLAMA_CODE_MODEL>
+    #   base_url: ${OLLAMA_BASE_URL}
+    #   model: ${OLLAMA_CODE_MODEL}
     #   request_timeout_ms: 900000
     #   stream_idle_timeout_ms: 300000
     #   think: false

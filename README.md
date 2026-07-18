@@ -132,7 +132,7 @@ Layer responsibilities:
 ```bash
 # 1. Install dependencies
 npm ci
-cp .env.example .env            # fill OPENROUTER_API_KEY for the default Free-mode provider
+cp .env.example .env            # fill OPENROUTER_API_KEY for the default OpenRouter Free provider
 cp config.example.yaml config.yaml
 
 # 2. Build and install as a global command
@@ -150,6 +150,17 @@ xcompiler run /tmp/xcompiler-<timestamp>/phasePlan.json
 # 5. Resume later from the generated project file
 xcompiler load /tmp/xcompiler-<timestamp>/xcompiler-<timestamp>.xc
 ```
+
+If you installed the published npm package instead of running from this source tree, create your own local config from the packaged templates first:
+
+```bash
+npm install -g @xcompiler/cli
+cp "$(npm root -g)/@xcompiler/cli/config.example.yaml" config.yaml
+cp "$(npm root -g)/@xcompiler/cli/.env.example" .env
+# then edit .env and set OPENROUTER_API_KEY
+```
+
+`config.yaml` and `llm_scores.yaml` are user/local runtime files. They are intentionally not committed; the npm package only ships `config.example.yaml` and `.env.example` as templates.
 
 Dev mode (no build step):
 
@@ -201,7 +212,8 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 ## Default runtime
 
 - **LLM**: OpenRouter Free mode by default, configured as an explicit `type: openai` OpenAI-compatible provider.
-  Put `OPENROUTER_API_KEY` in `.env`, keep `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`, and choose a free model slug such as `qwen/qwen3-coder:free`.
+  Put `OPENROUTER_API_KEY` in `.env`; `config.example.yaml` already points to `https://openrouter.ai/api/v1` and uses `model: openrouter/free`, so the copied default config is enough for a first validation run.
+  If the key is missing or invalid, XCompiler reports the failing provider, model, base URL, HTTP status/body, and an explicit hint to set `OPENROUTER_API_KEY`.
   For production-like engineering runs, give each role a dedicated first-choice model and append `openrouter_free` (`model: openrouter/free`, `tags: [cluster]`) as the last fallback in every role chain.
   Cluster providers default to the lower dynamic score band `0.2..0.5`, so they remain backups unless the dedicated models fail or their scores decay.
   See [docs/openrouter.md](docs/openrouter.md) for the setup guide and official OpenRouter links.

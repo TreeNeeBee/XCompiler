@@ -302,7 +302,7 @@ function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMC
 }
 
 function createClient(
-  _name: string,
+  name: string,
   p: ProviderConfig,
 ): LLMClient | null {
   if (isOllamaProvider(p)) {
@@ -317,6 +317,7 @@ function createClient(
   }
   if (isOpenAICompatibleProvider(p)) {
     return new OpenAIClient({
+      providerName: name,
       apiKey: p.api_key ?? '',
       baseUrl: normalizeBaseUrl(p.base_url, 'https://api.openai.com/v1'),
       model: p.model,
