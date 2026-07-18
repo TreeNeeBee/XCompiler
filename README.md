@@ -1,226 +1,226 @@
-# XCompiler — Extensible Compiler
+# XCompiler — AI Software Factory Runtime
 
-> Multi-LLM, V-model-driven AI Software Factory CLI
-> Turn one paragraph of natural-language requirements into a runnable, tested, deliverable Python or TypeScript project
-> Apache License 2.0
+> Turn natural-language requirements into runnable, tested Python or TypeScript projects through an iterative V-model workflow.
 
+[![npm](https://img.shields.io/npm/v/@xcompiler/cli.svg)](https://www.npmjs.com/package/@xcompiler/cli)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+[![node](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org)
 
-🌐 **Languages**: **EN** (default) · [简体中文](README.CN.md)
+Languages: **EN** (default) · [简体中文](README.CN.md)
 
 ---
 
-## What is this
+## What XCompiler Does
 
-XCompiler splits "writing code" into two phases — **compile** and **execute** — modelled on a traditional compiler's `cc` / `a.out`:
+XCompiler is a reusable AI software factory runtime. It compiles a product request into an executable engineering plan, then runs that plan with sandboxed agents, guarded tools, tests, debug loops, audit logs, and resumable project state.
 
 | Command | Role | Input | Output |
 |---|---|---|---|
-| **`xcompiler build`** | **AI Compiler** — translates natural-language requirements into a phase plan and executable current-phase steps | A requirement text (`-i req.md`, `-t topic.md`, or interactive) | `phasePlan.json` + `plan.P1.json` (current phase Step DAG) + `topic.md` + `plan.md` |
-| **`xcompiler run`** | **AI Executor** — runs the current phase from the compiled phase plan | `phasePlan.json` (legacy `plan.json` remains readable) | Runnable Python/TypeScript project + green tests + `docs/05-delivery.md` |
+| `xcompiler build` | Compile requirements into a `phasePlan.json` plus the current phase plan, such as `plan.P1.json` | Requirement text (`-i req.md`, `-t topic.md`, or interactive input) | `topic.md`, `phasePlan.json`, `plan.P1.json`, `plan.md`, `<name>.xc` |
+| `xcompiler run` | Execute the current phase through the V-model workflow | `phasePlan.json` or legacy `plan.json` | Runnable project, tests, docs, audit trail, updated progress |
+| `xcompiler load` | Resume from a project file | `<name>.xc` | Continue the saved phase/task state |
+| `xcompiler append` / `xcompiler evolve` | Add new requirements to an existing project | Existing workspace/project file plus new requirement | Incremental plan and implementation |
+| `xcompiler acp` | Run as an ACP code-agent adapter | stdio JSON-RPC from an IDE/editor | Runtime-backed code-agent events and results |
 
-> Analogy: `xcompiler build` ≈ a compiler turning C source into machine instructions; `xcompiler run` ≈ the CPU executing those instructions.
-> Difference: XCompiler's "instructions" are V-model phases (REQUIREMENT / ARCH / CODE / TEST / REFACTOR / DELIVERY), and each "execution unit" is a sandbox-constrained multi-Agent loop.
-
-Every Step gets a git snapshot and an audit-log entry; failures automatically enter a DEBUG retry loop (≤ 3 rounds).
-
----
-
-## Built-in V-model pipeline
-
-XCompiler encodes the **V-model** of software engineering directly as the decomposition skeleton of `xcompiler build` and the execution scheduler of `xcompiler run`. Each phase has mandatory artefacts, a tool whitelist, and a quality gate:
-
-```text
-                  ┌────────── xcompiler build (AI Compiler) ──────────┐
-                  │                                          │
-   Requirement ──► Intake ──► Clarify ──► PhasePlan ──► plan.P1.json
-        (NL)             │            │
-                         └─ Gate 1 ───┘ Gate 2  (two human confirmation gates)
-
-
-                  ┌─────────── xcompiler run (AI Executor) ──────────────┐
-                  │       topology executes V-model left → right    │
-
-                  REQUIREMENT  ◄──────── verify ─────────►  DELIVERY
-                       │                                        ▲
-                       ▼                                        │
-                     ARCH      ◄───── refactor / docs ─────►  REFACTOR
-                       │                                        ▲
-                       ▼                                        │
-                     CODE      ◄────── test gate ──────────►   TEST
-                       │                                        ▲
-                       └─────────────► DEBUG (≤3 retries) ──────┘
-                                       (auto failure loop)
-```
-
-| Phase | Lead Agent / Skill | Mandatory Artefact | Quality Gate |
-|---|---|---|---|
-| REQUIREMENT | Planner | `topic.md` | Gate 1 human confirmation |
-| ARCH | Architect | `architecture.md`；TypeScript 同步维护 `package.json` | plan lint |
-| CODE | Coder (`patcher` / `author`) | `src/**.{py,ts}` | EditGuard line cap |
-| TEST | Tester (`tester`) | `tests/**.{py,ts}` | **tests exit=0** |
-| DEBUG | Debugger (`debugger`) | fix patch | ≤ `max_debug_retries` |
-| REFACTOR | Refactorer | optimised `src/` | tests do not regress |
-| DELIVERY | Author | `docs/05-delivery.md` | All Steps DONE + entry `--help` =0 |
+The current architecture treats **Runtime as the only business entry point**. CLI and ACP are adapters: they parse input, load config, render output, and listen to Runtime events, while Runtime owns build/run/workflow/agent/tool/plugin/memory behavior.
 
 ---
 
-## System architecture
+## Iterative V-Model Pipeline
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                          CLI layer                               │
-│  xcompiler  ─┬─ xcompiler build   (= xcompiler_build)    AI Compiler                    │
-│         └─ xcompiler run (= xcompiler_run)  AI Executor                    │
-│         + xcompiler ls / show                                         │
-└──────────────────┬───────────────────────────────┬──────────────┘
-                   │                               │
-                   ▼                               ▼
-        ┌────────────────────┐         ┌──────────────────────┐
-        │  Planner (compile) │         │   PhaseEngine (run)  │
-        │  - intake/clarify  │         │   - topology sched.  │
-        │  - decompose (V)   │         │   - DEBUG loop       │
-        │  - plan lint       │         │   - resumable        │
-        └─────────┬──────────┘         └──────────┬───────────┘
-                  │                                │
-                  ▼                                ▼
-            ┌──────────────────────────────────────────────┐
-            │                Agent / Skill layer            │
-            │  Architect · Coder · Tester · Debugger ·     │
-            │  Refactorer · Author                         │
-            │  Skills: patcher / author / tester /         │
-            │          dep_resolver / debugger / refactor  │
-            └──────────────────┬───────────────────────────┘
-                               │
-                               ▼
-        ┌─────────────────────────────────────────────────────┐
-        │             Tool layer (whitelist + EditGuard)       │
-        │  read_file · write_file · append_file ·             │
-        │  replace_in_file · run_program · run_tests · git_*  │
-        └──────────────────┬──────────────────────────────────┘
-                           │
-            ┌──────────────┼──────────────────┐
-            ▼              ▼                  ▼
-   ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
-            │  LLM Router  │ │   Sandbox    │ │   Workspace      │
-   │  chain +     │ │  subprocess  │ │   git + audit    │
-   │  fallback    │ │  / docker    │ │   + .xcompiler/       │
-   │  (ollama,    │ │  venv iso.   │ │ phasePlan/plan.Px │
-   │   openai)    │ │              │ │                  │
-   └──────────────┘ └──────────────┘ └──────────────────┘
+XCompiler combines a phase iteration model with the V-model. The planner first creates a high-level `phasePlan.json`, then expands only the active phase into a concrete `plan.P<N>.json`. Each current phase runs a full V-model cycle; future phases stay as goals until they become active.
+
+```mermaid
+flowchart TB
+  req["Natural-language requirement"] --> clarify["Clarification\n2-5 prioritized choices per question"]
+  clarify --> gate1["Gate 1\nconfirmed topic.md"]
+  gate1 --> phasePlan["PhasePlan\nP1 current + P2..Pn planned by complexity"]
+  phasePlan --> active["Active phase plan\nplan.P1.json"]
+
+  subgraph iteration["Each implementation phase / iteration"]
+    active --> ra["1. Requirement analysis"]
+    ra --> hld["2. High-level design\nsystem role, external APIs, dependencies"]
+    hld --> dld["3. Detailed design\nmodule internals"]
+    dld --> code["4. Coding"]
+    code --> unit["5. Unit test"]
+    unit --> integ["6. Integration test"]
+    integ --> module["7. Module test"]
+    module --> functional["8. Functional test"]
+  end
+
+  functional --> gate["Iteration gate\nall required checks pass?"]
+  gate -->|pass| next["Advance to next planned phase\nor finish delivery"]
+  gate -->|fail| issues["Record issues\nstage + error + logs + artifacts"]
+  issues --> route["Route issue to paired V-model source stage"]
+  route --> debug["Debugger submits patch/rewrite\nthen reruns downstream stages"]
+  debug --> code
 ```
 
-The runtime also exposes a typed PluginHost across the compile, LLM, run, step,
-attempt and tool boundaries. Plugins can register Tools / Skills without bypassing
-the existing whitelist and EditGuard security model.
+V-model behavior:
+
+- `REQUIREMENT_ANALYSIS`, `HIGH_LEVEL_DESIGN`, `DETAILED_DESIGN`, and `CODE` generate their paired downstream test expectations.
+- `HIGH_LEVEL_DESIGN` defines system-level interfaces, external APIs, third-party libraries, and dependencies.
+- `DETAILED_DESIGN` defines internal module structure and implementation details.
+- Test failures are first recorded as issues, then routed back to the matching upstream stage for Debugger repair.
+- Completed-phase debug must provide a real patch/rewrite or successful verification evidence.
+- Network/API failures are treated as real gates: if the project API fails, the run must repair or switch API instead of hiding the failure.
+
+---
+
+## System Architecture
+
+```mermaid
+flowchart TB
+  subgraph adapters["Adapters"]
+    cli["CLI\nbuild/run/load/append/evolve/acp"]
+    acp["ACP Code Agent\nstdio JSON-RPC"]
+    future["Future adapters\nREST / GUI / SDK"]
+  end
+
+  cli --> runtime
+  acp --> runtime
+  future --> runtime
+
+  subgraph runtime["XCompiler Runtime\nsingle business entry point"]
+    events["Runtime events\nprogress / warning / error / result / permission"]
+    build["Build service\nclarify + phase planning"]
+    run["Run service\nphase execution + resume"]
+    workflow["Workflow engine\niteration + V-model state machine"]
+    plugins["PluginHost\nhooks + tools + skills"]
+    memory["Project memory\n.xcompiler state"]
+  end
+
+  runtime --> planner["Planner"]
+  runtime --> engine["PhaseEngine"]
+  engine --> agents["Agents / Skills\nPlanner · Architect · Coder · Tester · Debugger · Author"]
+  agents --> tools["Guarded tools\nread/write/patch/tests/program/http/git"]
+  agents --> llm["LLM Router\nroles + scores + fallbacks"]
+  tools --> sandbox["Sandbox\nsubprocess or docker"]
+  tools --> workspace["Workspace\ngit snapshots + audit + .xc"]
+```
 
 Layer responsibilities:
 
-- **CLI**: argument parsing, workspace lock, `--force` / `--from` / `--phase` modes.
-- **Planner / PhaseEngine**: top-level scheduler for "compile" and "execute" respectively.
-- **Agent / Skill**: each Skill is a `(role + system prompt + tool whitelist)` bundle bound to one V-model phase.
-- **Tool**: atomic operations, all guarded by EditGuard / whitelist; writes are restricted to a Step's declared `outputs`.
-- **LLM Router**: multi-provider chain + fallbacks with full audit trail.
-- **Sandbox**: Python uses venv/pip/pytest; TypeScript uses npm/tsx/vitest, via subprocess or docker.
-- **Workspace**: git snapshots + `.xcompiler/audit.jsonl` + `.xcompiler/.lock`, fully resumable.
+- **Adapters**: argument/protocol parsing, config loading, user interaction, output rendering, exit codes.
+- **Runtime**: the only business API for build, run, workflow, agents, tools, plugins, memory, and permissions.
+- **Workflow engine**: phase iteration, V-model scheduling, rollback/debug routing, iteration gates, resume.
+- **Agents / Skills**: role-specific prompts plus allowed tools for each stage.
+- **Tools**: guarded file edits, program/test execution, API fetches, dependency edits, git snapshots.
+- **LLM Router**: role chains, provider scores, cluster fallbacks, OpenAI-compatible/Ollama clients, audit.
+- **Workspace**: `phasePlan.json`, `plan.P<N>.json`, `<name>.xc`, `.xcompiler/audit.jsonl`, debug cache, project memory.
 
 ---
 
-## Quick start
-
-```bash
-# 1. Install dependencies
-npm ci
-cp .env.example .env            # fill OPENROUTER_API_KEY for the default OpenRouter Free provider
-cp config.example.yaml config.yaml
-
-# 2. Build and install as a global command
-npm run build
-npm link                        # or: npm install -g .
-xcompiler --help
-
-# 3. Write requirements → compile a plan
-echo "Parse a DBC file into an Excel report" > req.md
-xcompiler build -i req.md --yes
-
-# 4. Execute the plan
-xcompiler run /tmp/xcompiler-<timestamp>/phasePlan.json
-
-# 5. Resume later from the generated project file
-xcompiler load /tmp/xcompiler-<timestamp>/xcompiler-<timestamp>.xc
-```
-
-If you installed the published npm package instead of running from this source tree, create your own local config from the packaged templates first:
+## Install From npm
 
 ```bash
 npm install -g @xcompiler/cli
+mkdir xcompiler-demo && cd xcompiler-demo
 cp "$(npm root -g)/@xcompiler/cli/config.example.yaml" config.yaml
 cp "$(npm root -g)/@xcompiler/cli/.env.example" .env
-# then edit .env and set OPENROUTER_API_KEY
+# Edit .env and set OPENROUTER_API_KEY
+xcompiler doctor
 ```
 
-`config.yaml` and `llm_scores.yaml` are user/local runtime files. They are intentionally not committed; the npm package only ships `config.example.yaml` and `.env.example` as templates.
+The default template uses OpenRouter Free mode through a `type: openai` OpenAI-compatible provider:
 
-Dev mode (no build step):
-
-```bash
-npm run dev -- build
-npm run dev -- run path/to/phasePlan.json
+```yaml
+model: openrouter/free
+base_url: https://openrouter.ai/api/v1
 ```
 
-Incremental evolution on top of an existing workspace:
-
-```bash
-# add a feature against the current project baseline
-xcompiler build -w path/to/workspace -i feature_req.md --intent feature --yes
-
-# or compile + execute in one go
-xcompiler evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
-
-# append a new requirement through clarification + V-model on the same project
-xcompiler append path/to/workspace/<name>.xc -i feature_req.md --yes
-
-# let stable XCompiler build and qualify its next generation in an isolated worktree
-xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
-```
-
-### Common options
-
-| Command | Option | Purpose |
-|---|---|---|
-| `xcompiler build` | `-i <file>` | Use a requirements file (non-interactive) |
-| `xcompiler build` | `-t <file>` | Reuse a previously clarified `topic.md` and skip Gate 1 |
-| `xcompiler build` | `--intent <greenfield\|feature\|refactor\|self>` | Choose greenfield, incremental, or isolated self-bootstrap planning |
-| `xcompiler build` | `--baseline-plan <file>` | Point incremental planning at an explicit existing `phasePlan.json` or legacy `plan.json` |
-| `xcompiler build` / `xcompiler run` | `--project-file <file>` | Create/update a specific `XXX.xc` project file |
-| `xcompiler build` | `--force` | Override the workspace lock and regenerate the plan |
-| `xcompiler evolve` | `...` | Compile an incremental plan, then immediately execute it in the same workspace |
-| `xcompiler load <XXX.xc>` | — | Load project config/progress and continue the current plan |
-| `xcompiler append <XXX.xc>` | `-i <file>` | Clarify and execute a new incremental requirement on the existing project |
-| `xcompiler bootstrap` | `--promote` | Explicitly fast-forward a qualified candidate; the default only creates a candidate and report |
-| `xcompiler bootstrap` | `--docker-qualification` | Opt into the experimental Docker qualification runner; subprocess is the default |
-| `xcompiler run` | `--reset` | Reset all Steps to PENDING |
-| `xcompiler run` | `--force` | Equivalent to `--reset` + override lock |
-| `xcompiler run` | `--from <stepId>` / `--phase <phase>` | Resume / run only one phase |
-| `xcompiler run` | `--dry-run` | Print topology only |
-| `xcompiler ls` | — | Scan workspace and list every phase plan's status |
-| `xcompiler show <stepId>` | — | Inspect a single Step (definition / outputs / recent audit) |
+`config.yaml` and `llm_scores.yaml` are local runtime files and are intentionally not committed. The npm package ships `config.example.yaml` and `.env.example` as templates.
 
 ---
 
-## Default runtime
+## Quick Start
 
-- **LLM**: OpenRouter Free mode by default, configured as an explicit `type: openai` OpenAI-compatible provider.
-  Put `OPENROUTER_API_KEY` in `.env`; `config.example.yaml` already points to `https://openrouter.ai/api/v1` and uses `model: openrouter/free`, so the copied default config is enough for a first validation run.
-  If the key is missing or invalid, XCompiler reports the failing provider, model, base URL, HTTP status/body, and an explicit hint to set `OPENROUTER_API_KEY`.
-  For production-like engineering runs, give each role a dedicated first-choice model and append `openrouter_free` (`model: openrouter/free`, `tags: [cluster]`) as the last fallback in every role chain.
-  Cluster providers default to the lower dynamic score band `0.2..0.5`, so they remain backups unless the dedicated models fail or their scores decay.
-  See [docs/openrouter.md](docs/openrouter.md) for the setup guide and official OpenRouter links.
-- **i18n**: set top-level `locale: en` or `locale: zh` in `config.yaml` to control CLI and prompt language.
-- **Sandbox**: `subprocess` by default (creates an isolated venv at `<workspace>/.sandbox/<project>/`); switch to `docker` for bind-mount + network / resource limits.
-- **Audit**: every run writes `<workspace>/.xcompiler/audit.jsonl` and `docs/process_log.md`, recording all LLM I/O, tool calls and Step state transitions.
-- **Cross-run debug memory**: `<workspace>/.xcompiler/debug_cache.json` persists DEBUG attempts; subsequent `xcompiler run` calls enter Debugger mode with prior failures fed back to the LLM.
+```bash
+echo "Parse a DBC file into an Excel report" > req.md
+xcompiler build -i req.md --yes
+xcompiler run /tmp/xcompiler-<timestamp>/phasePlan.json
+xcompiler load /tmp/xcompiler-<timestamp>/xcompiler-<timestamp>.xc
+```
+
+Source checkout development:
+
+```bash
+npm ci
+cp .env.example .env
+cp config.example.yaml config.yaml
+npm run build
+npm link
+xcompiler --help
+```
+
+Dev mode without linking:
+
+```bash
+npm run dev -- build -i req.md --yes
+npm run dev -- run path/to/phasePlan.json
+```
+
+Incremental development:
+
+```bash
+xcompiler build -w path/to/workspace -i feature_req.md --intent feature --yes
+xcompiler evolve -w path/to/workspace -i refactor_req.md --intent refactor --yes
+xcompiler append path/to/workspace/<name>.xc -i feature_req.md --yes
+```
+
+Self-bootstrap:
+
+```bash
+xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
+```
+
+---
+
+## Common Commands
+
+| Command | Purpose |
+|---|---|
+| `xcompiler build -i <file>` | Build a phase plan from a requirement file |
+| `xcompiler build -t <topic.md>` | Reuse a clarified topic and skip Gate 1 |
+| `xcompiler run <phasePlan.json>` | Execute the active phase plan |
+| `xcompiler run --from <stepId>` | Resume from a specific step |
+| `xcompiler run --phase <phase>` | Run only one phase/stage |
+| `xcompiler load <name.xc>` | Load project config/progress and continue |
+| `xcompiler append <name.xc> -i <file>` | Add a new requirement to an existing project |
+| `xcompiler evolve -w <workspace> -i <file>` | Build and run an incremental change |
+| `xcompiler acp` | Start the ACP code-agent stdio adapter |
+| `xcompiler doctor` | Check config, LLM providers, sandbox, and skills |
+| `xcompiler ls` / `xcompiler show <stepId>` | Inspect plans and recent audit entries |
+| `npm run release:local -- vX.Y.Z` | Prepare a local release commit and tag without pushing |
+
+---
+
+## Runtime Defaults
+
+- **LLM**: OpenRouter Free mode by default. Missing/invalid keys produce provider/model/base URL/status/body diagnostics and an explicit `OPENROUTER_API_KEY` hint.
+- **LLM routing**: role-specific provider chains, dynamic scores, `score=0` manual disable, and `tags: [cluster]` fallback score band for aggregated routes such as `openrouter/free`.
+- **Languages**: Python and TypeScript project generation, testing, execution, and entry checks.
+- **Sandbox**: `subprocess` by default; optional `docker` mode for bind-mount isolation and network/resource limits.
+- **Audit**: every run writes `.xcompiler/audit.jsonl`, LLM stream traces, `docs/process_log.md`, debug cache, and project memory.
+- **Security gates**: project file access is guarded, write tools are scoped to declared outputs, and sensitive actions can be surfaced as permission events in adapter scenarios.
+
+---
+
+## Runtime Tuning
+
+LLM routing is configured under `config.yaml -> llm.*`.
+
+| Field | Default | Effect |
+|---|---|---|
+| `roles.<Role>` | role dependent | Ordered/scored provider chain for Planner, Architect, Coder, Tester, Debugger |
+| `scores.<provider>` | `1.0` | Initial score; `0` means manually disabled |
+| `cluster_score_min/max` | `0.2..0.5` | Dynamic score band for providers tagged `cluster` |
+| `max_rounds_per_step` | `6` | LLM dialogue limit within a normal step |
+| `max_debug_rounds_per_step` | `max(8, 2 * max_rounds_per_step)` | Debugger round cap |
+| `max_debug_retries` | `3` | Debug retry attempts |
+| `max_edit_lines_per_step` | `auto` | Adaptive EditGuard cumulative write-line budget |
+| `max_write_chunk_bytes` | `auto` | Adaptive per-call write chunk budget |
+| `sandbox_limits.network` | `download-only` | Outbound allowed, no inbound ports; `off` disables network |
 
 ---
 
@@ -228,62 +228,28 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 
 | Path | Content |
 |---|---|
-| [docs/XCompiler_design.md](docs/XCompiler_design.md) | Overall design: V-model phases, Agent / Skill / Tool abstractions, Sandbox & Workspace |
-| [docs/implementation_plan.md](docs/implementation_plan.md) | M1 → M6 milestones and landing steps |
-| [docs/openrouter.md](docs/openrouter.md) | OpenRouter Free-mode setup with `type: openai` provider config |
-| [docs/deploy.md](docs/deploy.md) | Deployment guide (local + Docker) |
-| [docs/plugin_api.md](docs/plugin_api.md) | Typed plugin API, lifecycle hooks, ordering and failure policy |
-| [docs/versioning.md](docs/versioning.md) | Core and Plugin API version sources, sync commands and release checks |
-| [docs/self_bootstrap.md](docs/self_bootstrap.md) | Generational bootstrap, worktree isolation, qualification gates and promotion protocol |
-| [docs/dev_audit_log.md](docs/dev_audit_log.md) | XCompiler's own delivery log (every requirement / decision / artefact / verification) |
-
-> Doc layering:
-> - `docs/` is the single documentation root; design documents use semantic names while V-model run artefacts use the `01-` through `05-` phase prefixes.
-> - `docs/dev_audit_log.md` documents "how we built XCompiler" and is itself a XCompiler deliverable.
-> - `<workspace>/docs/process_log.md` is auto-generated by the runtime `AuditLogger`, recording every interaction of "the user building a Python project with XCompiler" as that product's delivery summary.
-
----
-
-## Runtime tuning (`config.yaml → agent.*`)
-
-LLM routing is configured under `config.yaml → llm.*`. Use `roles.<Role>` arrays for role-specific chains, set `scores.<provider>: 0` to disable a provider, and tune cluster fallback score bounds with `cluster_score_min` / `cluster_score_max` when you want `openrouter/free` to be more or less aggressive as a backup.
-
-| Field | Default | Effect |
-|---|---|---|
-| `max_rounds_per_step` | 6 | Upper bound on LLM dialogue rounds within a single Step |
-| `max_debug_rounds_per_step` | `max(8, 2 × max_rounds_per_step)` | DEBUG retry round cap |
-| `max_debug_retries` | 3 | Max DEBUG retry count |
-| `max_edit_lines_per_step` | `auto` | EditGuard cumulative write-line cap per Step; `auto` adapts to phase/tools/outputs/prompt context, while a number keeps a fixed hard cap |
-| `max_write_chunk_bytes` | `auto` | `write_file` / `append_file` per-call content byte budget; `auto` adapts to phase/context, while complex work should still split by module/function/class boundaries |
-| `sandbox_limits.network` | `download-only` | unrestricted outbound without published ports; use `off` for isolation; legacy `pypi-only` is rejected |
+| [docs/openrouter.md](docs/openrouter.md) | OpenRouter Free-mode setup and OpenAI-compatible provider notes |
+| [docs/acp.md](docs/acp.md) | ACP code-agent adapter protocol notes |
+| [docs/XCompiler_design.md](docs/XCompiler_design.md) | Core design and V-model concepts |
+| [docs/plugin_api.md](docs/plugin_api.md) | Plugin API, lifecycle hooks, tools, skills |
+| [docs/versioning.md](docs/versioning.md) | Version sources, release script, tag policy |
+| [docs/self_bootstrap.md](docs/self_bootstrap.md) | Self-bootstrap and qualification gates |
+| [docs/deploy.md](docs/deploy.md) | Local, Docker, and native package deployment |
+| [docs/dev_audit_log.md](docs/dev_audit_log.md) | Historical project delivery log |
 
 ---
 
 ## Tests
 
 ```bash
+npm run version:check
 npm run typecheck
-npm test                        # vitest, ~140 cases
-npm run smoke:ollama            # real ollama end-to-end smoke test
+npm run lint
+npm test
+npm run build
 ```
 
----
-
-## Deployment
-
-Full steps in [docs/deploy.md](docs/deploy.md):
-
-```bash
-# A. Local (Node 24 + Python 3)
-npm ci && npm run build && npm link
-xcompiler --help
-
-# B. Docker (multi-stage image + compose)
-docker build -t xcompiler:latest .
-docker compose run --rm xcompiler --help
-```
-
-The image bundles `python3 / git / docker.io / tini`. The sandbox can be `subprocess` (default) or `docker` (DooD — mount `/var/run/docker.sock`).
+Recent local release gate: 49 test files / 473 tests passed.
 
 ---
 
