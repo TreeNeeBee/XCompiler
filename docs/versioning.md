@@ -24,9 +24,21 @@ npm run version:sync
 
 # 设置下一个核心版本并同步全部位置
 npm run version:set -- 0.1.4
+
+# 准备一次本地发版（不 push）
+npm run release:local -- v0.1.4
 ```
 
 核心版本遵循 SemVer。发布 tag 必须是 `v<package version>`，例如 `v0.1.3`；Release workflow 会在测试和打包前强制校验，版本不一致时停止发布。二进制分发包内包含 `VERSION` 文件，CLI 的 `--version` 也读取同一个生成常量。
+
+`release:local` 会要求工作区干净，然后同步 `package.json`、`package-lock.json` 与 `src/version.ts`，执行本地发版门禁（`version:check`、`npm audit --omit=dev`、`typecheck`、`lint`、`test`、`build`、`npm pack --dry-run`），提交 `chore: release <tag>`，并创建本地 annotated tag。它不会 push；完成后手工执行：
+
+```bash
+git push origin <branch>
+git push origin <tag>
+```
+
+如果上一次本地 tag 创建错了但还没有推送远端，可使用 `npm run release:local -- v0.1.4 --replace-local-tag` 删除并重建本地 tag；该选项不会删除远端 tag。离线环境可加 `--skip-audit` 跳过本地 `npm audit`，但 GitHub Release workflow 仍会执行审计。
 
 Plugin API 版本独立于核心版本，只在插件公共接口出现不兼容修改时递增整数主版本。插件自身使用 SemVer，并在 manifest 中强制声明 `apiVersion` 和 `minXCompilerVersion`；详细规则见 [plugin_api.md](plugin_api.md)。
 
