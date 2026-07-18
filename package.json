@@ -44,6 +44,8 @@
     ".env.example",
     "docs/assets",
     "docs/acp.md",
+    "docs/XCompiler_design.md",
+    "docs/deploy.md",
     "docs/openrouter.md",
     "docs/plugin_api.md",
     "docs/self_bootstrap.md",

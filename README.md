@@ -64,8 +64,8 @@ V-model behavior:
 Layer responsibilities:
 
 - **Adapters**: argument/protocol parsing, config loading, user interaction, output rendering, exit codes.
-- **Runtime**: the only business API for build, run, workflow, agents, tools, plugins, memory, and permissions.
-- **Workflow engine**: phase iteration, V-model scheduling, rollback/debug routing, iteration gates, resume.
+- **Runtime**: Runtime API, Build Service, Run Service, Event Stream, and Permission Broker; the only business entry point.
+- **Workflow and planning**: phase iteration, V-model scheduling, rollback/debug routing, iteration gates, resume.
 - **Agents / Skills**: role-specific prompts plus allowed tools for each stage.
 - **Tools**: guarded file edits, program/test execution, API fetches, dependency edits, git snapshots.
 - **LLM Router**: role chains, provider scores, cluster fallbacks, OpenAI-compatible/Ollama clients, audit.
@@ -197,7 +197,6 @@ LLM routing is configured under `config.yaml -> llm.*`.
 | [docs/versioning.md](docs/versioning.md) | Version sources, release script, tag policy |
 | [docs/self_bootstrap.md](docs/self_bootstrap.md) | Self-bootstrap and qualification gates |
 | [docs/deploy.md](docs/deploy.md) | Local, Docker, and native package deployment |
-| [docs/dev_audit_log.md](docs/dev_audit_log.md) | Historical project delivery log |
 
 ---
 

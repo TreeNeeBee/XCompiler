@@ -42,11 +42,9 @@ For local development from this repository:
 {
   "agent_servers": {
     "XCompiler Dev": {
-      "command": "node",
+      "command": "/path/to/XCompiler/node_modules/.bin/tsx",
       "args": [
-        "--import",
-        "tsx",
-        "/Users/ddk/Documents/Workspace/TOAA/src/cli/xcompiler.ts",
+        "/path/to/XCompiler/src/cli/xcompiler.ts",
         "acp"
       ],
       "env": {}
@@ -54,6 +52,8 @@ For local development from this repository:
   }
 }
 ```
+
+Replace `/path/to/XCompiler` with the local repository path. ACP mode must keep stdout reserved for JSON-RPC only; use stderr for adapter diagnostics.
 
 ## Current Limitations
 
