@@ -6,7 +6,9 @@ dist/
 .env.local
 config.yaml
 llm_scores.yaml
+llm_scores_user.yaml
 .sandbox/
+.xcompiler/
 workspace/.draft/
 workspace/logs/
 .toaa/

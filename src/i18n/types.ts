@@ -149,6 +149,7 @@ export interface Messages {
     optIntent: string;
     optBaselinePlan: string;
     optProjectFile: string;
+    optDebugWikiPath: string;
     argPlan: string;
     argProjectFile: string;
     argStepId: string;
@@ -410,6 +411,7 @@ export interface Messages {
         hasBaseline?: boolean;
         complex?: boolean;
         projectShapeAmbiguous?: boolean;
+        languageAmbiguous?: boolean;
       },
     ) => string;
     plannerDecompose: (
@@ -448,6 +450,7 @@ export interface Messages {
     executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) => string;
     executorFeedbackReadOnlyRecoveryRequired: string;
     executorFeedbackRepairEvidenceMissing: string;
+    executorFeedbackIssueResolutionPlanMissing: string;
   };
 
   // ───────── Skill prompts ─────────

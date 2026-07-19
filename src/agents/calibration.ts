@@ -150,6 +150,18 @@ export const DOC_PATH_ALIASES: Record<string, string> = {
   'docs/integration-test.md': DOC_NAMES.integrationTest,
   'docs/module-test.md': DOC_NAMES.moduleTest,
   'docs/functional-test.md': DOC_NAMES.functionalTest,
+  'docs/unit-test-plan.md': DOC_NAMES.unitTestPlan,
+  'docs/unit_test_plan.md': DOC_NAMES.unitTestPlan,
+  'docs/tests/unit_test_plan.md': DOC_NAMES.unitTestPlan,
+  'docs/integration-test-plan.md': DOC_NAMES.integrationTestPlan,
+  'docs/integration_test_plan.md': DOC_NAMES.integrationTestPlan,
+  'docs/tests/integration_test_plan.md': DOC_NAMES.integrationTestPlan,
+  'docs/module-test-plan.md': DOC_NAMES.moduleTestPlan,
+  'docs/module_test_plan.md': DOC_NAMES.moduleTestPlan,
+  'docs/tests/module_test_plan.md': DOC_NAMES.moduleTestPlan,
+  'docs/functional-test-plan.md': DOC_NAMES.functionalTestPlan,
+  'docs/functional_test_plan.md': DOC_NAMES.functionalTestPlan,
+  'docs/tests/functional_test_plan.md': DOC_NAMES.functionalTestPlan,
   'docs/quick-start.md': DOC_NAMES.quickstart,
   'docs/quick_start.md': DOC_NAMES.quickstart,
   'docs/quickstart.md': DOC_NAMES.quickstart,
@@ -158,6 +170,19 @@ export const DOC_PATH_ALIASES: Record<string, string> = {
   'docs/api-guide.md': DOC_NAMES.apiGuide,
 };
 
+function canonicalTestPlanAlias(path: string): string | undefined {
+  const normalized = path.replace(/\\/g, '/');
+  const match = normalized.match(
+    /^docs\/(?:tests\/)?(?:\d{1,2}[-_])?(functional|integration|module|unit)[-_]?test[-_]?plan\.md$/iu,
+  );
+  const kind = match?.[1]?.toLowerCase();
+  if (kind === 'functional') return DOC_NAMES.functionalTestPlan;
+  if (kind === 'integration') return DOC_NAMES.integrationTestPlan;
+  if (kind === 'module') return DOC_NAMES.moduleTestPlan;
+  if (kind === 'unit') return DOC_NAMES.unitTestPlan;
+  return undefined;
+}
+
 /**
  * 把 LLM 容易写歪的常见旧文档名规整为 V 模型规范化命名。同时：
  *  - 各阶段若 outputs 缺失对应规范文档，自动追加；
@@ -165,12 +190,12 @@ export const DOC_PATH_ALIASES: Record<string, string> = {
  *  - 若有 Step 把 docs/topic.md 列为 outputs，则移除（topic.md 仅由 xcompiler build 写入）。
  */
 export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'application'): Step[] {
-  const remap = (p: string): string => DOC_PATH_ALIASES[p] ?? p;
+  const remap = (p: string): string => DOC_PATH_ALIASES[p] ?? canonicalTestPlanAlias(p) ?? p;
   const dropTopic = (p: string): boolean => p !== DOC_NAMES.topic;
   return steps.map((s) => {
     const iterationId = s.iterationId ?? 'P1';
-    const inputs = (s.inputs ?? []).map((p) => iterationScopedInput(remap(p), s.phase, iterationId));
-    let outputs = (s.outputs ?? []).map((p) => iterationScopedDoc(remap(p), s.phase, iterationId)).filter(dropTopic);
+    const inputs = dedup((s.inputs ?? []).map((p) => iterationScopedInput(remap(p), s.phase, iterationId)));
+    let outputs = dedup((s.outputs ?? []).map((p) => iterationScopedDoc(remap(p), s.phase, iterationId)).filter(dropTopic));
     outputs = outputs.filter((out) => {
       const ownerPhase = testPlanOwnerPhase(out, iterationId);
       return !ownerPhase || ownerPhase === s.phase;
@@ -218,6 +243,37 @@ export function calibrateVModelDependencies(steps: Step[]): Step[] {
   }
 
   return out;
+}
+
+export function calibrateArchitectureModuleDependencies(
+  modules: ArchitectureModule[] | undefined | null,
+  dependencies: string[] | undefined | null,
+): { architectureModules: ArchitectureModule[]; dependencies: string[] } {
+  const architectureModules = (modules ?? []).map((module) => ({
+    ...module,
+    dependencies: [...(module.dependencies ?? [])],
+  }));
+  const moduleIds = new Set(architectureModules.map((module) => module.id));
+  const projectDependencies = [...(dependencies ?? [])];
+
+  for (const module of architectureModules) {
+    const internalDependencies: string[] = [];
+    for (const rawDependency of module.dependencies) {
+      const dependency = String(rawDependency ?? '').trim();
+      if (!dependency) continue;
+      if (moduleIds.has(dependency) || /^M\d{3,}$/u.test(dependency)) {
+        internalDependencies.push(dependency);
+      } else {
+        projectDependencies.push(dependency);
+      }
+    }
+    module.dependencies = dedup(internalDependencies);
+  }
+
+  return {
+    architectureModules,
+    dependencies: dedup(projectDependencies.map((dependency) => dependency.trim()).filter(Boolean)),
+  };
 }
 
 // =============================================================================

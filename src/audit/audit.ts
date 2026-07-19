@@ -221,14 +221,21 @@ export class AuditLogger {
   }
 
   /**
-   * 记录一轮 Executor 思考：thoughts 文本、计划调用的 actions、是否完成。
-   * 写入 jsonl + markdown 折叠块，交付时可作为"AI 思考过程完整记录"。
+   * 记录一轮 Executor 执行摘要：简短 intent、issue 处理方案、计划调用的 actions、是否完成。
+   * 写入 jsonl + markdown 折叠块，交付时可追溯每轮决策和动作。
    */
   async executorTurn(
     stepId: string,
     role: string,
     round: number,
-    payload: { thoughts?: string; actions?: unknown[]; done?: boolean; raw?: string; provider?: string },
+    payload: {
+      thoughts?: string;
+      issueResolutionPlan?: string;
+      actions?: unknown[];
+      done?: boolean;
+      raw?: string;
+      provider?: string;
+    },
   ): Promise<void> {
     const storedPayload = protectAuditContent(payload, this.contentMode) as Record<string, unknown>;
     await this.appendJsonl({

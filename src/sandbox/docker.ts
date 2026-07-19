@@ -8,7 +8,7 @@ import type { Language } from '../core/plan.js';
 import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 import { normalizeTypeScriptTestArgs } from './test_args.js';
 import { resolveTypeScriptProgramCommand } from './program_args.js';
-import { execRaw, sanitizeVenvName } from './subprocess.js';
+import { createInstallProgressWatch, execRaw, formatExecFailure, sanitizeVenvName } from './subprocess.js';
 
 export interface DockerSandboxOptions {
   ws: Workspace;
@@ -16,7 +16,7 @@ export interface DockerSandboxOptions {
   audit?: AuditLogger;
   /** 目标语言，决定运行时与默认镜像。默认 python。 */
   language?: Language;
-  /** 镜像名，默认按语言推导（python:3.11-slim / node:20-slim） */
+  /** 镜像名，默认按语言推导（python:3.11-slim / node:24-slim） */
   image?: string;
   /** 容器内挂载点，默认 /workspace */
   workdir?: string;
@@ -65,7 +65,7 @@ export class DockerSandbox implements Sandbox {
       throw new Error(t().system.unsupportedPypiOnlyNetwork);
     }
     this.language = opts.language ?? 'python';
-    this.image = opts.image ?? (this.language === 'typescript' ? 'node:20-slim' : 'python:3.11-slim');
+    this.image = opts.image ?? (this.language === 'typescript' ? 'node:24-slim' : 'python:3.11-slim');
     this.workdir = opts.workdir ?? '/workspace';
     this.sandboxRel = (opts.sandboxDir ?? '.sandbox').replaceAll('\\', '/');
     this.cacheRel = `${this.sandboxRel}/${this.language === 'typescript' ? 'package.sha256' : 'requirements.sha256'}`;
@@ -144,6 +144,11 @@ export class DockerSandbox implements Sandbox {
       reqContent.trim().length > 0
         ? `python -m venv ${this.venvInContainer} && ${this.pipInContainer} install --quiet -r ${reqInContainer}`
         : `python -m venv ${this.venvInContainer}`;
+    const progressWatch = createInstallProgressWatch(
+      [path.join(sandboxAbs, this.venvName)],
+      this.opts.limits,
+      'docker pip install',
+    );
 
     const r = await execRaw(
       this.dockerBin,
@@ -160,12 +165,10 @@ export class DockerSandbox implements Sandbox {
         '-lc',
         installCmd,
       ],
-      { timeoutMs: this.opts.limits.wall_seconds * 1000 * 10 },
+      { progressWatch },
     );
     if (r.exitCode !== 0) {
-      throw new Error(
-        `docker sandbox build failed (exit=${r.exitCode}):\n${r.stderr || r.stdout}`,
-      );
+      throw new Error(formatExecFailure(`docker sandbox build failed (image=${this.image}, cwd=${this.opts.ws.root})`, r));
     }
     await fs.writeFile(cacheAbs, sig, 'utf8');
     await this.opts.audit?.event('sandbox.exec', t().sandboxLog.dockerBuilt(!!reqContent), {
@@ -203,6 +206,11 @@ export class DockerSandbox implements Sandbox {
     const installCommand = lockContent.trim()
       ? 'npm ci --ignore-scripts --no-audit --no-fund'
       : 'npm install --ignore-scripts --no-audit --no-fund';
+    const progressWatch = createInstallProgressWatch(
+      [this.opts.ws.abs('node_modules')],
+      this.opts.limits,
+      'docker npm install',
+    );
     const r = await execRaw(
       this.dockerBin,
       [
@@ -218,10 +226,10 @@ export class DockerSandbox implements Sandbox {
         '-lc',
         installCommand,
       ],
-      { timeoutMs: this.opts.limits.wall_seconds * 1000 * 10 },
+      { progressWatch },
     );
     if (r.exitCode !== 0) {
-      throw new Error(`docker sandbox build failed (exit=${r.exitCode}):\n${r.stderr || r.stdout}`);
+      throw new Error(formatExecFailure(`docker sandbox build failed (image=${this.image}, cwd=${this.opts.ws.root})`, r));
     }
     await fs.writeFile(cacheAbs, sig, 'utf8');
     await this.opts.audit?.event('sandbox.exec', t().sandboxLog.dockerNodeBuilt, {
@@ -279,7 +287,7 @@ export class DockerSandbox implements Sandbox {
       image: this.image,
       network: this.opts.limits.network,
     });
-    return execRaw(this.dockerBin, dockerArgs, { timeoutMs });
+    return execRaw(this.dockerBin, dockerArgs, { timeoutMs, progressWatch: extra?.progressWatch });
   }
 
   async runProgram(args: string[], extra?: ExecExtra): Promise<ExecResult> {
@@ -300,10 +308,25 @@ export class DockerSandbox implements Sandbox {
   }
 
   async installDeps(packages: string[]): Promise<ExecResult> {
+    const progressWatch = createInstallProgressWatch(
+      [
+        this.language === 'typescript'
+          ? this.opts.ws.abs('node_modules')
+          : this.opts.ws.abs(`${this.sandboxRel}/${this.venvName}`),
+      ],
+      this.opts.limits,
+      this.language === 'typescript' ? 'docker npm install' : 'docker pip install',
+    );
     if (this.language === 'typescript') {
-      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages]);
+      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages], {
+        timeoutMs: 0,
+        progressWatch,
+      });
     }
-    return this.exec(this.pipInContainer, ['install', '--quiet', ...packages]);
+    return this.exec(this.pipInContainer, ['install', '--quiet', ...packages], {
+      timeoutMs: 0,
+      progressWatch,
+    });
   }
 
   /** 将宿主机绝对路径映射回容器路径；相对路径或 undefined 原样返回（相对则拼到 workdir）。 */

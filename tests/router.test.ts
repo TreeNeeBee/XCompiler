@@ -1,7 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import YAML from 'yaml';
 import { LLMRouter } from '../src/llm/router.js';
 import { findSharedCoderDebuggerModel, reportRoleModelAdvice } from '../src/llm/role_advice.js';
-import { ScoreStore, scoreStoreOptionsFromConfig } from '../src/llm/scores.js';
+import {
+  LLM_DYNAMIC_SCORES_FILE,
+  LLM_USER_SCORES_FILE,
+  ScoreStore,
+  scoreStoreOptionsFromConfig,
+} from '../src/llm/scores.js';
 import type { XCompilerConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
 
@@ -35,6 +44,10 @@ function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
       },
     },
   };
+}
+
+async function tmpDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-router-'));
 }
 
 describe('LLMRouter fallback chain', () => {
@@ -399,6 +412,24 @@ describe('LLMRouter score-sorted chain', () => {
     scores.set('openai', 0, 'disabled');
     const router = new LLMRouter(cfg, undefined, scores);
     expect(() => router.for('Coder')).toThrow(/score=0|No usable LLM provider/);
+  });
+
+  it('uses llm_scores_user.yaml overrides when ranking providers', async () => {
+    const dir = await tmpDir();
+    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    await fs.writeFile(path.join(dir, LLM_DYNAMIC_SCORES_FILE), YAML.stringify({
+      ollama_code: 1,
+      openai: 0.1,
+    }));
+    await fs.writeFile(path.join(dir, LLM_USER_SCORES_FILE), YAML.stringify({
+      ollama_code: 0,
+      openai: 0.9,
+    }));
+    const scores = new ScoreStore(path.join(dir, 'config.yaml'));
+    await scores.load();
+    const router = new LLMRouter(cfg, undefined, scores);
+
+    expect(router.for('Coder').name).toBe('openai:gpt');
   });
 
   it('decays score on chat error and boosts on success', async () => {

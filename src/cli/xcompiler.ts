@@ -95,6 +95,7 @@ program
   .option('--baseline-plan <file>', t().cli.optBaselinePlan)
   .option('--plan-out <file>', t().cli.optPlanOut)
   .option('--project-file <file>', t().cli.optProjectFile)
+  .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (opts) => {
@@ -110,6 +111,7 @@ program
       baselinePlanFile: opts.baselinePlan,
       planOut: opts.planOut,
       projectFilePath: opts.projectFile,
+      debugWikiPath: opts.debugWikiPath,
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
       cwd: process.cwd(),
@@ -128,6 +130,7 @@ program
   .option('--phase <phase>', t().cli.optPhase, parsePhase)
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
+  .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .action(async (projectArg, opts) => {
     const result = await runLoadCommand({
       projectFile: projectArg,
@@ -137,6 +140,7 @@ program
       onlyPhase: opts.phase,
       resetStatus: !!opts.reset,
       force: !!opts.force,
+      debugWikiPath: opts.debugWikiPath,
       io: createCliRuntimeIO(),
     });
     applyExecuteExitCode(result);
@@ -151,6 +155,7 @@ program
   .option('-t, --topic <file>', t().cli.optTopic)
   .option('--intent <kind>', t().cli.optIntent, parseIntent, 'feature')
   .option('--plan-out <file>', t().cli.optPlanOut)
+  .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .option('--yes', t().cli.optYes, false)
   .option('--force', t().cli.optForce, false)
   .action(async (projectArg, opts) => {
@@ -161,6 +166,7 @@ program
       topicFile: opts.topic,
       intent: opts.intent,
       planOut: opts.planOut,
+      debugWikiPath: opts.debugWikiPath,
       yes: !!opts.yes && (!!opts.input || !!opts.topic),
       force: !!opts.force,
       io: createCliRuntimeIO(),
@@ -208,6 +214,7 @@ program
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
+  .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .action(async (planArg, opts) => {
     const result = await runRunCommand({
       planArg,
@@ -220,6 +227,7 @@ program
       resetStatus: !!opts.reset,
       force: !!opts.force,
       projectFilePath: opts.projectFile,
+      debugWikiPath: opts.debugWikiPath,
       cwd: process.cwd(),
       io: createCliRuntimeIO(),
     });

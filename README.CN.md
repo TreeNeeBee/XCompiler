@@ -91,7 +91,7 @@ model: openrouter/free
 base_url: https://openrouter.ai/api/v1
 ```
 
-`config.yaml` 和 `llm_scores.yaml` 都是用户本地运行态文件，故意不提交到仓库。npm 包只发布 `config.example.yaml` 和 `.env.example` 作为模板。
+`config.yaml`、`llm_scores.yaml` 和 `llm_scores_user.yaml` 都是本地文件，故意不提交到仓库。npm 包只发布 `config.example.yaml` 和 `.env.example` 作为模板。`llm_scores.yaml` 是 XCompiler 自动维护的运行态分数；只有需要固定本地覆盖策略时，才创建 `llm_scores_user.yaml`，例如用 `provider: 0` 禁用某个 provider。
 
 ---
 
@@ -147,6 +147,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run <phasePlan.json>` | 执行当前阶段计划 |
 | `xcompiler run --from <stepId>` | 从指定 Step 断点恢复 |
 | `xcompiler run --phase <phase>` | 只执行某个阶段/状态 |
+| `xcompiler run --debug-wiki-path <dir>` | 复用并更新共享分层 Debug wiki 路径 |
 | `xcompiler load <name.xc>` | 读取工程配置/进度并继续 |
 | `xcompiler append <name.xc> -i <file>` | 在已有工程上追加新需求 |
 | `xcompiler evolve -w <workspace> -i <file>` | 编译并执行一次增量变更 |
@@ -160,10 +161,11 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 ## 默认运行时
 
 - **LLM**：默认 OpenRouter Free mode。key 缺失或无效时会输出 provider、model、base URL、HTTP 状态/响应体，并明确提示 `OPENROUTER_API_KEY`。
-- **LLM 路由**：角色专用 provider 链、动态评分、`score=0` 手动禁用、`tags: [cluster]` 聚合路由兜底评分带。
+- **LLM 路由**：角色专用 provider 链、XCompiler 自动维护的动态评分、`llm_scores_user.yaml` 用户覆盖，以及 `tags: [cluster]` 聚合路由兜底评分带。
 - **语言**：支持 Python 与 TypeScript 的工程生成、测试、运行和入口检查。
 - **Sandbox**：默认 `subprocess`；可切换 `docker` 以启用 bind-mount 隔离和网络/资源限制。
-- **Audit**：每次运行写入 `.xcompiler/audit.jsonl`、LLM stream trace、`docs/process_log.md`、Debug cache 和 Project memory。
+- **Audit**：每次运行写入 `.xcompiler/audit.jsonl`、LLM stream trace、`docs/process_log.md`、Debug cache、Debug wiki 反馈和 Project memory。
+- **Debug wiki**：Debugger 处理 issue 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 issue 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用，并追加 `log.md` 记录操作流水。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。issue 正确修复后会把 LLM 输出的 `issueResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
 - **安全门禁**：项目文件访问受控，写工具限制在 Step 声明 outputs 内，敏感操作可通过 Adapter 暴露为权限事件。
 
 ---
@@ -175,14 +177,18 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | 字段 | 默认 | 作用 |
 |---|---|---|
 | `roles.<Role>` | 按角色不同 | Planner、Architect、Coder、Tester、Debugger 的 provider 候选链 |
-| `scores.<provider>` | `1.0` | 初始评分；`0` 表示用户手动禁用 |
-| `cluster_score_min/max` | `0.2..0.5` | `cluster` provider 的动态评分范围 |
+| `scores.<provider>` | `1.0` | 向后兼容的初始评分；手动覆盖优先使用 `llm_scores_user.yaml` |
+| `llm_scores_user.yaml` | 不存在 | 本地用户评分覆盖；`0` 禁用 provider，`0.1..1` 固定有效优先级 |
+| `cluster_score_min/max` | `0.2..0.5` | `cluster` provider 的动态评分范围；用户覆盖仍可使用 `0.1..1` |
+| `agent.sandboxes.python.mode` | `subprocess` | Python 工程沙盒后端：本地 subprocess 或 Docker |
+| `agent.sandboxes.typescript.mode` | `subprocess` | TypeScript 工程沙盒后端：本地 subprocess 或 Docker |
 | `max_rounds_per_step` | `6` | 普通 Step 的 LLM 对话轮数上限 |
 | `max_debug_rounds_per_step` | `max(8, 2 * max_rounds_per_step)` | Debugger 对话轮数上限 |
 | `max_debug_retries` | `3` | Debug 重试次数 |
+| `--debug-wiki-path <dir>` | XCompiler 路径下的 `.xcompiler/debug-wiki` | 共享分层 Debug wiki 根目录路径 |
 | `max_edit_lines_per_step` | `auto` | EditGuard 单 Step 累计写入行数预算 |
 | `max_write_chunk_bytes` | `auto` | 单次写入 chunk 字节预算 |
-| `sandbox_limits.network` | `download-only` | 默认允许出站下载且不发布入站端口；`off` 为断网 |
+| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | 默认允许出站下载且不发布入站端口；`off` 为断网 |
 
 ---
 

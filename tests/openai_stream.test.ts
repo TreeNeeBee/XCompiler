@@ -460,6 +460,44 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
+  it('aborts repeated OpenAI-compatible long text phrase loops', async () => {
+    let stop = false;
+    const repeated =
+      'The classifier should produce one technology item, but the failing test reports two items, ' +
+      'so the same implementation hypothesis is being repeated instead of producing a patch. ';
+    let tickCount = 0;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const tick = () => {
+        if (stop || res.writableEnded) return;
+        const variant = `Next I will inspect candidate ${tickCount++} and then apply the smallest code change. `;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: repeated + variant } }] })}\n\n`);
+        setImmediate(tick);
+      };
+      tick();
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'looping-model',
+        requestTimeoutMs: 5_000,
+        streamIdleTimeoutMs: 0,
+        maxOutputChars: 0,
+      });
+      const chunks: string[] = [];
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: (chunk) => chunks.push(chunk) }),
+      ).rejects.toThrow(/repeated text loop/u);
+      expect(chunks.join('').length).toBeLessThan(20_000);
+    } finally {
+      stop = true;
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it('aborts degenerate non-JSON prefixes in JSON streaming mode', async () => {
     let open: import('node:http').ServerResponse | null = null;
     const server = createServer((_req, res) => {

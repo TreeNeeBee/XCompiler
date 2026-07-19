@@ -167,6 +167,17 @@ const projectShapeQuestions = [
   },
 ].map(withClarifyOptions);
 
+const languageClarificationQuestion = {
+  id: 'Q10',
+  category: 'boundary',
+  question: 'Which development language should this project use for the first delivery?',
+  why: 'Determines whether XCompiler should generate Python or TypeScript runtime, tests, and sandbox commands.',
+  options: [
+    { label: 'A', answer: 'Python CLI/script implementation, the default when no language is specified.' },
+    { label: 'B', answer: 'TypeScript / Node.js CLI implementation.' },
+  ],
+};
+
 describe('Planner.decompose — V 模型骨架完整性校验', () => {
   it('澄清阶段在 API/library 与应用形态不明时必须提出项目形态问题', async () => {
     const questionsWithoutShape = projectShapeQuestions.map((question) =>
@@ -192,6 +203,19 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const questionsWithoutCredential = projectShapeQuestions.filter((question) => question.id !== 'Q9');
     const p = new Planner(fakeLLM(JSON.stringify(questionsWithoutCredential)));
     await expect(p.clarify('Build a CLI that fetches weather data from an external API')).rejects.toThrow(/external API credential question/);
+  });
+
+  it('澄清阶段在 topic 无法判断开发语言时必须确认 Python 或 TypeScript', async () => {
+    const p = new Planner(fakeLLM(JSON.stringify(projectShapeQuestions)));
+    await expect(
+      p.clarify('Build a report generator tool', { languageAmbiguous: true }),
+    ).rejects.toThrow(/development language question/);
+  });
+
+  it('澄清阶段接受开发语言确认问题', async () => {
+    const p = new Planner(fakeLLM(JSON.stringify([...projectShapeQuestions, languageClarificationQuestion])));
+    const questions = await p.clarify('Build a report generator tool', { languageAmbiguous: true });
+    expect(questions.some((question) => question.question.includes('development language'))).toBe(true);
   });
 
   it('拒绝只有 REQUIREMENT_ANALYSIS + HIGH_LEVEL_DESIGN 两步的残缺 plan（用户回放）', async () => {
@@ -474,6 +498,154 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     expect(plan.steps.every((step) => step.iterationId === 'P1')).toBe(true);
   });
 
+  it('PhasePlan 校验失败时会把错误反馈给 Planner 并重试', async () => {
+    const requirementDigest = 'Build a small number formatter and add presentation polish in a later phase.';
+    const invalidPhasePlan = {
+      requirementDigest,
+      globalPrompt: '',
+      projectType: 'application',
+      complexityAssessment: {
+        level: 'moderate',
+        rationale: 'multi-step delivery',
+        splitRecommended: true,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core functionality',
+          objective: 'Deliver the core number formatting function.',
+          status: 'current',
+          scope: ['Number formatting'],
+          deliverables: ['Formatting function'],
+          dependsOn: [],
+        },
+      ],
+    };
+    const repairedPhasePlan = {
+      ...invalidPhasePlan,
+      implementationPhases: [
+        ...invalidPhasePlan.implementationPhases,
+        {
+          id: 'P2',
+          title: 'Reporting export',
+          objective: 'Add presentation polish after P1.',
+          status: 'planned',
+          scope: ['Presentation polish'],
+          deliverables: ['Polished output format'],
+          dependsOn: ['P1'],
+        },
+      ],
+    };
+    const stepPlan = {
+      requirementDigest: 'P1 core number formatting function.',
+      globalPrompt: '',
+      dependencies: ['pytest'],
+      steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
+    };
+
+    const p = new Planner(fakeLLM([
+      JSON.stringify(invalidPhasePlan),
+      JSON.stringify(repairedPhasePlan),
+      JSON.stringify(stepPlan),
+    ]));
+    const plan = await p.decompose({ rawRequirement: requirementDigest, clarifications: [] });
+
+    expect(plan.implementationPhases?.map((phase) => phase.id)).toEqual(['P1', 'P2']);
+    expect(plan.steps).toHaveLength(8);
+  });
+
+  it('当前 phase 的架构规模门禁不被后续 planned phase 的 surface 误伤', async () => {
+    const rawRequirement = '写一个 TypeScript CLI，每日抓取网上热点新闻并生成 Markdown 简报，后续支持定时调度。';
+    const phasePlan = {
+      requirementDigest: 'TypeScript news briefing CLI with scheduled daily execution planned in a later phase.',
+      globalPrompt: '',
+      projectType: 'application',
+      complexityAssessment: {
+        level: 'moderate',
+        rationale: 'core CLI and scraping now, scheduler later',
+        splitRecommended: true,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core news briefing',
+          objective: 'Deliver a TypeScript CLI that fetches public news pages, filters categories, and writes a Markdown briefing.',
+          status: 'current',
+          scope: ['CLI entrypoint', 'public web scraping', 'category filtering', 'Markdown generation'],
+          deliverables: ['Runnable TypeScript CLI', 'Markdown briefing output'],
+          dependsOn: [],
+          verificationGate: {
+            summary: 'P1 core CLI can fetch, filter, and render a briefing.',
+            checks: ['CLI starts', 'news items are fetched', 'Markdown contains titles and links'],
+            failurePolicy: 'Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.',
+          },
+        },
+        {
+          id: 'P2',
+          title: 'Scheduler',
+          objective: 'Add daily scheduling and retry policy after P1.',
+          status: 'planned',
+          scope: ['workflow scheduler', 'retry policy'],
+          deliverables: ['Configurable scheduler'],
+          dependsOn: ['P1'],
+          verificationGate: {
+            summary: 'P2 scheduler works.',
+            checks: ['scheduled run triggers'],
+            failurePolicy: 'Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.',
+          },
+        },
+      ],
+    };
+    const sourcePaths = ['src/cli.ts', 'src/fetcher.ts', 'src/filter.ts', 'src/brief.ts'];
+    const testPaths = ['tests/cli.test.ts', 'tests/fetcher.test.ts', 'tests/filter.test.ts', 'tests/brief.test.ts'];
+    const modules = sourcePaths.map((sourcePath, index) => ({
+      id: `M${String(index + 1).padStart(3, '0')}`,
+      name: ['CliEntrypoint', 'NewsFetcher', 'CategoryFilter', 'BriefRenderer'][index]!,
+      responsibility: 'Own one P1 core news briefing boundary.',
+      sourcePaths: [sourcePath],
+      testPaths: [testPaths[index]!],
+      dependencies: index === 0 ? ['M002', 'M003', 'M004'] : index === 1 ? ['cheerio'] : [],
+    }));
+    const steps = vModelSteps('P1', 1, sourcePaths[0], testPaths[0]);
+    steps[3] = {
+      ...steps[3]!,
+      outputs: [...sourcePaths, 'docs/tests/unit-test-plan.md'],
+      subTasks: modules.map((module) => ({
+        id: module.id,
+        title: `Implement ${module.name}`,
+        description: module.responsibility,
+        outputs: module.sourcePaths,
+      })),
+    };
+    steps[6] = {
+      ...steps[6]!,
+      outputs: ['docs/07-module-test.md', ...testPaths],
+      subTasks: modules.map((module) => ({
+        id: module.id,
+        title: `Test ${module.name}`,
+        description: module.responsibility,
+        outputs: module.testPaths,
+      })),
+    };
+    const stepPlan = {
+      requirementDigest: 'TypeScript CLI news briefing core with scheduled daily execution planned later.',
+      globalPrompt: '',
+      dependencies: ['typescript', 'tsx', 'vitest'],
+      architectureModules: modules,
+      steps,
+    };
+
+    const p = new Planner(fakeLLM([JSON.stringify(phasePlan), JSON.stringify(stepPlan)]), undefined, 'typescript');
+    const plan = await p.decompose({ rawRequirement, clarifications: [] });
+
+    expect(plan.architectureModules).toHaveLength(4);
+    expect(plan.architectureModules?.[1]?.dependencies).toEqual([]);
+    expect(plan.dependencies).toContain('cheerio');
+    expect(plan.steps.every((step) => step.iterationId === 'P1')).toBe(true);
+  });
+
   it('复杂需求缺少 HIGH_LEVEL_DESIGN 模块契约时拒绝 plan，让 fallback 重新生成', async () => {
     const requirementDigest = 'OpenAPI server with CLI import/export and SQLite persistence';
     const phasePlan = {
@@ -490,9 +662,9 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
         {
           id: 'P1',
           title: 'Core functionality',
-          objective: 'Deliver the core multi-surface application.',
+          objective: 'Deliver the core OpenAPI server, command line import/export, and SQLite database persistence.',
           status: 'current',
-          scope: ['Core API, CLI, and persistence'],
+          scope: ['OpenAPI server endpoint', 'command line import/export', 'SQLite database persistence'],
           deliverables: ['Core application'],
           dependsOn: [],
         },

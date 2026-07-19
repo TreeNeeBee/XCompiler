@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { URL } from 'node:url';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
-import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
+import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export const DEFAULT_OLLAMA_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEFAULT_OLLAMA_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -209,6 +209,12 @@ export function streamPostNdjson(
                   );
                   return;
                 }
+                if (detectRepeatedTextLoop(aggregate)) {
+                  fail(
+                    new Error('detected repeated text loop in stream (semantic tail repetition); aborting'),
+                  );
+                  return;
+                }
               }
               if (obj.error) {
                 fail(new Error(`Ollama error: ${obj.error}`));
@@ -240,6 +246,10 @@ export function streamPostNdjson(
             // watchdog: token loop
             if (detectCyclicTokenLoop(aggregate)) {
               fail(new Error('detected token loop in stream; aborting'));
+              return;
+            }
+            if (detectRepeatedTextLoop(aggregate)) {
+              fail(new Error('detected repeated text loop in stream; aborting'));
               return;
             }
           }

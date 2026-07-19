@@ -5,8 +5,7 @@
  *            verify each provider's model is actually available → check that
  *            every declared role has at least one live (reachable + enabled)
  *            provider.
- *  - sandbox: based on cfg.agent.sandbox, verify python3+venv (subprocess) or
- *             docker binary + daemon (docker); warn for DooD setups.
+ *  - sandbox: verify the configured Python and TypeScript sandbox profiles.
  *  - skills: build the default skill registry and verify every referenced tool
  *            is registered in the default tool registry.
  */
@@ -19,6 +18,7 @@ import { buildDefaultRegistry } from '../tools/index.js';
 import { buildDefaultSkills } from '../skills/skill.js';
 import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { t } from '../i18n/index.js';
+import type { Language } from './plan.js';
 
 export type CheckLevel = 'ok' | 'warn' | 'fail';
 
@@ -285,78 +285,82 @@ function openAIEndpointRequiresApiKey(baseUrl: string): boolean {
 
 async function checkSandbox(cfg: XCompilerConfig, skipNetwork: boolean): Promise<CheckSection> {
   const M = t().doctor;
-  const kind = cfg.agent.sandbox;
   const sec: CheckSection = { title: M.sectionSandbox, items: [] };
-  sec.items.push({ level: 'ok', message: M.sandboxKind(kind) });
-  // Report network policy + exposed ports (always, regardless of sandbox kind).
-  const limits = cfg.agent.sandbox_limits;
-  const ports = limits.expose_ports ?? [];
-  sec.items.push({ level: 'ok', message: M.sandboxNetworkPolicy(limits.network, ports) });
-  if (limits.network === 'full' && ports.length === 0) {
-    sec.items.push({ level: 'warn', message: M.sandboxFullNoPorts });
+  for (const language of ['python', 'typescript'] as const) {
+    const sandbox = cfg.agent.sandboxes[language];
+    const kind = sandbox.mode;
+    const limits = kind === 'docker' ? sandbox.docker.limits : sandbox.local.limits;
+    const ports = limits.expose_ports ?? [];
+    sec.items.push({ level: 'ok', message: M.sandboxKind(`${language}/${kind}`) });
+    sec.items.push({ level: 'ok', message: M.sandboxNetworkPolicy(limits.network, ports) });
+    if (limits.network === 'full' && ports.length === 0) {
+      sec.items.push({ level: 'warn', message: M.sandboxFullNoPorts });
+    }
+    if (kind === 'subprocess') {
+      await checkSubprocessLanguage(sec, language);
+    } else if (kind === 'docker') {
+      await checkDockerSandbox(sec, sandbox.docker.docker_bin || 'docker', skipNetwork);
+    }
   }
-
-  if (kind === 'subprocess') {
-    if (cfg.agent.language === 'typescript') {
-      const node = await execRaw('node', ['--version'], { timeoutMs: 5_000 });
-      if (node.exitCode !== 0) {
-        sec.items.push({ level: 'fail', message: M.sandboxNodeMissing });
-        return sec;
-      }
-      sec.items.push({ level: 'ok', message: M.sandboxNodeOk((node.stdout || node.stderr).trim()) });
-      const npm = await execRaw('npm', ['--version'], { timeoutMs: 5_000 });
-      if (npm.exitCode !== 0) {
-        sec.items.push({ level: 'fail', message: M.sandboxNpmMissing });
-        return sec;
-      }
-      sec.items.push({ level: 'ok', message: M.sandboxNpmOk((npm.stdout || npm.stderr).trim()) });
-      const npx = await execRaw('npx', ['--version'], { timeoutMs: 5_000 });
-      if (npx.exitCode !== 0) {
-        sec.items.push({ level: 'fail', message: M.sandboxNpxMissing });
-        return sec;
-      }
-      sec.items.push({ level: 'ok', message: M.sandboxNpxOk((npx.stdout || npx.stderr).trim()) });
-    } else {
-      const v = await execRaw('python3', ['--version'], { timeoutMs: 5_000 });
-      if (v.exitCode !== 0) {
-        sec.items.push({ level: 'fail', message: M.sandboxPythonMissing });
-        return sec;
-      }
-      sec.items.push({ level: 'ok', message: M.sandboxPythonOk((v.stdout || v.stderr).trim()) });
-      const venv = await execRaw('python3', ['-m', 'venv', '--help'], { timeoutMs: 5_000 });
-      if (venv.exitCode !== 0) {
-        sec.items.push({ level: 'fail', message: M.sandboxVenvMissing });
-      } else {
-        sec.items.push({ level: 'ok', message: M.sandboxVenvOk });
-      }
-    }
-    return sec;
-  }
-
-  if (kind === 'docker') {
-    if (isRunningInContainer()) {
-      sec.items.push({ level: 'fail', message: M.sandboxInContainerWarn });
-    }
-    const bin = cfg.agent.sandbox_docker.docker_bin || 'docker';
-    const v = await execRaw(bin, ['--version'], { timeoutMs: 5_000 });
-    if (v.exitCode !== 0) {
-      sec.items.push({ level: 'fail', message: M.sandboxDockerMissing(bin) });
-      return sec;
-    }
-    sec.items.push({ level: 'ok', message: M.sandboxDockerOk((v.stdout || v.stderr).trim()) });
-    if (skipNetwork) return sec;
-    const info = await execRaw(bin, ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 5_000 });
-    if (info.exitCode !== 0) {
-      sec.items.push({
-        level: 'fail',
-        message: M.sandboxDockerDaemonDown((info.stderr || info.stdout || '').trim().slice(0, 200)),
-      });
-    }
-    return sec;
-  }
-
-  // firejail or others: nothing to verify here.
   return sec;
+}
+
+async function checkSubprocessLanguage(sec: CheckSection, language: Language): Promise<void> {
+  const M = t().doctor;
+  if (language === 'typescript') {
+    const node = await execRaw('node', ['--version'], { timeoutMs: 5_000 });
+    if (node.exitCode !== 0) {
+      sec.items.push({ level: 'fail', message: M.sandboxNodeMissing });
+      return;
+    }
+    sec.items.push({ level: 'ok', message: M.sandboxNodeOk((node.stdout || node.stderr).trim()) });
+    const npm = await execRaw('npm', ['--version'], { timeoutMs: 5_000 });
+    if (npm.exitCode !== 0) {
+      sec.items.push({ level: 'fail', message: M.sandboxNpmMissing });
+      return;
+    }
+    sec.items.push({ level: 'ok', message: M.sandboxNpmOk((npm.stdout || npm.stderr).trim()) });
+    const npx = await execRaw('npx', ['--version'], { timeoutMs: 5_000 });
+    if (npx.exitCode !== 0) {
+      sec.items.push({ level: 'fail', message: M.sandboxNpxMissing });
+      return;
+    }
+    sec.items.push({ level: 'ok', message: M.sandboxNpxOk((npx.stdout || npx.stderr).trim()) });
+    return;
+  }
+  const v = await execRaw('python3', ['--version'], { timeoutMs: 5_000 });
+  if (v.exitCode !== 0) {
+    sec.items.push({ level: 'fail', message: M.sandboxPythonMissing });
+    return;
+  }
+  sec.items.push({ level: 'ok', message: M.sandboxPythonOk((v.stdout || v.stderr).trim()) });
+  const venv = await execRaw('python3', ['-m', 'venv', '--help'], { timeoutMs: 5_000 });
+  if (venv.exitCode !== 0) {
+    sec.items.push({ level: 'fail', message: M.sandboxVenvMissing });
+  } else {
+    sec.items.push({ level: 'ok', message: M.sandboxVenvOk });
+  }
+}
+
+async function checkDockerSandbox(sec: CheckSection, bin: string, skipNetwork: boolean): Promise<void> {
+  const M = t().doctor;
+  if (isRunningInContainer()) {
+    sec.items.push({ level: 'fail', message: M.sandboxInContainerWarn });
+  }
+  const v = await execRaw(bin, ['--version'], { timeoutMs: 5_000 });
+  if (v.exitCode !== 0) {
+    sec.items.push({ level: 'fail', message: M.sandboxDockerMissing(bin) });
+    return;
+  }
+  sec.items.push({ level: 'ok', message: M.sandboxDockerOk((v.stdout || v.stderr).trim()) });
+  if (skipNetwork) return;
+  const info = await execRaw(bin, ['info', '--format', '{{.ServerVersion}}'], { timeoutMs: 5_000 });
+  if (info.exitCode !== 0) {
+    sec.items.push({
+      level: 'fail',
+      message: M.sandboxDockerDaemonDown((info.stderr || info.stdout || '').trim().slice(0, 200)),
+    });
+  }
 }
 
 function checkSkills(): CheckSection {

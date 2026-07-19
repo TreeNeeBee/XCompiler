@@ -13,8 +13,8 @@ import { resolveWorkspacePath } from './path_guard.js';
  *   - python tests inside a `network=off` sandbox still need a small piece of
  *     external data (the LLM fetches it once and writes it as a fixture).
  *
- * For Python code that itself needs to talk to the network, configure
- * `agent.sandbox_limits.network` in `config.yaml`:
+ * For generated code that itself needs to talk to the network, configure
+ * `agent.sandboxes.<language>.<local|docker>.limits.network` in `config.yaml`:
  *   - `download-only` (default) — outbound HTTP/HTTPS allowed, no inbound.
  *   - `full` + `expose_ports: [8000]` — also publish container ports to
  *     127.0.0.1 on the host so host-side tests can reach the running app.

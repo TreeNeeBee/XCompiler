@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatClarificationQuestion, resolveClarificationAnswer } from '../src/cli/compile.js';
+import { formatClarificationQuestion, inferCompileLanguageFromText, resolveClarificationAnswer } from '../src/cli/compile.js';
 import { setLocale } from '../src/i18n/index.js';
 import type { ClarifyQuestion } from '../src/agents/planner.js';
 
@@ -42,5 +42,16 @@ describe('clarification answer choices', () => {
     expect(resolveClarificationAnswer(question, 'b')).toBe('B. Merge duplicates and preserve the most complete record.');
     expect(resolveClarificationAnswer(question, 'Use a timestamp tie-breaker.')).toBe('Use a timestamp tie-breaker.');
     expect(resolveClarificationAnswer(question, 'E')).toBe('E');
+  });
+});
+
+describe('compile language inference', () => {
+  it('infers TypeScript and Python from explicit topic wording', () => {
+    expect(inferCompileLanguageFromText('帮我写一个ts程序，每日抓取热点新闻并生成简报')).toBe('typescript');
+    expect(inferCompileLanguageFromText('写一个python脚本，解析dbc文件并导出excel')).toBe('python');
+  });
+
+  it('returns undefined when the topic does not identify Python or TypeScript', () => {
+    expect(inferCompileLanguageFromText('写一个命令行工具，每日抓取热点新闻并生成简报')).toBeUndefined();
   });
 });

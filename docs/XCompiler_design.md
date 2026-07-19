@@ -204,8 +204,9 @@ async function xcompilerRun(phasePlanPath: string) {
 行为约定：
 
 - **断点续跑**：每次 Step 状态变更立即回写当前 `plan.P<N>.json` 和工程进度，中断后再次执行自动续跑。
-- **DEBUG 闭环**：失败先记录 issue，再按失败阶段路由到匹配上游阶段生成 patch/rewrite；修复后继续执行后续 V 模型阶段。
-- **审计日志**：`.xcompiler/audit.jsonl`、LLM trace、debug cache 与 `docs/process_log.md` 同步记录关键事件和错误上下文。
+- **DEBUG 闭环**：失败先记录 issue，再按失败阶段路由到匹配上游阶段生成 patch/rewrite；Debugger 处理 issue 时必须输出 `issueResolutionPlan`，正确修复后写回 issue 并沉淀到 debug-wiki。
+- **Debug-wiki**：默认复制并加载 XCompiler 自身路径的 `.xcompiler/debug-wiki/`（设置 `XC_PATH` 时使用 `$XC_PATH`），也可通过 `--debug-wiki-path <dir>` 指定。存储和处理参考 LLM-wiki：`wiki/system/*.md` 是系统级策略，`wiki/agent/*.md` 是 agent/calibration 级规则，`wiki/external/*.md` 是真实生成项目的 issue 修复条目，`index.md` 是可读目录，`index.json` 是检索索引，`log.md` 是追加式操作日志，`wiki/external/feedback.jsonl` 是对内置层的运行反馈 overlay。检索输入使用压缩后的 `DebugBrief`，输出采用 problem / priorPlan / confirmedSolution / feedback 摘要；复用失败的条目标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
+- **审计日志**：`.xcompiler/audit.jsonl`、LLM trace、debug cache、debug-wiki 反馈与 `docs/process_log.md` 同步记录关键事件和错误上下文。
 
 ---
 
@@ -334,15 +335,17 @@ teardown → 保留缓存镜像，删除临时目录
 ### 8.3 Debug 闭环
 
 ```text
-Sandbox 失败 → 捕获错误 → Debugger LLM
+Sandbox 失败 → 记录 issue + DebugBrief
+             → 检索 debug-wiki system/agent/external 的历史问题/方案/反馈摘要
+             → Debugger LLM 输出 issueResolutionPlan
              → 选 Skill 修改源码 (apply_patch / replace_in_file / add_dependency …)
-             → Sandbox 重跑失败子集 → 通过则全量回归
-             → 失败则 retries++（≤ 3）
+             → Sandbox 重跑失败子集 → 通过则写回 issue 并更新 debug-wiki
+             → 失败则标记相关 wiki 条目 needs_review，并进入下一轮/终止
 ```
 
 ### 8.4 资源与安全限制（默认）
 
-- CPU / 内存 / 单次墙钟按 `config.yaml -> sandbox_limits` 配置。
+- CPU / 内存 / 单次墙钟按 `config.yaml -> agent.sandboxes.<language>.<local|docker>.limits` 配置。
 - 默认网络策略为 `download-only`：允许出站下载，不开放入站端口；`off` 表示断网。
 - 工具文件访问最高优先级门禁限制在项目目录内；项目外读写默认拒绝。
 - Docker 模式通过 bind mount、用户权限和资源限制提供更强隔离。
@@ -374,7 +377,7 @@ workspace/
 │   └── history/               # 阶段 + 时间戳归档
 ├── src/                       # Python / TypeScript 源码
 ├── tests/                     # pytest / Vitest
-├── .xcompiler/                # 锁、审计、项目记忆、debug cache、自举报告
+├── .xcompiler/                # 锁、审计、项目记忆、debug cache、自举报告；debug-wiki 默认在 XCompiler 自身路径的分层目录
 ├── .sandbox/                  # venv / docker 缓存（gitignore）
 └── node_modules/              # TypeScript subprocess sandbox（按需）
 ```
@@ -489,15 +492,39 @@ llm:
     Debugger:  [openrouter_free]
 
 agent:
-  language: python              # python | typescript
   max_steps: 50
   max_debug_retries: 3
-  sandbox: subprocess           # subprocess | docker | firejail
-  sandbox_limits:
-    cpu: 1
-    memory_mb: 1024
-    wall_seconds: 60
-    network: download-only      # off | download-only | full；旧 pypi-only 会被拒绝
+  sandboxes:
+    python:
+      mode: subprocess          # subprocess | docker | firejail
+      local:
+        limits:
+          cpu: 1
+          memory_mb: 1024
+          wall_seconds: 60
+          network: download-only
+      docker:
+        image: python:3.11-slim
+        limits:
+          cpu: 1
+          memory_mb: 1024
+          wall_seconds: 60
+          network: download-only
+    typescript:
+      mode: subprocess
+      local:
+        limits:
+          cpu: 1
+          memory_mb: 1024
+          wall_seconds: 60
+          network: download-only
+      docker:
+        image: node:24-slim
+        limits:
+          cpu: 1
+          memory_mb: 1024
+          wall_seconds: 60
+          network: download-only
 ```
 
 密钥通过 `.env` 注入，禁止硬编码。

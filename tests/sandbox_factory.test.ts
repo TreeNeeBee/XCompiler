@@ -55,7 +55,7 @@ describe('sandbox factory — container detection', () => {
   it('容器内创建 sandbox=docker 时抛出引导性错误', () => {
     process.env.XC_IN_CONTAINER = '1';
     const ws = new Workspace('/tmp/xcompiler-factory-test');
-    expect(() => createSandbox(baseCfg('docker'), ws)).toThrowError(/sandbox=docker/);
+    expect(() => createSandbox(baseCfg('docker'), ws)).toThrowError(/sandbox mode docker/);
     expect(() => createSandbox(baseCfg('docker'), ws)).toThrowError(/subprocess/);
   });
 
@@ -79,13 +79,13 @@ describe('sandbox factory — container detection', () => {
     expect(() => createSandbox(cfg, ws)).toThrow(/pypi-only/);
   });
 
-  it('跨语言执行时为 TypeScript plan 选择 node 默认镜像，而不是沿用 Python 自定义镜像', () => {
+  it('跨语言执行时为 TypeScript plan 选择 Node 默认镜像，而不是沿用 Python 自定义镜像', () => {
     process.env.XC_IN_CONTAINER = '0';
     const ws = new Workspace('/tmp/xcompiler-factory-test');
     const cfg = baseCfg('docker');
     cfg.agent.sandbox_docker.image = 'python:3.12-slim';
     const sb = createSandbox(cfg, ws, undefined, 'typescript') as DockerSandbox & { image?: string };
     expect(sb).toBeInstanceOf(DockerSandbox);
-    expect((sb as { image?: string }).image).toBe('node:20-slim');
+    expect((sb as { image?: string }).image).toBe('node:24-slim');
   });
 });

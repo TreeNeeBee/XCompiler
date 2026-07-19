@@ -29,12 +29,25 @@ export interface ExecResult {
   stderr: string;
   timedOut: boolean;
   durationMs: number;
+  timeoutReason?: string;
+}
+
+export interface ExecProgressWatch {
+  /** Host-side paths whose recursive size indicates install progress. */
+  paths: string[];
+  /** Kill the child only after this much time without size growth. */
+  idleTimeoutMs: number;
+  /** Poll interval for recursive size checks. */
+  checkIntervalMs?: number;
+  /** Human-readable label used in timeout diagnostics. */
+  label?: string;
 }
 
 export interface ExecExtra {
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs?: number;
+  progressWatch?: ExecProgressWatch;
 }
 
 /** 沙盒统一接口。任意 phase / tool 都通过此接口与运行时交互。 */

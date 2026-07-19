@@ -22,7 +22,7 @@ export interface PreflightResult {
   zeroed: string[];
   /** 本次探活不可达或模型缺失的 provider；只影响当前运行，不持久化为 score=0。 */
   unreachable: string[];
-  /** 历史 sidecar 把非 ollama provider 置 0，但当前没有其他活候选时恢复的 provider；用户配置 score=0 不恢复。 */
+  /** 历史动态快照把非 ollama provider 置 0，但当前没有其他活候选时恢复的 provider；用户覆盖 score=0 不恢复。 */
   revived: string[];
   /** 自动加入的合成 provider（key=合成名, value=模型名）。 */
   autoAdded: Record<string, string>;
@@ -34,7 +34,7 @@ export interface PreflightResult {
  * 启动期 LLM 自检：
  *  1. 对每个 ollama provider，GET `${base_url}/api/tags`，比对配置的 model 是否存在。
  *  2. 不存在 → 当前运行跳过该 provider，并把 ScoreStore 降到最低动态分。
- *     存在但当前评分=0 且不是用户显式禁用 → 恢复为 1，让用户手工拉模型后无需再编辑评分。
+ *     存在但当前评分=0 且不是用户显式禁用 → 恢复为 1，让用户手工拉模型后无需再编辑动态快照。
  *  3. 全部 ollama provider 都不可用时（任何角色都没活着的候选），从可达 ollama 服务器扫描
  *     全量 tags，把每个模型注册为合成 provider `auto_<sanitized>`，加入到所有现存角色的
  *     候选数组里。完成后再次校验：若仍有角色为空，抛错让 CLI 退出（exit code 7）。
@@ -98,7 +98,7 @@ export async function preflightProviders(
       result.zeroed.push(p.name);
       if (!result.unreachable.includes(p.name)) result.unreachable.push(p.name);
     } else if (scores.get(p.name) === 0 && !scores.isUserDisabled(p.name)) {
-      // 之前被置 0 过，现在模型回来了且不是用户显式禁用 → 恢复为 1
+      // 之前被动态置 0 过，现在模型回来了且不是用户显式禁用 → 恢复为 1
       scores.set(p.name, 1, `preflight: model "${p.model}" returned to ${p.baseUrl}`);
     }
   }

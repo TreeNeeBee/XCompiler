@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import type { Sandbox } from '../sandbox/types.js';
@@ -96,7 +98,7 @@ const typescriptProfile: LanguageProfile = {
   manifestFile: 'package.json',
   codeExtensions: ['.ts', '.tsx'],
   seedManifestFromDeps: false,
-  defaultDockerImage: 'node:20-slim',
+  defaultDockerImage: 'node:24-slim',
   renderManifest(deps) {
     const pkg = {
       name: 'app',
@@ -125,6 +127,9 @@ const typescriptProfile: LanguageProfile = {
   },
   plannerPromptOverride: '',
   executorPromptOverride: '',
+  async autoFixImports(ws, audit) {
+    return autoFixTypeScriptTypeOnlyImports(ws, audit);
+  },
   async probeEntry(ws, sandbox) {
     return probeTsEntrypoint(ws, sandbox);
   },
@@ -325,4 +330,110 @@ async function readJsonFile<T>(
   } catch {
     return null;
   }
+}
+
+const TYPE_ONLY_IMPORTS_BY_PACKAGE: Record<string, Set<string>> = {
+  axios: new Set([
+    'AxiosAdapter',
+    'AxiosBasicCredentials',
+    'AxiosHeaderValue',
+    'AxiosInstance',
+    'AxiosInterceptorManager',
+    'AxiosPromise',
+    'AxiosProxyConfig',
+    'AxiosRequestConfig',
+    'AxiosRequestHeaders',
+    'AxiosResponse',
+    'AxiosResponseHeaders',
+    'CreateAxiosDefaults',
+    'InternalAxiosRequestConfig',
+    'RawAxiosRequestHeaders',
+  ]),
+};
+
+async function autoFixTypeScriptTypeOnlyImports(
+  ws: Workspace,
+  audit: AuditLogger,
+): Promise<string[]> {
+  const files = await listTypeScriptSourceFiles(ws, 'src');
+  const fixed: string[] = [];
+  for (const rel of files) {
+    const original = await ws.readFile(rel);
+    const next = rewriteKnownTypeOnlyImports(original);
+    if (next === original) continue;
+    await ws.writeFile(rel, next);
+    fixed.push(rel);
+    await audit.event('note', `fixed type-only imports in ${rel}`, {
+      messageId: 'audit.typescript_imports_autofix',
+      path: rel,
+    });
+  }
+  return fixed;
+}
+
+async function listTypeScriptSourceFiles(ws: Workspace, dir: string): Promise<string[]> {
+  const abs = ws.abs(dir);
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(abs, { withFileTypes: true }) as Dirent[];
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const rel = `${dir}/${entry.name}`.replace(/\\/g, '/');
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      files.push(...await listTypeScriptSourceFiles(ws, rel));
+    } else if (entry.isFile() && /\.tsx?$/.test(entry.name)) {
+      files.push(rel);
+    }
+  }
+  return files.sort();
+}
+
+function rewriteKnownTypeOnlyImports(source: string): string {
+  const importRe = /^import\s+([^'"\n]+?)\s+from\s+(['"])([^'"]+)\2\s*;?$/gm;
+  return source.replace(importRe, (full, clauseRaw: string, quote: string, specifier: string) => {
+    const knownTypes = TYPE_ONLY_IMPORTS_BY_PACKAGE[specifier];
+    if (!knownTypes) return full;
+    if (clauseRaw.trim().startsWith('type ')) return full;
+
+    const parsed = splitImportClause(clauseRaw);
+    if (!parsed?.named.length) return full;
+    const valueNamed: string[] = [];
+    const typeNamed: string[] = [];
+    for (const item of parsed.named) {
+      const importedName = item.replace(/^type\s+/u, '').split(/\s+as\s+/iu)[0]?.trim() ?? '';
+      if (knownTypes.has(importedName)) typeNamed.push(item.replace(/^type\s+/u, '').trim());
+      else valueNamed.push(item);
+    }
+    if (typeNamed.length === 0) return full;
+
+    const lines: string[] = [];
+    if (parsed.defaultImport && valueNamed.length > 0) {
+      lines.push(`import ${parsed.defaultImport}, { ${valueNamed.join(', ')} } from ${quote}${specifier}${quote};`);
+    } else if (parsed.defaultImport) {
+      lines.push(`import ${parsed.defaultImport} from ${quote}${specifier}${quote};`);
+    } else if (valueNamed.length > 0) {
+      lines.push(`import { ${valueNamed.join(', ')} } from ${quote}${specifier}${quote};`);
+    }
+    lines.push(`import type { ${typeNamed.join(', ')} } from ${quote}${specifier}${quote};`);
+    return lines.join('\n');
+  });
+}
+
+function splitImportClause(clauseRaw: string): { defaultImport?: string; named: string[] } | undefined {
+  const clause = clauseRaw.trim();
+  const namedMatch = clause.match(/\{([\s\S]*)\}$/u);
+  if (!namedMatch) return undefined;
+  const beforeNamed = clause.slice(0, namedMatch.index).replace(/,\s*$/u, '').trim();
+  const named = (namedMatch[1] ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return {
+    defaultImport: beforeNamed || undefined,
+    named,
+  };
 }
