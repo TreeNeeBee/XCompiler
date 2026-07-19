@@ -34,8 +34,10 @@ export function detectNetworkApiFailure(text: string): NetworkApiFailure | null 
 export function isTestAssertionDiagnosticLine(line: string): boolean {
   const text = line.trim();
   if (!text) return false;
+  if (/^\d+\|\s/u.test(text)) return true;
   if (/^(?:[→>-]\s*)?expected\b/iu.test(text)) return true;
   if (/\bAssertionError\b/iu.test(text) && /\bexpected\b/iu.test(text)) return true;
+  if (/\bexpect\s*\(/u.test(text) && /\.(?:to|not)\w*\s*\(/u.test(text)) return true;
   return /\bexpected\b[\s\S]{0,240}\b(?:got|received|to\s+(?:be|equal|throw|contain|have|match))\b/iu.test(text);
 }
 

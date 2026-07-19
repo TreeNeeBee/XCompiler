@@ -346,7 +346,7 @@ async function createQualificationExecutor(
   const sandbox = new DockerSandbox({
     ws: workspace,
     language: 'typescript',
-    image: options.dockerImage ?? 'node:20-slim',
+    image: options.dockerImage ?? 'node:24-slim',
     dockerBin: options.dockerBin,
     limits: {
       cpu: 2,

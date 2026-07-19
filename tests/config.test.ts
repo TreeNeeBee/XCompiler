@@ -171,6 +171,73 @@ agent:
     expect(config.llm.cluster_score_max).toBe(0.5);
   });
 
+  it('parses language-specific sandbox profiles without requiring agent.language', async () => {
+    const cfgPath = await writeRawConfig(`
+llm:
+  default: openrouter_free
+  providers:
+    openrouter_free:
+      type: openai
+      api_key: dummy
+      base_url: https://openrouter.ai/api/v1
+      model: openrouter/free
+  roles: {}
+  fallbacks: []
+  role_fallbacks: {}
+  scores: {}
+agent:
+  max_steps: 1
+  max_debug_retries: 1
+  sandboxes:
+    python:
+      mode: subprocess
+      local:
+        sandbox_dir: .sandbox/python
+        limits:
+          cpu: 1
+          memory_mb: 256
+          wall_seconds: 30
+          network: off
+      docker:
+        image: python:3.11-slim
+        workdir: /workspace
+        pull: false
+        docker_bin: docker
+        extra_run_args: []
+        limits:
+          cpu: 1
+          memory_mb: 256
+          wall_seconds: 30
+          network: off
+    typescript:
+      mode: docker
+      local:
+        sandbox_dir: .sandbox/typescript
+        limits:
+          cpu: 1
+          memory_mb: 256
+          wall_seconds: 30
+          network: off
+      docker:
+        image: node:24-slim
+        workdir: /workspace
+        pull: false
+        docker_bin: docker
+        extra_run_args: []
+        limits:
+          cpu: 2
+          memory_mb: 512
+          wall_seconds: 45
+          network: download-only
+`);
+    const { config } = await loadConfigWithPath(cfgPath);
+    expect(config.agent.sandboxes.python.mode).toBe('subprocess');
+    expect(config.agent.sandboxes.python.local.sandbox_dir).toBe('.sandbox/python');
+    expect(config.agent.sandboxes.typescript.mode).toBe('docker');
+    expect(config.agent.sandboxes.typescript.docker.image).toBe('node:24-slim');
+    expect(config.agent.sandboxes.typescript.docker.limits.cpu).toBe(2);
+  });
+
   it('rejects inverted cluster score bounds', async () => {
     const cfg = baseConfig();
     (cfg.llm as Record<string, unknown>).cluster_score_min = 0.8;

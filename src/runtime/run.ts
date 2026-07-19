@@ -44,6 +44,8 @@ export interface ExecuteOptions {
   force?: boolean;
   /** Optional XXX.xc project file to keep in sync with execution progress. */
   projectFilePath?: string;
+  /** Optional debug wiki root directory. Defaults to XCompiler's own .xcompiler/debug-wiki. */
+  debugWikiPath?: string;
   /** Project-file history command label; defaults to run. */
   projectCommand?: string;
   /** Whether to append a history row when execution starts; defaults to true. */
@@ -262,6 +264,8 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     maxEditLinesPerStep: cfg.agent.max_edit_lines_per_step,
     maxWriteChunkBytes: cfg.agent.max_write_chunk_bytes,
     terminalOutput: opts.terminalOutput ?? true,
+    debugWikiPath: opts.debugWikiPath ? path.resolve(opts.debugWikiPath) : undefined,
+    debugWikiStrict: !!opts.debugWikiPath,
     requestPermission: io.requestPermission
       ? async (request: ToolPermissionRequest) => {
           await io.emit({ type: 'permission', status: 'requested', request });

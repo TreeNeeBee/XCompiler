@@ -36,7 +36,7 @@ OPENROUTER_MODEL=openrouter/free
 ```
 
 `.env` is ignored by git. Do not commit real API keys.
-`config.yaml` and `llm_scores.yaml` are local runtime files; keep them outside commits. The package ships `config.example.yaml` and `.env.example` only as templates.
+`config.yaml`, `llm_scores.yaml`, and `llm_scores_user.yaml` are local files; keep them outside commits. The package ships `config.example.yaml` and `.env.example` only as templates. `llm_scores.yaml` is maintained by XCompiler; do not edit it directly.
 
 ## 2. Configure XCompiler
 
@@ -106,6 +106,15 @@ roles:
 ```
 
 Keep the default cluster score band (`cluster_score_min: 0.2`, `cluster_score_max: 0.5`) when `openrouter/free` is a safety net. Raise `cluster_score_max` toward `1.0` only when you intentionally want the aggregated route to compete with dedicated models.
+
+For manual local priority overrides, create `llm_scores_user.yaml` beside `config.yaml`:
+
+```yaml
+openrouter_free: 0.3
+local_openai: 0
+```
+
+User overrides take precedence over the dynamic `llm_scores.yaml` snapshot. Use `0` to disable a provider; use `0.1..1` to pin its effective priority. This file is local runtime policy and should not be committed.
 
 ## 5. Optional Local Backups
 

@@ -52,6 +52,88 @@ const ProviderSchema = z.object({
 });
 
 const LocaleSchema = z.enum(['en', 'zh']);
+const TargetLanguageSchema = z.enum(['python', 'typescript']);
+const SandboxModeSchema = z.enum(['subprocess', 'docker', 'firejail']);
+
+const SandboxLimitsSchema = z
+  .object({
+    cpu: z.number().positive().default(1),
+    memory_mb: z.number().int().positive().default(1024),
+    wall_seconds: z.number().int().positive().default(60),
+    /**
+     * Sandbox network policy.
+     *  - `off`            — no network at all (`docker --network none`).
+     *  - `download-only`  — outbound traffic allowed, no inbound port publishing.
+     *  - `pypi-only`      — legacy value; rejected at sandbox creation rather than silently
+     *                       allowing unrestricted outbound traffic.
+     *  - `full`           — outbound + every port in `expose_ports` is published
+     *                       to `127.0.0.1` so host-side tests can reach the app.
+     */
+    network: z.enum(['off', 'pypi-only', 'download-only', 'full']).default('download-only'),
+    /** Container ports to publish to 127.0.0.1 when `network=full`. */
+    expose_ports: z.array(z.number().int().min(1).max(65535)).default([]),
+  })
+  .default({
+    cpu: 1,
+    memory_mb: 1024,
+    wall_seconds: 60,
+    network: 'download-only',
+    expose_ports: [],
+  });
+
+const LocalSandboxSchema = z
+  .object({
+    sandbox_dir: z.string().min(1).optional(),
+    python_bin: z.string().min(1).optional(),
+    inherit_env: z.boolean().optional(),
+    limits: SandboxLimitsSchema,
+  })
+  .default(() => ({ limits: defaultSandboxLimits() }));
+
+const DockerSandboxSchema = z
+  .object({
+    image: z.string().default('python:3.11-slim'),
+    workdir: z.string().default('/workspace'),
+    pull: z.boolean().default(false),
+    docker_bin: z.string().default('docker'),
+    extra_run_args: z.array(z.string()).default([]),
+    sandbox_dir: z.string().min(1).optional(),
+    limits: SandboxLimitsSchema,
+  })
+  .default({
+    image: 'python:3.11-slim',
+    workdir: '/workspace',
+    pull: false,
+    docker_bin: 'docker',
+    extra_run_args: [],
+    limits: defaultSandboxLimits(),
+  });
+
+const LanguageSandboxSchema = z
+  .object({
+    mode: SandboxModeSchema.default('subprocess'),
+    local: LocalSandboxSchema,
+    docker: DockerSandboxSchema,
+  })
+  .default(() => ({
+    mode: 'subprocess' as const,
+    local: { limits: defaultSandboxLimits() },
+    docker: {
+      image: 'python:3.11-slim',
+      workdir: '/workspace',
+      pull: false,
+      docker_bin: 'docker',
+      extra_run_args: [],
+      limits: defaultSandboxLimits(),
+    },
+  }));
+
+const SandboxesSchema = z
+  .object({
+    python: LanguageSandboxSchema.optional(),
+    typescript: LanguageSandboxSchema.optional(),
+  })
+  .default({});
 
 const LlmSchema = z.object({
   default: z.string(),
@@ -60,7 +142,7 @@ const LlmSchema = z.object({
    * 角色 → provider 数组的映射。
    * 兼容旧格式：单字符串 `Coder: ollama_code` 自动归一化为 `[ollama_code]`。
    * 数组形式 `Coder: [ollama_code, openai]` 表示该角色的候选 LLM 池；
-   * 实际选择顺序由 `llm.scores` 评分降序决定；用户显式设置评分=0 的 provider 直接跳过。
+   * 实际选择顺序由 ScoreStore 有效评分降序决定；有效评分为用户覆盖优先，否则使用动态评分。
    */
   roles: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))
@@ -77,9 +159,8 @@ const LlmSchema = z.object({
   /** 可选：按角色指定 fallback 链（覆盖全局） */
   role_fallbacks: z.record(z.string(), z.array(z.string())).default({}),
   /**
-   * Provider 评分快照（启动时从 sidecar 文件加载，运行时由 ScoreStore 维护并自动落盘）。
-   * 配置文件里也可以手工设置初始值；不存在的 provider 默认评分 = 1。
-   * 用户手工设置评分 = 0 表示禁用；运行时自动评分只在 0.1～1.0 范围内调整。
+   * Provider 兼容初值。运行时动态评分由 ScoreStore 写入 llm_scores.yaml；
+   * 用户手动覆盖应写入 llm_scores_user.yaml。旧配置里显式 0 仍表示用户禁用。
    */
   scores: z.record(z.string(), z.number().min(0)).default({}),
   /**
@@ -100,14 +181,10 @@ const LlmSchema = z.object({
   }
 });
 
-const ConfigSchema = z.object({
-  /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
-  locale: LocaleSchema.optional(),
-  /** @deprecated use `locale` instead. Kept as a backwards-compatible alias. */
-  ui_language: LocaleSchema.optional(),
-  llm: LlmSchema,
-  agent: z.object({
-    language: z.enum(['python', 'typescript']).default('python'),
+const AgentSchema = z
+  .object({
+    /** @deprecated Target project language is inferred from topic/baseline. Kept for legacy configs only. */
+    language: TargetLanguageSchema.optional(),
     max_steps: z.number().int().positive().default(50),
     max_debug_retries: z.number().int().positive().default(3),
     /** Debugger 滑动窗口的硬上限（默认 = max(max_debug_retries*4, 10)）。 */
@@ -116,57 +193,114 @@ const ConfigSchema = z.object({
     max_debug_rounds_per_step: z.number().int().positive().optional(),
     max_edit_lines_per_step: z.union([z.literal('auto'), z.number().int().positive()]).default('auto'),
     max_write_chunk_bytes: z.union([z.literal('auto'), z.number().int().positive()]).default('auto'),
-    sandbox: z.enum(['subprocess', 'docker', 'firejail']).default('subprocess'),
-    sandbox_limits: z
-      .object({
-        cpu: z.number().positive().default(1),
-        memory_mb: z.number().int().positive().default(1024),
-        wall_seconds: z.number().int().positive().default(60),
-        /**
-         * Sandbox network policy.
-         *  - `off`            — no network at all (`docker --network none`).
-         *  - `download-only`  — outbound traffic allowed, no inbound port publishing
-         *                       (default; lets python pip-install / fetch web pages).
-         *  - `pypi-only`      — legacy value; rejected at sandbox creation rather than silently
-         *                       allowing unrestricted outbound traffic.
-         *  - `full`           — outbound + every port in `expose_ports` is published
-         *                       to `127.0.0.1` so host-side tests can reach the app.
-         */
-        network: z
-          .enum(['off', 'pypi-only', 'download-only', 'full'])
-          .default('download-only'),
-        /** Container ports to publish to 127.0.0.1 when `network=full`. */
-        expose_ports: z.array(z.number().int().min(1).max(65535)).default([]),
-      })
-      .default({
-        cpu: 1,
-        memory_mb: 1024,
-        wall_seconds: 60,
-        network: 'download-only',
-        expose_ports: [],
-      }),
-    sandbox_docker: z
-      .object({
-        image: z.string().default('python:3.11-slim'),
-        workdir: z.string().default('/workspace'),
-        pull: z.boolean().default(false),
-        docker_bin: z.string().default('docker'),
-        extra_run_args: z.array(z.string()).default([]),
-      })
-      .default({
-        image: 'python:3.11-slim',
-        workdir: '/workspace',
-        pull: false,
-        docker_bin: 'docker',
-        extra_run_args: [],
-      }),
-  }),
+    /** @deprecated Use agent.sandboxes.<language>.mode. */
+    sandbox: SandboxModeSchema.optional(),
+    /** @deprecated Use agent.sandboxes.<language>.<local|docker>.limits. */
+    sandbox_limits: SandboxLimitsSchema.optional(),
+    /** @deprecated Use agent.sandboxes.<language>.docker. */
+    sandbox_docker: DockerSandboxSchema.optional(),
+    sandboxes: SandboxesSchema,
+  })
+  .transform((agent) => {
+    const legacyLanguage = agent.language ?? 'python';
+    const legacyMode = agent.sandbox ?? 'subprocess';
+    const legacyLimits = agent.sandbox_limits ?? defaultSandboxLimits();
+    const defaults = {
+      python: defaultLanguageSandbox('python', legacyMode, legacyLimits),
+      typescript: defaultLanguageSandbox('typescript', legacyMode, legacyLimits),
+    };
+    const sandboxes = {
+      python: mergeLanguageSandbox(
+        defaults.python,
+        agent.sandboxes.python,
+        legacyLanguage === 'python' ? agent.sandbox_docker : undefined,
+      ),
+      typescript: mergeLanguageSandbox(
+        defaults.typescript,
+        agent.sandboxes.typescript,
+        legacyLanguage === 'typescript' ? agent.sandbox_docker : undefined,
+      ),
+    };
+    return {
+      ...agent,
+      language: legacyLanguage,
+      sandbox: sandboxes.python.mode,
+      sandbox_limits: sandboxes.python.local.limits,
+      sandbox_docker: sandboxes.python.docker,
+      sandboxes,
+    };
+  });
+
+const ConfigSchema = z.object({
+  /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
+  locale: LocaleSchema.optional(),
+  /** @deprecated use `locale` instead. Kept as a backwards-compatible alias. */
+  ui_language: LocaleSchema.optional(),
+  llm: LlmSchema,
+  agent: AgentSchema,
 }).transform(({ locale, ui_language, ...rest }) => ({
   locale: locale ?? ui_language ?? 'en',
   ...rest,
 }));
 
 export type XCompilerConfig = z.infer<typeof ConfigSchema>;
+
+type NormalizedSandboxLimits = z.infer<typeof SandboxLimitsSchema>;
+type NormalizedLanguageSandbox = z.infer<typeof LanguageSandboxSchema>;
+
+function defaultSandboxLimits(): NormalizedSandboxLimits {
+  return {
+    cpu: 1,
+    memory_mb: 1024,
+    wall_seconds: 60,
+    network: 'download-only',
+    expose_ports: [],
+  };
+}
+
+function defaultLanguageSandbox(
+  language: 'python' | 'typescript',
+  mode: 'subprocess' | 'docker' | 'firejail',
+  limits: NormalizedSandboxLimits,
+): NormalizedLanguageSandbox {
+  return {
+    mode,
+    local: {
+      sandbox_dir: `.sandbox/${language}`,
+      limits: { ...limits, expose_ports: [...(limits.expose_ports ?? [])] },
+    },
+    docker: {
+      image: language === 'typescript' ? 'node:24-slim' : 'python:3.11-slim',
+      workdir: '/workspace',
+      pull: false,
+      docker_bin: 'docker',
+      extra_run_args: [],
+      sandbox_dir: `.sandbox/${language}`,
+      limits: { ...limits, expose_ports: [...(limits.expose_ports ?? [])] },
+    },
+  };
+}
+
+function mergeLanguageSandbox(
+  defaults: NormalizedLanguageSandbox,
+  override?: NormalizedLanguageSandbox,
+  legacyDocker?: NormalizedLanguageSandbox['docker'],
+): NormalizedLanguageSandbox {
+  const dockerOverride = legacyDocker ?? override?.docker;
+  return {
+    mode: override?.mode ?? defaults.mode,
+    local: {
+      ...defaults.local,
+      ...(override?.local ?? {}),
+      limits: override?.local?.limits ?? defaults.local.limits,
+    },
+    docker: {
+      ...defaults.docker,
+      ...(dockerOverride ?? {}),
+      limits: dockerOverride?.limits ?? defaults.docker.limits,
+    },
+  };
+}
 
 /**
  * 配置文件查找顺序（优先级从高到低）：

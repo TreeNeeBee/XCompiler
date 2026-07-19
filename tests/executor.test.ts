@@ -8,6 +8,8 @@ import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import type { Step } from '../src/core/plan.js';
 import type { Tool, ToolContext } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
+import { replaceInFileTool } from '../src/tools/edit.js';
+import { runTestsTool } from '../src/tools/sandbox.js';
 
 class CapturingLLM implements LLMClient {
   readonly name = 'cap';
@@ -109,6 +111,65 @@ describe('StepExecutor system prompt assembly', () => {
     const jsonl = await fs.readFile(path.join(tmp, '.xcompiler/audit.jsonl'), 'utf8');
     const turns = jsonl.trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.kind === 'executor.turn');
     expect(turns[0].data.role).toBe('Debugger');
+  });
+
+  it('requires issueResolutionPlan before resolving a DEBUG issue', async () => {
+    class MissingPlanLLM implements LLMClient {
+      readonly name = 'missing-plan';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'patch the issue without a reusable plan',
+          actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 2\n' } }],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new MissingPlanLLM(), maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [writeFileTool],
+      ctx,
+      debugContext: {
+        issueId: 'ISSUE-1',
+        reason: 'unit test failed',
+        failureLog: 'AssertionError: expected x = 2',
+        repairRequired: true,
+      },
+    });
+
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('issueResolutionPlan');
+  });
+
+  it('returns the DEBUG issue resolution plan when the issue is fixed', async () => {
+    class PlannedLLM implements LLMClient {
+      readonly name = 'planned';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'patch with a reusable plan',
+          issueResolutionPlan: 'Root cause is stale implementation in src/x.py; update it and verify the declared output exists.',
+          actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 3\n' } }],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new PlannedLLM(), maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [writeFileTool],
+      ctx,
+      debugContext: {
+        issueId: 'ISSUE-1',
+        reason: 'unit test failed',
+        failureLog: 'AssertionError: expected x = 3',
+        repairRequired: true,
+      },
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.issueResolutionPlan).toContain('Root cause');
   });
 
   it('extends past the base round limit when successful writes reduce missing outputs', async () => {
@@ -315,6 +376,42 @@ describe('StepExecutor system prompt assembly', () => {
     await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
   });
 
+  it('allows completion when a bad edit target is superseded by rewrite plus tests', async () => {
+    class BadEditThenRewriteAndTestLLM implements LLMClient {
+      readonly name = 'bad-edit-then-rewrite-and-test';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'bad edit target is followed by a complete rewrite and verification',
+          actions: [
+            { tool: 'replace_in_file', args: { path: '.', find: 'old', replace: 'new' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 4\n' } },
+            { tool: 'run_tests', args: {} },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor({ llm: new BadEditThenRewriteAndTestLLM(), maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      tools: [replaceInFileTool, writeFileTool, runTestsTool],
+      ctx: {
+        ...ctx,
+        sandbox: {
+          async runProgram() { throw new Error('not used'); },
+          async runTests() {
+            return { exitCode: 0, stdout: '1 passed\n', stderr: '', timedOut: false, durationMs: 1 };
+          },
+          async installDeps() { throw new Error('not used'); },
+        } as never,
+      },
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((c) => c.tool === 'replace_in_file' && !c.ok)?.error).toContain('outside the project directory');
+    await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 4\n');
+  });
+
   it('allows completion after an unauthorized read-only probe once outputs are written', async () => {
     class ReadProbeThenWriteLLM implements LLMClient {
       readonly name = 'read-probe-then-write';
@@ -516,6 +613,39 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.calls).toBe(3);
   });
 
+  it('fails early when write actions stop reducing missing outputs', async () => {
+    class StalledWritesLLM implements LLMClient {
+      readonly name = 'stalled-writes';
+      calls = 0;
+      sawOutputWarning = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        this.sawOutputWarning =
+          this.sawOutputWarning ||
+          (messages.at(-1)?.content.includes('Output progress warning: required outputs have not decreased') ?? false);
+        return JSON.stringify({
+          thoughts: 'keep polishing the same existing output',
+          actions: [{ tool: 'write_file', args: { path: 'src/a.py', content: `value = ${this.calls}\n` } }],
+          done: false,
+        });
+      }
+    }
+    const step: Step = {
+      ...baseStep,
+      outputs: ['src/a.py', 'src/b.py'],
+      acceptance: 'both files exist',
+    };
+    const llm = new StalledWritesLLM();
+    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const r = await exec.run({ step, tools: [writeFileTool], ctx });
+
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('write/progress actions did not reduce missing outputs');
+    expect(r.error).toContain('src/b.py');
+    expect(llm.calls).toBe(4);
+    expect(llm.sawOutputWarning).toBe(true);
+  });
+
   it('feeds successful read_file content back to the next model turn', async () => {
     class ReadThenRepairLLM implements LLMClient {
       readonly name = 'read-then-repair';
@@ -681,6 +811,36 @@ describe('StepExecutor system prompt assembly', () => {
     expect(await ws.readFile('src/source.py')).toBe('value = 2\n');
   });
 
+  it('returns provider validation rejections as low-quality debug attempt failures', async () => {
+    class LowQualityRejectedLLM implements LLMClient {
+      readonly name = 'low-quality-provider-chain';
+      async chat(): Promise<string> {
+        throw new Error(
+          'all LLM providers failed for role Debugger: ' +
+          'openrouter_deepseek_flash/openai:deepseek/deepseek-v4-flash: ' +
+          'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
+          'produce a repair action, verification action, or concrete blocker instead',
+        );
+      }
+    }
+    const exec = new StepExecutor({ llm: new LowQualityRejectedLLM(), maxRounds: 2 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [readFileTool, writeFileTool],
+      ctx,
+      debugContext: {
+        reason: 'read-only recovery mode repeated probe actions for 2 rounds',
+        failureLog: 'previous retry only read tests/unit_s005.test.ts',
+        repairRequired: true,
+      },
+    });
+
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('low-quality Debugger response');
+    expect(r.metrics.repeatedTurns).toBe(1);
+  });
+
   it('rejects repeated read-only Debugger turns when missing outputs need direct repair', async () => {
     class MissingOutputRepairLLM implements LLMClient {
       readonly name = 'missing-output-repair';
@@ -766,6 +926,37 @@ describe('StepExecutor system prompt assembly', () => {
       },
     });
     expect(r.success).toBe(true);
+  });
+
+  it('allows output-completion recovery despite untargeted malformed write noise', async () => {
+    class NoisyCompletionLLM implements LLMClient {
+      readonly name = 'noisy-completion';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'the preserved retry already created the required output, but I accidentally emitted a malformed write',
+          issueResolutionPlan: 'The prior debug attempt created the missing output; verify output presence and ignore untargeted malformed write noise.',
+          actions: [{ tool: 'write_file', args: {} }],
+          done: false,
+        });
+      }
+    }
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    const exec = new StepExecutor({ llm: new NoisyCompletionLLM(), maxRounds: 1 });
+    const r = await exec.run({
+      step: baseStep,
+      executionRole: 'Debugger',
+      tools: [writeFileTool],
+      ctx,
+      debugContext: {
+        issueId: 'ISSUE-1',
+        reason: 'max rounds exceeded without satisfying outputs',
+        failureLog: 'previous Debugger retry wrote src/x.py but did not return done=true',
+        repairRequired: true,
+      },
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.find((call) => call.tool === 'write_file' && !call.ok)?.error).toContain('path must be a non-empty string');
   });
 
   it('does not accept DEBUG completion until repair or verification evidence exists', async () => {

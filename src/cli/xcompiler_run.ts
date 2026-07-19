@@ -27,6 +27,7 @@ program
   .option('--reset', t().cli.optReset, false)
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
+  .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .action(async (planArg, opts) => {
     const result = await runRunCommand({
       planArg,
@@ -39,6 +40,7 @@ program
       resetStatus: !!opts.reset,
       force: !!opts.force,
       projectFilePath: opts.projectFile,
+      debugWikiPath: opts.debugWikiPath,
       cwd: process.cwd(),
       io: createCliRuntimeIO(),
     });

@@ -42,6 +42,7 @@
     "dist/acp",
     "config.example.yaml",
     ".env.example",
+    "debug-wiki",
     "docs/assets",
     "docs/acp.md",
     "docs/XCompiler_design.md",

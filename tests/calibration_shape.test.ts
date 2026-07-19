@@ -162,4 +162,36 @@ describe('calibrateStepShape', () => {
     expect(out[0]!.outputs).toContain('docs/tests/unit-test-plan.md');
     expect(out[1]!.outputs).toEqual(['docs/05-unit-test.md', 'tests/test_app.py']);
   });
+
+  it('normalizes noncanonical test-plan doc names before removing wrong phase ownership', () => {
+    const raw = [
+      {
+        id: 'S001',
+        phase: 'CODE',
+        title: 'code',
+        description: 'code',
+        systemPrompt: 'x'.repeat(30),
+        role: 'Coder',
+        outputs: ['src/app.ts', 'docs/04-unit-test-plan.md', 'docs/tests/unit-test-plan.md'],
+      },
+      {
+        id: 'S002',
+        phase: 'UNIT_TEST',
+        title: 'unit',
+        description: 'unit',
+        systemPrompt: 'x'.repeat(30),
+        role: 'Tester',
+        outputs: ['docs/unit_test_plan.md', 'tests/app.test.ts'],
+        dependsOn: ['S001'],
+      },
+    ] as unknown as Step[];
+
+    const out = calibrateDocPaths(raw, 'application');
+
+    expect(out[0]!.outputs).toContain('docs/tests/unit-test-plan.md');
+    expect(out[0]!.outputs.filter((item) => item === 'docs/tests/unit-test-plan.md')).toHaveLength(1);
+    expect(out[0]!.outputs).not.toContain('docs/04-unit-test-plan.md');
+    expect(out[0]!.outputs).not.toContain('docs/unit_test_plan.md');
+    expect(out[1]!.outputs).toEqual(['docs/05-unit-test.md', 'tests/app.test.ts']);
+  });
 });

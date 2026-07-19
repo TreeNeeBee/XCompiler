@@ -91,7 +91,7 @@ model: openrouter/free
 base_url: https://openrouter.ai/api/v1
 ```
 
-`config.yaml` and `llm_scores.yaml` are local runtime files and are intentionally not committed. The npm package ships `config.example.yaml` and `.env.example` as templates.
+`config.yaml`, `llm_scores.yaml`, and `llm_scores_user.yaml` are local files and are intentionally not committed. The npm package ships `config.example.yaml` and `.env.example` as templates. `llm_scores.yaml` is XCompiler-maintained runtime state; create `llm_scores_user.yaml` only when you want fixed local score overrides such as `provider: 0` to disable one provider.
 
 ---
 
@@ -147,6 +147,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run <phasePlan.json>` | Execute the active phase plan |
 | `xcompiler run --from <stepId>` | Resume from a specific step |
 | `xcompiler run --phase <phase>` | Run only one phase/stage |
+| `xcompiler run --debug-wiki-path <dir>` | Reuse and update a shared layered debug wiki path |
 | `xcompiler load <name.xc>` | Load project config/progress and continue |
 | `xcompiler append <name.xc> -i <file>` | Add a new requirement to an existing project |
 | `xcompiler evolve -w <workspace> -i <file>` | Build and run an incremental change |
@@ -160,10 +161,11 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 ## Runtime Defaults
 
 - **LLM**: OpenRouter Free mode by default. Missing/invalid keys produce provider/model/base URL/status/body diagnostics and an explicit `OPENROUTER_API_KEY` hint.
-- **LLM routing**: role-specific provider chains, dynamic scores, `score=0` manual disable, and `tags: [cluster]` fallback score band for aggregated routes such as `openrouter/free`.
+- **LLM routing**: role-specific provider chains, XCompiler-maintained dynamic scores, user overrides from `llm_scores_user.yaml`, and `tags: [cluster]` fallback score bands for aggregated routes such as `openrouter/free`.
 - **Languages**: Python and TypeScript project generation, testing, execution, and entry checks.
 - **Sandbox**: `subprocess` by default; optional `docker` mode for bind-mount isolation and network/resource limits.
-- **Audit**: every run writes `.xcompiler/audit.jsonl`, LLM stream traces, `docs/process_log.md`, debug cache, and project memory.
+- **Audit**: every run writes `.xcompiler/audit.jsonl`, LLM stream traces, `docs/process_log.md`, debug cache, debug wiki feedback, and project memory.
+- **Debug wiki**: Debugger issue repairs retrieve LLM-wiki style prior fixes by compact `DebugBrief`. The wiki is a layered Markdown knowledge base: bundled `wiki/system` policy pages, bundled `wiki/agent` calibration pages, and local `wiki/external` issue-resolution pages. Runtime regenerates `index.md` for review, `index.json` for retrieval, and `log.md` for append-only operations. By default it is copied to the XCompiler path (`$XC_PATH/.xcompiler/debug-wiki` when `XC_PATH` is set, otherwise the package/repo root); use `--debug-wiki-path <dir>` to share a different root. Successful issue repairs persist the LLM's `issueResolutionPlan` in `external`; failed reused fixes are marked `needs_review` through feedback overlays and later successful repairs create/correct external entries.
 - **Security gates**: project file access is guarded, write tools are scoped to declared outputs, and sensitive actions can be surfaced as permission events in adapter scenarios.
 
 ---
@@ -175,14 +177,18 @@ LLM routing is configured under `config.yaml -> llm.*`.
 | Field | Default | Effect |
 |---|---|---|
 | `roles.<Role>` | role dependent | Ordered/scored provider chain for Planner, Architect, Coder, Tester, Debugger |
-| `scores.<provider>` | `1.0` | Initial score; `0` means manually disabled |
-| `cluster_score_min/max` | `0.2..0.5` | Dynamic score band for providers tagged `cluster` |
+| `scores.<provider>` | `1.0` | Backward-compatible initial score; prefer `llm_scores_user.yaml` for manual overrides |
+| `llm_scores_user.yaml` | absent | Local user score overrides; `0` disables, `0.1..1` fixes effective priority |
+| `cluster_score_min/max` | `0.2..0.5` | Dynamic score band for providers tagged `cluster`; user overrides may still use `0.1..1` |
+| `agent.sandboxes.python.mode` | `subprocess` | Python project sandbox backend: local subprocess or Docker |
+| `agent.sandboxes.typescript.mode` | `subprocess` | TypeScript project sandbox backend: local subprocess or Docker |
 | `max_rounds_per_step` | `6` | LLM dialogue limit within a normal step |
 | `max_debug_rounds_per_step` | `max(8, 2 * max_rounds_per_step)` | Debugger round cap |
 | `max_debug_retries` | `3` | Debug retry attempts |
+| `--debug-wiki-path <dir>` | XCompiler path `.xcompiler/debug-wiki` | Shared layered debug wiki root |
 | `max_edit_lines_per_step` | `auto` | Adaptive EditGuard cumulative write-line budget |
 | `max_write_chunk_bytes` | `auto` | Adaptive per-call write chunk budget |
-| `sandbox_limits.network` | `download-only` | Outbound allowed, no inbound ports; `off` disables network |
+| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | Outbound allowed, no inbound ports; `off` disables network |
 
 ---
 

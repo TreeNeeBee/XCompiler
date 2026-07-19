@@ -34,7 +34,7 @@ export function isRunningInContainer(): boolean {
 }
 
 /**
- * 工厂：按 config.agent.sandbox 选择实现。
+ * 工厂：按 plan.language 选择 config.agent.sandboxes.<language> 的实现。
  *
  * 约束：当 XCompiler 本身运行在容器内时，**不支持** sandbox=docker（DooD 在多数
  * 部署中会造成 bind-mount 路径语义不一致、docker.sock GID 错位等问题）。给
@@ -44,18 +44,12 @@ export function createSandbox(
   cfg: XCompilerConfig,
   ws: Workspace,
   audit?: AuditLogger,
-  language: Language = cfg.agent.language,
+  language: Language = 'python',
 ): Sandbox {
-  const profile = getLanguageProfile(language);
-  // 默认镜像按实际执行语言推导。若当前 plan 语言与 config.agent.language 不同，
-  // 说明我们在执行/恢复另一种语言的历史 plan，此时不能沿用配置里为默认语言定制的镜像。
-  const configuredImage = cfg.agent.sandbox_docker.image;
-  const image =
-    language === cfg.agent.language
-      ? configuredImage
-      : profile.defaultDockerImage;
-  const kind = cfg.agent.sandbox;
-  if (cfg.agent.sandbox_limits.network === 'pypi-only') {
+  const languageSandbox = cfg.agent.sandboxes?.[language] ?? legacyLanguageSandbox(cfg, language);
+  const kind = languageSandbox.mode;
+  const activeLimits = kind === 'docker' ? languageSandbox.docker.limits : languageSandbox.local.limits;
+  if (activeLimits.network === 'pypi-only') {
     throw new Error(t().system.unsupportedPypiOnlyNetwork);
   }
   if (kind === 'docker') {
@@ -64,19 +58,64 @@ export function createSandbox(
     }
     return new DockerSandbox({
       ws,
-      limits: cfg.agent.sandbox_limits,
+      limits: languageSandbox.docker.limits,
       audit,
       language,
-      image,
-      workdir: cfg.agent.sandbox_docker.workdir,
-      pull: cfg.agent.sandbox_docker.pull,
-      dockerBin: cfg.agent.sandbox_docker.docker_bin,
-      extraRunArgs: cfg.agent.sandbox_docker.extra_run_args,
+      image: languageSandbox.docker.image ?? getLanguageProfile(language).defaultDockerImage,
+      workdir: languageSandbox.docker.workdir,
+      pull: languageSandbox.docker.pull,
+      dockerBin: languageSandbox.docker.docker_bin,
+      extraRunArgs: languageSandbox.docker.extra_run_args,
+      sandboxDir: languageSandbox.docker.sandbox_dir,
     });
   }
   if (kind === 'firejail') {
     throw new Error(t().system.firejailUnsupported);
   }
   // 在容器内默认提示（但不抦截）：subprocess 是唯一推荐选项
-  return new SubprocessSandbox({ ws, limits: cfg.agent.sandbox_limits, audit, language });
+  return new SubprocessSandbox({
+    ws,
+    limits: languageSandbox.local.limits,
+    audit,
+    language,
+    sandboxDir: languageSandbox.local.sandbox_dir,
+    pythonBin: languageSandbox.local.python_bin,
+    inheritEnv: languageSandbox.local.inherit_env,
+  });
+}
+
+function legacyLanguageSandbox(
+  cfg: XCompilerConfig,
+  language: Language,
+): XCompilerConfig['agent']['sandboxes'][Language] {
+  const legacyAgent = cfg.agent as XCompilerConfig['agent'] & {
+    sandbox?: 'subprocess' | 'docker' | 'firejail';
+    sandbox_limits?: XCompilerConfig['agent']['sandboxes'][Language]['local']['limits'];
+    sandbox_docker?: Partial<XCompilerConfig['agent']['sandboxes'][Language]['docker']>;
+    language?: Language;
+  };
+  const limits = legacyAgent.sandbox_limits ?? {
+    cpu: 1,
+    memory_mb: 1024,
+    wall_seconds: 60,
+    network: 'download-only',
+    expose_ports: [],
+  };
+  const useLegacyDocker = legacyAgent.language === language ? legacyAgent.sandbox_docker : undefined;
+  return {
+    mode: legacyAgent.sandbox ?? 'subprocess',
+    local: {
+      sandbox_dir: `.sandbox/${language}`,
+      limits,
+    },
+    docker: {
+      image: useLegacyDocker?.image ?? getLanguageProfile(language).defaultDockerImage,
+      workdir: useLegacyDocker?.workdir ?? '/workspace',
+      pull: useLegacyDocker?.pull ?? false,
+      docker_bin: useLegacyDocker?.docker_bin ?? 'docker',
+      extra_run_args: useLegacyDocker?.extra_run_args ?? [],
+      sandbox_dir: useLegacyDocker?.sandbox_dir ?? `.sandbox/${language}`,
+      limits: useLegacyDocker?.limits ?? limits,
+    },
+  };
 }

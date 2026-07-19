@@ -6,6 +6,8 @@ import { t } from '../i18n/index.js';
 import type { XCompilerConfig } from '../config/config.js';
 
 export const CLUSTER_PROVIDER_TAG = 'cluster';
+export const LLM_DYNAMIC_SCORES_FILE = 'llm_scores.yaml';
+export const LLM_USER_SCORES_FILE = 'llm_scores_user.yaml';
 
 export interface ScoreStoreOptions {
   /** Providers tagged as aggregated/route pools such as OpenRouter free mode. */
@@ -22,10 +24,11 @@ export interface ScoreStoreOptions {
  * 设计动机：
  *  - 配置允许给一个角色挂多个 provider；运行时按评分降序选择当前"最可信"的。
  *  - 评分会随成功/失败动态调整：失败 -0.5 直到 0.1；成功 +0.1 直到 cap=1。
- *  - 只有用户在配置中显式设置 score=0 才表示禁用；运行时自动评分不会写出 0。
+ *  - `llm_scores.yaml` 是 XCompiler 维护的动态快照；它不是用户策略文件。
+ *  - 用户手动覆盖写在 `llm_scores_user.yaml`；其中 score=0 表示禁用，并且优先生效。
  *  - preflight 检测到 ollama 服务器上**模型不存在**会在当前运行跳过该 provider，并把评分降到 0.1。
- *  - 持久化到 config 同目录的 sidecar 文件 `llm_scores.yaml`，避免改写用户的 config.yaml
- *    （会丢注释）。配置里 `llm.scores` 段作为 sidecar 缺失时的初值。
+ *  - 动态评分持久化到 config 同目录的 sidecar 文件 `llm_scores.yaml`，避免改写用户的 config.yaml
+ *    （会丢注释）。配置里 `llm.scores` 段仅作为兼容初值；旧配置中显式 0 仍视为用户禁用。
  */
 export class ScoreStore {
   static readonly DEFAULT = 1.0;
@@ -37,14 +40,15 @@ export class ScoreStore {
   static readonly DECAY = 0.5;
   static readonly BOOST = 0.1;
 
-  private readonly scores = new Map<string, number>();
-  private readonly userDisabled = new Set<string>();
+  private readonly dynamicScores = new Map<string, number>();
+  private readonly userScores = new Map<string, number>();
   private readonly clusterProviders: Set<string>;
   private readonly clusterMin: number;
   private readonly clusterMax: number;
   private dirty = false;
   private writeQueue: Promise<void> = Promise.resolve();
   private readonly sidecarPath: string;
+  private readonly userScoresPath: string;
 
   constructor(
     configPath: string,
@@ -52,28 +56,36 @@ export class ScoreStore {
     private readonly audit?: AuditLogger,
     opts: ScoreStoreOptions = {},
   ) {
-    this.sidecarPath = path.join(path.dirname(configPath), 'llm_scores.yaml');
+    const configDir = path.dirname(configPath);
+    this.sidecarPath = path.join(configDir, LLM_DYNAMIC_SCORES_FILE);
+    this.userScoresPath = path.join(configDir, LLM_USER_SCORES_FILE);
     this.clusterProviders = new Set(opts.clusterProviderNames ?? []);
     const bounds = normalizeClusterBounds(opts.clusterScoreMin, opts.clusterScoreMax);
     this.clusterMin = bounds.min;
     this.clusterMax = bounds.max;
     for (const [k, v] of Object.entries(initial)) {
-      const score = this.clampConfigured(k, v);
-      this.scores.set(k, score);
-      if (score === ScoreStore.DISABLED) this.userDisabled.add(k);
+      if (v === ScoreStore.DISABLED) {
+        this.userScores.set(k, ScoreStore.DISABLED);
+      } else {
+        this.dynamicScores.set(k, this.clampDynamic(k, v));
+      }
     }
   }
 
-  /** 异步加载 sidecar 文件；失败/不存在不抛错，使用 ctor 提供的初值。 */
+  /** 异步加载动态 sidecar 与用户覆盖文件；失败/不存在不抛错，使用 ctor 提供的初值。 */
   async load(): Promise<void> {
+    await this.loadDynamicScores();
+    await this.loadUserScores();
+  }
+
+  private async loadDynamicScores(): Promise<void> {
     try {
       const raw = await fs.readFile(this.sidecarPath, 'utf8');
       const parsed = YAML.parse(raw) as Record<string, number> | null;
       if (parsed && typeof parsed === 'object') {
         for (const [k, v] of Object.entries(parsed)) {
           if (typeof v === 'number' && Number.isFinite(v)) {
-            if (this.userDisabled.has(k)) continue;
-            this.scores.set(k, this.clampDynamic(k, v));
+            this.dynamicScores.set(k, this.clampPersistedDynamic(k, v));
           }
         }
       }
@@ -88,45 +100,76 @@ export class ScoreStore {
     }
   }
 
-  get(name: string): number {
-    return this.scores.has(name) ? this.scores.get(name)! : this.defaultFor(name);
+  private async loadUserScores(): Promise<void> {
+    try {
+      const raw = await fs.readFile(this.userScoresPath, 'utf8');
+      const parsed = YAML.parse(raw) as Record<string, number> | null;
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'number' && Number.isFinite(v)) {
+            this.userScores.set(k, this.clampUserScore(v));
+          }
+        }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        await this.audit?.event('llm.error', t().llm.scoreReadFailed(this.userScoresPath, (err as Error).message), {
+          messageId: 'llm.user_score_read_failed',
+          sidecarPath: this.userScoresPath,
+        });
+      }
+    }
   }
 
-  /** 主动设置评分；value=0 仅用于显式禁用，其它值会归一到动态范围。 */
+  get(name: string): number {
+    if (this.userScores.has(name)) return this.userScores.get(name)!;
+    return this.dynamicScores.has(name) ? this.dynamicScores.get(name)! : this.defaultFor(name);
+  }
+
+  /** 主动设置动态评分；用户覆盖只从配置或 llm_scores_user.yaml 读取。 */
   set(name: string, value: number, reason?: string): void {
-    if (this.userDisabled.has(name) && value !== ScoreStore.DISABLED) return;
     const v = value === ScoreStore.DISABLED ? ScoreStore.DISABLED : this.clampDynamic(name, value);
-    const prev = this.scores.get(name);
+    const prev = this.dynamicScores.get(name);
     if (prev === v) return;
-    this.scores.set(name, v);
+    this.dynamicScores.set(name, v);
     this.dirty = true;
-    void this.audit?.event('llm.score', t().llm.scoreChanged(name, v.toFixed(2), (prev ?? ScoreStore.DEFAULT).toFixed(2)), {
-      messageId: 'llm.score_changed', provider: name, score: v, previous: prev ?? ScoreStore.DEFAULT, reason: reason ?? 'set',
+    void this.audit?.event('llm.score', t().llm.scoreChanged(name, v.toFixed(2), (prev ?? this.defaultFor(name)).toFixed(2)), {
+      messageId: 'llm.score_changed', provider: name, score: v, previous: prev ?? this.defaultFor(name), reason: reason ?? 'set',
     });
     this.scheduleSave();
   }
 
   decay(name: string, reason: string): void {
-    if (this.get(name) === ScoreStore.DISABLED) return;
-    this.set(name, Math.max(this.minFor(name), this.get(name) - ScoreStore.DECAY), reason);
+    if (this.isUserDisabled(name)) return;
+    const cur = this.dynamicScore(name);
+    if (cur === ScoreStore.DISABLED) return;
+    this.set(name, Math.max(this.minFor(name), cur - ScoreStore.DECAY), reason);
   }
 
   boost(name: string, reason: string): void {
-    const cur = this.get(name);
+    if (this.isUserDisabled(name)) return;
+    const cur = this.dynamicScore(name);
     if (cur === ScoreStore.DISABLED) return;
     if (cur >= this.maxFor(name)) return;
     this.set(name, Math.min(this.maxFor(name), cur + ScoreStore.BOOST), reason);
   }
 
-  /** True only for providers explicitly disabled by user config (`llm.scores.<provider>: 0`). */
+  /** True only for providers explicitly disabled by user config or llm_scores_user.yaml. */
   isUserDisabled(name: string): boolean {
-    return this.userDisabled.has(name);
+    return this.userScores.get(name) === ScoreStore.DISABLED;
   }
 
-  /** 全量快照（用于测试与 audit 输出）。 */
+  /** 动态评分快照（用于持久化、测试与 audit 输出；不包含用户覆盖）。 */
   snapshot(): Record<string, number> {
     const out: Record<string, number> = {};
-    for (const [k, v] of this.scores) out[k] = v;
+    for (const [k, v] of this.dynamicScores) out[k] = v;
+    return out;
+  }
+
+  /** 用户覆盖快照（用于测试/诊断；运行时不会改写用户文件）。 */
+  userSnapshot(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [k, v] of this.userScores) out[k] = v;
     return out;
   }
 
@@ -173,10 +216,8 @@ export class ScoreStore {
     return this.clusterProviders.has(name);
   }
 
-  private clampConfigured(name: string, v: number): number {
-    if (!Number.isFinite(v)) return this.defaultFor(name);
-    if (v === ScoreStore.DISABLED) return ScoreStore.DISABLED;
-    return this.clampDynamic(name, v);
+  private dynamicScore(name: string): number {
+    return this.dynamicScores.has(name) ? this.dynamicScores.get(name)! : this.defaultFor(name);
   }
 
   private clampDynamic(name: string, v: number): number {
@@ -184,6 +225,20 @@ export class ScoreStore {
     if (v <= ScoreStore.DISABLED) return this.minFor(name);
     if (v < this.minFor(name)) return this.minFor(name);
     if (v > this.maxFor(name)) return this.maxFor(name);
+    return v;
+  }
+
+  private clampPersistedDynamic(name: string, v: number): number {
+    if (!Number.isFinite(v)) return this.defaultFor(name);
+    if (v === ScoreStore.DISABLED) return ScoreStore.DISABLED;
+    return this.clampDynamic(name, v);
+  }
+
+  private clampUserScore(v: number): number {
+    if (!Number.isFinite(v)) return ScoreStore.DEFAULT;
+    if (v <= ScoreStore.DISABLED) return ScoreStore.DISABLED;
+    if (v < ScoreStore.MIN) return ScoreStore.MIN;
+    if (v > ScoreStore.MAX) return ScoreStore.MAX;
     return v;
   }
 }

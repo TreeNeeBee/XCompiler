@@ -41,7 +41,19 @@ import {
   DebugCache,
   sanitizeDebugFailureLogForPrompt,
   stripNestedLatestDebuggerFailures,
+  type DebugAttemptEntry,
 } from './debug_cache.js';
+import {
+  buildDebugBrief,
+  compactFailureEvidence,
+  renderDebugBriefForPrompt,
+  type DebugBrief,
+} from './debug_brief.js';
+import {
+  DebugWiki,
+  defaultDebugWikiPath,
+  renderDebugWikiMatchesForPrompt,
+} from './debug_wiki.js';
 import { getLanguageProfile, type LanguageProfile } from './language.js';
 import { missingArchitectureDocumentTokens } from './architecture.js';
 import { DOC_NAMES } from './docs.js';
@@ -97,6 +109,10 @@ export interface EngineOptions {
   onToolEvent?: ToolExecutionReporter;
   /** Whether PhaseEngine may write human terminal progress directly. Defaults to true for CLI compatibility. */
   terminalOutput?: boolean;
+  /** Optional cross-run debug wiki root directory. Defaults to XCompiler's own .xcompiler/debug-wiki. */
+  debugWikiPath?: string;
+  /** If true, debug wiki read/write failures abort instead of only being audited. */
+  debugWikiStrict?: boolean;
 }
 
 export interface EngineResult {
@@ -119,6 +135,8 @@ type DebugAttemptContext = {
   testScopeArgs?: string[];
   issueId?: string;
   completedBeforeDebug?: boolean;
+  debugWikiEntryIds?: string[];
+  issueResolutionPlan?: string;
 };
 
 type AttemptOutcome = {
@@ -130,6 +148,7 @@ type AttemptOutcome = {
   rollbackTestStepId?: string;
   issueKind?: EngineIssueKind;
   evidence?: Record<string, unknown>;
+  issueResolutionPlan?: string;
 };
 
 type LastFailure = {
@@ -167,12 +186,23 @@ interface EngineIssue {
   title?: string;
   reason: string;
   failureLog: string;
+  failureLogBytes?: number;
+  rawFailureLogPath?: string;
+  debugBrief?: DebugBrief;
   metrics?: ExecutorRunMetrics;
   evidence?: Record<string, unknown>;
   targetStepId?: string;
   targetPhase?: Step['phase'];
   routedAt?: string;
   resolvedAt?: string;
+  issueResolutionPlan?: string;
+  resolutionPlanHistory?: Array<{
+    at: string;
+    stepId: string;
+    phase: Step['phase'];
+    plan: string;
+    outcome: 'accepted';
+  }>;
   repair?: {
     repairedStepId: string;
     repairedPhase: Step['phase'];
@@ -180,7 +210,9 @@ interface EngineIssue {
     mode: 'patch' | 'rewrite' | 'patch-or-rewrite' | 'verification';
     patchPath?: string;
     summaryPath?: string;
+    changedFiles?: string[];
   };
+  debugWikiEntryIds?: string[];
 }
 
 /** Phase Engine：拓扑顺序执行 Plan 的每个 Step；失败时自动调用 Debugger 重试。 */
@@ -191,6 +223,8 @@ export class PhaseEngine {
   private pluginExtensionsApplied = false;
   /** 跨 xcompiler run 持久化的 debug 历史（`<workspace>/.xcompiler/debug_cache.json`）。 */
   private readonly debugCache: DebugCache;
+  /** 跨项目 debug 知识库，记录错误摘要、解决方案和正/负反馈。 */
+  private readonly debugWiki: DebugWiki;
   /** 当前 Plan 的语言 profile（在 run() 起始处按 plan.language 解析）。 */
   private profile: LanguageProfile = getLanguageProfile('python');
   /** 当前 workspace 的项目记忆，用于给执行阶段注入更稳定的跨轮上下文。 */
@@ -207,6 +241,7 @@ export class PhaseEngine {
     this.skills = opts.skills ?? buildDefaultSkills();
     this.plugins = opts.plugins ?? new PluginHost();
     this.debugCache = new DebugCache(opts.ws.abs('.xcompiler/debug_cache.json'));
+    this.debugWiki = new DebugWiki(opts.debugWikiPath ?? defaultDebugWikiPath());
   }
 
   private get terminalOutput(): boolean {
@@ -219,6 +254,22 @@ export class PhaseEngine {
 
   private spin(text: string, options?: { animate?: boolean }) {
     return this.terminalOutput ? ora(text, options).start() : null;
+  }
+
+  private async withDebugWiki<T>(operation: string, action: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await action();
+    } catch (err) {
+      const message = (err as Error).message;
+      await this.opts.audit.event('note', `debug wiki ${operation} failed: ${message}`, {
+        messageId: 'engine.debug_wiki_failed',
+        operation,
+        path: this.debugWiki.filePath,
+        error: message,
+      });
+      if (this.opts.debugWikiStrict) throw err;
+      return fallback;
+    }
   }
 
   private async requestEnginePermission(
@@ -249,6 +300,7 @@ export class PhaseEngine {
 
   async run(plan: Plan): Promise<EngineResult> {
     await this.plugins.initialize();
+    await this.withDebugWiki('load', () => this.debugWiki.load(), undefined);
     if (!this.pluginExtensionsApplied) {
       this.plugins.applyExtensions({ tools: this.registry, skills: this.skills });
       this.pluginExtensionsApplied = true;
@@ -489,7 +541,22 @@ export class PhaseEngine {
     const now = new Date().toISOString();
     this.issueSeq += 1;
     const id = `ISSUE-${now.replace(/[-:.TZ]/g, '').slice(0, 14)}-${String(this.issueSeq).padStart(3, '0')}`;
-    const failureLog = cleanFailureLogForDebugContext(input.failureLog);
+    const rawFailureLog = input.failureLog ?? '';
+    const cleanedFailureLog = cleanFailureLogForDebugContext(rawFailureLog);
+    const debugBrief = buildDebugBrief({
+      reason: input.reason,
+      failureLog: cleanedFailureLog,
+      phase: step?.phase,
+    });
+    const failureLog = compactFailureEvidence({
+      reason: input.reason,
+      failureLog: cleanedFailureLog,
+      phase: step?.phase,
+      maxChars: 6000,
+      maxLines: 90,
+    });
+    const rawFailureLogPath = `.xcompiler/issues/${id}/failure.raw.log`;
+    await this.opts.ws.writeFile(rawFailureLogPath, rawFailureLog.endsWith('\n') ? rawFailureLog : `${rawFailureLog}\n`);
     const issue: EngineIssue = {
       id,
       createdAt: now,
@@ -507,6 +574,9 @@ export class PhaseEngine {
       title: step?.title,
       reason: input.reason,
       failureLog,
+      failureLogBytes: Buffer.byteLength(rawFailureLog, 'utf8'),
+      rawFailureLogPath,
+      debugBrief,
       metrics: input.metrics,
       evidence: input.evidence,
     };
@@ -525,6 +595,12 @@ export class PhaseEngine {
     issue.status = 'routed';
     issue.targetStepId = target.id;
     issue.targetPhase = target.phase;
+    issue.debugBrief = buildDebugBrief({
+      reason: issue.reason,
+      failureLog: issue.failureLog,
+      phase: issue.phase,
+      targetPhase: target.phase,
+    });
     issue.routedAt = new Date().toISOString();
     issue.updatedAt = issue.routedAt;
     await this.persistIssue(issue, 'routed', { routingReason: reason });
@@ -549,6 +625,7 @@ export class PhaseEngine {
     issueId: string | undefined,
     step: Step,
     repair?: EngineIssue['repair'],
+    issueResolutionPlan?: string,
   ): Promise<void> {
     const issue = issueId ? this.findIssue(issueId) : undefined;
     if (!issue) return;
@@ -556,6 +633,20 @@ export class PhaseEngine {
     issue.resolvedAt = new Date().toISOString();
     issue.updatedAt = issue.resolvedAt;
     if (repair) issue.repair = repair;
+    if (issueResolutionPlan?.trim()) {
+      issue.issueResolutionPlan = issueResolutionPlan.trim();
+      issue.resolutionPlanHistory = [
+        ...(issue.resolutionPlanHistory ?? []),
+        {
+          at: issue.resolvedAt,
+          stepId: step.id,
+          phase: step.phase,
+          plan: issue.issueResolutionPlan,
+          outcome: 'accepted' as const,
+        },
+      ].slice(-8);
+    }
+    await this.recordDebugWikiResolution(issue, step, repair);
     await this.persistIssue(issue, 'resolved');
     await this.opts.audit.event('issue.resolve', `${issue.id} resolved by ${step.id} ${step.phase}`, {
       messageId: 'engine.issue_resolved',
@@ -564,6 +655,93 @@ export class PhaseEngine {
       repairedPhase: step.phase,
       repair,
     });
+  }
+
+  private async recordDebugWikiFailure(
+    step: Step,
+    debug: DebugAttemptContext,
+    outcome: { reason?: string; failureLog: string },
+  ): Promise<void> {
+    const entryIds = dedup(debug.debugWikiEntryIds ?? []);
+    if (entryIds.length === 0) return;
+    const issue = debug.issueId ? this.findIssue(debug.issueId) : undefined;
+    const brief = buildDebugBrief({
+      reason: outcome.reason ?? debug.reason,
+      failureLog: cleanFailureLogForDebugContext(outcome.failureLog),
+      phase: issue?.phase ?? step.phase,
+      targetPhase: issue?.targetPhase ?? step.phase,
+    });
+    await this.withDebugWiki(
+      'record-failure',
+      () => this.debugWiki.recordFailure(entryIds, {
+        brief,
+        issueId: issue?.id,
+        stepId: step.id,
+        phase: step.phase,
+        targetPhase: issue?.targetPhase,
+        language: this.profile.id,
+        solution: 'retrieved wiki solution did not resolve this attempt',
+        reason: outcome.reason ?? debug.reason,
+      }),
+      undefined,
+    );
+    await this.opts.audit.event('note', `debug wiki marked ${entryIds.join(', ')} for review`, {
+      messageId: 'engine.debug_wiki_feedback',
+      kind: 'failure',
+      entryIds,
+      issueId: issue?.id,
+      stepId: step.id,
+      reason: outcome.reason ?? debug.reason,
+    });
+  }
+
+  private async recordDebugWikiResolution(
+    issue: EngineIssue,
+    step: Step,
+    repair?: EngineIssue['repair'],
+  ): Promise<void> {
+    const brief = issue.debugBrief ?? buildDebugBrief({
+      reason: issue.reason,
+      failureLog: issue.failureLog,
+      phase: issue.phase,
+      targetPhase: issue.targetPhase,
+    });
+    const repairFiles = repair?.changedFiles?.length ? repair.changedFiles : step.outputs;
+    const evidenceSummary = [
+      `Resolved ${issue.kind} by Debugger in ${step.id}/${step.phase}.`,
+      `Mode: ${repair?.mode ?? 'verification'}.`,
+      repairFiles.length > 0 ? `Changed/verified files: ${repairFiles.join(', ')}.` : '',
+      repair?.patchPath ? `Patch: ${repair.patchPath}.` : '',
+      `Demand: ${brief.debugDemand}`,
+    ].filter(Boolean).join(' ');
+    const solution = issue.issueResolutionPlan
+      ? `${issue.issueResolutionPlan}\nResolution evidence: ${evidenceSummary}`
+      : evidenceSummary;
+    const result = await this.withDebugWiki(
+      'record-resolution',
+      () => this.debugWiki.recordResolution({
+        brief,
+        issueId: issue.id,
+        stepId: step.id,
+        phase: step.phase,
+        targetPhase: issue.targetPhase,
+        language: this.profile.id,
+        resolutionPlan: issue.issueResolutionPlan,
+        solution,
+        evidence: brief.evidence,
+        repairFiles,
+        usedEntryIds: issue.debugWikiEntryIds,
+      }),
+      { updated: [] },
+    );
+    if (result.created || result.updated.length > 0) {
+      await this.opts.audit.event('note', `debug wiki updated after ${issue.id}`, {
+        messageId: 'engine.debug_wiki_updated',
+        issueId: issue.id,
+        created: result.created,
+        updated: result.updated,
+      });
+    }
   }
 
   private findIssue(issueId: string): EngineIssue | undefined {
@@ -589,6 +767,10 @@ export class PhaseEngine {
       targetStepId: issue.targetStepId,
       targetPhase: issue.targetPhase,
       reason: issue.reason,
+      debugSummary: issue.debugBrief?.summary,
+      debugDemand: issue.debugBrief?.debugDemand,
+      debugWikiEntryIds: issue.debugWikiEntryIds,
+      issueResolutionPlan: issue.issueResolutionPlan,
       ...extra,
     });
     await this.opts.ws.writeFile(eventPath, `${existing}${line}\n`);
@@ -614,6 +796,7 @@ export class PhaseEngine {
     const summaryPath = `.xcompiler/issues/${issueId}/repair.md`;
     const diff = await this.opts.git.raw().diff([beforeRef, '--']).catch((err) => `# git diff failed: ${(err as Error).message}\n`);
     const mode = inferRepairMode(toolCalls);
+    const changedFiles = parsePatchChangedFiles(diff);
     await this.opts.ws.writeFile(patchPath, diff || '# No textual diff captured.\n');
     await this.opts.ws.writeFile(
       summaryPath,
@@ -638,6 +821,7 @@ export class PhaseEngine {
       mode,
       patchPath,
       summaryPath,
+      changedFiles,
     };
   }
 
@@ -1038,6 +1222,8 @@ export class PhaseEngine {
     await this.debugCache.load();
     const initialDebug = opts.initialDebug;
     const inheritedExtraAllowedWrites = initialDebug?.extraAllowedWrites;
+    const inheritedContextMode = initialDebug?.contextMode;
+    const inheritedTestScopeArgs = initialDebug?.testScopeArgs;
     const completedBeforeDebug = initialDebug?.completedBeforeDebug ?? step.status === 'DONE';
     const rootDebugFailureLog = initialDebug
       ? cleanFailureLogForDebugContext(initialDebug.failureLog)
@@ -1084,7 +1270,8 @@ export class PhaseEngine {
           priorAttemptsPrompt: priorPrompt,
           contextPaths: initialDebug.contextPaths,
           extraAllowedWrites: inheritedExtraAllowedWrites,
-          contextMode: initialDebug.contextMode,
+          contextMode: inheritedContextMode,
+          testScopeArgs: inheritedTestScopeArgs,
           issueId: activeIssueId,
           completedBeforeDebug,
         });
@@ -1092,6 +1279,8 @@ export class PhaseEngine {
         const attempts = this.debugCache.attempts(step.id);
         const last = attempts.slice(-1)[0]!;
         const resume = latestActionableDebugAttempt(attempts) ?? last;
+        const cachedTestScopeArgs = inferCachedTestScopeArgs(resume);
+        const cachedContextMode = resume.contextMode ?? (cachedTestScopeArgs.length > 0 ? 'test-rollback' : undefined);
         this.log(
           chalk.yellow(
             t().engine.debugResumeNotice(step.id, attempts.length),
@@ -1122,6 +1311,8 @@ export class PhaseEngine {
               reason: resume.reason,
               priorAttemptsPrompt: priorPrompt,
               extraAllowedWrites: inheritedExtraAllowedWrites,
+              contextMode: cachedContextMode,
+              testScopeArgs: cachedTestScopeArgs,
               issueId: activeIssueId,
               completedBeforeDebug,
             });
@@ -1152,6 +1343,8 @@ export class PhaseEngine {
             reason: resume.reason,
             priorAttemptsPrompt: priorPrompt,
             extraAllowedWrites: inheritedExtraAllowedWrites,
+            contextMode: cachedContextMode,
+            testScopeArgs: cachedTestScopeArgs,
             issueId: activeIssueId,
             completedBeforeDebug,
           });
@@ -1206,6 +1399,8 @@ export class PhaseEngine {
       suggestions: calibrateDebugSuggestions(cleanFailureLogForDebugContext(initialFailureLogForRecord), initialReason).map(
         (s) => `[${s.code}] ${s.hint}`,
       ),
+      contextMode: inheritedContextMode,
+      testScopeArgs: inheritedTestScopeArgs,
       metrics: initial.metrics
         ? {
             healthScore: initial.metrics.healthScore,
@@ -1287,6 +1482,8 @@ export class PhaseEngine {
           reason: lastReason,
           priorAttemptsPrompt: priorPrompt,
           extraAllowedWrites: inheritedExtraAllowedWrites,
+          contextMode: inheritedContextMode,
+          testScopeArgs: inheritedTestScopeArgs,
           issueId: activeIssueId,
           completedBeforeDebug,
         });
@@ -1343,6 +1540,8 @@ export class PhaseEngine {
           suggestions: calibrateDebugSuggestions(cleanFailureLogForDebugContext(recordedFailureLog), rollbackReason).map(
             (s) => `[${s.code}] ${s.hint}`,
           ),
+          contextMode: inheritedContextMode,
+          testScopeArgs: inheritedTestScopeArgs,
           metrics: r.metrics
             ? {
                 healthScore: r.metrics.healthScore,
@@ -1364,9 +1563,13 @@ export class PhaseEngine {
       }
 	      const m = r.metrics;
 	      const readOnlyProbeLoop = isReadOnlyProbeLoopFailure(r.reason);
+	      const missingOutputStall = isMissingOutputStallFailure(r.reason);
+	      const lowQualityDebuggerResponse = isLowQualityDebuggerResponseFailure(r.reason);
 	      const repairEvidenceMissing = isRepairEvidenceMissingFailure(r.reason);
 	      const healthy =
 	        !readOnlyProbeLoop &&
+	        !missingOutputStall &&
+	        !lowQualityDebuggerResponse &&
 	        !repairEvidenceMissing &&
 	        !!m &&
 	        m.parseFailures === 0 &&
@@ -1374,6 +1577,8 @@ export class PhaseEngine {
 	        m.healthScore >= 0.6;
 	      const bad =
 	        readOnlyProbeLoop ||
+	        missingOutputStall ||
+	        lowQualityDebuggerResponse ||
 	        repairEvidenceMissing ||
 	        (!!m &&
 	          (m.healthScore < 0.3 ||
@@ -1431,6 +1636,8 @@ export class PhaseEngine {
         suggestions: calibrateDebugSuggestions(cleanFailureLogForDebugContext(recordedFailureLog), r.reason ?? '').map(
           (s) => `[${s.code}] ${s.hint}`,
         ),
+        contextMode: inheritedContextMode,
+        testScopeArgs: inheritedTestScopeArgs,
         metrics: m
           ? {
               healthScore: m.healthScore,
@@ -1595,6 +1802,79 @@ export class PhaseEngine {
     return dedup([...codeAndTests, ...step.inputs, ...docs]);
   }
 
+  private async buildDebugPromptPayload(
+    step: Step,
+    debug: DebugAttemptContext,
+    failureLog: string,
+  ): Promise<{ debugBrief: string; failureLog: string; suggestions: string; debugWikiEntryIds: string[] }> {
+    const issue = debug.issueId ? this.findIssue(debug.issueId) : undefined;
+    const currentBrief = buildDebugBrief({
+      reason: debug.reason,
+      failureLog,
+      phase: issue?.phase ?? step.phase,
+      targetPhase: issue?.targetPhase ?? step.phase,
+    });
+    const rootBrief = issue?.debugBrief;
+    const briefBlocks = rootBrief && rootBrief.summary !== currentBrief.summary
+      ? [
+          '## root issue brief',
+          renderDebugBriefForPrompt(rootBrief),
+          '',
+          '## current retry brief',
+          renderDebugBriefForPrompt(currentBrief),
+        ]
+      : [renderDebugBriefForPrompt(currentBrief)];
+    const evidence = compactFailureEvidence({
+      reason: debug.reason,
+      failureLog,
+      phase: issue?.phase ?? step.phase,
+      targetPhase: issue?.targetPhase ?? step.phase,
+      maxChars: 2600,
+      maxLines: 50,
+    });
+    const suggestions = renderDebugSuggestions(
+      calibrateDebugSuggestions(failureLog, debug.reason),
+    );
+    const wikiMatches = await this.withDebugWiki(
+      'search',
+      () => this.debugWiki.search(currentBrief, { language: this.profile.id, limit: 3 }),
+      [],
+    );
+    const debugWikiEntryIds = wikiMatches.map((match) => match.entry.id);
+    if (debugWikiEntryIds.length > 0) {
+      debug.debugWikiEntryIds = dedup([...(debug.debugWikiEntryIds ?? []), ...debugWikiEntryIds]);
+      if (issue) {
+        issue.debugWikiEntryIds = dedup([...(issue.debugWikiEntryIds ?? []), ...debugWikiEntryIds]);
+      }
+      await this.withDebugWiki(
+        'record-use',
+        () => this.debugWiki.recordUse(debugWikiEntryIds, {
+          brief: currentBrief,
+          issueId: issue?.id,
+          stepId: step.id,
+          phase: step.phase,
+          targetPhase: issue?.targetPhase,
+          language: this.profile.id,
+          solution: 'retrieved for Debugger prompt',
+        }),
+        undefined,
+      );
+      await this.opts.audit.event('note', `debug wiki matched ${debugWikiEntryIds.join(', ')}`, {
+        messageId: 'engine.debug_wiki_matched',
+        entryIds: debugWikiEntryIds,
+        stepId: step.id,
+        phase: step.phase,
+      });
+    }
+    const wikiPrompt = renderDebugWikiMatchesForPrompt(wikiMatches);
+    return {
+      debugBrief: [briefBlocks.join('\n'), wikiPrompt].filter(Boolean).join('\n\n'),
+      failureLog: evidence,
+      suggestions,
+      debugWikiEntryIds,
+    };
+  }
+
   /** 一次执行尝试：可选 debug 模式（使用 Debugger 角色 + 注入失败日志）。 */
   private async runOneAttempt(
     plan: Plan,
@@ -1611,6 +1891,9 @@ export class PhaseEngine {
     });
     try {
       const outcome = await this.runOneAttemptCore(plan, step, debug);
+      if (debug && !outcome.ok) {
+        await this.recordDebugWikiFailure(step, debug, outcome);
+      }
       await this.plugins.emit('step.attempt.after', {
         plan,
         step,
@@ -1626,6 +1909,9 @@ export class PhaseEngine {
         failureLog: error instanceof Error ? (error.stack ?? error.message) : String(error),
         reason: error instanceof Error ? error.message : String(error),
       };
+      if (debug) {
+        await this.recordDebugWikiFailure(step, debug, outcome);
+      }
       await this.plugins.emit('step.attempt.after', {
         plan,
         step,
@@ -1774,6 +2060,9 @@ export class PhaseEngine {
           { animate: false },
         );
     const debugFailureLog = debug ? cleanFailureLogForDebugContext(debug.failureLog) : undefined;
+    const debugPayload = debug
+      ? await this.buildDebugPromptPayload(step, debug, debugFailureLog ?? debug.failureLog)
+      : undefined;
     try {
       const r = await executor.run({
         step,
@@ -1784,14 +2073,15 @@ export class PhaseEngine {
         skillHints: hints,
         debugContext: debug
           ? {
+              issueId: debug.issueId,
               reason: debug.reason,
-              failureLog: debugFailureLog ?? debug.failureLog,
+              failureLog: debugPayload?.failureLog ?? debugFailureLog ?? debug.failureLog,
+              debugBrief: debugPayload?.debugBrief,
               repairRequired: !debug.completedBeforeDebug,
-              suggestions:
-                renderDebugSuggestions(
-                  calibrateDebugSuggestions(debugFailureLog ?? debug.failureLog, debug.reason),
-                ) +
-                (debug.priorAttemptsPrompt ? `\n\n${debug.priorAttemptsPrompt}` : ''),
+              suggestions: [
+                debugPayload?.suggestions,
+                debug.priorAttemptsPrompt,
+              ].filter(Boolean).join('\n\n'),
             }
           : undefined,
         globalPrompt: plan.globalPrompt,
@@ -2057,7 +2347,7 @@ export class PhaseEngine {
             )
           : undefined;
         if (debug?.issueId) {
-          await this.markIssueResolved(debug.issueId, step, repair);
+          await this.markIssueResolved(debug.issueId, step, repair, r.issueResolutionPlan);
         }
         await this.opts.git.snapshot(step.id, step.retries, debug ? 'debug done' : 'done');
         spin?.succeed(t().engine.phaseDone(step.id, r.rounds));
@@ -2065,9 +2355,16 @@ export class PhaseEngine {
           messageId: 'engine.phase_done', rounds: r.rounds, retry: step.retries,
         });
         // 不在这里调 markDone：executeStepWithDebug 中统一处理（避免 retry-loop 里双写）。
-        return { ok: true, failureLog: '' };
+        return { ok: true, failureLog: '', issueResolutionPlan: r.issueResolutionPlan };
       }
-      const reason = r.error ?? t().engine.outputsMissing(verify.missing.join(', '));
+      let reason = r.error ?? t().engine.outputsMissing(verify.missing.join(', '));
+      if (
+        debug?.completedBeforeDebug &&
+        !hasSuccessfulRepairMutation(r.toolCalls) &&
+        hasFailedVerificationEvidence(r.toolCalls)
+      ) {
+        reason = 'completed phase debug finished with failed verification but without a successful repair mutation';
+      }
       const m = r.metrics;
       const metricsLine = m
         ? t().engine.metricsLine(m.healthScore.toFixed(2), m.parseFailures, m.repeatedTurns, m.toolFailRatio.toFixed(2), m.progressRatio.toFixed(2))
@@ -2106,7 +2403,7 @@ export class PhaseEngine {
       } else {
         await this.opts.git.revertTo(sha);
       }
-      return { ok: false, failureLog, reason, metrics: m, issueKind: 'phase' };
+      return { ok: false, failureLog, reason, metrics: m, issueKind: 'phase', issueResolutionPlan: r.issueResolutionPlan };
     } catch (err) {
       const msg = (err as Error).message;
       const stack = (err as Error).stack ?? msg;
@@ -2374,6 +2671,12 @@ function hasSuccessfulVerificationEvidence(
   return toolCalls.some((call) => call.ok && REPAIR_VERIFICATION_TOOLS.has(call.tool));
 }
 
+function hasFailedVerificationEvidence(
+  toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
+): boolean {
+  return toolCalls.some((call) => !call.ok && REPAIR_VERIFICATION_TOOLS.has(call.tool));
+}
+
 function shouldRollbackTestPhaseFromToolFailures(
   step: Step,
   toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
@@ -2544,10 +2847,10 @@ function extractFailedTestPaths(text: string): string[] {
 
 function isNonDebuggableInfrastructureFailure(reason?: string, failureLog?: string): boolean {
   const text = `${reason ?? ''}\n${failureLog ?? ''}`.toLowerCase();
+  if (/low-quality debugger response/u.test(text)) return false;
   return (
     /typeerror:\s*fetch failed/u.test(text) ||
 	    /(?:openai|ollama) http (?:401|403|408|409|429|5\d\d)\b/u.test(text) ||
-    /\bhttp (?:401|403|408|409|429|5\d\d)\b/u.test(text) ||
     /rate limit exceeded|free-models-per-day|retry_after_seconds|retry-after/u.test(text) ||
 	    /(?:openai|ollama|llm|provider)[^\n]{0,180}(?:rate[- ]?limit|rate limited|rate-limited|retry-after|retry_after_seconds)/u.test(text) ||
 	    /(?:response_format|json_object|json_schema)[^\n]{0,220}(?:not support|unsupported|invalid_request_body|supported formats)/u.test(text) ||
@@ -2566,22 +2869,66 @@ function isReadOnlyProbeLoopFailure(reason?: string): boolean {
     /read-only recovery mode repeated probe actions/u.test(reason ?? '');
 }
 
+function isMissingOutputStallFailure(reason?: string): boolean {
+  return /write\/progress actions did not reduce missing outputs/u.test(reason ?? '');
+}
+
+function isLowQualityDebuggerResponseFailure(reason?: string): boolean {
+  return /low-quality debugger response/u.test(reason ?? '');
+}
+
 function isRepairEvidenceMissingFailure(reason?: string): boolean {
   return /without repair evidence/u.test(reason ?? '') ||
+    /without a successful repair mutation/u.test(reason ?? '') ||
     /without a successful repair mutation or verification tool call/u.test(reason ?? '');
 }
 
-function shouldRollbackTestPhaseFailure(reason?: string, failureLog?: string): boolean {
+export function shouldRollbackTestPhaseFailure(reason?: string, failureLog?: string): boolean {
   const text = `${reason ?? ''}\n${failureLog ?? ''}`.toLowerCase();
   if (isReadOnlyProbeLoopFailure(reason) || isRepairEvidenceMissingFailure(reason)) return false;
+  if (/tool verification failed.*rolling back to paired/u.test(text)) return true;
   if (isCachedTestArtifactDiscoveryFailure(text)) return false;
   if (/missing outputs|outputs? 校验|verify outputs|declared outputs|产物/u.test(text)) return false;
   if (/invalid action|args must be an object|invalid json|parse failure/u.test(text)) return false;
-  if (/tool verification failed.*rolling back to paired/u.test(text)) return true;
-  if (/test gate|functional gate|functional entry probe|entry probe|delivery gate/u.test(text)) return true;
+  if (/test gate|functional gate|functional entry probe|entry probe|delivery gate|测试门禁|功能门禁|功能入口探测|入口探测|交付门禁/u.test(text)) return true;
   if (/pytest exit=\s*[1-9]\d*|exit code\s*[1-9]\d*|failed tests?|test failures?/u.test(text)) return true;
   if (/assertionerror|failed:\s+did not|traceback \(most recent call last\)/u.test(text)) return true;
   return false;
+}
+
+function inferCachedTestScopeArgs(entry: DebugAttemptEntry): string[] {
+  const explicit = (entry.testScopeArgs ?? [])
+    .map(normalizeGitPath)
+    .filter(isTestFilePath);
+  if (explicit.length > 0) return dedup(explicit);
+
+  const text = [
+    entry.failureLogTail,
+    entry.debugBrief?.toolFailures?.join('\n') ?? '',
+    entry.debugBrief?.evidence?.join('\n') ?? '',
+  ].filter(Boolean).join('\n');
+  const fromRunTestsArgs = extractRunTestsArgs(text);
+  if (fromRunTestsArgs.length > 0) return fromRunTestsArgs;
+
+  const failedPaths = extractFailedTestPaths(text);
+  if (failedPaths.length > 0) return failedPaths;
+
+  return dedup((entry.debugBrief?.files ?? [])
+    .map(normalizeGitPath)
+    .filter(isTestFilePath));
+}
+
+function extractRunTestsArgs(text: string): string[] {
+  const out: string[] = [];
+  for (const match of text.matchAll(/\brun_tests[^\n]*\bargs=([^\n]+)/giu)) {
+    const raw = match[1] ?? '';
+    for (const token of raw.split(/\s+/u)) {
+      const cleaned = token.replace(/^["'`]+|["'`,;]+$/gu, '');
+      const normalized = normalizeGitPath(cleaned);
+      if (isTestFilePath(normalized)) out.push(normalized);
+    }
+  }
+  return dedup(out);
 }
 
 function isCachedTestArtifactDiscoveryFailure(text: string): boolean {
@@ -2658,4 +3005,12 @@ function inferRepairMode(
   if (usedPatch) return 'patch';
   if (usedRewrite) return 'rewrite';
   return 'verification';
+}
+
+function parsePatchChangedFiles(diff: string): string[] {
+  const files: string[] = [];
+  for (const match of diff.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gmu)) {
+    files.push(normalizeGitPath(match[2] ?? match[1] ?? ''));
+  }
+  return dedup(files.filter(Boolean));
 }

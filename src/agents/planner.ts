@@ -32,6 +32,7 @@ import {
   calibrateStepShape,
   calibratePlanCoverage,
   calibrateLanguageStepOwnership,
+  calibrateArchitectureModuleDependencies,
 } from './calibration.js';
 
 /** @deprecated kept for back-compat; use `calibratePythonRequirements`. */
@@ -114,7 +115,7 @@ export class Planner {
 
   async clarify(
     rawRequirement: string,
-    opts: { intent?: PlanIntent; hasBaseline?: boolean } = {},
+    opts: { intent?: PlanIntent; hasBaseline?: boolean; languageAmbiguous?: boolean } = {},
   ): Promise<ClarifyQuestion[]> {
     const demand = analyzeArchitectureDemand(
       { requirementDigest: rawRequirement, intent: opts.intent ?? 'greenfield' },
@@ -127,6 +128,7 @@ export class Planner {
       hasBaseline: !!opts.hasBaseline,
       complex: demand.nonTrivial,
       projectShapeAmbiguous,
+      languageAmbiguous: !!opts.languageAmbiguous,
     });
     const rep = makeStreamReporter('Planner.clarify', this.llm.name);
     let provider: string | undefined;
@@ -147,6 +149,7 @@ export class Planner {
           validate: (t) => validateClarifyJson(t, demand.nonTrivial, {
             projectShapeAmbiguous,
             externalApiRequired,
+            languageAmbiguous: !!opts.languageAmbiguous,
           }),
         },
       );
@@ -235,14 +238,14 @@ export class Planner {
         },
         { role: 'user', content: prompt + feedback },
       ],
-      validate: (t) => parsePhaseStepPlanJson(t, parseContext, phasePlan, currentPhase.id),
+      validate: (t) => parsePhaseStepPlanJson(t, parseContext, phasePlan, currentPhase),
     });
     await this.audit?.plannerThought('decompose', text, {
       qaCount: input.clarifications.length,
       provider,
       phaseId: currentPhase.id,
     });
-    return parsePhaseStepPlanJson(text, parseContext, phasePlan, currentPhase.id);
+    return parsePhaseStepPlanJson(text, parseContext, phasePlan, currentPhase);
   }
 
   private async chatWithStructuredValidationRetry(input: {
@@ -326,7 +329,7 @@ function formatPlannerValidationFeedback(err: unknown): string {
 function isPlannerStructuredValidationError(err: unknown): boolean {
   const message = errorMessage(err);
   if (isPlannerTransportFailure(message)) return false;
-  return /^Planner (?:architecture|phase|JSON|draft|complexityAssessment|implementationPhases|iteration)/u.test(message);
+  return /^Planner (?:architecture|phase|PhasePlan|JSON|draft|complexityAssessment|implementationPhases|iteration)/u.test(message);
 }
 
 function isPlannerTransportFailure(message: string): boolean {
@@ -389,6 +392,12 @@ export function buildPlan(
   const phaseId = implementationPhases.find((phase) => phase.status === 'current')?.id ??
     draft.steps.find((step) => step.iterationId)?.iterationId ??
     'P1';
+  const architectureDependencyCalibration = calibrateArchitectureModuleDependencies(
+    draft.architectureModules ?? [],
+    draft.dependencies,
+  );
+  const architectureModules = architectureDependencyCalibration.architectureModules;
+  const draftDependencies = architectureDependencyCalibration.dependencies;
   const iterated = normalizeStepIterations(draft.steps, implementationPhases);
   const shaped = calibrateLanguageStepOwnership(
     calibrateVModelDependencies(
@@ -397,19 +406,19 @@ export function buildPlan(
     {
       language,
       intent: opts.intent ?? 'greenfield',
-      architectureModules: draft.architectureModules ?? [],
+      architectureModules,
     },
   );
-  const mapped = calibrateArchitectureStepMappings(shaped, draft.architectureModules ?? []);
-  const contracted = injectArchitectureContractPrompts(mapped, draft.architectureModules ?? []);
+  const mapped = calibrateArchitectureStepMappings(shaped, architectureModules);
+  const contracted = injectArchitectureContractPrompts(mapped, architectureModules);
   const languageContracted = injectLanguageContractPrompts(contracted, language);
   // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
   const steps = calibratePlanCoverage(languageContracted, language);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
     language === 'python'
-      ? calibratePythonRequirements(draft.dependencies)
-      : [...new Set((draft.dependencies ?? []).map((d) => d.trim()).filter(Boolean))];
+      ? calibratePythonRequirements(draftDependencies)
+      : [...new Set((draftDependencies ?? []).map((d) => d.trim()).filter(Boolean))];
   return {
     version: '1',
     language,
@@ -419,7 +428,7 @@ export function buildPlan(
     requirementDigest: draft.requirementDigest,
     complexityAssessment,
     implementationPhases,
-    architectureModules: draft.architectureModules,
+    architectureModules,
     globalPrompt: draft.globalPrompt,
     baselineSummary: opts.baselineSummary ?? '',
     dependencies,
@@ -597,7 +606,11 @@ function stripOptionLabel(value: string): string {
 function validateClarifyJson(
   text: string,
   complex: boolean,
-  opts: { projectShapeAmbiguous?: boolean; externalApiRequired?: boolean } = {},
+  opts: {
+    projectShapeAmbiguous?: boolean;
+    externalApiRequired?: boolean;
+    languageAmbiguous?: boolean;
+  } = {},
 ): ClarifyQuestion[] {
   const data = safeJson(text);
   const raw = coerceClarifyArray(data);
@@ -651,6 +664,11 @@ function validateClarifyJson(
       'clarify missing required external API credential question: ask whether the user has an API/key/token; if not, default to open no-key APIs',
     );
   }
+  if (opts.languageAmbiguous && !parsed.some(isDevelopmentLanguageClarification)) {
+    throw new Error(
+      'clarify missing required development language question: ask whether the project should use Python or TypeScript/Node.js, with Python as the default option',
+    );
+  }
   return parsed;
 }
 
@@ -660,6 +678,8 @@ interface DraftParseContext {
   userAddenda: string;
   baselineSummary: string;
   intent: PlanIntent;
+  /** When expanding one implementation phase, scope architecture-demand gates to that phase. */
+  phaseDemandText?: string;
 }
 
 function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhasePlan {
@@ -736,7 +756,7 @@ function parsePhaseStepPlanJson(
   text: string,
   context: DraftParseContext,
   phasePlan: DraftPhasePlan,
-  currentIterationId: string,
+  currentPhase: ImplementationPhase,
 ): DraftPlan {
   const data = safeJson(text);
   if (!data || typeof data !== 'object') {
@@ -752,7 +772,7 @@ function parsePhaseStepPlanJson(
     requirementDigest:
       typeof obj.requirementDigest === 'string' && obj.requirementDigest.trim()
         ? obj.requirementDigest
-        : phasePlan.requirementDigest,
+        : currentPhase.objective || phasePlan.requirementDigest,
     globalPrompt:
       typeof obj.globalPrompt === 'string' && obj.globalPrompt.trim()
         ? obj.globalPrompt
@@ -764,7 +784,11 @@ function parsePhaseStepPlanJson(
     architectureModules: obj.architectureModules,
     steps: obj.steps,
   };
-  const parsed = parseDraftPlanJson(JSON.stringify(draft), context);
+  const parsed = parseDraftPlanJson(JSON.stringify(draft), {
+    ...context,
+    phaseDemandText: phaseDemandText(currentPhase),
+  });
+  const currentIterationId = currentPhase.id;
   const wrongIteration = parsed.steps.find((step) => (step.iterationId ?? 'P1') !== currentIterationId);
   if (wrongIteration) {
     throw new Error(
@@ -806,7 +830,7 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     : Array.isArray(obj.pythonRequirements)
       ? obj.pythonRequirements
       : [];
-  const dependencies = (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string');
+  let dependencies = (rawDeps as unknown[]).filter((s): s is string => typeof s === 'string');
   if (context) {
     const validPhaseNames = new Set<string>(PHASES);
     const nonCanonical = (steps as unknown[])
@@ -850,7 +874,12 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
   if (!architectureResult.success) {
     throw new Error(`Planner architectureModules invalid: ${architectureResult.error.issues.map((i) => i.message).join('; ')}`);
   }
-  const architectureModules = architectureResult.data;
+  const architectureDependencyCalibration = calibrateArchitectureModuleDependencies(
+    architectureResult.data,
+    dependencies,
+  );
+  const architectureModules = architectureDependencyCalibration.architectureModules;
+  dependencies = architectureDependencyCalibration.dependencies;
   const parsedComplexityAssessment = parseComplexityAssessment(obj.complexityAssessment);
   if (context && !parsedComplexityAssessment) {
     throw new Error('Planner JSON missing valid complexityAssessment; complexity must be assessed during plan decomposition.');
@@ -888,14 +917,7 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
   }
   if (context) {
     const demand = analyzeArchitectureDemand(
-      {
-        requirementDigest: digest,
-        rawRequirement: context.rawRequirement,
-        userAddenda: context.userAddenda,
-        globalPrompt,
-        baselineSummary: context.baselineSummary,
-        intent: context.intent,
-      },
+      architectureDemandInputForDraft(context, digest, globalPrompt),
       context.language,
     );
     const forcedPhaseSplit = hasForcedPhaseSplit([
@@ -947,6 +969,43 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     architectureModules,
     steps: stepsWithIterations,
   };
+}
+
+function architectureDemandInputForDraft(
+  context: DraftParseContext,
+  digest: string,
+  globalPrompt: string,
+): Parameters<typeof analyzeArchitectureDemand>[0] {
+  if (!context.phaseDemandText) {
+    return {
+      requirementDigest: digest,
+      rawRequirement: context.rawRequirement,
+      userAddenda: context.userAddenda,
+      globalPrompt,
+      baselineSummary: context.baselineSummary,
+      intent: context.intent,
+    };
+  }
+  return {
+    requirementDigest: context.phaseDemandText,
+    baselineSummary: context.baselineSummary,
+    intent: context.intent,
+  };
+}
+
+function phaseDemandText(currentPhase: ImplementationPhase): string {
+  const gate = currentPhase.verificationGate;
+  return [
+    currentPhase.title,
+    currentPhase.objective,
+    currentPhase.scope.join('\n'),
+    currentPhase.deliverables.join('\n'),
+    gate?.summary ?? '',
+    gate?.checks.join('\n') ?? '',
+  ]
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 function parseComplexityAssessment(value: unknown): ComplexityAssessment | undefined {
@@ -1067,6 +1126,18 @@ function isExternalApiCredentialClarification(question: ClarifyQuestion): boolea
     /\b(api|url|endpoint|provider|external|third[- ]party|fetch|request)\b/u.test(text) ||
     /外部|第三方|接口|数据源|天气|节假日|联网/u.test(text);
   return externalApiContext && asksCredential && mentionsNoKeyFallback;
+}
+
+function isDevelopmentLanguageClarification(question: ClarifyQuestion): boolean {
+  const text = `${question.question}\n${question.why}\n${question.options.map((option) => option.answer).join('\n')}`.toLowerCase();
+  const mentionsPython = /\bpython\b/u.test(text) || /python\s*脚本|python\s*项目/u.test(text);
+  const mentionsTypeScript =
+    /\btypescript\b|\btype\s*script\b|\bnode(?:\.js)?\b/u.test(text) ||
+    /type\s*script|ts\s*(程序|工程|项目|脚本|语言|实现)|typescript\s*项目/u.test(text);
+  const asksLanguage =
+    /\b(language|runtime|implementation stack|programming language)\b/u.test(text) ||
+    /开发语言|编程语言|实现语言|运行时|技术栈/u.test(text);
+  return asksLanguage && mentionsPython && mentionsTypeScript;
 }
 
 function projectShapeSignals(text: string): { libraryLike: boolean; appLike: boolean; genericApi: boolean } {

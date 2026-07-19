@@ -236,6 +236,38 @@ describe('runTestsTool / runPythonTool summary', () => {
     expect(r.summary).toContain('503 Service Unavailable');
   });
 
+  it('does not treat test assertion source frames containing HTTP status text as API failures', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runProgram() { throw new Error('not used'); },
+        async runTests() {
+          return {
+            exitCode: 1,
+            stdout: '',
+            stderr: [
+              'AssertionError: expected "S1: HTTP 500" to contain "S1: HTTP 500"',
+              '57|     expect(errorsArg).toContain("S1: HTTP 500");',
+              '58|   });',
+            ].join('\n'),
+            timedOut: false,
+            durationMs: 1,
+          };
+        },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S005',
+      language: 'typescript',
+    };
+
+    const r = await runTestsTool.run({ args: ['tests/app.unit.test.ts'] }, fakeCtx);
+    expect(r.ok).toBe(false);
+    expect(r.summary).not.toContain('Network API failure detected');
+    expect(r.summary).toContain('npm test exit=1');
+  });
+
   it('reports TypeScript run_program project commands without wrapping npm/npx/node in tsx', async () => {
     const { runProgramTool } = await import('../src/tools/sandbox.js');
     let seenArgs: string[] = [];

@@ -1,5 +1,10 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import {
+  buildDebugBrief,
+  compactFailureEvidence,
+  type DebugBrief,
+} from './debug_brief.js';
 
 /**
  * 单步 debug 尝试历史条目。所有字段都做了截断，避免缓存文件无限膨胀。
@@ -13,6 +18,12 @@ export interface DebugAttemptEntry {
   reason: string;
   /** 失败日志尾部（已按 maxFailureLogLines 截断）。 */
   failureLogTail: string;
+  /** 结构化核心错误摘要；用于跨会话恢复时避免重新注入长日志。 */
+  debugBrief?: DebugBrief;
+  /** Debug 场景来源；用于跨会话恢复时保留测试回退/审计修复语义。 */
+  contextMode?: 'audit-repair' | 'iteration-gate' | 'test-rollback';
+  /** 测试回退 Debugger 的默认验证范围，避免 resume 后无参 run_tests 退化成全量测试。 */
+  testScopeArgs?: string[];
   /** Calibrator 给出的修复建议（一行一条）。 */
   suggestions?: string[];
   /** 该次尝试前 git snapshot SHA，便于人工 checkout 复盘。 */
@@ -45,10 +56,14 @@ export function sanitizeDebugFailureLogForPrompt(log: string): string {
   const lines = log.split(/\r?\n/u);
   const out: string[] = [];
   const seenReasonLines = new Set<string>();
-  let mode: 'keep' | 'skip-history' | 'skip-suggestions' = 'keep';
+  let mode: 'keep' | 'skip-history' | 'skip-suggestions' | 'skip-brief' = 'keep';
   for (const line of lines) {
     if (/^##\s+历史\s+DEBUG\s+尝试/u.test(line)) {
       mode = 'skip-history';
+      continue;
+    }
+    if (/^##\s+(?:debug brief|root issue brief|current retry brief)\b/u.test(line)) {
+      mode = 'skip-brief';
       continue;
     }
     if (/^##\s+修复建议/u.test(line)) {
@@ -56,19 +71,26 @@ export function sanitizeDebugFailureLogForPrompt(log: string): string {
       continue;
     }
     if (mode === 'skip-history') {
-      if (/^(原因：|Reason:|##\s+debug failure log\b)/u.test(line)) {
+      if (/^(原因：|Reason:|##\s+(?:debug failure log|compact failure evidence)\b)/u.test(line)) {
         mode = 'keep';
       } else {
         continue;
       }
     }
     if (mode === 'skip-suggestions') {
-      if (/^(原因：|Reason:|轮次：|工具调用：|---\s+|##\s+历史\s+DEBUG\s+尝试|##\s+debug failure log\b)/u.test(line)) {
+      if (/^(原因：|Reason:|轮次：|工具调用：|---\s+|##\s+历史\s+DEBUG\s+尝试|##\s+(?:debug failure log|compact failure evidence)\b)/u.test(line)) {
         mode = 'keep';
         if (/^##\s+历史\s+DEBUG\s+尝试/u.test(line)) {
           mode = 'skip-history';
           continue;
         }
+      } else {
+        continue;
+      }
+    }
+    if (mode === 'skip-brief') {
+      if (/^(原因：|Reason:|轮次：|工具调用：|---\s+|##\s+修复建议|##\s+历史\s+DEBUG\s+尝试|##\s+(?:debug failure log|compact failure evidence)\b)/u.test(line)) {
+        mode = 'keep';
       } else {
         continue;
       }
@@ -157,11 +179,24 @@ export class DebugCache {
     const cleanedFailureLog = stripNestedLatestDebuggerFailures(
       sanitizeDebugFailureLogForPrompt(entry.failureLogTail ?? ''),
     );
+    const debugBrief = buildDebugBrief({
+      reason: entry.reason,
+      failureLog: cleanedFailureLog,
+    });
+    const compactFailureLog = compactFailureEvidence({
+      reason: entry.reason,
+      failureLog: cleanedFailureLog,
+      maxChars: 3600,
+      maxLines: this.maxLogLines,
+    });
     const e: DebugAttemptEntry = {
       attempt: entry.attempt,
       ts: entry.ts ?? new Date().toISOString(),
       reason: (entry.reason ?? '').slice(0, 500),
-      failureLogTail: tail(cleanedFailureLog),
+      failureLogTail: tail(compactFailureLog),
+      debugBrief,
+      contextMode: entry.contextMode,
+      testScopeArgs: entry.testScopeArgs,
       suggestions: entry.suggestions,
       snapshotSha: entry.snapshotSha,
       metrics: entry.metrics,
@@ -233,7 +268,10 @@ export class DebugCache {
       const sugg = e.suggestions && e.suggestions.length > 0
         ? `\n    prior suggestions: omitted (${e.suggestions.length}) to avoid stale guidance; use the current failure log first.`
         : '';
-      return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${sugg}`;
+      const brief = e.debugBrief
+        ? `\n    brief: ${e.debugBrief.category} — ${e.debugBrief.summary}`
+        : '';
+      return `- attempt #${e.attempt} @ ${e.ts}${m}\n    reason: ${e.reason}${brief}${sugg}`;
     });
     const omitted = [
       noisyCount > 0 ? `- omitted ${noisyCount} noisy provider/read-only/recovery attempt(s); keep focus on the current actionable failure.` : '',
@@ -263,7 +301,9 @@ function isNoisyDebugReason(reason: string): boolean {
     /repeated read-only\/probe actions without progress/u.test(text) ||
     /read-only recovery mode repeated probe actions/u.test(text) ||
     /low-quality debugger response/u.test(text) ||
+    /script exhausted/u.test(text) ||
     /without repair evidence/u.test(text) ||
+    /without a successful repair mutation or verification tool call/u.test(text) ||
     /had an unresolved failure from a previous run.*rolling back/u.test(text) ||
     /tool verification failed.*rolling back/u.test(text) ||
     /openai http (?:400|401|403|408|409|429|5\d\d)/u.test(text) ||

@@ -1,6 +1,7 @@
 import {
   CompileExitError,
   formatClarificationQuestion,
+  inferCompileLanguageFromText,
   resolveClarificationAnswer,
   resolveCompileLanguage,
   runCompile as runRuntimeCompile,
@@ -11,6 +12,7 @@ import { createCliRuntimeIO } from './runtime_adapter.js';
 export {
   CompileExitError,
   formatClarificationQuestion,
+  inferCompileLanguageFromText,
   resolveClarificationAnswer,
   resolveCompileLanguage,
   type CompileOptions,

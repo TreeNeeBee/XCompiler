@@ -49,7 +49,7 @@ cp config.example.yaml config.yaml
 # 关键字段（详见 README.md 与 docs/openrouter.md）：
 #   llm.providers.<name>.type: openai | ollama
 #   llm.roles.{Planner|Architect|Coder|Tester|Debugger}: provider 名数组
-#   agent.sandbox: subprocess | docker
+#   agent.sandboxes.python.mode / agent.sandboxes.typescript.mode: subprocess | docker
 #   agent.max_rounds_per_step / max_debug_rounds_per_step / max_debug_retries
 ```
 
@@ -295,14 +295,14 @@ docker run --rm -it \
 
 ### 2.6 沙盒模式选择
 
-`config.yaml -> agent.sandbox`：
+`config.yaml -> agent.sandboxes.<language>.mode`：
 
 | 模式 | 适用场景 | 说明 |
 |---|---|---|
-| `subprocess` | **容器部署唯一支持项** / 轻量本地 | 直接在 XCompiler 镜像内 `python -m venv .sandbox/venv`。简单，最快。默认推荐。 |
-| `docker` | **仅限宿主部署使用** | 在宿主 docker daemon 上起 sibling 容器（image 由 `agent.sandbox_docker.image` 指定）。 |
+| `subprocess` | **容器部署唯一支持项** / 轻量本地 | 直接在宿主或 XCompiler 镜像内创建语言专属本地沙盒。简单，最快。默认推荐。 |
+| `docker` | **仅限宿主部署使用** | 在宿主 docker daemon 上起 sibling 容器（image 由 `agent.sandboxes.<language>.docker.image` 指定）。 |
 
-> ⚠️ **容器内不可使用 `sandbox=docker`**。XCompiler 启动时会检测运行环境（`/.dockerenv` / `/proc/1/cgroup` / `XC_IN_CONTAINER` env），若检测到在容器内且 `agent.sandbox: docker`，将报错退出并提示改用 `subprocess`。
+> ⚠️ **容器内不可使用 `mode: docker`**。XCompiler 启动时会检测运行环境（`/.dockerenv` / `/proc/1/cgroup` / `XC_IN_CONTAINER` env），若检测到在容器内且当前语言 sandbox 使用 Docker，将报错退出并提示改用 `subprocess`。
 >
 > 原因：DooD 路径错位、`docker.sock` GID 冲突、sibling 容器看不到 XCompiler 容器内的 `/workspace` 路径。
 >

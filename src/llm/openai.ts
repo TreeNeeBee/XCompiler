@@ -1,5 +1,5 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
-import { detectCyclicTokenLoop, RepeatTokenDetector } from './stream_watchdog.js';
+import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 export const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -201,6 +201,9 @@ export class OpenAIClient implements LLMClient {
           }
           if (detectCyclicTokenLoop(aggregate)) {
             throw new Error('detected cyclic token loop in OpenAI stream (periodic tail); aborting');
+          }
+          if (detectRepeatedTextLoop(aggregate)) {
+            throw new Error('detected repeated text loop in OpenAI stream (semantic tail repetition); aborting');
           }
           if (maxOutputChars > 0 && expectsJsonObject && aggregate.length > maxOutputChars && hasInvalidJsonPrefix(aggregate)) {
             throw new Error(`OpenAI stream exceeded ${maxOutputChars} chars without a valid JSON prefix; aborting`);

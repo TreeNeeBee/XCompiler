@@ -13,11 +13,14 @@ import type {
 import { makeStreamReporter } from '../llm/stream.js';
 import { t } from '../i18n/index.js';
 
+const MISSING_OUTPUT_STALL_ROUND_LIMIT = 3;
+
 /**
  * Executor 把一个 Step 交给对应角色的 LLM，要求其用一组 tool calls 完成产出。
  *
  * 协议：LLM 必须严格返回 JSON：
  *   { "thoughts": "短说明", "actions": [ { "tool": "name", "args": {...} }, ... ], "done": true|false }
+ * DEBUG issue 场景还必须额外返回 issueResolutionPlan，供 issue/debug-wiki 持久化。
  *
  * 主循环：
  *   while not done and rounds < maxRounds:
@@ -51,7 +54,14 @@ export interface ExecutorRunInput {
   /** 来自 Skill 的提示词，拼接到 system prompt 后。 */
   skillHints?: string[];
   /** debug 模式下传入上一轮失败记录（错误文本 / 失败测试 / 上下文）。 */
-  debugContext?: { reason: string; failureLog: string; suggestions?: string; repairRequired?: boolean };
+  debugContext?: {
+    issueId?: string;
+    reason: string;
+    failureLog: string;
+    debugBrief?: string;
+    suggestions?: string;
+    repairRequired?: boolean;
+  };
   /** Plan 级别的全局 system prompt（xcompiler build 沉淀）。 */
   globalPrompt?: string;
   /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
@@ -63,6 +73,8 @@ export interface ExecutorRunResult {
   rounds: number;
   toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>;
   finalThought?: string;
+  /** Debugger 处理 issue 时输出的可复用处理方案，成功后写回 issue/debug-wiki。 */
+  issueResolutionPlan?: string;
   error?: string;
   /** 健康度统计：用于调用方做"滑动窗口"自适应重试决策。 */
   metrics: ExecutorRunMetrics;
@@ -96,6 +108,11 @@ export interface AdvisoryFailureRule {
 
 interface LLMTurn {
   thoughts?: string;
+  issueResolutionPlan?: string;
+  issue_resolution_plan?: string;
+  resolutionPlan?: string;
+  handlingPlan?: string;
+  fixPlan?: string;
   actions?: unknown;
   done?: boolean;
 }
@@ -105,8 +122,10 @@ interface TurnFeedbackContext {
   actionCount: number;
   unresolvedFailures?: string[];
   readOnlyLoopWarning?: { rounds: number; targets: string };
+  missingOutputStallWarning?: { rounds: number; missing: string };
   readOnlyRecoveryWarning?: boolean;
   repairEvidenceMissing?: boolean;
+  issueResolutionPlanMissing?: boolean;
 }
 
 export class StepExecutor {
@@ -141,10 +160,14 @@ export class StepExecutor {
     ];
     const calls: ExecutorRunResult['toolCalls'] = [];
     let finalThought: string | undefined;
+    let issueResolutionPlan: string | undefined;
 
     // 健康度信号采集
-    const initialMissing = (await verifyOutputs(inp)).missing.length;
+    const initialVerify = await verifyOutputs(inp);
+    const initialMissing = initialVerify.missing.length;
     const hardRoundLimit = Math.max(maxRounds, maxRounds + Math.min(12, Math.max(4, initialMissing * 2)));
+    let lastMissingCount = initialMissing;
+    let missingOutputStallRounds = 0;
     let parseFailures = 0;
     let repeatedTurns = 0;
     let lastActionsKey: string | null = null;
@@ -202,6 +225,7 @@ export class StepExecutor {
       } catch (err) {
         rep.done('failed');
         const errMsg = (err as Error).message;
+        actualRounds = round;
         // 把部分流落盘到 .xcompiler/llm-stream/<step>-<role>-r<n>.txt
         const dumpRel = `.xcompiler/llm-stream/${inp.step.id}-${role}-r${round}.txt`;
         try {
@@ -234,11 +258,33 @@ export class StepExecutor {
             partialBytes: rawAggregate.length,
           },
         );
+        if (isLowQualityLLMResponseError(errMsg)) {
+          repeatedTurns++;
+          const verify = await verifyOutputs(inp);
+          const metrics = computeMetrics({
+            rounds: actualRounds,
+            parseFailures,
+            repeatedTurns,
+            calls,
+            initialMissing,
+            currentMissing: verify.missing.length,
+          });
+          return {
+            success: false,
+            rounds: round,
+            toolCalls: calls,
+            finalThought,
+            issueResolutionPlan,
+            error: errMsg,
+            metrics,
+          };
+        }
         throw err;
       }
       rep.done();
       const turn = parseTurn(text);
       finalThought = turn.thoughts;
+      issueResolutionPlan = extractIssueResolutionPlan(turn) ?? issueResolutionPlan;
       const normalizedActions = normalizeActions(turn.actions);
       const actions = normalizedActions.actions;
       if (normalizedActions.invalid.length > 0) {
@@ -294,6 +340,7 @@ export class StepExecutor {
       // 把 LLM 本轮的"思考过程 + 计划行动"写入审计，作为交付时的可追溯材料
       await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
         thoughts: turn.thoughts,
+        issueResolutionPlan,
         actions,
         done: turn.done === true,
         raw: text,
@@ -398,14 +445,45 @@ export class StepExecutor {
         turnResults.push({ ...r, tool: a.tool });
       }
       const verify = await verifyOutputs(inp);
+      const mutationSucceededThisRound = turnResults.some((r) => r.ok && isRepairEvidenceTool(r.tool));
+      if (verify.missing.length < lastMissingCount) {
+        lastMissingCount = verify.missing.length;
+        missingOutputStallRounds = 0;
+      } else if (
+        !verify.ok &&
+        initialMissing > 0 &&
+        mutationSucceededThisRound &&
+        !readOnlyRound &&
+        unresolvedToolFailures.size === 0
+      ) {
+        missingOutputStallRounds++;
+      }
       if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok) && !advisoryFailureTools.has('run_tests')) {
         failedTestRunRounds++;
       }
       const repairGateOk = !repairRequired ||
         repairEvidence ||
         canAcceptOutputCompletionRecovery(inp, initialMissing);
+      const issueResolutionPlanRequired = role === 'Debugger' && !!inp.debugContext?.issueId;
+      const issueResolutionPlanOk = !issueResolutionPlanRequired || !!issueResolutionPlan?.trim();
       const verifiedCompletion = !turn.done && hasSuccessfulCompletionVerification(calls);
-      if ((turn.done || verifiedCompletion) && verify.ok && unresolvedToolFailures.size === 0 && repairGateOk) {
+      const outputCompletionRecovery = verify.ok && canAcceptOutputCompletionRecovery(inp, initialMissing);
+      const supersededContractFailures =
+        repairEvidence &&
+        hasSuccessfulCompletionVerification(calls) &&
+        hasOnlySupersededToolContractFailures(unresolvedToolFailures);
+      const unresolvedFailuresOk =
+        unresolvedToolFailures.size === 0 ||
+        (outputCompletionRecovery && hasOnlyUntargetedToolContractFailures(unresolvedToolFailures)) ||
+        supersededContractFailures;
+      const completionSignal = turn.done || verifiedCompletion || outputCompletionRecovery;
+      if (
+        completionSignal &&
+        verify.ok &&
+        unresolvedFailuresOk &&
+        repairGateOk &&
+        issueResolutionPlanOk
+      ) {
         const metrics = computeMetrics({
           rounds: actualRounds,
           parseFailures,
@@ -414,7 +492,7 @@ export class StepExecutor {
           initialMissing,
           currentMissing: verify.missing.length,
         });
-        return { success: true, rounds: round, toolCalls: calls, finalThought, metrics };
+        return { success: true, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, metrics };
       }
       if (this.opts.maxFailedTestRuns && failedTestRunRounds >= this.opts.maxFailedTestRuns) {
         const metrics = computeMetrics({
@@ -435,7 +513,30 @@ export class StepExecutor {
           failedTestRunRounds,
           maxFailedTestRuns: this.opts.maxFailedTestRuns,
         });
-        return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
+        return { success: false, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, error, metrics };
+      }
+      if (missingOutputStallRounds >= MISSING_OUTPUT_STALL_ROUND_LIMIT) {
+        repeatedTurns++;
+        const metrics = computeMetrics({
+          rounds: actualRounds,
+          parseFailures,
+          repeatedTurns,
+          calls,
+          initialMissing,
+          currentMissing: verify.missing.length,
+        });
+        const error =
+          `write/progress actions did not reduce missing outputs for ${missingOutputStallRounds} rounds; ` +
+          `missing outputs: ${verify.missing.join(', ')}. ` +
+          'Next attempt must create those exact outputs before rewriting already-existing files.';
+        await inp.ctx.audit?.event('note', error, {
+          messageId: 'audit.executor_missing_output_stall',
+          stepId: inp.step.id,
+          round,
+          missingOutputStallRounds,
+          missingOutputs: verify.missing,
+        });
+        return { success: false, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, error, metrics };
       }
       const readOnlyRecoveryViolation = readOnlyRecoveryMode && readOnlyRecoveryRounds >= 2;
       const readOnlyRoundLimit = directRepairMode ? 2 : 3;
@@ -463,7 +564,7 @@ export class StepExecutor {
           consecutiveReadOnlyRounds,
           actions,
         });
-        return { success: false, rounds: round, toolCalls: calls, finalThought, error, metrics };
+        return { success: false, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, error, metrics };
       }
       if (
         round >= roundLimit &&
@@ -503,6 +604,12 @@ export class StepExecutor {
                 targets: actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', '),
               }
             : undefined,
+          missingOutputStallWarning: missingOutputStallRounds >= MISSING_OUTPUT_STALL_ROUND_LIMIT - 1 && !verify.ok
+            ? {
+                rounds: missingOutputStallRounds,
+                missing: verify.missing.join(', '),
+              }
+            : undefined,
           readOnlyRecoveryWarning: (readOnlyRecoveryMode || directRepairMode) && readOnlyRound,
           repairEvidenceMissing:
             repairRequired &&
@@ -510,6 +617,12 @@ export class StepExecutor {
             verify.ok &&
             unresolvedToolFailures.size === 0 &&
             !repairEvidence,
+          issueResolutionPlanMissing:
+            issueResolutionPlanRequired &&
+            turn.done === true &&
+            verify.ok &&
+            unresolvedToolFailures.size === 0 &&
+            !issueResolutionPlanOk,
         }),
       });
     }
@@ -528,7 +641,13 @@ export class StepExecutor {
       rounds: actualRounds || roundLimit,
       toolCalls: calls,
       finalThought,
+      issueResolutionPlan,
       error:
+        role === 'Debugger' &&
+          !!inp.debugContext?.issueId &&
+          !issueResolutionPlan?.trim()
+          ? 'DEBUG issue completion missing issueResolutionPlan; provide a concrete handling plan before marking the issue resolved.'
+          :
         repairRequired &&
           finalVerify.ok &&
           unresolvedToolFailures.size === 0 &&
@@ -555,6 +674,11 @@ function isReadOnlyLoopFailure(reason: string): boolean {
     /read-only recovery mode repeated probe actions/i.test(reason);
 }
 
+function isLowQualityLLMResponseError(message: string): boolean {
+  return /low-quality (?:debugger )?response/i.test(message) ||
+    /read-only\/probe actions in read-only recovery mode/i.test(message);
+}
+
 function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugContext']): boolean {
   if (!debugContext) return false;
   const text = [
@@ -574,6 +698,24 @@ function canAcceptOutputCompletionRecovery(inp: ExecutorRunInput, initialMissing
   if (inp.debugContext?.repairRequired !== true) return false;
   if (initialMissing !== 0) return false;
   return isOutputCompletionFailure(inp.debugContext.reason, inp.debugContext.failureLog);
+}
+
+function hasOnlyUntargetedToolContractFailures(unresolved: Map<string, string>): boolean {
+  if (unresolved.size === 0) return true;
+  return [...unresolved.entries()].every(([key, detail]) =>
+    key.startsWith('tool:') &&
+    /invalid (?:write_file|append_file|replace_in_file|read_file) args: path must be a non-empty string/i.test(detail),
+  );
+}
+
+function hasOnlySupersededToolContractFailures(unresolved: Map<string, string>): boolean {
+  if (unresolved.size === 0) return true;
+  return [...unresolved.values()].every((detail) =>
+    /invalid (?:write_file|append_file|replace_in_file|apply_patch|read_file) args/i.test(detail) ||
+    /(?:read_file|write_file|append_file|replace_in_file|apply_patch) denied: path "\." is outside the project directory/i.test(detail) ||
+    /(?:read_file|write_file|append_file|replace_in_file) failed:.*path must be a non-empty string/i.test(detail) ||
+    /path must be a non-empty string/i.test(detail),
+  );
 }
 
 function isOutputCompletionFailure(reason = '', failureLog = ''): boolean {
@@ -678,6 +820,7 @@ function compactTurnForHistory(turn: LLMTurn): string {
   const normalized = normalizeActions(turn.actions);
   return JSON.stringify({
     thoughts: truncate(turn.thoughts ?? '', 500),
+    issueResolutionPlan: truncate(extractIssueResolutionPlan(turn) ?? '', 900),
     actions: normalized.actions.map((action) => ({
       tool: action.tool,
       args: compactActionArgs(action.tool, action.args),
@@ -1096,8 +1239,12 @@ function renderUserPrompt(inp: ExecutorRunInput, toolDocs: string): string {
     )
     .join('\n\n');
   const dbg = inp.debugContext
-    ? `## debug failure log\n\`\`\`\n${truncate(inp.debugContext.failureLog, failureLogLimit)}\n\`\`\`\n` +
-      (inp.debugContext.suggestions ? `\n${inp.debugContext.suggestions}\n` : '')
+    ? [
+        inp.debugContext.issueId ? `## issue\nid: ${inp.debugContext.issueId}\n` : '',
+        inp.debugContext.debugBrief ? `${inp.debugContext.debugBrief}\n` : '',
+        `## compact failure evidence\n\`\`\`\n${truncate(inp.debugContext.failureLog, failureLogLimit)}\n\`\`\`\n`,
+        inp.debugContext.suggestions ? `\n${inp.debugContext.suggestions}\n` : '',
+      ].join('\n')
     : '';
   return [
     `# Step ${inp.step.id} — ${inp.step.title}`,
@@ -1198,6 +1345,13 @@ function renderFeedback(
       ),
     );
   }
+  if (turn.missingOutputStallWarning) {
+    lines.push(
+      `Output progress warning: required outputs have not decreased for ${turn.missingOutputStallWarning.rounds} write/progress rounds. ` +
+      `Create these exact missing outputs next: ${turn.missingOutputStallWarning.missing}. ` +
+      'Do not keep rewriting files that already satisfy declared outputs.',
+    );
+  }
   if (turn.readOnlyRecoveryWarning) {
     lines.push(M.executorFeedbackReadOnlyRecoveryRequired);
     if (!verify.ok && verify.missing.length > 0) {
@@ -1207,6 +1361,9 @@ function renderFeedback(
         `or run a concrete verification command if they already exist. Do not spend another round only reading files.`,
       );
     }
+  }
+  if (turn.issueResolutionPlanMissing) {
+    lines.push(M.executorFeedbackIssueResolutionPlanMissing);
   }
   if (turn.unresolvedFailures && turn.unresolvedFailures.length > 0) {
     lines.push(
@@ -1447,6 +1604,22 @@ function repairJsonCandidate(text: string): string {
 function isTurnObject(value: unknown): LLMTurn | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as LLMTurn;
+}
+
+function extractIssueResolutionPlan(turn: LLMTurn): string | undefined {
+  const candidates = [
+    turn.issueResolutionPlan,
+    turn.issue_resolution_plan,
+    turn.resolutionPlan,
+    turn.handlingPlan,
+    turn.fixPlan,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return truncate(value.trim(), 2400);
+    }
+  }
+  return undefined;
 }
 
 function normalizeJsonLikeStrings(text: string): string {

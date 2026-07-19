@@ -6,11 +6,22 @@ import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import type { Language } from '../core/plan.js';
-import type { Sandbox, SandboxLimits, ExecResult, ExecExtra } from './types.js';
+import type { Sandbox, SandboxLimits, ExecResult, ExecExtra, ExecProgressWatch } from './types.js';
 import { normalizeTypeScriptTestArgs } from './test_args.js';
 import { resolveTypeScriptProgramCommand } from './program_args.js';
 
 export type { SandboxLimits, ExecResult } from './types.js';
+
+const INSTALL_IDLE_TIMEOUT_FLOOR_MS = 15 * 60_000;
+const INSTALL_IDLE_TIMEOUT_MULTIPLIER = 10;
+const INSTALL_PROGRESS_CHECK_INTERVAL_MS = 15_000;
+
+interface ExecRawOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  progressWatch?: ExecProgressWatch;
+}
 
 export interface SubprocessSandboxOptions {
   ws: Workspace;
@@ -101,6 +112,7 @@ export class SubprocessSandbox implements Sandbox {
         fs.mkdir(path.join(this.sandboxAbs, 'home'), { recursive: true }),
         fs.mkdir(path.join(this.sandboxAbs, 'tmp'), { recursive: true }),
         fs.mkdir(path.join(this.sandboxAbs, 'npm-cache'), { recursive: true }),
+        fs.mkdir(path.join(this.sandboxAbs, 'pip-cache'), { recursive: true }),
       ]);
     }
     if (this.language === 'typescript') {
@@ -153,15 +165,23 @@ export class SubprocessSandbox implements Sandbox {
       }
     }
     if (reqContent.trim().length > 0) {
+      const progressWatch = createInstallProgressWatch(
+        [this.venvAbs, path.join(this.sandboxAbs, 'pip-cache')],
+        this.opts.limits,
+        'pip install',
+      );
+      await this.opts.audit?.event('sandbox.exec', t().sandboxLog.command('subprocess', `pip install -r ${reqAbs}`), {
+        messageId: 'sandbox.command',
+        cwd: this.opts.ws.root,
+        progressIdleTimeoutMs: progressWatch.idleTimeoutMs,
+        progressPaths: progressWatch.paths,
+      });
       const r = await execRaw(pyVenv, ['-m', 'pip', 'install', '-r', reqAbs, '--quiet', '--disable-pip-version-check'], {
-        timeoutMs: this.opts.limits.wall_seconds * 1000 * 5,
+        env: this.baseEnvironment(),
+        progressWatch,
       });
       if (r.exitCode !== 0) {
-        throw new Error(
-          `pip install failed (venv=${this.venvAbs}, requirements=${reqAbs}):\n${
-            r.stderr || r.stdout
-          }`,
-        );
+        throw new Error(formatExecFailure(`pip install failed (venv=${this.venvAbs}, requirements=${reqAbs})`, r));
       }
     }
     await fs.writeFile(this.cacheFile, sig, 'utf8');
@@ -192,13 +212,24 @@ export class SubprocessSandbox implements Sandbox {
     const installArgs = lockContent.trim()
       ? ['ci', '--ignore-scripts', '--no-audit', '--no-fund']
       : ['install', '--ignore-scripts', '--no-audit', '--no-fund'];
+    const progressWatch = createInstallProgressWatch(
+      [this.opts.ws.abs('node_modules'), path.join(this.sandboxAbs, 'npm-cache')],
+      this.opts.limits,
+      'npm install',
+    );
+    await this.opts.audit?.event('sandbox.exec', t().sandboxLog.command('subprocess', `npm ${installArgs.join(' ')}`), {
+      messageId: 'sandbox.command',
+      cwd: this.opts.ws.root,
+      progressIdleTimeoutMs: progressWatch.idleTimeoutMs,
+      progressPaths: progressWatch.paths,
+    });
     const r = await execRaw('npm', installArgs, {
       cwd: this.opts.ws.root,
       env: this.baseEnvironment(),
-      timeoutMs: this.opts.limits.wall_seconds * 1000 * 10,
+      progressWatch,
     });
     if (r.exitCode !== 0) {
-      throw new Error(`npm dependency install failed (cwd=${this.opts.ws.root}):\n${r.stderr || r.stdout}`);
+      throw new Error(formatExecFailure(`npm dependency install failed (cwd=${this.opts.ws.root})`, r));
     }
     await fs.writeFile(this.cacheFile, sig, 'utf8');
     await this.opts.audit?.event('sandbox.exec', t().sandboxLog.subprocessNodeBuilt, {
@@ -233,8 +264,10 @@ export class SubprocessSandbox implements Sandbox {
       messageId: 'sandbox.command',
       cwd,
       timeoutMs,
+      progressIdleTimeoutMs: extra?.progressWatch?.idleTimeoutMs,
+      progressPaths: extra?.progressWatch?.paths,
     });
-    const r = await execRaw(cmd, argv, { cwd, env, timeoutMs });
+    const r = await execRaw(cmd, argv, { cwd, env, timeoutMs, progressWatch: extra?.progressWatch });
     return r;
   }
 
@@ -272,10 +305,24 @@ export class SubprocessSandbox implements Sandbox {
 
   /** 安装额外依赖（不会写入依赖清单，需要由调用方自行回写）。 */
   async installDeps(packages: string[]): Promise<ExecResult> {
+    const progressWatch = createInstallProgressWatch(
+      [
+        this.language === 'typescript' ? this.opts.ws.abs('node_modules') : this.venvAbs,
+        path.join(this.sandboxAbs, this.language === 'typescript' ? 'npm-cache' : 'pip-cache'),
+      ],
+      this.opts.limits,
+      this.language === 'typescript' ? 'npm install' : 'pip install',
+    );
     if (this.language === 'typescript') {
-      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages]);
+      return this.exec('npm', ['install', '--no-audit', '--no-fund', ...packages], {
+        timeoutMs: 0,
+        progressWatch,
+      });
     }
-    return this.exec(this.pythonInVenv, ['-m', 'pip', 'install', ...packages, '--quiet', '--disable-pip-version-check']);
+    return this.exec(this.pythonInVenv, ['-m', 'pip', 'install', ...packages, '--quiet', '--disable-pip-version-check'], {
+      timeoutMs: 0,
+      progressWatch,
+    });
   }
 }
 
@@ -285,11 +332,42 @@ export function sanitizeVenvName(name: string): string {
   return cleaned.length > 0 ? cleaned : 'venv';
 }
 
+export function createInstallProgressWatch(
+  paths: string[],
+  limits: SandboxLimits,
+  label = 'dependency install',
+): ExecProgressWatch {
+  const idleTimeoutMs = Math.max(
+    limits.wall_seconds * 1000 * INSTALL_IDLE_TIMEOUT_MULTIPLIER,
+    INSTALL_IDLE_TIMEOUT_FLOOR_MS,
+  );
+  return {
+    paths: dedupPaths(paths),
+    idleTimeoutMs,
+    checkIntervalMs: INSTALL_PROGRESS_CHECK_INTERVAL_MS,
+    label,
+  };
+}
+
+export function formatExecFailure(label: string, r: ExecResult): string {
+  const parts = [
+    `${label} (exit=${r.exitCode}, timedOut=${r.timedOut ? 'true' : 'false'}, durationMs=${r.durationMs}${
+      r.timeoutReason ? `, reason=${r.timeoutReason}` : ''
+    }):`,
+  ];
+  const stdout = clipExecOutput(r.stdout);
+  const stderr = clipExecOutput(r.stderr);
+  if (stdout) parts.push(`stdout:\n${stdout}`);
+  if (stderr) parts.push(`stderr:\n${stderr}`);
+  if (!stdout && !stderr) parts.push('(no stdout/stderr captured)');
+  return parts.join('\n');
+}
+
 /** 不依赖沙盒的底层 spawn 封装。 */
 export async function execRaw(
   cmd: string,
   argv: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  opts: ExecRawOptions = {},
 ): Promise<ExecResult> {
   const start = Date.now();
   return new Promise((resolve) => {
@@ -301,12 +379,48 @@ export async function execRaw(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let timeoutReason: string | undefined;
+    let settled = false;
+    let progressTimer: NodeJS.Timeout | null = null;
+    let progressStopped = false;
     const t = opts.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
+          timeoutReason = `wall-clock timeout after ${opts.timeoutMs}ms`;
           child.kill('SIGKILL');
         }, opts.timeoutMs)
       : null;
+    const finish = (result: ExecResult) => {
+      if (settled) return;
+      settled = true;
+      progressStopped = true;
+      if (t) clearTimeout(t);
+      if (progressTimer) clearTimeout(progressTimer);
+      resolve(result);
+    };
+    if (opts.progressWatch?.paths.length) {
+      const watch = opts.progressWatch;
+      let lastProgressAt = start;
+      let lastObservedSize: number | null = null;
+      const checkProgress = async () => {
+        if (progressStopped) return;
+        const observedAt = Date.now();
+        const currentSize = await directoryTreeSize(watch.paths);
+        if (progressStopped) return;
+        if (lastObservedSize !== null && currentSize > lastObservedSize) {
+          lastProgressAt = observedAt;
+        }
+        lastObservedSize = currentSize;
+        if (observedAt - lastProgressAt >= watch.idleTimeoutMs) {
+          timedOut = true;
+          timeoutReason = `${watch.label ?? 'process'} progress idle for ${watch.idleTimeoutMs}ms; watched paths did not grow: ${watch.paths.join(', ')}`;
+          child.kill('SIGKILL');
+          return;
+        }
+        progressTimer = setTimeout(checkProgress, watch.checkIntervalMs ?? INSTALL_PROGRESS_CHECK_INTERVAL_MS);
+      };
+      progressTimer = setTimeout(checkProgress, watch.checkIntervalMs ?? INSTALL_PROGRESS_CHECK_INTERVAL_MS);
+    }
     child.stdout.on('data', (b) => {
       stdout += b.toString();
     });
@@ -314,24 +428,66 @@ export async function execRaw(
       stderr += b.toString();
     });
     child.on('error', (err) => {
-      if (t) clearTimeout(t);
-      resolve({
+      finish({
         exitCode: -1,
         stdout,
         stderr: stderr + `\n[spawn error] ${err.message}`,
         timedOut,
+        ...(timeoutReason ? { timeoutReason } : {}),
         durationMs: Date.now() - start,
       });
     });
     child.on('close', (code) => {
-      if (t) clearTimeout(t);
-      resolve({
+      finish({
         exitCode: code ?? -1,
         stdout,
         stderr,
         timedOut,
+        ...(timeoutReason ? { timeoutReason } : {}),
         durationMs: Date.now() - start,
       });
     });
   });
+}
+
+async function directoryTreeSize(paths: string[]): Promise<number> {
+  let total = 0;
+  for (const p of dedupPaths(paths)) {
+    total += await pathTreeSize(p);
+  }
+  return total;
+}
+
+async function pathTreeSize(abs: string): Promise<number> {
+  let stat;
+  try {
+    stat = await fs.lstat(abs);
+  } catch {
+    return 0;
+  }
+  if (!stat.isDirectory()) {
+    return stat.isFile() ? stat.size : 0;
+  }
+
+  let total = stat.size;
+  let entries;
+  try {
+    entries = await fs.readdir(abs, { withFileTypes: true });
+  } catch {
+    return total;
+  }
+  for (const entry of entries) {
+    total += await pathTreeSize(path.join(abs, entry.name));
+  }
+  return total;
+}
+
+function dedupPaths(paths: string[]): string[] {
+  return Array.from(new Set(paths.map((p) => path.resolve(p)).filter(Boolean)));
+}
+
+function clipExecOutput(text: string, max = 6000): string {
+  const normalized = String(text ?? '').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max)}\n...[truncated ${normalized.length - max} chars]`;
 }

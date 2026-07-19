@@ -102,12 +102,104 @@ export function resolveClarificationAnswer(q: ClarifyQuestion, rawAnswer: string
   return answer;
 }
 
+export interface CompileLanguageResolutionInput {
+  rawRequirement: string;
+  clarifications?: PlannerInput['clarifications'];
+  userAddenda?: string;
+  intent?: PlanIntent;
+  baseline?: { language?: Language; languageSource?: string; summary?: string };
+}
+
+export interface CompileLanguageResolution {
+  language: Language;
+  source: 'baseline' | 'topic' | 'clarification' | 'default';
+  ambiguous: boolean;
+}
+
 export function resolveCompileLanguage(
   configuredLanguage: Language,
   intent: PlanIntent,
   baseline: { language?: Language },
-): Language {
-  return isIncrementalIntent(intent) ? baseline.language ?? configuredLanguage : configuredLanguage;
+): Language;
+export function resolveCompileLanguage(input: CompileLanguageResolutionInput): CompileLanguageResolution;
+export function resolveCompileLanguage(
+  inputOrConfigured: CompileLanguageResolutionInput | Language,
+  intent?: PlanIntent,
+  baseline?: { language?: Language },
+): CompileLanguageResolution | Language {
+  if (typeof inputOrConfigured === 'string') {
+    return isIncrementalIntent(intent ?? 'greenfield')
+      ? baseline?.language ?? inputOrConfigured
+      : inputOrConfigured;
+  }
+  const input = inputOrConfigured;
+  if (isIncrementalIntent(input.intent ?? 'greenfield') && input.baseline?.language) {
+    return { language: input.baseline.language, source: 'baseline', ambiguous: false };
+  }
+  const topicInferred = inferCompileLanguageFromText(input.rawRequirement);
+  if (topicInferred) {
+    return {
+      language: topicInferred,
+      source: 'topic',
+      ambiguous: false,
+    };
+  }
+  const clarificationText = formatLanguageClarificationText(input.clarifications ?? []);
+  const clarifiedInferred = inferCompileLanguageFromText([
+    clarificationText,
+    input.userAddenda ?? '',
+  ].join('\n'));
+  if (clarifiedInferred) {
+    return { language: clarifiedInferred, source: 'clarification', ambiguous: false };
+  }
+  return { language: 'python', source: 'default', ambiguous: true };
+}
+
+export function inferCompileLanguageFromText(text: string): Language | undefined {
+  const normalized = text
+    .toLowerCase()
+    .replace(/[，。；：、（）【】]/gu, ' ')
+    .replace(/\s+/gu, ' ');
+  const pythonStrong =
+    /\bpython\b/u.test(normalized) ||
+    /python\s*脚本/u.test(normalized) ||
+    /\.py\b/u.test(normalized) ||
+    /\bpytest\b/u.test(normalized) ||
+    /\bpip\b/u.test(normalized);
+  const typescriptStrong =
+    /\btypescript\b/u.test(normalized) ||
+    /\btype\s*script\b/u.test(normalized) ||
+    /(^|[^a-z0-9])ts\s*(程序|工程|项目|脚本|语言|实现)/u.test(normalized) ||
+    /\.tsx?\b/u.test(normalized) ||
+    /\btsx\b/u.test(normalized);
+  if (pythonStrong && !typescriptStrong) return 'python';
+  if (typescriptStrong && !pythonStrong) return 'typescript';
+  const pythonWeak =
+    /\bopenpyxl\b/u.test(normalized) ||
+    /\bpandas\b/u.test(normalized) ||
+    /\bfastapi\b/u.test(normalized) ||
+    /\bflask\b/u.test(normalized);
+  const typescriptWeak =
+    /\bnode(?:\.js)?\b/u.test(normalized) ||
+    /\bnpm\b/u.test(normalized) ||
+    /\bvitest\b/u.test(normalized) ||
+    /\bpackage\.json\b/u.test(normalized) ||
+    /\bjavascript\b/u.test(normalized) ||
+    /\bjs\s*(程序|工程|项目|脚本|语言|实现)\b/u.test(normalized);
+  if ((pythonStrong || pythonWeak) && !(typescriptStrong || typescriptWeak)) return 'python';
+  if ((typescriptStrong || typescriptWeak) && !(pythonStrong || pythonWeak)) return 'typescript';
+  return undefined;
+}
+
+function formatLanguageClarificationText(input: PlannerInput['clarifications']): string {
+  return input
+    .map((item) => [
+      item.question,
+      item.answer,
+      item.why ?? '',
+      ...(item.options ?? []).map((option) => option.answer),
+    ].join('\n'))
+    .join('\n\n');
 }
 
 export async function runCompile(opts: CompileOptions): Promise<{ planPath?: string }> {
@@ -191,19 +283,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   if (baseline.summary) {
     await runtimeLog(io, 'success', M.compile.baselineLoaded(intent, baseline.sources.join(', ')));
   }
-  const language = resolveCompileLanguage(cfg.agent.language, intent, baseline);
-  if (
-    isIncrementalIntent(intent) &&
-    baseline.language &&
-    baseline.language !== cfg.agent.language
-  ) {
-    await runtimeLog(
-      io,
-      'warning',
-      M.compile.baselineLanguageOverride(baseline.language, baseline.languageSource ?? 'baseline', cfg.agent.language),
-    );
-  }
-  const planner = new Planner(router.for('Planner'), audit, language);
+  const plannerClient = router.for('Planner');
 
   const trace = (msg: string) => {
     if (xcEnv('TRACE') === '1') {
@@ -237,6 +317,12 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     trace('audit.userInput.intake.done');
   }
 
+  const initialLanguage = resolveCompileLanguage({
+    rawRequirement,
+    intent,
+    baseline,
+  });
+
   // 2. Clarify — topic 模式跳过（topic.md 已经是冻结后的选题书）
   trace('clarify.section.enter');
   const clarifications: Array<{
@@ -249,14 +335,16 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   let clarificationQuestions: ClarifyQuestion[] = [];
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
   if (!opts.yes && !topicMode) {
+    const clarifyPlanner = new Planner(plannerClient, audit, initialLanguage.language);
     trace('ora.clarify.start');
     const spin = io.progress(M.compile.spinClarify, { animate: false });
     trace('ora.clarify.started');
     try {
       trace('planner.clarify.call');
-      clarificationQuestions = await planner.clarify(rawRequirement, {
+      clarificationQuestions = await clarifyPlanner.clarify(rawRequirement, {
         intent,
         hasBaseline: !!baseline.summary,
+        languageAmbiguous: initialLanguage.ambiguous,
       });
       trace(`planner.clarify.return n=${clarificationQuestions.length}`);
       spin.succeed(M.compile.clarifySucceed(clarificationQuestions.length));
@@ -357,6 +445,20 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   //   下次可用 `xcompiler build --topic docs/topic.md` 直接重跑而不必再澄清一次。
   trace('ws.readFile.finalTopic');
   const finalTopicMd = await ws.readFile(draftTopic);
+  const languageResolution = resolveCompileLanguage({
+    rawRequirement: finalTopicMd,
+    clarifications,
+    userAddenda,
+    intent,
+    baseline,
+  });
+  const language = languageResolution.language;
+  await audit.event('note', `target language resolved: ${language}`, {
+    messageId: 'compile.language_resolved',
+    language,
+    source: languageResolution.source,
+    ambiguous: languageResolution.ambiguous,
+  });
   await archiveIfExists(ws, DOC_NAMES.topic, audit);
   await ws.writeFile(DOC_NAMES.topic, finalTopicMd);
   await audit.event('topic.persist', M.compile.auditTopicPersisted(ws.abs(DOC_NAMES.topic)), {
@@ -372,6 +474,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   trace('ora.spin2.started');
   let draft;
   try {
+    const planner = new Planner(plannerClient, audit, language);
     const plannerInput: PlannerInput = {
       rawRequirement: finalTopicMd,
       clarifications,

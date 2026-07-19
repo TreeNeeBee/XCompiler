@@ -259,6 +259,43 @@ describe('buildPlan — Step id 规整', () => {
     expect(plan.steps[2]?.systemPrompt).toContain('本 MODULE_TEST Step 验证架构模块');
   });
 
+  it('把误放在 architectureModules.dependencies 的外部包迁移到顶层 dependencies', () => {
+    const draft = {
+      requirementDigest: 'TypeScript CLI fetcher',
+      globalPrompt: 'g',
+      dependencies: ['typescript'],
+      architectureModules: [
+        {
+          id: 'M001',
+          name: 'fetcher',
+          responsibility: 'Fetch and parse public content for the CLI.',
+          sourcePaths: ['src/fetcher.ts'],
+          testPaths: ['tests/fetcher.test.ts'],
+          dependencies: ['cheerio', 'M002'],
+        },
+        {
+          id: 'M002',
+          name: 'cli',
+          responsibility: 'Expose the command line entrypoint.',
+          sourcePaths: ['src/cli.ts'],
+          testPaths: ['tests/cli.test.ts'],
+          dependencies: ['commander'],
+        },
+      ],
+      steps: [
+        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
+        baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/fetcher.ts', 'src/cli.ts'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/fetcher.test.ts', 'tests/cli.test.ts'], dependsOn: ['S002'] }),
+      ],
+    };
+
+    const plan = buildPlan(draft, { language: 'typescript' });
+
+    expect(plan.dependencies).toEqual(expect.arrayContaining(['typescript', 'cheerio', 'commander']));
+    expect(plan.architectureModules?.[0]?.dependencies).toEqual(['M002']);
+    expect(plan.architectureModules?.[1]?.dependencies).toEqual([]);
+  });
+
   it('plan markdown 层级展示 V-model macro Step 与两层 subTasks', () => {
     const plan = buildPlan({
       requirementDigest: 'r',

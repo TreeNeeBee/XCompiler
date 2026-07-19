@@ -33,6 +33,7 @@ export type RuntimeEvolveCommandOptions =
   WorkspaceOptions & {
     planOut?: string;
     cwd?: string;
+    debugWikiPath?: string;
   };
 
 export interface RuntimeEvolveCommandResult {
@@ -59,6 +60,7 @@ export async function runEvolveCommand(opts: RuntimeEvolveCommandOptions): Promi
     projectFilePath: opts.projectFilePath,
     projectCommand: 'evolve',
     recordProjectHistory: false,
+    debugWikiPath: opts.debugWikiPath,
     io: opts.io,
     plugins: opts.plugins,
     pluginStrict: opts.pluginStrict,
@@ -112,6 +114,7 @@ export type RuntimeAppendCommandOptions =
   Omit<CompileOptions, 'workspace' | 'baselinePlanFile' | 'outputFile' | 'projectFilePath' | 'projectCommand'> & {
     projectFile: string;
     planOut?: string;
+    debugWikiPath?: string;
   };
 
 export interface RuntimeAppendCommandResult {
@@ -142,6 +145,7 @@ export async function runAppendCommand(opts: RuntimeAppendCommandOptions): Promi
     projectFilePath: project.filePath,
     projectCommand: 'append',
     recordProjectHistory: false,
+    debugWikiPath: opts.debugWikiPath,
     io: opts.io,
     plugins: opts.plugins,
     pluginStrict: opts.pluginStrict,

@@ -99,6 +99,7 @@ const PYTHON_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only 
 Every round you must return strict JSON:
 {
   "thoughts": "<one sentence describing this round's intent>",
+  "issueResolutionPlan": "<required only in DEBUG issue mode: concise root cause, repair target, and validation plan>",
   "actions": [ { "tool": "<tool name>", "args": { ... } }, ... ],
   "done": true | false
 }
@@ -185,6 +186,7 @@ const TYPESCRIPT_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may o
 Every round you must return strict JSON:
 {
   "thoughts": "<one sentence describing this round's intent>",
+  "issueResolutionPlan": "<required only in DEBUG issue mode: concise root cause, repair target, and validation plan>",
   "actions": [ { "tool": "<tool name>", "args": { ... } }, ... ],
   "done": true | false
 }
@@ -209,7 +211,7 @@ Rules:
 8. run_program runs the project entry with \`npx tsx\`, run_tests runs Vitest via \`npm test\`, and the final delivery gate also verifies the direct Node entry command.`;
 
 const PLANNER_CLARIFY_SYSTEM = `You are the requirements analyst for XCompiler's V-model. Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
-Return strict JSON only. Each question must be directly answerable by a product owner, cover one decision, and avoid vague catch-all or implementation-stack questions.`;
+Return strict JSON only. Each question must be directly answerable by a product owner and cover one decision. Avoid vague catch-all or implementation-stack questions, except for the single development-language question when the user prompt explicitly requires it.`;
 
 function buildPlannerSystem(profile: LanguageProfile): string {
   return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM) + profile.plannerPromptOverride;
@@ -306,7 +308,7 @@ const messages: Messages = {
     preflightOllamaUnreachable: (baseUrl, message) => `preflight: ollama ${baseUrl} unreachable: ${message}`,
     preflightAutoAdded: (providers, roles) => `preflight: auto-added ${providers} provider(s) for roles [${roles}]`,
     scoreFileHeader: '# XCompiler LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
-    scoreFileSemantics: '# Scores: default 1.0; automatic range 0.1-1.0; providers tagged cluster default to 0.2-0.5 unless llm.cluster_score_min/max widens it; failure -0.5; success +0.1; only user-configured score=0 disables a provider.',
+    scoreFileSemantics: '# Scores: dynamic snapshot; default 1.0; automatic range 0.1-1.0; providers tagged cluster default to 0.2-0.5 unless llm.cluster_score_min/max widens it; failure -0.5; success +0.1. Put user overrides in llm_scores_user.yaml; 0 disables a provider.',
   },
   system: {
     configEnvMissing: (names) => `[xcompiler] unset config environment variables were replaced with empty strings: ${names}`,
@@ -314,7 +316,7 @@ const messages: Messages = {
     unsupportedPypiOnlyNetwork:
       'network=pypi-only is rejected because Docker cannot enforce a PyPI-only allowlist by itself. Use network=off for isolation or network=download-only for explicitly unrestricted outbound downloads.',
     dockerInsideContainerUnsupported:
-      'XCompiler is running inside a container, so sandbox=docker is unsupported because Docker-outside-of-Docker can mis-map bind mounts and docker.sock permissions. Use agent.sandbox=subprocess, run XCompiler on the host, or set XC_IN_CONTAINER=0 only in a controlled environment.',
+      'XCompiler is running inside a container, so sandbox mode docker is unsupported because Docker-outside-of-Docker can mis-map bind mounts and docker.sock permissions. Use agent.sandboxes.<language>.mode=subprocess, run XCompiler on the host, or set XC_IN_CONTAINER=0 only in a controlled environment.',
     firejailUnsupported: 'sandbox=firejail is not implemented; use subprocess or docker.',
     smokeHeader: (baseUrl) => `Smoke test against ${baseUrl} (streaming)`,
     smokeOk: (model, totalMs, firstTokenMs, chunks, preview) =>
@@ -422,6 +424,7 @@ const messages: Messages = {
     optIntent: 'plan intent: greenfield | feature | refactor | self',
     optBaselinePlan: 'existing baseline phasePlan.json / plan.json path (default <workspace>/phasePlan.json)',
     optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
+    optDebugWikiPath: 'debug wiki root directory path (default <XCompiler path>/.xcompiler/debug-wiki)',
     argPlan: 'phasePlan.json or legacy plan.json path (default = <workspace>/phasePlan.json)',
     argProjectFile: 'XXX.xc project file',
     argStepId: 'Step ID, e.g. S001',
@@ -723,12 +726,17 @@ Question mix (functionality first):
 ${opts.projectShapeAmbiguous
   ? '- Required for this topic: ask the API library vs runnable application vs mixed-deliverable boundary explicitly.\n'
   : ''}
+${opts.languageAmbiguous
+  ? '- Required for this topic: include exactly one boundary question confirming the target development language. Options must be A. Python (default/recommended) and B. TypeScript / Node.js. The user may still answer with custom free-form text.\n'
+  : ''}
 
-[Hard constraint] The implementation stack is already fixed by XCompiler config / the existing project baseline. Do not reopen language/runtime/package-manager decisions.
+${opts.languageAmbiguous
+  ? `[Stack decision] XCompiler could not infer the target language from the topic or baseline. Ask only the development-language question described above; do not ask package manager, test framework, or OS questions. If the user does not choose, Python is the default.`
+  : `[Hard constraint] The implementation stack is already fixed by the user's topic or existing project baseline. Do not reopen language/runtime/package-manager decisions.
 **Do NOT** ask questions of these forms:
   - "Which programming language / framework / runtime should this use?"
   - "Which test framework / build tool / package manager?"
-  - "Which OS is the target platform?"
+  - "Which OS is the target platform?"`}
 ${opts.intent && opts.intent !== 'greenfield'
   ? `This is an incremental ${opts.intent} request against an existing project${opts.hasBaseline ? ' with a separate baseline summary that will be provided during decomposition' : ''}. Ask ONLY delta questions; do not ask to rebuild the project from scratch.`
   : ''}The majority of questions must concern functional behaviour; performance, boundaries, and extensibility should eliminate ambiguities that affect this delivery.`,
@@ -825,6 +833,7 @@ Return strict JSON StepPlan for the current phase only.`,
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
       `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
+      'When this retry is handling an issue, every JSON response must include issueResolutionPlan before or while fixing it. The plan must be concise and actionable: root cause hypothesis, files/contracts to change, validation command or gate, and what would disprove the plan. ' +
       'DEBUG may edit upstream source files and tests within the current allowedWrites. If the failure reveals a real implementation, contract, or downstream integration mismatch, fix that real defect; do not pass by weakening assertions, skipping tests, deleting failing cases, or merely accommodating an incorrect test. ' +
       'If this rollback is in a design/requirements step and the concrete code change belongs to a later V-model step outside the current allowedWrites, update the current contract, test plan, or diagnostic artifact and finish this step so the later CODE step can implement it; do not attempt denied writes. ' +
       'If the failure is a missing third-party dependency or wrong library choice, use add_dependency with the real package name or change the source back to the real library selected by HIGH_LEVEL_DESIGN; never add try/except ImportError fake modules, fake classes/functions, empty implementations, or fallback mocks in production src/ code to bypass the error. ' +
@@ -851,6 +860,8 @@ Return strict JSON StepPlan for the current phase only.`,
       'Read-only recovery mode is active because the previous attempt already failed from probing. The next response must use existing failure evidence to patch/write/change dependency or run verification; one more read-only-only response will fail this retry.',
     executorFeedbackRepairEvidenceMissing:
       'Invalid DEBUG completion: this retry has not produced repair evidence yet. Before done=true, perform at least one successful repair action or successful verification run; otherwise stop only with a concrete blocker in thoughts.',
+    executorFeedbackIssueResolutionPlanMissing:
+      'Invalid DEBUG issue completion: issueResolutionPlan is required before the issue can be resolved. Return JSON with a concise handling plan plus the needed repair or verification actions.',
   },
   skills: {
     patcher: 'Use apply_patch / replace_in_file for small in-place edits to existing files; never overwrite a whole file.',
@@ -909,7 +920,7 @@ Return strict JSON StepPlan for the current phase only.`,
       `network=${policy}` + (ports.length ? ` (expose_ports=[${ports.join(', ')}])` : ''),
     sandboxFullNoPorts:
       'network=full but no expose_ports configured — host-side cannot reach container services. ' +
-      'Add `agent.sandbox_limits.expose_ports: [<port>]` in config.yaml.',
+      'Add `agent.sandboxes.<language>.<local|docker>.limits.expose_ports: [<port>]` in config.yaml.',
     sandboxNodeMissing: 'node not found on PATH (required by TypeScript subprocess sandbox)',
     sandboxNodeOk: (version) => `node OK (${version})`,
     sandboxNpmMissing: 'npm not found on PATH (required by TypeScript subprocess sandbox)',

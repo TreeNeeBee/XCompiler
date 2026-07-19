@@ -222,7 +222,7 @@ msg package.cross_compile
 
 mkdir -p "$OUT_ROOT"
 # 共享附件
-ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example)
+ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example debug-wiki)
 
 build_one() {
   local short="$1"               # linux-x64 / linux-arm64 / macos-arm64 / win-x64
@@ -255,6 +255,7 @@ build_one() {
   # 附带文档与示例配置
   for f in "${ASSETS[@]}"; do
     [[ -f "$f" ]] && cp "$f" "$staging_dir/"
+    [[ -d "$f" ]] && cp -R "$f" "$staging_dir/"
   done
   printf '%s\n' "$VERSION" > "$staging_dir/VERSION"
 
