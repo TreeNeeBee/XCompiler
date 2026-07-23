@@ -201,6 +201,16 @@ describe('calibrateDebugSuggestions', () => {
     expect(sugs.find((s) => s.code === 'network-api-failure')).toBeUndefined();
   });
 
+  it('does not suggest switching an external API for a loopback test-server failure', () => {
+    const sugs = calibrateDebugSuggestions([
+      'Network API failure detected. Treat this task as failed.',
+      'Error: connect ECONNREFUSED 127.0.0.1:80',
+      'FAIL tests/integration/web-server-flow.test.ts > returns 404 for missing briefing',
+    ].join('\n'));
+
+    expect(sugs.find((s) => s.code === 'network-api-failure')).toBeUndefined();
+  });
+
   it('detects network API probe loops and stops endpoint enumeration', () => {
     const sugs = calibrateDebugSuggestions(
       `tool calls:\n` +

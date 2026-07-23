@@ -111,6 +111,7 @@ export class Planner {
     private readonly llm: LLMClient,
     private readonly audit?: AuditLogger,
     private readonly language: Language = 'python',
+    private readonly streamOutput = false,
   ) {}
 
   async clarify(
@@ -130,7 +131,7 @@ export class Planner {
       projectShapeAmbiguous,
       languageAmbiguous: !!opts.languageAmbiguous,
     });
-    const rep = makeStreamReporter('Planner.clarify', this.llm.name);
+    const rep = makeStreamReporter('Planner.clarify', this.llm.name, { enabled: this.streamOutput });
     let provider: string | undefined;
     let text: string;
     try {
@@ -144,7 +145,10 @@ export class Planner {
           temperature: 0.2,
           onToken: rep.onToken,
           onProvider: (n) => { provider = n; },
-          onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
+          onProviderStart: (name, model) => {
+            rep.reset();
+            rep.setModel(`${name}/${model}`);
+          },
           // 在 provider fallback 层校验问题集质量，避免“只有两三个泛泛问题”直接进入 Gate 1。
           validate: (t) => validateClarifyJson(t, demand.nonTrivial, {
             projectShapeAmbiguous,
@@ -179,6 +183,28 @@ export class Planner {
     if (!currentPhase) {
       throw new Error('Planner phase plan has no current implementation phase.');
     }
+    return this.decomposeCurrentPhase(input, qa, addenda, parseContext, intent, phasePlan, currentPhase);
+  }
+
+  /** Expand one approved PhasePlan goal without replanning the remaining iterations. */
+  async decomposePhase(input: PlannerInput, phasePlan: DraftPhasePlan, phaseId: string): Promise<DraftPlan> {
+    const currentPhase = phasePlan.implementationPhases.find(
+      (phase) => phase.id === phaseId && phase.status === 'current',
+    );
+    if (!currentPhase) {
+      throw new Error(`Planner cannot decompose ${phaseId}: the phase is not current in PhasePlan.`);
+    }
+    const qa = formatClarificationTranscript(input.clarifications);
+    const addenda = (input.userAddenda ?? '').trim();
+    const intent = input.intent ?? 'greenfield';
+    const parseContext: DraftParseContext = {
+      language: this.language,
+      rawRequirement: input.rawRequirement,
+      userAddenda: addenda,
+      baselineSummary: input.baselineContext ?? '',
+      intent,
+      currentPhaseId: phaseId,
+    };
     return this.decomposeCurrentPhase(input, qa, addenda, parseContext, intent, phasePlan, currentPhase);
   }
 
@@ -261,6 +287,7 @@ export class Planner {
       const rep = makeStreamReporter(
         attempt === 1 ? input.label : `${input.label}.repair${attempt - 1}`,
         this.llm.name,
+        { enabled: this.streamOutput },
       );
       let provider: string | undefined;
       try {
@@ -271,7 +298,10 @@ export class Planner {
             temperature: 0.1,
             onToken: rep.onToken,
             onProvider: (n) => { provider = n; },
-            onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
+            onProviderStart: (name, model) => {
+              rep.reset();
+              rep.setModel(`${name}/${model}`);
+            },
             validate: input.validate,
           },
         );
@@ -444,9 +474,11 @@ function injectLanguageContractPrompts(steps: Step[], language: Language): Step[
     '\n\nTypeScript runtime/test contract（强制，覆盖本 Step 其它相反描述）：\n' +
     '- 测试框架必须使用 Vitest：测试文件从 `vitest` 导入 `describe/it/expect/vi`，禁止 Jest API、`jest.fn`、`jest.spyOn`、`jest.mock`。\n' +
     '- `package.json` 必须使用 `"test": "vitest run"`，`"build": "tsc --noEmit"`，并包含 `type: "module"`。\n' +
+    '- `tsconfig.json` 必须启用 `allowImportingTsExtensions: true`，确保显式 `.ts` 导入可通过 `tsc --noEmit`。\n' +
     '- greenfield 项目的 HIGH_LEVEL_DESIGN 必须输出 `package.json` 与 `tsconfig.json`；CODE 阶段只输出产品源码与单元测试计划，不再补写基础工程配置。\n' +
     '- `devDependencies` 使用 `typescript`、`tsx`、`vitest`、`@types/node`；禁止新增或要求 `jest`、`ts-jest`、`@types/jest`、`ts-node`、`nodemon`。\n' +
-    '- 本地源码导入必须使用显式 `.ts` ESM specifier，代码需兼容 Node 原生 TypeScript type stripping。';
+    '- 本地源码导入必须使用显式 `.ts` ESM specifier，代码需兼容 Node 原生 TypeScript type stripping。\n' +
+    '- 时间相关测试必须冻结系统时钟或从当前时钟推导预期值；禁止一边调用 `new Date()` 一边硬编码年份。';
   return steps.map((step) => {
     if (step.systemPrompt.includes('TypeScript runtime/test contract')) return step;
     return { ...step, systemPrompt: `${step.systemPrompt}${contractBlock}` };
@@ -680,6 +712,8 @@ interface DraftParseContext {
   intent: PlanIntent;
   /** When expanding one implementation phase, scope architecture-demand gates to that phase. */
   phaseDemandText?: string;
+  /** Materialized implementation phase. Initial planning defaults to P1. */
+  currentPhaseId?: string;
 }
 
 function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhasePlan {
@@ -787,6 +821,7 @@ function parsePhaseStepPlanJson(
   const parsed = parseDraftPlanJson(JSON.stringify(draft), {
     ...context,
     phaseDemandText: phaseDemandText(currentPhase),
+    currentPhaseId: currentPhase.id,
   });
   const currentIterationId = currentPhase.id;
   const wrongIteration = parsed.steps.find((step) => (step.iterationId ?? 'P1') !== currentIterationId);
@@ -897,10 +932,14 @@ function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPla
     });
   const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
   if (context && (!parsedImplementationPhases || parsedImplementationPhases.length === 0)) {
-    throw new Error('Planner JSON missing valid implementationPhases; P1 current phase must be explicit.');
+    throw new Error('Planner JSON missing valid implementationPhases; the materialized current phase must be explicit.');
   }
   const phaseIssue = parsedImplementationPhases
-    ? validateImplementationPhaseDraft(parsedImplementationPhases, complexityAssessment)
+    ? validateImplementationPhaseDraft(
+        parsedImplementationPhases,
+        complexityAssessment,
+        context?.currentPhaseId ?? 'P1',
+      )
     : undefined;
   if (context && phaseIssue) {
     throw new Error(`Planner implementationPhases invalid: ${phaseIssue}`);
@@ -1021,6 +1060,7 @@ function parseImplementationPhases(value: unknown): ImplementationPhase[] | unde
 function validateImplementationPhaseDraft(
   phases: ImplementationPhase[],
   assessment: ComplexityAssessment,
+  expectedCurrentPhaseId = 'P1',
 ): string | undefined {
   const requiredCount = requiredImplementationPhaseCount(assessment);
   const executable = phases.filter((phase) => phase.status !== 'deferred');
@@ -1036,16 +1076,11 @@ function validateImplementationPhaseDraft(
     return 'simple complexity without splitRecommended must use exactly one executable implementation iteration';
   }
   const current = phases.filter((phase) => phase.status === 'current');
-  if (current.length !== 1 || current[0]?.id !== 'P1') {
-    return 'exactly one current phase is required and it must be P1';
+  if (current.length !== 1 || current[0]?.id !== expectedCurrentPhaseId) {
+    return `exactly one current phase is required and it must be ${expectedCurrentPhaseId}`;
   }
   if (phases[0]?.id !== 'P1') {
     return 'P1 must be the first implementation phase';
-  }
-  for (const phase of phases.filter((item) => item.id !== 'P1')) {
-    if (phase.status === 'current') {
-      return `${phase.id} must not be current; later iterations must be planned or explicitly deferred`;
-    }
   }
   if (assessment.userForcedPhaseSplit && !assessment.splitRecommended) {
     return 'userForcedPhaseSplit=true requires splitRecommended=true';
@@ -1146,8 +1181,8 @@ function projectShapeSignals(text: string): { libraryLike: boolean; appLike: boo
     /\b(api[- ]?library|library|sdk|package|npm package|pypi package|client library|api client|reusable module|public api)\b/u.test(lower) ||
     /api\s*(库|客户端)|公共\s*api|可复用接口|公共库|库项目|软件包|客户端库|开发包/u.test(text);
   const appLike =
-    /\b(cli|command|command line|web app|server|service|dashboard|script|tool|terminal|application|app|api[- ]?server|api[- ]?service|rest api|http api|web api|api endpoint)\b/u.test(lower) ||
-    /命令行|服务|应用|脚本|工具|控制台|后台|仪表盘/u.test(text);
+    /\b(cli|command|command line|web app|server|service|dashboard|software|script|tool|terminal|application|app|api[- ]?server|api[- ]?service|rest api|http api|web api|api endpoint)\b/u.test(lower) ||
+    /命令行|服务|应用|脚本|工具|控制台|后台|仪表盘|软件/u.test(text);
   const explicitApiSurface =
     /\b(api[- ]?server|api[- ]?service|rest api|http api|web api|api endpoint|api client|api[- ]?library)\b/u.test(lower) ||
     /api\s*(服务|网关|端点|客户端|库)/u.test(text);
@@ -1192,12 +1227,19 @@ function normalizeImplementationPhases(
   requirementDigest: string,
 ): ImplementationPhase[] {
   const requiredCount = requiredImplementationPhaseCount(assessment);
+  const hasCurrent = (phases ?? []).some((phase) => phase.status === 'current');
   const sanitized: ImplementationPhase[] = (phases ?? [])
     .filter((phase) => phase.id && phase.title && phase.objective)
     .map((phase, index) => ({
       ...phase,
       id: phase.id || `P${index + 1}`,
-      status: index === 0 ? 'current' as const : phase.status === 'deferred' ? 'deferred' as const : 'planned' as const,
+      status: hasCurrent
+        ? phase.status
+        : index === 0
+          ? 'current' as const
+          : phase.status === 'deferred'
+            ? 'deferred' as const
+            : 'planned' as const,
       dependsOn: index === 0 ? [] : phase.dependsOn.length > 0 ? phase.dependsOn : [`P${index}`],
       verificationGate: phase.verificationGate ?? defaultVerificationGate(phase.id || `P${index + 1}`),
     }));

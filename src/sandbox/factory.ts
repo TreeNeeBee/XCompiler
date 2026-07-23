@@ -52,6 +52,9 @@ export function createSandbox(
   if (activeLimits.network === 'pypi-only') {
     throw new Error(t().system.unsupportedPypiOnlyNetwork);
   }
+  if (kind === 'subprocess' && activeLimits.network === 'off') {
+    throw new Error(t().system.unsupportedSubprocessNetworkOff);
+  }
   if (kind === 'docker') {
     if (isRunningInContainer()) {
       throw new Error(t().system.dockerInsideContainerUnsupported);
@@ -106,6 +109,7 @@ function legacyLanguageSandbox(
     mode: legacyAgent.sandbox ?? 'subprocess',
     local: {
       sandbox_dir: `.sandbox/${language}`,
+      inherit_env: false,
       limits,
     },
     docker: {

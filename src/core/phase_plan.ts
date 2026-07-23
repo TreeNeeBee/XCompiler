@@ -38,6 +38,12 @@ export const PhasePlanSchema = z.object({
 export type PhasePlan = z.infer<typeof PhasePlanSchema>;
 export type PhasePlanPhase = z.infer<typeof PhasePlanPhaseSchema>;
 
+export interface PhasePlanAdvanceResult {
+  phasePlan: PhasePlan;
+  completedPhaseId: string;
+  nextPhase?: PhasePlanPhase;
+}
+
 export function defaultPhasePlanPath(workspace: string): string {
   return path.join(path.resolve(workspace), DEFAULT_PHASE_PLAN_FILE);
 }
@@ -91,6 +97,45 @@ export function buildPhasePlanFromCurrentPlan(args: {
     phases,
     createdAt: args.existing?.createdAt ?? args.plan.createdAt ?? now,
     updatedAt: now,
+  };
+}
+
+/**
+ * Complete the current iteration and activate the first dependency-ready planned iteration.
+ * The caller materializes `nextPhase.planPath` before persisting the returned PhasePlan.
+ */
+export function advancePhasePlan(input: PhasePlan): PhasePlanAdvanceResult {
+  const phases = input.phases.map((phase) => ({ ...phase }));
+  const current = phases.find((phase) => phase.id === input.currentPhaseId);
+  if (!current) {
+    throw new Error(`phasePlan current phase ${input.currentPhaseId} does not exist`);
+  }
+  if (current.status !== 'current' && current.status !== 'complete') {
+    throw new Error(`phasePlan current phase ${current.id} has invalid status ${current.status}`);
+  }
+  current.status = 'complete';
+
+  const completeIds = new Set(phases.filter((phase) => phase.status === 'complete').map((phase) => phase.id));
+  const planned = phases.filter((phase) => phase.status === 'planned');
+  const next = planned.find((phase) => phase.dependsOn.every((dependency) => completeIds.has(dependency)));
+  if (!next && planned.length > 0) {
+    const blocked = planned
+      .map((phase) => `${phase.id} depends on [${phase.dependsOn.join(', ')}]`)
+      .join('; ');
+    throw new Error(`no planned phase is dependency-ready after ${current.id}: ${blocked}`);
+  }
+  if (next) next.status = 'current';
+
+  const phasePlan: PhasePlan = {
+    ...input,
+    currentPhaseId: next?.id ?? current.id,
+    phases,
+    updatedAt: new Date().toISOString(),
+  };
+  return {
+    phasePlan,
+    completedPhaseId: current.id,
+    nextPhase: next,
   };
 }
 

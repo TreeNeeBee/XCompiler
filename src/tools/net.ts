@@ -75,14 +75,17 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
     // Enforce allowedWrites for saveAs (same guard as fs tools).
     let saveAsAbs: string | undefined;
     if (args.saveAs) {
-      const resolved = await resolveWorkspacePath(ctx.ws, args.saveAs, 'http_fetch.saveAs', { forWrite: true });
+      const resolved = await resolveWorkspacePath(ctx.ws, args.saveAs, 'http_fetch.saveAs', {
+        forWrite: true,
+        relativePathHints: ctx.allowedWrites,
+      });
       if (!resolved.ok) return { ok: false, error: resolved.error };
       saveAsAbs = resolved.abs;
       const { isAllowedWrite } = await import('./types.js');
-      if (!isAllowedWrite(args.saveAs, ctx.allowedWrites)) {
+      if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
         return {
           ok: false,
-          error: `http_fetch: saveAs "${args.saveAs}" is not in allowedWrites=[${ctx.allowedWrites.join(', ')}]`,
+          error: `http_fetch: saveAs "${resolved.rel}" is not in allowedWrites=[${ctx.allowedWrites.join(', ')}]`,
         };
       }
     }

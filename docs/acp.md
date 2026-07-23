@@ -59,6 +59,7 @@ Replace `/path/to/XCompiler` with the local repository path. ACP mode must keep 
 
 - The adapter supports Code Agent task execution, not general chat.
 - Build-stage confirm/select interactions are mapped to `session/request_permission`.
-- Free-form build-stage follow-up text is not yet modeled as a multi-turn ACP prompt loop.
-- Runtime cancellation is best-effort until Runtime exposes hard cancellation.
+- A-E Build clarification choices are mapped to explicit ACP options. Arbitrary free-form follow-up text still requires a future multi-turn ACP prompt extension.
+- Cancellation immediately rejects pending Build interactions and Run permissions and prevents the next Runtime phase from starting. An already-running provider/tool operation may finish before task closure.
+- `sessionId` scopes the conversation, while every Runtime tool invocation has a unique `callId` mapped to ACP `toolCallId`; permission and Patch updates reuse that same call identity.
 - Official ACP registry publication still requires a real Zed smoke test and final registry metadata alignment.

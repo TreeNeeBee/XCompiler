@@ -23,6 +23,7 @@ export interface BootstrapOptions {
   worktree?: string;
   /** Opt into the experimental Docker qualification runner. */
   dockerQualification?: boolean;
+  terminalOutput?: boolean;
   io?: RuntimeIO;
 }
 
@@ -105,6 +106,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRes
       configPath,
       force: !!opts.force,
       setProcessExitCode: false,
+      terminalOutput: opts.terminalOutput ?? io.terminalOutput ?? false,
       io,
     });
   } catch (error) {

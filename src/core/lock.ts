@@ -1,4 +1,5 @@
-import { promises as fs, unlinkSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -13,6 +14,7 @@ import os from 'node:os';
  */
 
 export interface LockInfo {
+  ownerId?: string;
   pid: number;
   host: string;
   command: string;
@@ -65,6 +67,7 @@ export async function acquireLock(
   const file = lockPath(workspace);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const info: LockInfo = {
+    ownerId: randomUUID(),
     pid: process.pid,
     host: os.hostname(),
     command,
@@ -85,13 +88,13 @@ export async function acquireLock(
   };
 
   if (await tryCreate()) {
-    return makeReleaser(file);
+    return makeReleaser(file, info.ownerId!);
   }
 
   if (options.force) {
     // 强制接管：覆写现有锁文件。仅在用户明确传入 --force 时生效。
     await fs.writeFile(file, payload, 'utf8');
-    return makeReleaser(file);
+    return makeReleaser(file, info.ownerId!);
   }
 
   const existing = await readLock(file);
@@ -100,7 +103,7 @@ export async function acquireLock(
     if (sameHost && !isAlive(existing.pid)) {
       // 陈旧锁：直接覆写
       await fs.writeFile(file, payload, 'utf8');
-      return makeReleaser(file);
+      return makeReleaser(file, info.ownerId!);
     }
     throw new LockError(
       `workspace 已被其它 XCompiler 进程占用 (pid=${existing.pid}, host=${existing.host}, cmd=${existing.command}, since=${existing.startedAt}).\n` +
@@ -110,38 +113,21 @@ export async function acquireLock(
   }
   // 文件存在但读不出（损坏） → 接管
   await fs.writeFile(file, payload, 'utf8');
-  return makeReleaser(file);
+  return makeReleaser(file, info.ownerId!);
 }
 
-function makeReleaser(file: string): AcquiredLock {
+function makeReleaser(file: string, ownerId: string): AcquiredLock {
   let released = false;
   const release = async () => {
     if (released) return;
     released = true;
     try {
+      const current = await readLock(file);
+      if (current?.ownerId !== ownerId) return;
       await fs.unlink(file);
     } catch {
       /* ignore */
     }
   };
-  // 进程异常退出时也尽力清理（同步删除）
-  const sync = () => {
-    if (released) return;
-    released = true;
-    try {
-      unlinkSync(file);
-    } catch {
-      /* ignore */
-    }
-  };
-  process.once('exit', sync);
-  process.once('SIGINT', () => {
-    sync();
-    process.exit(130);
-  });
-  process.once('SIGTERM', () => {
-    sync();
-    process.exit(143);
-  });
   return { release };
 }

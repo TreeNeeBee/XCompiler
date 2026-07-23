@@ -216,13 +216,7 @@ export class AcpServer {
     try {
       await this.runCodeTask(session, task, { ...p, workspace });
     } catch (err) {
-      task.status = 'failed';
-      task.completedAt = new Date().toISOString();
-      this.notifyTask(session, task, 'error', (err as Error).message);
-      this.notifyTask(session, task, 'task_completed', `Task failed: ${(err as Error).message}`, {
-        status: 'failed',
-        changedFiles: task.changedFiles,
-      });
+      this.finishTaskFromError(session, task, err);
     }
     return {
       stopReason: task.status === 'cancelled' || task.status === 'cancel_requested' ? 'cancelled' : 'end_turn',
@@ -235,13 +229,7 @@ export class AcpServer {
     const workspace = path.resolve(p.workspace || session.workspace || process.cwd());
     const task = this.sessions.createTask(session, { workspace, userTask: p.task, protocol });
     this.runCodeTask(session, task, { ...p, workspace }).catch((err) => {
-      task.status = 'failed';
-      task.completedAt = new Date().toISOString();
-      this.notifyTask(session, task, 'error', (err as Error).message);
-      this.notifyTask(session, task, 'task_completed', `Task failed: ${(err as Error).message}`, {
-        status: 'failed',
-        changedFiles: task.changedFiles,
-      });
+      this.finishTaskFromError(session, task, err);
     });
     return { taskId: task.id, status: task.status };
   }
@@ -259,15 +247,20 @@ export class AcpServer {
     }
     const task = this.sessions.getTask(sessionId, taskId);
     task.cancellationRequested = true;
-    if (task.status === 'waiting_for_confirmation' || task.status === 'waiting_for_permission') {
-      task.status = 'cancel_requested';
-    }
-    this.notifyTask(session, task, 'task_cancelled', 'Runtime cancellation is best-effort in this phase; active Runtime execution may finish current operation.', {
+    task.status = 'cancel_requested';
+    task.abortController.abort(new Error('ACP task cancelled by client'));
+    const rejectedIds = this.sessions.rejectPendingForTask(
+      sessionId,
+      taskId,
+      new Error('ACP task cancelled by client'),
+    );
+    for (const requestId of rejectedIds) this.pendingClientRequests.delete(requestId);
+    this.notifyTask(session, task, 'task_cancelled', 'Cancellation accepted; no further Runtime phase will start.', {
       status: task.status,
     });
     return {
-      cancelled: false,
-      reason: 'Runtime cancellation is not fully supported yet; cancellation was recorded and reported.',
+      cancelled: true,
+      reason: 'Cancellation accepted. An active non-interruptible operation may finish before the task closes.',
     };
   }
 
@@ -295,6 +288,7 @@ export class AcpServer {
   }
 
   private async runCodeTask(session: AcpSession, task: AcpTask, params: AcpCodeTaskParams): Promise<void> {
+    this.throwIfCancelled(task);
     this.notifyTask(session, task, 'task_started', `Task started in ${task.workspace}`, { workspace: task.workspace });
     this.notifyTask(session, task, 'build_started', 'Build started', { workspace: task.workspace });
     const buildIo = this.createRuntimeIO(session, task, 'build');
@@ -307,20 +301,40 @@ export class AcpServer {
       io: buildIo,
     };
     const build = await this.runtime.build(buildOpts);
+    this.throwIfCancelled(task);
     if (build.planPath) task.planPath = build.planPath;
-    task.phase = params.autoRunAfterBuild === false ? 'complete' : 'run';
-    this.notifyTask(session, task, 'build_completed', 'Build completed', { planPath: task.planPath });
-    if (params.autoRunAfterBuild === false || !task.planPath) {
-      task.status = 'completed';
+    this.notifyTask(session, task, 'build_completed', `Build ${task.lastBuildStatus ?? 'completed'}`, {
+      planPath: task.planPath,
+      status: task.lastBuildStatus,
+    });
+    if (!task.planPath) {
+      task.status = task.lastBuildStatus === 'cancelled' || task.lastBuildStatus === 'rejected'
+        ? 'cancelled'
+        : 'failed';
+      task.phase = 'complete';
       task.completedAt = new Date().toISOString();
-      this.notifyTask(session, task, 'task_completed', 'Task completed', {
-        status: 'completed',
+      this.notifyTask(session, task, 'task_completed', `Task ${task.status}: build produced no runnable plan`, {
+        status: task.status,
+        buildStatus: task.lastBuildStatus,
+        planPath: task.planPath,
+        changedFiles: task.changedFiles,
+      });
+      return;
+    }
+    if (params.autoRunAfterBuild === false) {
+      task.status = 'completed';
+      task.phase = 'complete';
+      task.completedAt = new Date().toISOString();
+      this.notifyTask(session, task, 'task_completed', 'Task completed after Build', {
+        status: task.status,
         planPath: task.planPath,
         changedFiles: task.changedFiles,
       });
       return;
     }
 
+    task.phase = 'run';
+    this.throwIfCancelled(task);
     this.notifyTask(session, task, 'run_started', 'Run started', { planPath: task.planPath });
     const runIo = this.createRuntimeIO(session, task, 'run');
     const runOpts: RuntimeRunCommandOptions = {
@@ -332,6 +346,7 @@ export class AcpServer {
       io: runIo,
     };
     const run = await this.runtime.run(runOpts);
+    this.throwIfCancelled(task);
     task.status = run.status === 'ok' || run.status === 'dry-run' ? 'completed' : 'failed';
     task.phase = 'complete';
     task.completedAt = new Date().toISOString();
@@ -345,8 +360,13 @@ export class AcpServer {
 
   private createRuntimeIO(session: AcpSession, task: AcpTask, phase: 'build' | 'run'): RuntimeIO {
     const io: RuntimeIO = {
+      terminalOutput: false,
       emit: async (event) => {
         if (event.type === 'permission' && event.status === 'requested') return;
+        if (event.type === 'result') {
+          if (event.command === 'build') task.lastBuildStatus = event.status;
+          if (event.command === 'run') task.lastRunStatus = event.status;
+        }
         const mapped = mapRuntimeEventToAcpUpdates(event, { taskId: task.id, phase });
         for (const acpEvent of mapped) {
           if (acpEvent.legacyType === 'file_changed' && typeof acpEvent.path === 'string') {
@@ -366,20 +386,30 @@ export class AcpServer {
 
   private createInteraction(session: AcpSession, task: AcpTask, phase: 'build' | 'run'): RuntimeInteraction {
     return {
-      input: ({ message }) => this.requestInteraction(session, task, phase, 'input', message) as Promise<string>,
+      input: async ({ message }) => interactionText(
+        await this.requestInteraction(session, task, phase, 'input', message),
+        'input',
+      ),
       confirm: async ({ message, default: defaultValue }) => {
         const result = await this.requestInteraction(session, task, phase, 'confirm', message, undefined, defaultValue);
         return result === true || result === 'true' || result === 'yes' || result === 'confirm';
       },
-      editor: ({ message, default: defaultValue }) =>
-        this.requestInteraction(session, task, phase, 'editor', message, undefined, defaultValue) as Promise<string>,
+      editor: async ({ message, default: defaultValue }) => {
+        const result = await this.requestInteraction(session, task, phase, 'editor', message, undefined, defaultValue);
+        if (typeof result === 'string') return result;
+        if (result === true) return defaultValue ?? '';
+        throw new Error('ACP client rejected the Build editor request.');
+      },
       select: async <T extends string>({ message, choices }: { message: string; choices: RuntimeSelectChoice<T>[] }) => {
         const result = await this.requestInteraction(session, task, phase, 'select', message, choices);
         return String(result) as T;
       },
       readMultiline: async ({ message }) => {
         if (phase === 'build' && task.userTask.trim()) return task.userTask;
-        return this.requestInteraction(session, task, phase, 'multiline', message) as Promise<string>;
+        return interactionText(
+          await this.requestInteraction(session, task, phase, 'multiline', message),
+          'multiline input',
+        );
       },
       pauseStdin: () => undefined,
     };
@@ -400,9 +430,10 @@ export class AcpServer {
       return Promise.reject(err);
     }
     const requestId = randomUUID();
+    const effectiveChoices = choices ?? (kind === 'input' ? clarificationChoices(message) : undefined);
     const choiceValues = new Map<string, unknown>();
-    if (choices?.length) {
-      for (const choice of choices) choiceValues.set(choice.value, choice.value);
+    if (effectiveChoices?.length) {
+      for (const choice of effectiveChoices) choiceValues.set(choice.value, choice.value);
     } else {
       choiceValues.set('allow_once', true);
       choiceValues.set('reject_once', false);
@@ -423,14 +454,14 @@ export class AcpServer {
         taskId: task.id,
         kind,
         message,
-        choices,
+        choices: effectiveChoices,
         defaultValue,
       }),
     ));
     this.notifyTask(session, task, 'build_confirmation_required', message, {
       requestId,
       kind,
-      choices,
+      choices: effectiveChoices,
       default: defaultValue,
     });
     return new Promise((resolve, reject) => {
@@ -441,7 +472,7 @@ export class AcpServer {
         phase,
         kind,
         message,
-        choices,
+        choices: effectiveChoices,
         resolve,
         reject,
       });
@@ -533,6 +564,28 @@ export class AcpServer {
     this.sessions.resolveInteraction(pending.sessionId, pending.requestId, selected);
   }
 
+  private throwIfCancelled(task: AcpTask): void {
+    if (!task.cancellationRequested && !task.abortController.signal.aborted) return;
+    const error = new Error('ACP task cancelled by client');
+    error.name = 'AbortError';
+    throw error;
+  }
+
+  private finishTaskFromError(session: AcpSession, task: AcpTask, err: unknown): void {
+    const cancelled = task.cancellationRequested || task.abortController.signal.aborted;
+    task.status = cancelled ? 'cancelled' : 'failed';
+    task.phase = 'complete';
+    task.completedAt = new Date().toISOString();
+    if (!cancelled) this.notifyTask(session, task, 'error', (err as Error).message);
+    this.notifyTask(
+      session,
+      task,
+      'task_completed',
+      cancelled ? 'Task cancelled' : `Task failed: ${(err as Error).message}`,
+      { status: task.status, changedFiles: task.changedFiles },
+    );
+  }
+
   private notifyTask(
     session: AcpSession,
     task: AcpTask,
@@ -552,6 +605,21 @@ export class AcpServer {
     this.logger.error((err as Error).stack ?? (err as Error).message ?? String(err));
     return failure(id, JsonRpcErrorCode.InternalError, (err as Error).message ?? String(err));
   }
+}
+
+function clarificationChoices(message: string): Array<{ name: string; value: string }> | undefined {
+  const choices = [...message.matchAll(/^\s{2}([A-E])\.\s+(.+)$/gmu)].map((match) => ({
+    name: `${match[1]}. ${match[2]}`,
+    value: match[1]!,
+  }));
+  return choices.length >= 2 ? choices : undefined;
+}
+
+function interactionText(value: unknown, operation: string): string {
+  if (typeof value === 'string') return value;
+  throw new Error(
+    `ACP ${operation} requires a text or listed-choice response; received ${typeof value}.`,
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

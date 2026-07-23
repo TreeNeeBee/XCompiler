@@ -38,7 +38,7 @@ The current architecture treats **Runtime as the only business entry point**. CL
 
 ## Iterative V-Model Pipeline
 
-XCompiler combines a phase iteration model with the V-model. The planner first creates a high-level `phasePlan.json`, then expands only the active phase into a concrete `plan.P<N>.json`. Each current phase runs a full V-model cycle; future phases stay as goals until they become active.
+XCompiler combines a phase iteration model with the V-model. The planner first creates a high-level `phasePlan.json`, then expands only the active phase into a concrete `plan.P<N>.json`. Each current phase runs a full V-model cycle. After its iteration gate and project audit pass, it becomes `complete`; XCompiler activates the first dependency-ready phase and materializes only that phase's plan for the next run.
 
 <p align="center">
   <img src="docs/assets/iterative-v-model-pipeline.svg" alt="Iterative V-Model Pipeline" />
@@ -163,7 +163,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 - **LLM**: OpenRouter Free mode by default. Missing/invalid keys produce provider/model/base URL/status/body diagnostics and an explicit `OPENROUTER_API_KEY` hint.
 - **LLM routing**: role-specific provider chains, XCompiler-maintained dynamic scores, user overrides from `llm_scores_user.yaml`, and `tags: [cluster]` fallback score bands for aggregated routes such as `openrouter/free`.
 - **Languages**: Python and TypeScript project generation, testing, execution, and entry checks.
-- **Sandbox**: `subprocess` by default; optional `docker` mode for bind-mount isolation and network/resource limits.
+- **Sandbox**: `subprocess` by default with an isolated environment (`inherit_env: false`); optional `docker` mode for enforceable network/resource isolation. `network: off` is rejected in subprocess mode because a host child process cannot enforce it.
 - **Audit**: every run writes `.xcompiler/audit.jsonl`, LLM stream traces, `docs/process_log.md`, debug cache, debug wiki feedback, and project memory.
 - **Debug wiki**: Debugger issue repairs retrieve LLM-wiki style prior fixes by compact `DebugBrief`. The wiki is a layered Markdown knowledge base: bundled `wiki/system` policy pages, bundled `wiki/agent` calibration pages, and local `wiki/external` issue-resolution pages. Runtime regenerates `index.md` for review, `index.json` for retrieval, and `log.md` for append-only operations. By default it is copied to the XCompiler path (`$XC_PATH/.xcompiler/debug-wiki` when `XC_PATH` is set, otherwise the package/repo root); use `--debug-wiki-path <dir>` to share a different root. Successful issue repairs persist the LLM's `issueResolutionPlan` in `external`; failed reused fixes are marked `needs_review` through feedback overlays and later successful repairs create/correct external entries.
 - **Security gates**: project file access is guarded, write tools are scoped to declared outputs, and sensitive actions can be surfaced as permission events in adapter scenarios.
@@ -182,13 +182,14 @@ LLM routing is configured under `config.yaml -> llm.*`.
 | `cluster_score_min/max` | `0.2..0.5` | Dynamic score band for providers tagged `cluster`; user overrides may still use `0.1..1` |
 | `agent.sandboxes.python.mode` | `subprocess` | Python project sandbox backend: local subprocess or Docker |
 | `agent.sandboxes.typescript.mode` | `subprocess` | TypeScript project sandbox backend: local subprocess or Docker |
+| `agent.sandboxes.<language>.local.inherit_env` | `false` | Opt in to host environment inheritance; keep false when the host contains API keys or other secrets |
 | `max_rounds_per_step` | `6` | LLM dialogue limit within a normal step |
 | `max_debug_rounds_per_step` | `max(8, 2 * max_rounds_per_step)` | Debugger round cap |
 | `max_debug_retries` | `3` | Debug retry attempts |
 | `--debug-wiki-path <dir>` | XCompiler path `.xcompiler/debug-wiki` | Shared layered debug wiki root |
 | `max_edit_lines_per_step` | `auto` | Adaptive EditGuard cumulative write-line budget |
 | `max_write_chunk_bytes` | `auto` | Adaptive per-call write chunk budget |
-| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | Outbound allowed, no inbound ports; `off` disables network |
+| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | Docker supports enforceable `off`; subprocess rejects `off` instead of claiming isolation it cannot provide |
 
 ---
 
@@ -216,7 +217,7 @@ npm test
 npm run build
 ```
 
-Recent local release gate: 49 test files / 473 tests passed.
+Recent local release gate: 53 test files / 537 tests passed.
 
 ---
 

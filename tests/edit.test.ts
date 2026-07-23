@@ -51,6 +51,30 @@ describe('replace_in_file', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/write denied/);
   });
+
+  it('canonicalizes a project-prefixed path before the allowlist check', async () => {
+    await ws.writeFile('src/prefixed.py', 'x = 1\n');
+    const r = await replaceInFileTool.run(
+      {
+        path: `${path.basename(ws.root)}/src/prefixed.py`,
+        find: 'x = 1',
+        replace: 'x = 2',
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.summary).toContain('src/prefixed.py');
+    expect(await ws.readFile('src/prefixed.py')).toBe('x = 2\n');
+  });
+
+  it('rejects a missing path before attempting workspace resolution', async () => {
+    const r = await replaceInFileTool.run(
+      { find: 'x', replace: 'y' } as never,
+      ctx,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('path must be a non-empty string');
+  });
 });
 
 describe('code_search', () => {

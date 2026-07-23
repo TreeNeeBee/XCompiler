@@ -75,6 +75,9 @@ export interface AcpTask {
   startedAt: string;
   completedAt?: string;
   cancellationRequested?: boolean;
+  abortController: AbortController;
+  lastBuildStatus?: string;
+  lastRunStatus?: string;
 }
 
 export interface PendingInteraction {

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { jsonrepair } from 'jsonrepair';
 import type { LLMClient } from '../llm/types.js';
@@ -32,6 +33,8 @@ const MISSING_OUTPUT_STALL_ROUND_LIMIT = 3;
 
 export interface ExecutorOptions {
   llm: LLMClient;
+  /** Enables direct human terminal stream rendering for the CLI adapter only. */
+  streamOutput?: boolean;
   /** 同一 Step 内最多对话轮数，避免无限循环。 */
   maxRounds?: number;
   /** run_tests 连续/累计失败达到该预算后提前停止，让外层 V 模型回退处理。 */
@@ -124,6 +127,7 @@ interface TurnFeedbackContext {
   readOnlyLoopWarning?: { rounds: number; targets: string };
   missingOutputStallWarning?: { rounds: number; missing: string };
   readOnlyRecoveryWarning?: boolean;
+  noProgressWarning?: { rounds: number };
   repairEvidenceMissing?: boolean;
   issueResolutionPlanMissing?: boolean;
 }
@@ -176,6 +180,7 @@ export class StepExecutor {
     const unresolvedToolFailures = new Map<string, string>();
     let actualRounds = 0;
     let consecutiveReadOnlyRounds = 0;
+    let consecutiveNoProgressRounds = 0;
     let failedTestRunRounds = 0;
     let repairEvidence = false;
     const repairRequired = inp.debugContext?.repairRequired === true;
@@ -192,6 +197,7 @@ export class StepExecutor {
       const rep = makeStreamReporter(
         `${inp.step.id} ${role} round ${round}`,
         this.opts.llm.name,
+        { enabled: this.opts.streamOutput === true },
       );
       // 另起一份本轮完整原始输出的拼接，以便 llm.chat 报错/超时/loop 被 abort 时仔细存证。
       // 上限 256KB，略大于 ollama 默认 maxOutputChars，只作为内存保护。
@@ -213,7 +219,12 @@ export class StepExecutor {
               ? (text) => validateDebuggerRecoveryTurn(text, toolMap)
               : undefined,
           onProvider: (name) => { provider = name; },
-          onProviderStart: (name, model) => { rep.setModel(`${name}/${model}`); },
+          onProviderStart: (name, model) => {
+            provider = name;
+            rawAggregate = '';
+            rep.reset();
+            rep.setModel(`${name}/${model}`);
+          },
           streamStopWhen: isCompleteTurnJson,
           onToken: (chunk) => {
             if (rawAggregate.length < RAW_CAP) {
@@ -328,6 +339,12 @@ export class StepExecutor {
       // 一轮里有 ≥ 2 个 action 是旧指纹的重复 → 强信号；只 1 个不计入避免误伤。
       if (perActionRepeats >= 2) repeatedTurns++;
       const readOnlyRound = actions.length > 0 && actions.every(isReadOnlyOrProbeAction);
+      const noProgressRound = actions.length === 0 && turn.done !== true;
+      if (noProgressRound) {
+        consecutiveNoProgressRounds++;
+      } else {
+        consecutiveNoProgressRounds = 0;
+      }
       if (readOnlyRound) {
         consecutiveReadOnlyRounds++;
         if (readOnlyRecoveryMode) {
@@ -365,17 +382,18 @@ export class StepExecutor {
           });
           continue;
         }
+        const callId = randomUUID();
         const permission = buildPermissionRequest(a.tool, a.args, inp.step.id, inp.ctx.language);
-        if (a.tool === 'apply_patch' && typeof a.args.patch === 'string') {
-          await inp.ctx.onToolEvent?.({
-            status: 'started',
-            stepId: inp.step.id,
-            tool: a.tool,
-            target: actionTargetPaths(a.tool, a.args).join(', '),
-            args: a.args,
-            patch: a.args.patch,
-          });
-        }
+        if (permission) permission.id = callId;
+        await inp.ctx.onToolEvent?.({
+          callId,
+          status: 'started',
+          stepId: inp.step.id,
+          tool: a.tool,
+          target: actionTargetPaths(a.tool, a.args).join(', ') || undefined,
+          args: a.args,
+          patch: a.tool === 'apply_patch' && typeof a.args.patch === 'string' ? a.args.patch : undefined,
+        });
         if (permission && inp.ctx.requestPermission) {
           const decision = await inp.ctx.requestPermission(permission);
           if (!decision.approved) {
@@ -395,6 +413,7 @@ export class StepExecutor {
             calls.push({ tool: a.tool, ok: false, error: r.error });
             turnResults.push({ ...r, tool: a.tool });
             await inp.ctx.onToolEvent?.({
+              callId,
               status: 'completed',
               stepId: inp.step.id,
               tool: a.tool,
@@ -408,16 +427,10 @@ export class StepExecutor {
         await inp.ctx.audit?.event('tool.call', t().audit.toolCalled(a.tool), {
           messageId: 'audit.tool_called', stepId: inp.step.id, tool: a.tool, args: a.args,
         });
-        await inp.ctx.onToolEvent?.({
-          status: 'started',
-          stepId: inp.step.id,
-          tool: a.tool,
-          target: actionTargetPaths(a.tool, a.args).join(', ') || undefined,
-          args: a.args,
-        });
         const toolReporter = makeStreamReporter(
           t().stream.toolExecution(inp.step.id, a.tool),
           t().stream.toolRunner,
+          { enabled: this.opts.streamOutput === true },
         );
         const r = await safeRunTool(selectedTool, a.args, inp.ctx);
         toolReporter.done(r.ok ? 'done' : 'failed');
@@ -432,6 +445,7 @@ export class StepExecutor {
           ok: r.ok,
         });
         await inp.ctx.onToolEvent?.({
+          callId,
           status: 'completed',
           stepId: inp.step.id,
           tool: a.tool,
@@ -566,6 +580,27 @@ export class StepExecutor {
         });
         return { success: false, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, error, metrics };
       }
+      if (consecutiveNoProgressRounds >= 2) {
+        repeatedTurns++;
+        const metrics = computeMetrics({
+          rounds: actualRounds,
+          parseFailures,
+          repeatedTurns,
+          calls,
+          initialMissing,
+          currentMissing: verify.missing.length,
+        });
+        const error =
+          `model returned actions=[] and done=false for ${consecutiveNoProgressRounds} consecutive rounds; ` +
+          'this is invalid no-progress output, so the attempt is stopping before it becomes a token-consuming loop.';
+        await inp.ctx.audit?.event('note', error, {
+          messageId: 'audit.executor_no_progress_guard',
+          stepId: inp.step.id,
+          round,
+          consecutiveNoProgressRounds,
+        });
+        return { success: false, rounds: round, toolCalls: calls, finalThought, issueResolutionPlan, error, metrics };
+      }
       if (
         round >= roundLimit &&
         roundLimit < hardRoundLimit &&
@@ -611,6 +646,9 @@ export class StepExecutor {
               }
             : undefined,
           readOnlyRecoveryWarning: (readOnlyRecoveryMode || directRepairMode) && readOnlyRound,
+          noProgressWarning: noProgressRound
+            ? { rounds: consecutiveNoProgressRounds }
+            : undefined,
           repairEvidenceMissing:
             repairRequired &&
             turn.done === true &&
@@ -714,7 +752,8 @@ function hasOnlySupersededToolContractFailures(unresolved: Map<string, string>):
     /invalid (?:write_file|append_file|replace_in_file|apply_patch|read_file) args/i.test(detail) ||
     /(?:read_file|write_file|append_file|replace_in_file|apply_patch) denied: path "\." is outside the project directory/i.test(detail) ||
     /(?:read_file|write_file|append_file|replace_in_file) failed:.*path must be a non-empty string/i.test(detail) ||
-    /path must be a non-empty string/i.test(detail),
+    /path must be a non-empty string/i.test(detail) ||
+    /tool not allowed for this step: add_dependency/i.test(detail),
   );
 }
 
@@ -806,22 +845,49 @@ function shouldExtendProductiveRun(p: {
   consecutiveReadOnlyRounds: number;
   unresolvedFailures: number;
 }): boolean {
-  if (p.initialMissing <= 0) return false;
-  if (p.currentMissing >= p.initialMissing) return false;
-  if (p.parseFailures > 0 || p.repeatedTurns > 0 || p.consecutiveReadOnlyRounds > 0) return false;
+  if (p.parseFailures > 0 || p.repeatedTurns > 0 || p.consecutiveReadOnlyRounds >= 2) return false;
   const totalCalls = p.calls.length;
   const failedCalls = p.calls.filter((call) => !call.ok).length;
   const toolFailRatio = totalCalls > 0 ? failedCalls / totalCalls : 0;
+  const pendingMutation = hasUnverifiedSuccessfulMutation(p.calls);
+  // A successful repair after a failed verification needs one more round to
+  // prove the fix. The next successful verification clears the unresolved test failure.
+  if (pendingMutation && toolFailRatio <= 0.5) return true;
+  if (p.consecutiveReadOnlyRounds > 0) return false;
   if (toolFailRatio > 0.25 || p.unresolvedFailures > 0) return false;
-  return p.calls.some((call) => call.ok && isRepairEvidenceTool(call.tool));
+  if (p.initialMissing > 0 && p.currentMissing < p.initialMissing) return true;
+  return pendingMutation;
+}
+
+function hasUnverifiedSuccessfulMutation(calls: ExecutorRunResult['toolCalls']): boolean {
+  let mutationPendingVerification = false;
+  for (const call of calls) {
+    if (!call.ok) continue;
+    if (COMPLETION_VERIFICATION_TOOLS.has(call.tool)) {
+      mutationPendingVerification = false;
+      continue;
+    }
+    if (isRepairEvidenceTool(call.tool)) mutationPendingVerification = true;
+  }
+  return mutationPendingVerification;
 }
 
 function compactTurnForHistory(turn: LLMTurn): string {
   const normalized = normalizeActions(turn.actions);
+  const omittedPayloadActions = normalized.actions.filter(hasReplayUnsafePayload);
+  const safeActions = normalized.actions.filter((action) => !hasReplayUnsafePayload(action));
+  const omittedSummary = omittedPayloadActions.length > 0
+    ? ` Previous payload actions already executed; do not replay these summaries as tool args: ${omittedPayloadActions
+        .map((action) => {
+          const targets = actionTargetPaths(action.tool, action.args).join(', ') || 'no target';
+          return `${action.tool}(${targets}; payload omitted)`;
+        })
+        .join('; ')}.`
+    : '';
   return JSON.stringify({
-    thoughts: truncate(turn.thoughts ?? '', 500),
+    thoughts: truncate(`${turn.thoughts ?? ''}${omittedSummary}`, 900),
     issueResolutionPlan: truncate(extractIssueResolutionPlan(turn) ?? '', 900),
-    actions: normalized.actions.map((action) => ({
+    actions: safeActions.map((action) => ({
       tool: action.tool,
       args: compactActionArgs(action.tool, action.args),
     })),
@@ -833,6 +899,11 @@ function compactTurnForHistory(turn: LLMTurn): string {
   });
 }
 
+function hasReplayUnsafePayload(action: LLMAction): boolean {
+  if (!isPlainRecord(action.args)) return false;
+  return ['content', 'patch', 'body'].some((key) => typeof action.args[key] === 'string');
+}
+
 function compactActionArgs(tool: string, args: unknown): Record<string, unknown> {
   if (!isPlainRecord(args)) {
     return { invalidArgs: args ?? null };
@@ -840,11 +911,7 @@ function compactActionArgs(tool: string, args: unknown): Record<string, unknown>
   const compact: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
     if (typeof value === 'string') {
-      if (key === 'content' || key === 'patch' || key === 'body') {
-        compact[`${key}Bytes`] = Buffer.byteLength(value);
-      } else {
-        compact[key] = truncate(value, 500);
-      }
+      compact[key] = truncate(value, 500);
     } else if (Array.isArray(value)) {
       compact[key] = value.map((item) => typeof item === 'string' ? truncate(item, 200) : item);
     } else if (value && typeof value === 'object') {
@@ -1361,6 +1428,12 @@ function renderFeedback(
         `or run a concrete verification command if they already exist. Do not spend another round only reading files.`,
       );
     }
+  }
+  if (turn.noProgressWarning) {
+    lines.push(
+      'No-progress warning: actions=[] with done=false does not advance the step. ' +
+      'The next response must run a concrete tool action or return done=true only when completion is already verified.',
+    );
   }
   if (turn.issueResolutionPlanMissing) {
     lines.push(M.executorFeedbackIssueResolutionPlanMissing);

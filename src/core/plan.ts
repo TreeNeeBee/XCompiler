@@ -75,8 +75,8 @@ export type ProjectType = (typeof PROJECT_TYPES)[number];
 export const COMPLEXITY_LEVELS = ['simple', 'moderate', 'complex'] as const;
 export type ComplexityLevel = (typeof COMPLEXITY_LEVELS)[number];
 
-/** Implementation phase status. `current` is materialized as Steps; `planned` remains a PhasePlan goal until loaded. */
-export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'planned', 'deferred'] as const;
+/** Implementation phase status. Only `current` is materialized as executable Steps. */
+export const IMPLEMENTATION_PHASE_STATUSES = ['current', 'planned', 'complete', 'deferred'] as const;
 export type ImplementationPhaseStatus = (typeof IMPLEMENTATION_PHASE_STATUSES)[number];
 
 export const PHASE_ORDER: Record<Phase, number> = {

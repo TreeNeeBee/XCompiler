@@ -7,13 +7,26 @@
  */
 import { t } from '../i18n/index.js';
 
-export function makeStreamReporter(label: string, initialModel = t().stream.resolvingModel): {
+export function makeStreamReporter(
+  label: string,
+  initialModel = t().stream.resolvingModel,
+  opts: { enabled?: boolean } = {},
+): {
   onToken: (chunk: string) => void;
   setModel: (model: string) => void;
+  reset: () => void;
   done: (status?: 'done' | 'failed') => void;
 } {
+  if (opts.enabled === false) {
+    return {
+      onToken: () => undefined,
+      setModel: () => undefined,
+      reset: () => undefined,
+      done: () => undefined,
+    };
+  }
   const isTTY = !!(process.stderr as { isTTY?: boolean }).isTTY;
-  const startedAt = Date.now();
+  let startedAt = Date.now();
   let count = 0;
   let tail = '';
   let model = initialModel;
@@ -58,6 +71,13 @@ export function makeStreamReporter(label: string, initialModel = t().stream.reso
     setModel: (next: string) => {
       if (finished || !next.trim()) return;
       model = next.trim();
+      flush(true);
+    },
+    reset: () => {
+      if (finished) return;
+      startedAt = Date.now();
+      count = 0;
+      tail = '';
       flush(true);
     },
     done: (status = 'done') => {

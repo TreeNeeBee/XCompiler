@@ -29,6 +29,7 @@ function renderLog(level: RuntimeLogLevel, message: string): void {
 
 export function createCliRuntimeIO(): RuntimeIO {
   return {
+    terminalOutput: true,
     emit(event) {
       if (event.type === 'log') renderLog(event.level, event.message);
     },

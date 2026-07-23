@@ -70,6 +70,30 @@ describe('OpenAI-compatible streaming', () => {
     }
   });
 
+  it('supplies an Undici dispatcher so connect_timeout_ms controls connection establishment', async () => {
+    const originalFetch = globalThis.fetch;
+    let dispatcher: unknown;
+    globalThis.fetch = vi.fn(async (_url, init) => {
+      dispatcher = (init as RequestInit & { dispatcher?: unknown } | undefined)?.dispatcher;
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    try {
+      const client = new OpenAIClient({
+        apiKey: 'dummy',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openrouter/free',
+        connectTimeoutMs: 45000,
+      });
+      await expect(client.chat([{ role: 'user', content: 'hi' }])).resolves.toBe('ok');
+      expect(dispatcher).toBeTruthy();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('wraps OpenAI-compatible HTTP failures with provider diagnostics and redacted details', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => new Response(
@@ -208,13 +232,80 @@ describe('OpenAI-compatible streaming', () => {
         baseUrl: `http://127.0.0.1:${port}/v1`,
         model: 'slow-first-token-model',
         requestTimeoutMs: 0,
-        streamIdleTimeoutMs: 150,
+        streamFirstTokenTimeoutMs: 150,
+        streamIdleTimeoutMs: 50,
       });
       await expect(
         client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
       ).rejects.toThrow(/idle before first token/u);
     } finally {
       if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('uses a shorter post-token idle timeout than the first-token timeout', async () => {
+    let open: import('node:http').ServerResponse | null = null;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' } }] })}\n\n`);
+      }, 100);
+      open = res;
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'slow-first-token-then-stalled-model',
+        requestTimeoutMs: 0,
+        streamFirstTokenTimeoutMs: 500,
+        streamIdleTimeoutMs: 80,
+      });
+      const startedAt = Date.now();
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).rejects.toThrow(/stream idle for 80ms/u);
+      const elapsed = Date.now() - startedAt;
+      expect(elapsed).toBeGreaterThanOrEqual(150);
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      if (open) (open as import('node:http').ServerResponse).end();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it('does not stop a productive stream at the pre-token request timeout', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      let index = 0;
+      const timer = setInterval(() => {
+        index++;
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: String(index) } }] })}\n\n`);
+        if (index === 5) {
+          clearInterval(timer);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }
+      }, 50);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const client = new OpenAIClient({
+        apiKey: '',
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        model: 'slow-productive-model',
+        requestTimeoutMs: 100,
+        streamFirstTokenTimeoutMs: 500,
+        streamIdleTimeoutMs: 100,
+      });
+      await expect(
+        client.chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      ).resolves.toBe('12345');
+    } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });

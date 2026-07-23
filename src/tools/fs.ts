@@ -8,6 +8,9 @@ export const readFileTool: Tool<{ path: string; maxBytes?: number }, { content: 
   description: '读取 workspace 内的文本文件。',
   argsSchema: { path: 'string', maxBytes: 'number?' },
   async run(args, ctx) {
+    if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
+      return { ok: false, error: 'invalid read_file args: path must be a non-empty string' };
+    }
     try {
       const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'read_file', { mustExist: true });
       if (!resolved.ok) return { ok: false, error: resolved.error };
@@ -20,7 +23,7 @@ export const readFileTool: Tool<{ path: string; maxBytes?: number }, { content: 
         buf.byteLength > limit
           ? buf.subarray(0, limit).toString('utf8') + `\n... [truncated ${buf.byteLength - limit} bytes]`
           : buf.toString('utf8');
-      return { ok: true, data: { content }, summary: `read ${args.path} (${buf.byteLength}B)` };
+      return { ok: true, data: { content }, summary: `read ${resolved.rel} (${buf.byteLength}B)` };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -85,17 +88,20 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
   async run(args, ctx) {
     const argError = validateTextFileArgs('write_file', args);
     if (argError) return { ok: false, error: argError };
-    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'write_file', { forWrite: true });
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'write_file', {
+      forWrite: true,
+      relativePathHints: ctx.allowedWrites,
+    });
     if (!resolved.ok) return { ok: false, error: resolved.error };
-    if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
+    if (resolved.rel === 'requirements.txt' || resolved.rel.endsWith('/requirements.txt')) {
       return {
         ok: false,
         error:
           'write denied: requirements.txt 由 plan.dependencies 在 xcompiler run 启动时种入并由 add_dependency 工具维护；请改用 add_dependency 工具新增依赖（一行一包，不要再 write_file 直接覆盖）。',
       };
     }
-    if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
-      return { ok: false, error: `write denied: ${args.path} not in step writable allowlist` };
+    if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
+      return { ok: false, error: `write denied: ${resolved.rel} not in step writable allowlist` };
     }
     const size = Buffer.byteLength(args.content);
     const limit = resolveWriteChunkBytes(ctx.writeChunkBytes);
@@ -115,7 +121,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, { bytes: num
       return {
         ok: true,
         data: { bytes: size },
-        summary: `wrote ${args.path} (${size}B)`,
+        summary: `wrote ${resolved.rel} (${size}B)`,
       };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -137,13 +143,16 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
   async run(args, ctx) {
     const argError = validateTextFileArgs('append_file', args);
     if (argError) return { ok: false, error: argError };
-    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'append_file', { forWrite: true });
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'append_file', {
+      forWrite: true,
+      relativePathHints: ctx.allowedWrites,
+    });
     if (!resolved.ok) return { ok: false, error: resolved.error };
-    if (args.path === 'requirements.txt' || args.path.endsWith('/requirements.txt')) {
+    if (resolved.rel === 'requirements.txt' || resolved.rel.endsWith('/requirements.txt')) {
       return { ok: false, error: 'append denied: requirements.txt 由 add_dependency 维护。' };
     }
-    if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
-      return { ok: false, error: `append denied: ${args.path} not in step writable allowlist` };
+    if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
+      return { ok: false, error: `append denied: ${resolved.rel} not in step writable allowlist` };
     }
     const size = Buffer.byteLength(args.content);
     const limit = resolveWriteChunkBytes(ctx.writeChunkBytes);
@@ -166,7 +175,7 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
       return {
         ok: true,
         data: { bytes: size, total },
-        summary: `appended ${size}B to ${args.path} (now ${total}B)`,
+        summary: `appended ${size}B to ${resolved.rel} (now ${total}B)`,
       };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -199,7 +208,7 @@ export const listDirTool: Tool<{ path?: string }, { entries: string[] }> = {
       return {
         ok: true,
         data: { entries: entries.map((e) => (e.isDirectory() ? e.name + '/' : e.name)) },
-        summary: `list ${args.path ?? '.'}: ${entries.length} entries`,
+        summary: `list ${resolved.rel}: ${entries.length} entries`,
       };
     } catch (err) {
       return { ok: false, error: (err as Error).message };

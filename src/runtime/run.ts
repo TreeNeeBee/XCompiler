@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { loadPlanTarget, savePlan } from '../core/storage.js';
-import { topoSort } from '../core/lint.js';
+import { loadPlanTarget, savePhasePlan, savePlan } from '../core/storage.js';
+import { assertPlanValid, topoSort } from '../core/lint.js';
 import { AuditLogger } from '../audit/audit.js';
 import { Workspace } from '../workspace/workspace.js';
 import { GitService } from '../workspace/git.js';
@@ -12,13 +12,21 @@ import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
 import { PhaseEngine } from '../core/engine.js';
 import { acquireLock, LockError } from '../core/lock.js';
-import { normalizePythonRequirements } from '../agents/planner.js';
+import {
+  Planner,
+  buildPlan,
+  normalizePythonRequirements,
+  type DraftPhasePlan,
+} from '../agents/planner.js';
 import { getLanguageProfile } from '../core/language.js';
 import { runProjectAudit, shouldRunProjectAudit } from '../core/project_audit.js';
 import { refreshProjectMemory } from '../core/project_memory.js';
 import { updateProjectFile } from '../core/project_file.js';
+import { DOC_NAMES } from '../core/docs.js';
+import { renderPlanMarkdown } from '../core/render.js';
+import { advancePhasePlan, phasePlanFileName, type PhasePlan } from '../core/phase_plan.js';
 import { DebugCache } from '../core/debug_cache.js';
-import type { Language, PlanIntent } from '../core/plan.js';
+import type { Language, Plan, PlanIntent } from '../core/plan.js';
 import { setLocale, t } from '../i18n/index.js';
 import { PluginHost } from '../plugins/host.js';
 import type { XCompilerPlugin } from '../plugins/types.js';
@@ -57,7 +65,7 @@ export interface ExecuteOptions {
   pluginStrict?: boolean;
   /** Runtime event and interaction adapter. CLI supplies terminal rendering; SDKs may stay silent. */
   io?: RuntimeIO;
-  /** Allow human terminal progress from lower-level engines. Defaults to true for CLI compatibility. */
+  /** Allow human terminal progress from lower-level engines. Defaults to false; CLI adapters opt in. */
   terminalOutput?: boolean;
 }
 
@@ -78,9 +86,12 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     /* ignore */
   }
   const ws = new Workspace(path.resolve(opts.workspace));
-  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // AuditLogger 会立即创建过程日志，因此必须先应用配置语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
+  if (missingEnv.length > 0) {
+    await runtimeLog(io, 'warning', t().system.configEnvMissing(missingEnv.join(', ')));
+  }
   let lock;
   try {
     lock = await acquireLock(ws.root, 'xcompiler_run', { force: !!opts.force });
@@ -92,6 +103,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     }
     throw err;
   }
+  try {
   const audit = new AuditLogger({ root: ws.root, command: 'xcompiler_run' });
   await audit.start({
     workspace: ws.root,
@@ -138,25 +150,24 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       messageId: 'execute.debug_cache_reset',
     });
   }
-  const recoveredRunning: Array<{ stepId: string; status: string; reason: string }> = [];
+  let recoveredRunning: Array<{ stepId: string; status: string; reason: string }> = [];
   if (!opts.resetStatus) {
-    for (const step of plan.steps) {
-      if (step.status !== 'RUNNING') continue;
-      const outputs = step.outputs.filter((out) => !out.endsWith('/'));
-      const complete = outputs.length > 0 && (await Promise.all(outputs.map((out) => ws.exists(out)))).every(Boolean);
-      step.status = complete ? 'DONE' : 'PENDING';
-      step.retries = 0;
-      recoveredRunning.push({
-        stepId: step.id,
-        status: step.status,
-        reason: complete ? 'all declared outputs exist' : 'one or more declared outputs are missing',
-      });
-    }
+    recoveredRunning = resetInterruptedRunningSteps(plan);
     if (recoveredRunning.length > 0) {
       await savePlan(planAbs, plan);
+      const debugCache = new DebugCache(ws.abs('.xcompiler/debug_cache.json'));
+      const recoveredDebugSteps: string[] = [];
+      for (const recovered of recoveredRunning) {
+        const marked = await debugCache.markInterrupted(
+          recovered.stepId,
+          `interrupted while ${recovered.reason}; resume the latest recorded Debugger attempt`,
+        );
+        if (marked) recoveredDebugSteps.push(recovered.stepId);
+      }
       await audit.event('plan.persist', `recovered ${recoveredRunning.length} stale RUNNING step(s)`, {
         messageId: 'execute.plan_running_recovered',
         steps: recoveredRunning,
+        recoveredDebugSteps,
       });
     }
   }
@@ -238,7 +249,6 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     await runtimeLog(io, 'error', t().system.unhandledError((err as Error).message));
     await audit.end({ status: 'error', message: (err as Error).message, stage: 'llm-preflight' });
     await scoreStore.flush();
-    await lock.release();
     await runtimeResult(io, 'run', 'error', { message: (err as Error).message, exitCode: 7 });
     return { status: 'error', message: (err as Error).message, exitCode: 7 };
   }
@@ -263,7 +273,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     maxDebugRetriesCap: cfg.agent.max_debug_retries_cap,
     maxEditLinesPerStep: cfg.agent.max_edit_lines_per_step,
     maxWriteChunkBytes: cfg.agent.max_write_chunk_bytes,
-    terminalOutput: opts.terminalOutput ?? true,
+    terminalOutput: opts.terminalOutput ?? io.terminalOutput ?? false,
     debugWikiPath: opts.debugWikiPath ? path.resolve(opts.debugWikiPath) : undefined,
     debugWikiStrict: !!opts.debugWikiPath,
     requestPermission: io.requestPermission
@@ -275,17 +285,9 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         }
       : undefined,
     onToolEvent: async (event: ToolExecutionEvent) => {
-      if (event.patch) {
-        await io.emit({
-          type: 'patch_proposed',
-          stepId: event.stepId,
-          tool: event.tool,
-          patch: event.patch,
-        });
-        return;
-      }
       await io.emit({
         type: 'tool_call',
+        callId: event.callId,
         status: event.status,
         stepId: event.stepId,
         tool: event.tool,
@@ -294,10 +296,20 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         summary: event.summary,
         error: event.error,
       });
+      if (event.patch && event.status === 'started') {
+        await io.emit({
+          type: 'patch_proposed',
+          callId: event.callId,
+          stepId: event.stepId,
+          tool: event.tool,
+          patch: event.patch,
+        });
+      }
       if (event.status === 'completed' && event.ok && event.changedFiles) {
         for (const changed of event.changedFiles) {
           await io.emit({
             type: 'file_changed',
+            callId: event.callId,
             stepId: event.stepId,
             tool: event.tool,
             path: changed,
@@ -446,6 +458,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       }
       auditWarnings = auditResult.warnings;
     }
+    const phaseAdvance = target.phasePlan && target.phasePlanPath && !opts.onlyPhase
+      ? await completeAndPrepareNextPhase({
+          phasePlan: target.phasePlan,
+          phasePlanPath: target.phasePlanPath,
+          ws,
+          router,
+          audit,
+          io,
+          currentPlanPath: planAbs,
+        })
+      : undefined;
+    const projectPlan = phaseAdvance?.nextPlan ?? plan;
+    if (phaseAdvance?.nextPlan) {
+      await runtimeLog(
+        io,
+        'success',
+        `iteration ${phaseAdvance.completedPhaseId} passed; prepared ${phaseAdvance.nextPlan.phaseId}`,
+      );
+    }
     await runtimeLog(io, 'success', t().execute.runAllDone(r.executedSteps, r.totalSteps));
     await audit.end({
       status: auditWarnings > 0 ? 'warn' : 'ok',
@@ -459,10 +490,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       configPath: cfgPath,
       projectFilePath,
       command: projectCommand,
-      intent: plan.intent,
-      plan,
+      intent: projectPlan.intent,
+      plan: projectPlan,
     });
-    await runtimeResult(io, 'run', 'ok', { executedSteps: r.executedSteps, totalSteps: r.totalSteps });
+    await runtimeResult(io, 'run', 'ok', {
+      executedSteps: r.executedSteps,
+      totalSteps: r.totalSteps,
+      completedPhaseId: phaseAdvance?.completedPhaseId,
+      nextPhaseId: phaseAdvance?.nextPlan?.phaseId,
+    });
     return { status: 'ok', engine: r };
   } catch (err) {
     const msg = (err as Error).message;
@@ -486,7 +522,134 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     return { status: 'error', message: msg, exitCode: 5 };
   } finally {
     await scoreStore.flush();
+  }
+  } finally {
     await lock.release();
+  }
+}
+
+/**
+ * A persisted RUNNING state proves that the phase did not finish its acceptance
+ * gates. Existing output files are useful resume context, but are not completion
+ * evidence: they may be partial, inconsistent, or fail compilation.
+ */
+export function resetInterruptedRunningSteps(
+  plan: Pick<Plan, 'steps'>,
+): Array<{ stepId: string; status: 'PENDING'; reason: string }> {
+  const recovered: Array<{ stepId: string; status: 'PENDING'; reason: string }> = [];
+  for (const step of plan.steps) {
+    if (step.status !== 'RUNNING') continue;
+    step.status = 'PENDING';
+    step.retries = 0;
+    recovered.push({
+      stepId: step.id,
+      status: 'PENDING',
+      reason: 'interrupted before acceptance gates completed; revalidation required',
+    });
+  }
+  return recovered;
+}
+
+async function completeAndPrepareNextPhase(args: {
+  phasePlan: PhasePlan;
+  phasePlanPath: string;
+  ws: Workspace;
+  router: LLMRouter;
+  audit: AuditLogger;
+  io: RuntimeIO;
+  currentPlanPath: string;
+}): Promise<{ completedPhaseId: string; nextPlan?: Plan }> {
+  const transition = advancePhasePlan(args.phasePlan);
+  const next = transition.nextPhase;
+  if (!next) {
+    await savePhasePlan(args.phasePlanPath, transition.phasePlan);
+    await args.audit.event('plan.persist', `completed final implementation phase ${transition.completedPhaseId}`, {
+      messageId: 'execute.phase_completed',
+      phaseId: transition.completedPhaseId,
+      phasePlanPath: args.phasePlanPath,
+    });
+    return { completedPhaseId: transition.completedPhaseId };
+  }
+
+  next.planPath ??= phasePlanFileName(next.id);
+  const nextPlanPath = path.resolve(path.dirname(args.phasePlanPath), next.planPath);
+  assertWorkspacePath(args.ws.root, nextPlanPath);
+  const topic = await args.ws.exists(DOC_NAMES.topic)
+    ? await args.ws.readFile(DOC_NAMES.topic)
+    : transition.phasePlan.requirementDigest;
+  let baselineSummary = transition.phasePlan.baselineSummary;
+  try {
+    const memory = await refreshProjectMemory(args.ws, {
+      planPath: args.currentPlanPath,
+      language: transition.phasePlan.language,
+      intent: transition.phasePlan.intent,
+    });
+    baselineSummary = memory.summary;
+  } catch (err) {
+    await args.audit.event('note', `could not refresh phase baseline: ${(err as Error).message}`, {
+      messageId: 'execute.phase_baseline_refresh_failed',
+      phaseId: next.id,
+    });
+  }
+
+  const draftPhasePlan: DraftPhasePlan = {
+    requirementDigest: transition.phasePlan.requirementDigest,
+    globalPrompt: transition.phasePlan.globalPrompt,
+    projectType: transition.phasePlan.projectType,
+    complexityAssessment: transition.phasePlan.complexityAssessment,
+    implementationPhases: transition.phasePlan.phases.map(({ planPath: _planPath, ...phase }) => phase),
+  };
+  const planner = new Planner(
+    args.router.for('Planner'),
+    args.audit,
+    transition.phasePlan.language,
+    args.io.terminalOutput === true,
+  );
+  const draft = await planner.decomposePhase(
+    {
+      rawRequirement: topic,
+      clarifications: [],
+      userAddenda: transition.phasePlan.userAddenda,
+      baselineContext: baselineSummary,
+      intent: transition.phasePlan.intent,
+    },
+    draftPhasePlan,
+    next.id,
+  );
+  const nextPlan = buildPlan(draft, {
+    language: transition.phasePlan.language,
+    intent: transition.phasePlan.intent,
+    userAddenda: transition.phasePlan.userAddenda,
+    baselineSummary,
+  });
+  if (nextPlan.phaseId !== next.id) {
+    throw new Error(`materialized plan phase ${nextPlan.phaseId} does not match activated phase ${next.id}`);
+  }
+  assertPlanValid(nextPlan);
+
+  // Persist the materialized plan first. A crash cannot point phasePlan.json at a missing file.
+  await savePlan(nextPlanPath, nextPlan);
+  await savePhasePlan(args.phasePlanPath, transition.phasePlan);
+  await args.ws.writeFile(DOC_NAMES.plan, renderPlanMarkdown(nextPlan));
+  await refreshProjectMemory(args.ws, {
+    planPath: nextPlanPath,
+    language: nextPlan.language,
+    intent: nextPlan.intent,
+  });
+  await args.audit.event('plan.persist', `prepared implementation phase ${next.id}`, {
+    messageId: 'execute.phase_prepared',
+    completedPhaseId: transition.completedPhaseId,
+    nextPhaseId: next.id,
+    nextPlanPath,
+    phasePlanPath: args.phasePlanPath,
+  });
+  return { completedPhaseId: transition.completedPhaseId, nextPlan };
+}
+
+function assertWorkspacePath(workspace: string, target: string): void {
+  const relative = path.relative(path.resolve(workspace), path.resolve(target));
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`phase plan path escapes workspace: ${target}`);
   }
 }
 

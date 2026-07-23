@@ -33,7 +33,7 @@ export interface SubprocessSandboxOptions {
   sandboxDir?: string;
   /** Python 解释器。默认从 PATH 找 python3 / python。 */
   pythonBin?: string;
-  /** 是否继承宿主进程环境。默认 true；验证不可信候选时应设为 false。 */
+  /** 是否继承宿主进程环境。默认 false；显式启用会把宿主凭据暴露给项目代码。 */
   inheritEnv?: boolean;
 }
 
@@ -107,7 +107,7 @@ export class SubprocessSandbox implements Sandbox {
    */
   async build(manifestFile?: string): Promise<{ rebuilt: boolean; reason: string }> {
     await fs.mkdir(this.sandboxAbs, { recursive: true });
-    if (this.opts.inheritEnv === false) {
+    if (this.opts.inheritEnv !== true) {
       await Promise.all([
         fs.mkdir(path.join(this.sandboxAbs, 'home'), { recursive: true }),
         fs.mkdir(path.join(this.sandboxAbs, 'tmp'), { recursive: true }),
@@ -272,7 +272,7 @@ export class SubprocessSandbox implements Sandbox {
   }
 
   private baseEnvironment(): NodeJS.ProcessEnv {
-    if (this.opts.inheritEnv !== false) return { ...process.env };
+    if (this.opts.inheritEnv === true) return { ...process.env };
     return {
       PATH: process.env.PATH ?? '',
       HOME: path.join(this.sandboxAbs, 'home'),

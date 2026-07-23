@@ -136,10 +136,10 @@ class FakeRuntime implements AcpRuntimeFacade {
       await opts.io?.emit({ type: 'result', command: 'run', status: 'failed', data: { exitCode: 4 } });
       return { status: 'failed', message: 'permission denied', exitCode: 4 };
     }
-    await opts.io?.emit({ type: 'tool_call', status: 'started', stepId: 'S005', tool: 'run_tests', target: 'npm test' });
-    await opts.io?.emit({ type: 'file_changed', stepId: 'S004', tool: 'write_file', path: 'src/main.ts' });
-    await opts.io?.emit({ type: 'patch_proposed', stepId: 'S004', tool: 'apply_patch', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n' });
-    await opts.io?.emit({ type: 'tool_call', status: 'completed', stepId: 'S005', tool: 'run_tests', ok: true, summary: 'npm test exit=0' });
+    await opts.io?.emit({ type: 'tool_call', callId: 'test-call-1', status: 'started', stepId: 'S005', tool: 'run_tests', target: 'npm test' });
+    await opts.io?.emit({ type: 'file_changed', callId: 'write-call-1', stepId: 'S004', tool: 'write_file', path: 'src/main.ts' });
+    await opts.io?.emit({ type: 'patch_proposed', callId: 'patch-call-1', stepId: 'S004', tool: 'apply_patch', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n' });
+    await opts.io?.emit({ type: 'tool_call', callId: 'test-call-1', status: 'completed', stepId: 'S005', tool: 'run_tests', ok: true, summary: 'npm test exit=0' });
     await opts.io?.emit({ type: 'result', command: 'run', status: 'ok', data: { executedSteps: 1 } });
     return { status: 'ok' };
   }
@@ -284,6 +284,69 @@ describe('ACP Code Agent adapter', () => {
     });
     const done = await transport.waitForEvent('task_completed');
     expect(done.status).toBe('failed');
+  });
+
+  it('maps Build clarification choices to ACP permission options and returns the selected label', async () => {
+    let answer = '';
+    const runtime: AcpRuntimeFacade = {
+      build: async (opts) => {
+        answer = await opts.io!.interaction!.input({
+          message: 'Q1 [functionality] Choose scope\n  ↳ Define the first delivery\n  A. Core only\n  B. Core and reports\n  Choose A-B or provide a custom answer',
+        });
+        await opts.io!.emit({ type: 'result', command: 'build', status: 'ok' });
+        return { workspace: opts.workspace, planPath: path.join(opts.workspace, 'phasePlan.json') };
+      },
+      run: async () => ({ status: 'ok' }),
+    };
+    const transport = new MemoryTransport();
+    const server = new AcpServer({
+      runtime,
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+    await server.start(transport);
+    await transport.inject(req(1, AcpMethod.SessionNew, { cwd: root, mcpServers: [] }));
+    const sessionId = (await transport.waitForResponse(1)).sessionId as string;
+    await transport.inject(req(2, AcpMethod.SessionPrompt, {
+      sessionId,
+      prompt: [{ type: 'text', text: 'build with clarification' }],
+      autoRunAfterBuild: false,
+    }));
+    const clarification = await transport.waitForClientRequest(AcpMethod.SessionRequestPermission);
+    const options = ((clarification as { params?: Record<string, unknown> }).params?.options ?? []) as Array<Record<string, unknown>>;
+    expect(options.map((option) => option.optionId)).toEqual(['A', 'B']);
+    await transport.inject(res(clarification.id!, 'B'));
+    await transport.waitForResponse(2);
+    expect(answer).toBe('B');
+  });
+
+  it('cancels a task waiting for Build interaction and settles the prompt', async () => {
+    const runtime: AcpRuntimeFacade = {
+      build: async (opts) => {
+        await opts.io!.interaction!.confirm({ message: 'Wait for cancellation', default: false });
+        return { workspace: opts.workspace };
+      },
+      run: async () => ({ status: 'ok' }),
+    };
+    const transport = new MemoryTransport();
+    const server = new AcpServer({
+      runtime,
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    });
+    await server.start(transport);
+    await transport.inject(req(1, AcpMethod.SessionNew, { cwd: root, mcpServers: [] }));
+    const sessionId = (await transport.waitForResponse(1)).sessionId as string;
+    await transport.inject(req(2, AcpMethod.SessionPrompt, {
+      sessionId,
+      prompt: [{ type: 'text', text: 'cancel this task' }],
+    }));
+    await transport.waitForClientRequest(AcpMethod.SessionRequestPermission);
+    await transport.inject(req(3, AcpMethod.SessionCancel, { sessionId }));
+
+    const cancellation = await transport.waitForResponse(3);
+    expect(cancellation.cancelled).toBe(true);
+    expect((await transport.waitForResponse(2)).stopReason).toBe('cancelled');
+    const done = await transport.waitForEvent('task_completed');
+    expect(done.status).toBe('cancelled');
   });
 
   it('maps protocol errors without crashing the server', async () => {

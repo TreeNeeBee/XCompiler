@@ -20,7 +20,7 @@ function buildRunSummary(
   opts: { tailLines?: number; maxBytes?: number } = {},
 ): string {
   const N = opts.tailLines ?? 60;
-  const MAX = opts.maxBytes ?? 4000;
+  const MAX = opts.maxBytes ?? 6000;
   const errTail = tailLines(r.stderr ?? '', N).trim();
   const outTail = tailLines(r.stdout ?? '', N).trim();
   const parts = [base];
@@ -28,7 +28,12 @@ function buildRunSummary(
   if (outTail) parts.push('--- stdout (last lines) ---', outTail);
   let s = parts.join('\n');
   if (s.length > MAX) {
-    s = s.slice(0, MAX) + `\n... [truncated, total ${s.length}B]`;
+    const originalLength = s.length;
+    const marker = `\n... [truncated, total ${originalLength}B] ...\n`;
+    const available = Math.max(0, MAX - marker.length);
+    const headLength = Math.ceil(available * 0.55);
+    const tailLength = available - headLength;
+    s = `${s.slice(0, headLength)}${marker}${s.slice(-tailLength)}`;
   }
   return s;
 }

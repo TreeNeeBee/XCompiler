@@ -323,7 +323,9 @@ function createClient(
       model: p.model,
       jsonResponseFormat: p.json_response_format,
       requestTimeoutMs: p.request_timeout_ms,
+      connectTimeoutMs: p.connect_timeout_ms,
       streamIdleTimeoutMs: p.stream_idle_timeout_ms,
+      streamFirstTokenTimeoutMs: p.stream_first_token_timeout_ms,
       maxOutputChars: p.max_output_chars,
     });
   }
@@ -345,7 +347,7 @@ export function isOpenAICompatibleProvider(provider: Pick<ProviderConfig, 'type'
  *  - 空 / 仅空白 → fallback；
  *  - 去首尾空白和尾部 '/'；
  *  - 缺少 scheme 时自动补 `http://`；
- *  - 不能解析为合法 URL → fallback（并 console.warn）。
+ *  - 不能解析为合法 URL → fail configuration immediately.
  */
 export function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
   const trimmed = (raw ?? '').trim().replace(/\/+$/, '');
@@ -356,7 +358,6 @@ export function normalizeBaseUrl(raw: string | undefined, fallback: string): str
     new URL(withScheme);
     return withScheme;
   } catch {
-    console.warn(t().llm.invalidBaseUrl(JSON.stringify(raw), fallback));
-    return fallback;
+    throw new Error(t().llm.invalidBaseUrl(JSON.stringify(raw), fallback));
   }
 }

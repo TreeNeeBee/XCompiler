@@ -28,7 +28,7 @@ import {
   type ToolPermissionRequester,
 } from '../tools/index.js';
 import { StepExecutor, verifyOutputs } from '../agents/executor.js';
-import type { AdvisoryFailureRule, ExecutorRunMetrics } from '../agents/executor.js';
+import type { AdvisoryFailureRule, ExecutorRunMetrics, ExecutorRunResult } from '../agents/executor.js';
 import {
   calibrateDebugSuggestions,
   ensureEssentialToolRefs,
@@ -107,7 +107,7 @@ export interface EngineOptions {
   requestPermission?: ToolPermissionRequester;
   /** Optional protocol/UI event hook for tool calls and changed files. */
   onToolEvent?: ToolExecutionReporter;
-  /** Whether PhaseEngine may write human terminal progress directly. Defaults to true for CLI compatibility. */
+  /** Whether PhaseEngine may write human terminal progress directly. Defaults to false; CLI opts in. */
   terminalOutput?: boolean;
   /** Optional cross-run debug wiki root directory. Defaults to XCompiler's own .xcompiler/debug-wiki. */
   debugWikiPath?: string;
@@ -241,11 +241,11 @@ export class PhaseEngine {
     this.skills = opts.skills ?? buildDefaultSkills();
     this.plugins = opts.plugins ?? new PluginHost();
     this.debugCache = new DebugCache(opts.ws.abs('.xcompiler/debug_cache.json'));
-    this.debugWiki = new DebugWiki(opts.debugWikiPath ?? defaultDebugWikiPath());
+    this.debugWiki = new DebugWiki(opts.debugWikiPath ?? defaultDebugWikiPath(opts.ws.root));
   }
 
   private get terminalOutput(): boolean {
-    return this.opts.terminalOutput ?? true;
+    return this.opts.terminalOutput === true;
   }
 
   private log(...args: unknown[]): void {
@@ -1065,7 +1065,12 @@ export class PhaseEngine {
             ...failedTest.inputs,
             ...failedTest.outputs,
           ]),
-          extraAllowedWrites: dedup([...routedTest.outputs]),
+          extraAllowedWrites: collectRollbackRepairOutputs(
+            order,
+            sourceStep,
+            routedTest,
+            this.profile.manifestFile,
+          ),
           contextMode: 'test-rollback',
           testScopeArgs: this.testGateArgsForStep(routedTest),
           issueId: issue?.id,
@@ -1814,7 +1819,9 @@ export class PhaseEngine {
       phase: issue?.phase ?? step.phase,
       targetPhase: issue?.targetPhase ?? step.phase,
     });
-    const rootBrief = issue?.debugBrief;
+    const rootBrief = issue?.debugBrief && !isSupersededNetworkBrief(issue.debugBrief, currentBrief)
+      ? issue.debugBrief
+      : undefined;
     const briefBlocks = rootBrief && rootBrief.summary !== currentBrief.summary
       ? [
           '## root issue brief',
@@ -1832,9 +1839,10 @@ export class PhaseEngine {
       maxChars: 2600,
       maxLines: 50,
     });
-    const suggestions = renderDebugSuggestions(
-      calibrateDebugSuggestions(failureLog, debug.reason),
-    );
+    const suggestions = [
+      debug.contextMode === 'test-rollback' ? testRollbackTriageGuidance(currentBrief) : '',
+      renderDebugSuggestions(calibrateDebugSuggestions(failureLog, debug.reason)),
+    ].filter(Boolean).join('\n\n');
     const wikiMatches = await this.withDebugWiki(
       'search',
       () => this.debugWiki.search(currentBrief, { language: this.profile.id, limit: 3 }),
@@ -2014,6 +2022,7 @@ export class PhaseEngine {
       // 不能复用 cached executor：不同轮数需要独立实例。
       executor = new StepExecutor({
         llm,
+        streamOutput: this.terminalOutput,
         maxRounds: rounds,
         maxFailedTestRuns,
         advisoryFailureTools,
@@ -2090,10 +2099,13 @@ export class PhaseEngine {
       const verify = await verifyOutputs({ step, tools: guardedTools, ctx });
       const testArtifactRegression = this.isVModelTestPhase(step.phase) &&
         isTestArtifactRegressionAfterPassingVerification(step, r.toolCalls);
+      const pendingTestArtifactRepair = this.isVModelTestPhase(step.phase) &&
+        hasPendingTestArtifactRepair(step, r.toolCalls);
       if (
         this.isVModelTestPhase(step.phase) &&
         shouldRollbackTestPhaseFromToolFailures(step, r.toolCalls) &&
-        !testArtifactRegression
+        !testArtifactRegression &&
+        !pendingTestArtifactRepair
       ) {
         const reason = `${step.phase} tool verification failed; rolling back to paired V-model source phase.`;
         const failureLog = [
@@ -2101,7 +2113,7 @@ export class PhaseEngine {
           t().engine.roundsLine(r.rounds),
           t().engine.toolCallsHeader,
           ...r.toolCalls.map((c) =>
-            t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+            t().engine.toolCallLine(c.tool, c.ok, compactToolCallFailureDetail(c)),
           ),
         ].join('\n');
         spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
@@ -2155,6 +2167,81 @@ export class PhaseEngine {
               metrics: r.metrics,
               issueKind: 'architecture-gate',
               evidence: { missingTokens },
+            };
+          }
+        }
+
+        // CODE 阶段先通过语言级静态校验再进入右侧测试链，避免语法/类型错误
+        // 延迟到集成测试后才暴露。失败产物会保留，供同阶段 Debugger 修复。
+        if (
+          step.phase === 'CODE' &&
+          shouldRunCodeValidation(plan, step) &&
+          await hasCodeValidationPrerequisites(this.opts.ws, this.profile.id)
+        ) {
+          const command = codeValidationCommand(this.profile.id);
+          const permission = await this.requestEnginePermission({
+            operationType: 'build_command',
+            target: command.display,
+            reason: 'Validate generated source syntax and type contracts before completing the CODE phase.',
+            risk: 'This executes the language compiler in the configured project sandbox.',
+            scope: 'current workspace sandbox',
+            skippable: false,
+            denyBehavior: 'Fail the CODE phase because invalid source cannot safely enter the V-model test chain.',
+            stepId: step.id,
+          });
+          if (!permission.approved) {
+            const reason = `permission denied for CODE validation ${step.id}`;
+            const failureLog = [t().engine.reasonLine(reason), permission.reason ?? ''].filter(Boolean).join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.git.snapshot(step.id, step.retries, 'code validation denied preserved');
+            return {
+              ok: false,
+              failureLog,
+              reason,
+              metrics: r.metrics,
+              issueKind: 'infrastructure',
+              evidence: { stage: 'code-validation', permissionDenied: true, command: command.display },
+            };
+          }
+          const validation = await this.opts.sandbox.exec(command.cmd, command.args, {});
+          if (validation.exitCode !== 0 || validation.timedOut) {
+            const tail = (value: string) => value.split('\n').slice(-40).join('\n');
+            const reason =
+              `CODE validation failed: ${command.display} exit=${validation.exitCode}` +
+              (validation.timedOut ? ' timedOut=true' : '');
+            const failureLog = [
+              t().engine.reasonLine(reason),
+              t().engine.commandLine(command.display),
+              t().engine.stdoutTailHeader,
+              tail(validation.stdout),
+              t().engine.stderrTailHeader,
+              tail(validation.stderr),
+            ].join('\n');
+            spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
+            await this.opts.audit.event('phase.end', t().engine.phaseFailed(step.id, !!debug, reason), {
+              messageId: 'engine.code_validation_failed',
+              rounds: r.rounds,
+              reason,
+              retry: step.retries,
+              command: command.display,
+              exitCode: validation.exitCode,
+              timedOut: validation.timedOut,
+            });
+            await this.opts.git.snapshot(step.id, step.retries, 'code validation failed preserved');
+            return {
+              ok: false,
+              failureLog,
+              reason,
+              metrics: r.metrics,
+              issueKind: 'phase',
+              evidence: {
+                stage: 'code-validation',
+                command: command.display,
+                exitCode: validation.exitCode,
+                timedOut: validation.timedOut,
+                stdout: validation.stdout,
+                stderr: validation.stderr,
+              },
             };
           }
         }
@@ -2314,7 +2401,7 @@ export class PhaseEngine {
               t().engine.roundsLine(r.rounds),
               t().engine.toolCallsHeader,
               ...r.toolCalls.map((c) =>
-                t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+                t().engine.toolCallLine(c.tool, c.ok, compactToolCallFailureDetail(c)),
               ),
             ].join('\n');
             spin?.fail(t().engine.phaseFailed(step.id, true, reason));
@@ -2376,7 +2463,7 @@ export class PhaseEngine {
           metricsLine,
           t().engine.toolCallsHeader,
           ...r.toolCalls.map((c) =>
-            t().engine.toolCallLine(c.tool, c.ok, compactToolCallDetail(c.summary ?? c.error ?? '')),
+            t().engine.toolCallLine(c.tool, c.ok, compactToolCallFailureDetail(c)),
           ),
         ].join('\n');
       spin?.fail(t().engine.phaseFailed(step.id, !!debug, reason));
@@ -2583,7 +2670,10 @@ export class PhaseEngine {
     for (const id of seen) {
       const s = byId.get(id);
       if (!s) continue;
-      if (s.phase !== 'CODE' && s.phase !== 'DEBUG' && !this.isVModelTestPhase(s.phase)) continue;
+      if (s.phase !== 'CODE' && s.phase !== 'DEBUG' && !this.isVModelTestPhase(s.phase)) {
+        if (hasTypeScriptConfigOutput(s.outputs, this.profile.id)) out.add('tsconfig.json');
+        continue;
+      }
       for (const o of s.outputs) {
         if (o === this.profile.manifestFile) continue;
         out.add(o);
@@ -2624,6 +2714,57 @@ export class PhaseEngine {
       step.outputs.join('\n'),
     ].join('\n').length;
   }
+}
+
+export function collectRollbackRepairOutputs(
+  order: Step[],
+  sourceStep: Step,
+  routedTest: Step,
+  manifestFile: string,
+): string[] {
+  const iterationId = sourceStep.iterationId ?? 'P1';
+  const sourceOrder = PHASE_ORDER[sourceStep.phase];
+  const testOrder = PHASE_ORDER[routedTest.phase];
+  const outputs = order
+    .filter((step) => (step.iterationId ?? 'P1') === iterationId)
+    .filter((step) => {
+      const phaseOrder = PHASE_ORDER[step.phase];
+      return phaseOrder >= sourceOrder && phaseOrder <= testOrder;
+    })
+    .flatMap((step) => step.outputs)
+    .filter((output) => output !== manifestFile);
+  return dedup(outputs);
+}
+
+export function codeValidationCommand(
+  language: LanguageProfile['id'],
+): { cmd: string; args: string[]; display: string } {
+  return language === 'typescript'
+    ? { cmd: 'npx', args: ['tsc', '--noEmit'], display: 'npx tsc --noEmit' }
+    : { cmd: 'python3', args: ['-m', 'compileall', '-q', 'src'], display: 'python3 -m compileall -q src' };
+}
+
+export function shouldRunCodeValidation(plan: Plan, current: Step): boolean {
+  if (current.phase !== 'CODE') return false;
+  const iterationId = current.iterationId ?? 'P1';
+  return !plan.steps.some((step) =>
+    step.id !== current.id &&
+    step.phase === 'CODE' &&
+    (step.iterationId ?? 'P1') === iterationId &&
+    step.status !== 'DONE' &&
+    step.status !== 'SKIPPED',
+  );
+}
+
+async function hasCodeValidationPrerequisites(
+  ws: Workspace,
+  language: LanguageProfile['id'],
+): Promise<boolean> {
+  return language === 'python' || ws.exists('tsconfig.json');
+}
+
+function hasTypeScriptConfigOutput(outputs: string[], language: LanguageProfile['id']): boolean {
+  return language === 'typescript' && outputs.includes('tsconfig.json');
 }
 
 function dedup<T>(arr: T[]): T[] {
@@ -2682,13 +2823,20 @@ function shouldRollbackTestPhaseFromToolFailures(
   toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
 ): boolean {
   let unresolvedTestFailure = false;
+  let unresolvedDependencyToolFailure = false;
   for (const call of toolCalls) {
     const detail = `${call.tool} ${call.error ?? call.summary ?? ''}`.toLowerCase();
+
+    if (!call.ok && detail.includes('tool not allowed for this step: add_dependency')) {
+      unresolvedDependencyToolFailure = true;
+      continue;
+    }
 
     if (!call.ok && isStructuralToolFailure(detail)) return true;
 
     if (call.ok && call.tool === 'run_tests') {
       unresolvedTestFailure = false;
+      unresolvedDependencyToolFailure = false;
       continue;
     }
 
@@ -2697,7 +2845,7 @@ function shouldRollbackTestPhaseFromToolFailures(
       unresolvedTestFailure = true;
     }
   }
-  return unresolvedTestFailure;
+  return unresolvedTestFailure || unresolvedDependencyToolFailure;
 }
 
 function isTestArtifactDiscoveryFailure(step: Step, detail: string): boolean {
@@ -2754,6 +2902,31 @@ function isTestArtifactRegressionAfterPassingVerification(
   return false;
 }
 
+export function hasPendingTestArtifactRepair(
+  step: Step,
+  toolCalls: Array<{ tool: string; ok: boolean; summary?: string; error?: string }>,
+): boolean {
+  const testOutputs = step.outputs
+    .filter((out) => typeof out === 'string' && !out.endsWith('/'))
+    .map((out) => normalizeGitPath(out).toLowerCase())
+    .filter(isTestFilePath);
+  if (testOutputs.length === 0) return false;
+
+  let failedVerification = false;
+  let pendingRepair = false;
+  for (const call of toolCalls) {
+    if (call.tool === 'run_tests') {
+      failedVerification = !call.ok;
+      pendingRepair = false;
+      continue;
+    }
+    if (!failedVerification || !call.ok || !REPAIR_MUTATION_TOOLS.has(call.tool)) continue;
+    const detail = `${call.summary ?? ''}\n${call.error ?? ''}`.toLowerCase();
+    if (testOutputs.some((output) => detail.includes(output))) pendingRepair = true;
+  }
+  return failedVerification && pendingRepair;
+}
+
 function isCachedTestArtifactRegressionAfterPassingVerification(step: Step, failureLog: string): boolean {
   const testOutputs = step.outputs
     .filter((out) => typeof out === 'string' && !out.endsWith('/'))
@@ -2790,8 +2963,7 @@ function isTestVerificationFailure(tool: string, detail: string): boolean {
 function isStructuralToolFailure(detail: string): boolean {
   return (
       detail.includes('write denied: src/') ||
-      detail.includes('append denied: src/') ||
-      detail.includes('tool not allowed for this step: add_dependency')
+      detail.includes('append denied: src/')
   );
 }
 
@@ -2801,6 +2973,22 @@ function compactToolCallDetail(detail: string): string {
   const head = normalized.slice(0, 800);
   const tail = normalized.slice(-1000);
   return `${head}\n... [truncated ${normalized.length - head.length - tail.length} chars]\n${tail}`;
+}
+
+function compactToolCallFailureDetail(call: ExecutorRunResult['toolCalls'][number]): string {
+  const detail = [call.summary, call.error]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join('\n');
+  if (!call.ok && call.tool === 'run_tests') {
+    return compactFailureEvidence({
+      reason: 'run_tests failed',
+      failureLog: detail,
+      maxChars: 3800,
+      maxLines: 60,
+    });
+  }
+  return compactToolCallDetail(detail);
 }
 
 function normalizeGitPath(file: string): string {
@@ -2849,6 +3037,7 @@ function isNonDebuggableInfrastructureFailure(reason?: string, failureLog?: stri
   const text = `${reason ?? ''}\n${failureLog ?? ''}`.toLowerCase();
   if (/low-quality debugger response/u.test(text)) return false;
   return (
+    /permission denied for code validation/u.test(text) ||
     /typeerror:\s*fetch failed/u.test(text) ||
 	    /(?:openai|ollama) http (?:401|403|408|409|429|5\d\d)\b/u.test(text) ||
     /rate limit exceeded|free-models-per-day|retry_after_seconds|retry-after/u.test(text) ||
@@ -2862,6 +3051,22 @@ function isNonDebuggableInfrastructureFailure(reason?: string, failureLog?: stri
     /input[^\n]{0,80}tokens[^\n]{0,120}(?:exceed|limit|ceiling)/u.test(text) ||
     /llm provider|provider_call_failed|all llm providers failed/u.test(text)
 	  );
+}
+
+function isSupersededNetworkBrief(root: DebugBrief, current: DebugBrief): boolean {
+  return root.category === 'network_api_failure' && current.category === 'test_failure';
+}
+
+function testRollbackTriageGuidance(brief: DebugBrief): string {
+  const failedTests = brief.failedTests.length > 0
+    ? ` Failed tests: ${brief.failedTests.join(', ')}.`
+    : '';
+  return [
+    '## V-model test rollback triage',
+    'Classify the failure before editing: a bad assertion, mock shape, fixture, test-server lifecycle, or loopback port is a test-artifact defect; a valid assertion exposing wrong product behavior is an implementation/contract defect.',
+    'Test outputs in allowedWrites may be repaired even when the paired rollback step is a requirement/design phase. Do not add product APIs solely to satisfy a test that calls a nonexistent helper.',
+    `Patch the actual defect, then run the inherited scoped test command before done=true.${failedTests}`,
+  ].join('\n');
 }
 
 function isReadOnlyProbeLoopFailure(reason?: string): boolean {

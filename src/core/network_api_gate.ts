@@ -15,11 +15,24 @@ const HTTP_STATUS_RE = /\b(?:HTTP\s*)?(?:status(?:\s*code)?\s*[=:]?\s*)?(?:401|4
 
 export function detectNetworkApiFailure(text: string): NetworkApiFailure | null {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  let inCapturedTestOutput = false;
   for (const rawLine of lines) {
     const line = rawLine.trim();
-    if (!line) continue;
+    if (!line) {
+      inCapturedTestOutput = false;
+      continue;
+    }
+    // Vitest labels stdout/stderr emitted by a test with this prefix. Such output
+    // often contains the error a test is deliberately exercising, not a runner failure.
+    if (/^(?:stdout|stderr)\s*\|\s+/iu.test(line)) {
+      inCapturedTestOutput = true;
+      continue;
+    }
+    if (inCapturedTestOutput) continue;
     if (isTestRunnerStatusLine(line)) continue;
     if (isTestAssertionDiagnosticLine(line)) continue;
+    if (isAmbiguousApplicationFetchFailure(line)) continue;
+    if (isLoopbackNetworkFailureLine(line)) continue;
     if (FAILURE_LINE_RE.test(line) || EXCEPTION_RE.test(line) || HTTP_STATUS_RE.test(line)) {
       return {
         message:
@@ -29,6 +42,19 @@ export function detectNetworkApiFailure(text: string): NetworkApiFailure | null 
     }
   }
   return null;
+}
+
+export function isLoopbackNetworkFailureLine(line: string): boolean {
+  const hasLoopbackTarget = /(?:https?:\/\/)?(?:localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)(?::\d+)?\b/iu.test(line);
+  if (!hasLoopbackTarget) return false;
+  return FAILURE_LINE_RE.test(line) || EXCEPTION_RE.test(line) || HTTP_STATUS_RE.test(line);
+}
+
+function isAmbiguousApplicationFetchFailure(line: string): boolean {
+  if (!/\b(?:fetch(?:ing)?\s+failed|failed\s+to\s+fetch|fetch\s+failure)\b/iu.test(line)) {
+    return false;
+  }
+  return /\b(?:is not a function|is not iterable|cannot read propert(?:y|ies)|undefined|null)\b/iu.test(line);
 }
 
 export function isTestAssertionDiagnosticLine(line: string): boolean {

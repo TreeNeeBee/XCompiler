@@ -6,7 +6,14 @@ import { Workspace } from '../src/workspace/workspace.js';
 import { GitService } from '../src/workspace/git.js';
 import { SubprocessSandbox } from '../src/sandbox/subprocess.js';
 import { AuditLogger } from '../src/audit/audit.js';
-import { PhaseEngine, shouldRollbackTestPhaseFailure } from '../src/core/engine.js';
+import {
+  PhaseEngine,
+  codeValidationCommand,
+  collectRollbackRepairOutputs,
+  hasPendingTestArtifactRepair,
+  shouldRunCodeValidation,
+  shouldRollbackTestPhaseFailure,
+} from '../src/core/engine.js';
 import { savePlan } from '../src/core/storage.js';
 import { buildDebugBrief } from '../src/core/debug_brief.js';
 import { DebugWiki } from '../src/core/debug_wiki.js';
@@ -161,6 +168,36 @@ class UnitRollbackSandbox implements Sandbox {
     return source.includes('fixed')
       ? okExec({ stdout: 'tests passed after rollback\n' })
       : okExec({ exitCode: 1, stderr: 'unit regression failed: expected fixed implementation\n' });
+  }
+
+  async installDeps(): Promise<ExecResult> {
+    return okExec();
+  }
+}
+
+class CodeValidationSandbox implements Sandbox {
+  readonly kind = 'subprocess' as const;
+  public readonly validationArgs: string[][] = [];
+  constructor(private readonly workspace: Workspace) {}
+
+  async build(): Promise<{ rebuilt: boolean; reason: string }> {
+    return { rebuilt: false, reason: 'stubbed' };
+  }
+
+  async exec(_cmd: string, args: string[]): Promise<ExecResult> {
+    this.validationArgs.push(args);
+    const source = await this.workspace.readFile('src/hello.py').catch(() => '');
+    return source.includes('syntax_error')
+      ? okExec({ exitCode: 1, stderr: 'SyntaxError: invalid syntax in src/hello.py' })
+      : okExec({ stdout: 'source validation passed' });
+  }
+
+  async runProgram(): Promise<ExecResult> {
+    return okExec();
+  }
+
+  async runTests(): Promise<ExecResult> {
+    return okExec();
   }
 
   async installDeps(): Promise<ExecResult> {
@@ -491,6 +528,104 @@ function fakePlan(): Plan {
 }
 
 describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
+  it('validates CODE outputs and routes compiler errors to same-phase Debugger', async () => {
+    const plan = fakePlan();
+    const code = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{ ...code, dependsOn: [], tools: ['write_file'] }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    const validationSandbox = new CodeValidationSandbox(ws);
+    const router = new FakeRouter({
+      Coder: new ScriptedLLM([JSON.stringify({
+        thoughts: 'write initial source',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/hello.py', content: 'syntax_error\n' } },
+          { tool: 'write_file', args: { path: 'docs/tests/unit-test-plan.md', content: '# unit plan\n' } },
+        ],
+        done: true,
+      })]),
+      Debugger: new ScriptedLLM([JSON.stringify({
+        thoughts: 'repair compiler error',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/hello.py', content: 'def hi():\n    return 1\n' } },
+        ],
+        done: true,
+      })]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: validationSandbox,
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      debugWikiPath: path.join(tmp, '.xcompiler', 'debug-wiki'),
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBeUndefined();
+    expect(plan.steps[0]?.status).toBe('DONE');
+    expect(validationSandbox.validationArgs).toEqual([
+      codeValidationCommand('python').args,
+      codeValidationCommand('python').args,
+    ]);
+    expect(await ws.readFile('src/hello.py')).toContain('def hi');
+    expect(await ws.readFile('.xcompiler/issues/issues.jsonl')).toContain('CODE validation failed');
+  });
+
+  it('defers project-wide CODE validation until the final CODE step in an iteration', () => {
+    const plan = fakePlan();
+    const code = plan.steps.find((step) => step.phase === 'CODE')!;
+    const laterCode = { ...code, id: 'S004B', status: 'PENDING' as const };
+    plan.steps = [code, laterCode];
+
+    expect(shouldRunCodeValidation(plan, code)).toBe(false);
+    code.status = 'DONE';
+    expect(shouldRunCodeValidation(plan, laterCode)).toBe(true);
+  });
+
+  it('records a denied CODE validation permission without invoking Debugger', async () => {
+    const plan = fakePlan();
+    const code = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{ ...code, dependsOn: [], tools: ['write_file'] }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    const debuggerLlm = new ThrowingLLM(new Error('Debugger must not run for denied permission'));
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new CodeValidationSandbox(ws),
+      router: new FakeRouter({
+        Coder: new ScriptedLLM([JSON.stringify({
+          thoughts: 'write valid source',
+          actions: [
+            { tool: 'write_file', args: { path: 'src/hello.py', content: 'def hi():\n    return 1\n' } },
+            { tool: 'write_file', args: { path: 'docs/tests/unit-test-plan.md', content: '# unit plan\n' } },
+          ],
+          done: true,
+        })]),
+        Debugger: debuggerLlm,
+      }) as unknown as LLMRouter,
+      audit,
+      planPath,
+      debugWikiPath: path.join(tmp, '.xcompiler', 'debug-wiki'),
+      requestPermission: async (request) => ({
+        approved: request.operationType !== 'build_command',
+        reason: request.operationType === 'build_command' ? 'user denied compiler execution' : undefined,
+      }),
+      maxRoundsPerStep: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBe('S004');
+    expect(debuggerLlm.calls).toBe(0);
+    expect(await ws.readFile('.xcompiler/issues/issues.jsonl')).toContain('permission denied for CODE validation');
+  });
+
   it('allows DEBUG to edit dependency-chain src/tests outputs while keeping design docs scoped', async () => {
     const plan = fakePlan();
     const debugStep = {
@@ -807,6 +942,49 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
 
     expect(result.failedStepId).toBeUndefined();
     expect(plan.steps[0]?.status).toBe('DONE');
+  });
+
+  it('does not roll back after an optional dependency action is denied and the configured test gate passes', async () => {
+    const plan = fakePlan();
+    const unitStep = plan.steps.find((step) => step.phase === 'UNIT_TEST')!;
+    plan.steps = [{
+      ...unitStep,
+      dependsOn: [],
+      tools: ['write_file', 'run_tests'],
+      outputs: ['docs/05-unit-test.md', 'tests/test_unit_s005.py'],
+    }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    const router = new FakeRouter({
+      Tester: new ScriptedLLM([
+        JSON.stringify({
+          thoughts: 'coverage is optional; use the configured test command after dependency denial',
+          actions: [
+            { tool: 'write_file', args: { path: 'docs/05-unit-test.md', content: '# Unit Test\n' } },
+            { tool: 'write_file', args: { path: 'tests/test_unit_s005.py', content: 'def test_unit():\n    assert True\n' } },
+            { tool: 'add_dependency', args: { name: '@vitest/coverage-v8', dev: true } },
+            { tool: 'run_tests', args: { args: ['tests/test_unit_s005.py'] } },
+          ],
+          done: false,
+        }),
+      ]),
+    });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new CapturingTestArgsSandbox(),
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBeUndefined();
+    expect(plan.steps[0]?.status).toBe('DONE');
+    const auditLog = await ws.readFile('.xcompiler/audit.jsonl');
+    expect(auditLog).not.toContain('rolling back to paired V-model source phase');
   });
 
   it('repairs test artifacts in the same test phase when they regress after passing verification', async () => {
@@ -1783,6 +1961,48 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
         ].join('\n'),
       ),
     ).toBe(false);
+  });
+
+  it('keeps a changed test artifact in the test phase until the repair is verified', () => {
+    const step = fakePlan().steps.find((candidate) => candidate.phase === 'INTEGRATION_TEST')!;
+    step.outputs = ['tests/integration/web-server-flow.test.ts'];
+
+    expect(hasPendingTestArtifactRepair(step, [
+      { tool: 'run_tests', ok: false, error: 'ECONNREFUSED 127.0.0.1:80' },
+      { tool: 'write_file', ok: true, summary: 'wrote tests/integration/web-server-flow.test.ts (2400B)' },
+    ])).toBe(true);
+    expect(hasPendingTestArtifactRepair(step, [
+      { tool: 'run_tests', ok: false, error: 'assertion failed' },
+      { tool: 'write_file', ok: true, summary: 'wrote src/web-server.ts (2400B)' },
+    ])).toBe(false);
+    expect(hasPendingTestArtifactRepair(step, [
+      { tool: 'run_tests', ok: false, error: 'assertion failed' },
+      { tool: 'write_file', ok: true, summary: 'wrote tests/integration/web-server-flow.test.ts (2400B)' },
+      { tool: 'run_tests', ok: true, summary: '11 tests passed' },
+    ])).toBe(false);
+  });
+
+  it('allows rollback Debugger repairs across declared outputs on the affected V-model chain', () => {
+    const plan = fakePlan();
+    const detailed = plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')!;
+    const code = plan.steps.find((step) => step.phase === 'CODE')!;
+    const unit = plan.steps.find((step) => step.phase === 'UNIT_TEST')!;
+    const integration = plan.steps.find((step) => step.phase === 'INTEGRATION_TEST')!;
+    code.outputs = ['src/app.ts', 'package.json'];
+    unit.outputs = ['tests/app.unit.test.ts'];
+    integration.outputs = ['tests/app.integration.test.ts'];
+
+    const writes = collectRollbackRepairOutputs(
+      plan.steps,
+      detailed,
+      integration,
+      'package.json',
+    );
+
+    expect(writes).toContain('src/app.ts');
+    expect(writes).toContain('tests/app.unit.test.ts');
+    expect(writes).toContain('tests/app.integration.test.ts');
+    expect(writes).not.toContain('package.json');
   });
 
   it('keeps inherited rollback test scope across Debugger retries', async () => {

@@ -16,10 +16,19 @@ export const replaceInFileTool: Tool<
   description: '把当前 Step writable allowlist 内目标文件的 find 字符串精确替换为 replace（默认要求出现 1 次）。',
   argsSchema: { path: 'string', find: 'string', replace: 'string', expectedCount: 'number?' },
   async run(args, ctx) {
-    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'replace_in_file', { forWrite: true });
+    if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
+      return { ok: false, error: 'invalid replace_in_file args: path must be a non-empty string' };
+    }
+    if (typeof args.find !== 'string' || typeof args.replace !== 'string') {
+      return { ok: false, error: 'invalid replace_in_file args: find and replace must be strings' };
+    }
+    const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'replace_in_file', {
+      forWrite: true,
+      relativePathHints: ctx.allowedWrites,
+    });
     if (!resolved.ok) return { ok: false, error: resolved.error };
-    if (!isAllowedWrite(args.path, ctx.allowedWrites)) {
-      return { ok: false, error: `write denied: ${args.path}` };
+    if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
+      return { ok: false, error: `write denied: ${resolved.rel}` };
     }
     if (!args.find) return { ok: false, error: 'find must be non-empty' };
     if (args.find === args.replace) {
@@ -34,7 +43,7 @@ export const replaceInFileTool: Tool<
     try {
       original = await fs.readFile(abs, 'utf8');
     } catch {
-      return { ok: false, error: `file not found: ${args.path}` };
+      return { ok: false, error: `file not found: ${resolved.rel}` };
     }
     const expected = args.expectedCount ?? 1;
     const parts = original.split(args.find);
@@ -45,7 +54,7 @@ export const replaceInFileTool: Tool<
       // 这样模型下一轮能看到「文件中实际是什么样」，避免反复提交同样的错误 find。
       const firstFindLine = (args.find.split('\n')[0] ?? '').trim();
       const hint: string[] = [];
-      hint.push(`expected ${expected} occurrences of find, found ${occurrences} in ${args.path} (file size=${Buffer.byteLength(original)}B)`);
+      hint.push(`expected ${expected} occurrences of find, found ${occurrences} in ${resolved.rel} (file size=${Buffer.byteLength(original)}B)`);
       if (firstFindLine.length >= 4) {
         // 掏出含 firstFindLine 前 8个词符的行作为「似是该区域」
         const probe = firstFindLine.slice(0, Math.min(20, firstFindLine.length));
@@ -76,7 +85,7 @@ export const replaceInFileTool: Tool<
     return {
       ok: true,
       data: { occurrences },
-      summary: `replaced ${occurrences}× in ${args.path}`,
+      summary: `replaced ${occurrences}× in ${resolved.rel}`,
     };
   },
 };

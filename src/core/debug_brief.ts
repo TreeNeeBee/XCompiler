@@ -1,4 +1,5 @@
 import type { Phase } from './plan.js';
+import { isLoopbackNetworkFailureLine } from './network_api_gate.js';
 
 export type DebugFailureCategory = 'test_failure' | 'syntax_error' | 'import_error' | 'dependency_error' |
   'network_api_failure' | 'missing_output' | 'tool_loop' | 'permission_denied' | 'llm_provider' | 'exception' | 'unknown';
@@ -162,29 +163,47 @@ function classify(
   toolFailures: string[],
 ): DebugFailureCategory {
   const lower = text.toLowerCase();
+  if (/permission denied/u.test(lower)) return 'permission_denied';
+  if (/modulenotfounderror|importerror/u.test(lower)) return 'import_error';
+  if (/could not find a version|no matching distribution|pip install|add_dependency/u.test(lower)) return 'dependency_error';
+  if (/syntaxerror|indentationerror|taberror/u.test(lower)) return 'syntax_error';
+  if (/outputs? (?:still )?missing|missing required outputs?|outputs? \S*缺失|仍缺失/u.test(lower)) return 'missing_output';
+
+  // Assertion/test identities are root-cause evidence. Provider retry messages and
+  // URLs commonly appear later in accumulated logs and must not replace them.
+  if (
+    failedTests.length > 0 ||
+    /assertionerror|expected[^\n]{0,120}(?:to be|to equal|got)|did not raise/u.test(lower)
+  ) {
+    return 'test_failure';
+  }
+
+  if (hasConcreteNetworkFailure(lower)) return 'network_api_failure';
+
+  if (
+    /pytest exit=\s*[1-9]|tests? exit=\s*[1-9]|test gate|测试门禁|vitest|assertionerror|failed tests?|test failures?|(?:unit|integration|module|functional|gate) regression failed/u.test(lower)
+  ) {
+    return 'test_failure';
+  }
   if (/openai|ollama|openrouter|llm provider|provider_call_failed|all llm providers failed|prefill_memory_exceeded|context window|token limit|prompt too long/u.test(lower)) {
     return 'llm_provider';
   }
   if (/repeated read-only\/probe actions|read-only recovery mode|low-quality debugger response/u.test(lower)) {
     return 'tool_loop';
   }
-  if (/permission denied/u.test(lower)) return 'permission_denied';
-  if (/network api failure detected|http_fetch|https?:\/\/|http\s+(?:401|403|404|408|409|410|422|429|5\d\d)|timed out|timeout/u.test(lower)) {
-    if (!/openai|ollama|openrouter|llm provider/u.test(lower)) return 'network_api_failure';
-  }
-  if (/modulenotfounderror|importerror/u.test(lower)) return 'import_error';
-  if (/could not find a version|no matching distribution|pip install|add_dependency/u.test(lower)) return 'dependency_error';
-  if (/syntaxerror|indentationerror|taberror/u.test(lower)) return 'syntax_error';
-  if (/outputs? (?:still )?missing|missing required outputs?|outputs? \S*缺失|仍缺失/u.test(lower)) return 'missing_output';
-  if (
-    failedTests.length > 0 ||
-    /pytest exit=\s*[1-9]|tests? exit=\s*[1-9]|test gate|测试门禁|vitest|assertionerror|failed tests?|test failures?|(?:unit|integration|module|functional|gate) regression failed/u.test(lower)
-  ) {
-    return 'test_failure';
-  }
   if (toolFailures.length > 0) return 'exception';
   if (lines.some((line) => /error|exception|traceback|failed/i.test(line))) return 'exception';
   return 'unknown';
+}
+
+function hasConcreteNetworkFailure(lower: string): boolean {
+  return lower.split(/\r?\n/u).some((line) => {
+    if (isLoopbackNetworkFailureLine(line)) return false;
+    if (/^network api failure detected(?:\.|$)/u.test(line.trim())) return false;
+    return /http_fetch[^\n]*(?:失败|failed|error|http\s*(?:401|403|404|408|409|410|422|429|5\d\d)|timed out|timeout)/u.test(line) ||
+      /(?:fetch|axios|http request|network request)[^\n]*(?:econnrefused|econnreset|enotfound|etimedout|socket hang up|失败|failed|timed out|timeout)/u.test(line) ||
+      /\bhttp\s*(?:status\s*)?(?:401|403|404|408|409|410|422|429|5\d\d)\b/u.test(line);
+  });
 }
 
 function findPrimaryError(
@@ -196,16 +215,28 @@ function findPrimaryError(
 ): string {
   if (failedTests.length > 0 && category === 'test_failure') return `failed test: ${failedTests[0]}`;
   if (toolFailures.length > 0 && (category === 'tool_loop' || category === 'exception')) return toolFailures[0]!;
-  const patterns: RegExp[] = [
+  const categoryPatterns: Partial<Record<DebugFailureCategory, RegExp[]>> = {
+    test_failure: [
+      /(?:AssertionError|TypeError|Error):[^\n]+/u,
+      /\bFAIL(?:ED)?\s+[^\n]+/u,
+      /\b(?:pytest|vitest)[^\n]*(?:exit|failed|FAIL)[^\n]*/iu,
+      /Test timed out[^\n]*/iu,
+    ],
+    network_api_failure: [
+      /\bHTTP\s+(?:401|403|404|408|409|410|422|429|5\d\d)[^\n]*/iu,
+      /Network API failure detected[^\n]*/iu,
+    ],
+    missing_output: [/outputs?[^\n]*(?:missing|缺失|仍缺失)[^\n]*/iu],
+    tool_loop: [/repeated read-only\/probe actions[^\n]*/iu],
+  };
+  const genericPatterns: RegExp[] = [
     /(?:SyntaxError|IndentationError|TabError|ModuleNotFoundError|ImportError|AssertionError|TypeError|ValueError|FileNotFoundError|AttributeError|RuntimeError):[^\n]+/u,
     /\bFAILED\s+[^\n]+/u,
     /\b(?:pytest|vitest)[^\n]*(?:exit|failed|FAIL)[^\n]*/iu,
-    /\bHTTP\s+(?:401|403|404|408|409|410|422|429|5\d\d)[^\n]*/iu,
-    /Network API failure detected[^\n]*/iu,
     /outputs?[^\n]*(?:missing|缺失|仍缺失)[^\n]*/iu,
     /repeated read-only\/probe actions[^\n]*/iu,
   ];
-  for (const pattern of patterns) {
+  for (const pattern of [...(categoryPatterns[category] ?? []), ...genericPatterns]) {
     const match = text.match(pattern)?.[0];
     if (match) return oneLine(match);
   }
@@ -290,6 +321,7 @@ function extractFailedTests(text: string): string[] {
   const patterns = [
     /\bFAILED\s+([^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)(?:::[^\s]+)?)/gu,
     /([^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)::[A-Za-z0-9_:[\].-]+)/gu,
+    /(?:^|\n)\s*(?:FAIL|❯)\s+([^\n]+?(?:\.py|\.ts|\.tsx|\.js|\.jsx)\s+>\s+[^\n]+)/gu,
     /[×x]\s+([^\n]+?>\s+[^\n]+)/gu,
   ];
   const out: string[] = [];
@@ -327,8 +359,14 @@ function extractToolFailures(lines: string[]): string[] {
 
 function extractStatusCodes(text: string): string[] {
   const out: string[] = [];
-  for (const match of text.matchAll(/\b(?:HTTP\s*)?(401|403|404|408|409|410|422|429|5\d\d)\b/giu)) {
-    out.push(match[1]!);
+  const patterns = [
+    /\bHTTP\s*(?:status\s*)?(401|403|404|408|409|410|422|429|5\d\d)\b/giu,
+    /\bstatus(?:\s*code)?\s*[=:]?\s*(401|403|404|408|409|410|422|429|5\d\d)\b/giu,
+    /\b(?:api|request|fetch|接口|请求)\b[^\n]{0,80}\b(401|403|404|408|409|410|422|429|5\d\d)\b/giu,
+    /\b(401|403|404|408|409|410|422|429|5\d\d)\b[^\n]{0,80}\b(?:api|request|fetch|接口|请求)\b/giu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) out.push(match[1]!);
   }
   return dedup(out);
 }

@@ -37,6 +37,7 @@ export interface Messages {
     configEnvMissing: (names: string) => string;
     unhandledError: (message: string) => string;
     unsupportedPypiOnlyNetwork: string;
+    unsupportedSubprocessNetworkOff: string;
     dockerInsideContainerUnsupported: string;
     firejailUnsupported: string;
     smokeHeader: (baseUrl: string) => string;

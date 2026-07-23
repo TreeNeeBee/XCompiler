@@ -79,6 +79,13 @@ describe('sandbox factory — container detection', () => {
     expect(() => createSandbox(cfg, ws)).toThrow(/pypi-only/);
   });
 
+  it('subprocess 拒绝无法兑现的 network=off 策略', () => {
+    const ws = new Workspace('/tmp/xcompiler-factory-test');
+    const cfg = baseCfg('subprocess');
+    cfg.agent.sandbox_limits.network = 'off';
+    expect(() => createSandbox(cfg, ws)).toThrow(/cannot be enforced in subprocess mode/);
+  });
+
   it('跨语言执行时为 TypeScript plan 选择 Node 默认镜像，而不是沿用 Python 自定义镜像', () => {
     process.env.XC_IN_CONTAINER = '0';
     const ws = new Workspace('/tmp/xcompiler-factory-test');

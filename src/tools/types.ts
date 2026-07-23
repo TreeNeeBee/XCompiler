@@ -38,6 +38,8 @@ export interface ToolPermissionDecision {
 export type ToolPermissionRequester = (request: ToolPermissionRequest) => Promise<ToolPermissionDecision>;
 
 export interface ToolExecutionEvent {
+  /** Unique per invocation, including repeated calls to the same tool in one Step. */
+  callId: string;
   status: 'started' | 'completed';
   stepId: string;
   tool: string;

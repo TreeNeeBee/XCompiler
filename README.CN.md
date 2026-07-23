@@ -38,7 +38,7 @@ XCompiler 是一个可复用的 AI 软件工厂运行时。它先把产品需求
 
 ## 迭代式 V 模型流程
 
-XCompiler 把 Phase 迭代模型和 V 模型结合起来。Planner 先生成总览级 `phasePlan.json`，再只展开当前阶段为具体 `plan.P<N>.json`。每个当前阶段都执行完整 V 模型；未来阶段只保留目标，等激活后再展开细节计划。
+XCompiler 把 Phase 迭代模型和 V 模型结合起来。Planner 先生成总览级 `phasePlan.json`，再只展开当前阶段为具体 `plan.P<N>.json`。每个当前阶段都执行完整 V 模型；迭代门禁和工程审计通过后标记为 `complete`，再激活首个依赖已满足的阶段，并且只为下一次运行生成该阶段计划。
 
 <p align="center">
   <img src="docs/assets/iterative-v-model-pipeline.svg" alt="Iterative V-Model Pipeline" />
@@ -163,7 +163,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 - **LLM**：默认 OpenRouter Free mode。key 缺失或无效时会输出 provider、model、base URL、HTTP 状态/响应体，并明确提示 `OPENROUTER_API_KEY`。
 - **LLM 路由**：角色专用 provider 链、XCompiler 自动维护的动态评分、`llm_scores_user.yaml` 用户覆盖，以及 `tags: [cluster]` 聚合路由兜底评分带。
 - **语言**：支持 Python 与 TypeScript 的工程生成、测试、运行和入口检查。
-- **Sandbox**：默认 `subprocess`；可切换 `docker` 以启用 bind-mount 隔离和网络/资源限制。
+- **Sandbox**：默认 `subprocess` 且隔离宿主环境变量（`inherit_env: false`）；可切换 `docker` 获得可执行的网络/资源隔离。subprocess 无法兑现 `network: off`，因此该组合会明确报错。
 - **Audit**：每次运行写入 `.xcompiler/audit.jsonl`、LLM stream trace、`docs/process_log.md`、Debug cache、Debug wiki 反馈和 Project memory。
 - **Debug wiki**：Debugger 处理 issue 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 issue 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用，并追加 `log.md` 记录操作流水。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。issue 正确修复后会把 LLM 输出的 `issueResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
 - **安全门禁**：项目文件访问受控，写工具限制在 Step 声明 outputs 内，敏感操作可通过 Adapter 暴露为权限事件。
@@ -182,13 +182,14 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | `cluster_score_min/max` | `0.2..0.5` | `cluster` provider 的动态评分范围；用户覆盖仍可使用 `0.1..1` |
 | `agent.sandboxes.python.mode` | `subprocess` | Python 工程沙盒后端：本地 subprocess 或 Docker |
 | `agent.sandboxes.typescript.mode` | `subprocess` | TypeScript 工程沙盒后端：本地 subprocess 或 Docker |
+| `agent.sandboxes.<language>.local.inherit_env` | `false` | 是否显式继承宿主环境；宿主含 API key 等机密时应保持关闭 |
 | `max_rounds_per_step` | `6` | 普通 Step 的 LLM 对话轮数上限 |
 | `max_debug_rounds_per_step` | `max(8, 2 * max_rounds_per_step)` | Debugger 对话轮数上限 |
 | `max_debug_retries` | `3` | Debug 重试次数 |
 | `--debug-wiki-path <dir>` | XCompiler 路径下的 `.xcompiler/debug-wiki` | 共享分层 Debug wiki 根目录路径 |
 | `max_edit_lines_per_step` | `auto` | EditGuard 单 Step 累计写入行数预算 |
 | `max_write_chunk_bytes` | `auto` | 单次写入 chunk 字节预算 |
-| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | 默认允许出站下载且不发布入站端口；`off` 为断网 |
+| `agent.sandboxes.<language>.<local\|docker>.limits.network` | `download-only` | Docker 可执行 `off`；subprocess 会拒绝 `off`，避免声称无法兑现的隔离 |
 
 ---
 
@@ -216,7 +217,7 @@ npm test
 npm run build
 ```
 
-最近本地 release gate：49 个测试文件 / 473 个测试通过。
+最近本地 release gate：53 个测试文件 / 537 个测试通过。
 
 ---
 

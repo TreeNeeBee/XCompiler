@@ -50,6 +50,7 @@ export class AcpSessionStore {
       phase: 'build',
       changedFiles: [],
       startedAt: new Date().toISOString(),
+      abortController: new AbortController(),
     };
     session.tasks.set(task.id, task);
     return task;
@@ -92,5 +93,23 @@ export class AcpSessionStore {
     const task = session.tasks.get(pending.taskId);
     if (task && task.status === 'waiting_for_permission') task.status = 'running';
     pending.resolve(approved, reason);
+  }
+
+  rejectPendingForTask(sessionId: string, taskId: string, reason: Error): string[] {
+    const session = this.get(sessionId);
+    const rejectedIds: string[] = [];
+    for (const [id, pending] of session.pendingInteractions) {
+      if (pending.taskId !== taskId) continue;
+      session.pendingInteractions.delete(id);
+      rejectedIds.push(id);
+      pending.reject(reason);
+    }
+    for (const [id, pending] of session.pendingPermissions) {
+      if (pending.taskId !== taskId) continue;
+      session.pendingPermissions.delete(id);
+      rejectedIds.push(id);
+      pending.reject(reason);
+    }
+    return rejectedIds;
   }
 }

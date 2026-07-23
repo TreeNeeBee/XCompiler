@@ -22,5 +22,6 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRes
   return runRuntimeBootstrap({
     ...opts,
     io: opts.io ?? createCliRuntimeIO(),
+    terminalOutput: opts.terminalOutput ?? true,
   });
 }

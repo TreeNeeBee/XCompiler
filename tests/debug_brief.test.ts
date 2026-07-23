@@ -49,6 +49,38 @@ describe('debug brief extraction', () => {
     expect(brief.evidence.join('\n')).toContain('403');
   });
 
+  it('does not treat a source URL as a network failure when the root cause is an assertion', () => {
+    const brief = buildDebugBrief({
+      reason: 'UNIT_TEST tool verification failed; rolling back to paired V-model source phase.',
+      failureLog: [
+        "const url = 'https://news.example.test/v2/top-headlines';",
+        'run_tests failed npm test exit=1',
+        'AssertionError: expected 1 to be 2 // Object.is equality',
+      ].join('\n'),
+      phase: 'UNIT_TEST',
+      targetPhase: 'CODE',
+    });
+
+    expect(brief.category).toBe('test_failure');
+    expect(brief.debugDemand).toContain('Fix the root implementation/contract defect');
+  });
+
+  it('keeps an assertion root cause when later provider recovery also fails', () => {
+    const brief = buildDebugBrief({
+      reason: 'all LLM providers failed for role Debugger',
+      failureLog: [
+        'AssertionError: expected generated briefing to contain 未知',
+        'run_tests failed npm test exit=1',
+        'all LLM providers failed for role Debugger: low-quality Debugger response',
+        'read-only/probe actions in read-only recovery mode',
+      ].join('\n'),
+      phase: 'CODE',
+    });
+
+    expect(brief.category).toBe('test_failure');
+    expect(brief.debugDemand).not.toContain('provider/context infrastructure');
+  });
+
   it('classifies generic test gates as test failures', () => {
     const brief = buildDebugBrief({
       reason: 'Test gate: tests exit=1',
@@ -63,6 +95,40 @@ describe('debug brief extraction', () => {
 
     expect(brief.category).toBe('test_failure');
     expect(brief.debugDemand).toContain('Fix the root implementation/contract defect');
+  });
+
+  it('keeps loopback test-server failures out of the external API category', () => {
+    const brief = buildDebugBrief({
+      reason: 'INTEGRATION_TEST tool verification failed',
+      failureLog: [
+        'run_tests failed npm test exit=1',
+        'FAIL tests/integration/web-server-flow.test.ts > serves the index',
+        'Error: connect ECONNREFUSED 127.0.0.1:80',
+        'returns 404 for missing briefing',
+      ].join('\n'),
+      phase: 'INTEGRATION_TEST',
+    });
+
+    expect(brief.category).toBe('test_failure');
+    expect(brief.statusCodes).not.toContain('404');
+    expect(brief.debugDemand).not.toContain('API');
+  });
+
+  it('uses current Vitest failures instead of a stale network marker', () => {
+    const brief = buildDebugBrief({
+      reason: 'INTEGRATION_TEST tool verification failed',
+      failureLog: [
+        'Network API failure detected. Treat this task as failed.',
+        'run_tests failed npm test exit=1 args=tests/integration',
+        'FAIL  tests/integration/web-server-flow.test.ts > returns rendered briefing content',
+        "AssertionError: expected '<h1>Test Briefing</h1>' to contain '# Test Briefing'",
+      ].join('\n'),
+      phase: 'INTEGRATION_TEST',
+    });
+
+    expect(brief.category).toBe('test_failure');
+    expect(brief.failedTests[0]).toContain('web-server-flow.test.ts');
+    expect(brief.primaryError).not.toContain('Network API failure');
   });
 
   it('compacts long evidence while preserving the actionable failure', () => {

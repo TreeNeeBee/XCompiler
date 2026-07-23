@@ -51,7 +51,7 @@ export function mapRuntimeEventToAcpUpdates(
       event.tool === 'run_tests'
         ? event.status === 'started' ? 'test_started' : 'test_completed'
         : event.status === 'started' ? 'tool_call_started' : 'run_progress';
-    const toolCallId = toolCallIdFor(event.stepId, event.tool);
+    const toolCallId = event.callId;
     if (event.status === 'started') {
       return [{
         legacyType,
@@ -100,7 +100,7 @@ export function mapRuntimeEventToAcpUpdates(
       path: event.path,
       update: {
         sessionUpdate: 'tool_call_update',
-        toolCallId: toolCallIdFor(event.stepId, event.tool),
+        toolCallId: event.callId,
         status: 'completed',
         locations: [{ path: event.path }],
         content: [{
@@ -122,8 +122,8 @@ export function mapRuntimeEventToAcpUpdates(
       legacyType,
       update: {
         sessionUpdate: 'tool_call_update',
-        toolCallId: toolCallIdFor(event.stepId, event.tool),
-        status: 'completed',
+        toolCallId: event.callId,
+        status: 'pending',
         content: [{
           type: 'content',
           content: { type: 'text', text: `Patch proposed:\n\n${event.patch}` },
@@ -164,8 +164,4 @@ export function taskUpdate(
   extra: Record<string, unknown> = {},
 ): AcpSessionUpdate {
   return agentText(message, { xcompiler: { eventType: type, taskId, ...extra } });
-}
-
-function toolCallIdFor(stepId: string | undefined, tool: string | undefined): string {
-  return [stepId || 'runtime', tool || 'tool'].join(':');
 }

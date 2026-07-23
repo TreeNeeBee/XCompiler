@@ -34,6 +34,7 @@ export interface RuntimeProgressEvent {
 
 export interface RuntimeToolCallEvent {
   type: 'tool_call';
+  callId: string;
   status: ToolExecutionEvent['status'];
   stepId: string;
   tool: string;
@@ -45,6 +46,7 @@ export interface RuntimeToolCallEvent {
 
 export interface RuntimeFileChangedEvent {
   type: 'file_changed';
+  callId: string;
   stepId: string;
   tool: string;
   path: string;
@@ -52,6 +54,7 @@ export interface RuntimeFileChangedEvent {
 
 export interface RuntimePatchProposedEvent {
   type: 'patch_proposed';
+  callId: string;
   stepId: string;
   tool: string;
   patch: string;
@@ -93,6 +96,8 @@ export interface RuntimeInteraction {
 }
 
 export interface RuntimeIO {
+  /** Enables human-oriented lower-level stream rendering. Runtime adapters default to false. */
+  terminalOutput?: boolean;
   emit(event: RuntimeEvent): void | Promise<void>;
   progress(message: string, opts?: { animate?: boolean }): RuntimeProgress;
   interaction?: RuntimeInteraction;
@@ -106,6 +111,7 @@ const noopProgress: RuntimeProgress = {
 };
 
 export const silentRuntimeIO: RuntimeIO = {
+  terminalOutput: false,
   emit: () => undefined,
   progress: () => noopProgress,
 };

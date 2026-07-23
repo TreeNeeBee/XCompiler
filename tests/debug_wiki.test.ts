@@ -28,6 +28,18 @@ describe('DebugWiki', () => {
     }
   });
 
+  it('falls back to the workspace when the configured XCompiler path is the filesystem root', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-debug-wiki-fallback-'));
+    const previous = process.env.XC_PATH;
+    process.env.XC_PATH = path.parse(dir).root;
+    try {
+      expect(defaultDebugWikiPath(dir)).toBe(path.join(dir, DEFAULT_DEBUG_WIKI_REL_PATH));
+    } finally {
+      if (previous === undefined) delete process.env.XC_PATH;
+      else process.env.XC_PATH = previous;
+    }
+  });
+
   it('records a resolved debug issue and retrieves it by debug brief', async () => {
     const root = await tmpRoot();
     const wiki = new DebugWiki(root);

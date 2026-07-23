@@ -91,6 +91,51 @@ describe('write_file tool', () => {
     expect(missingContent.error).toContain('content must be a string');
   });
 
+  it('canonicalizes project-prefixed and absolute in-workspace write paths', async () => {
+    const projectName = path.basename(ws.root);
+    const prefixed = await writeFileTool.run(
+      { path: `${projectName}/src/prefixed.py`, content: 'x = 1\n' },
+      ctx,
+    );
+    expect(prefixed.ok).toBe(true);
+    expect(prefixed.summary).toContain('src/prefixed.py');
+    expect(await ws.readFile('src/prefixed.py')).toBe('x = 1\n');
+    expect(await ws.exists(`${projectName}/src/prefixed.py`)).toBe(false);
+
+    const absolute = await writeFileTool.run(
+      { path: ws.abs('src/absolute.py'), content: 'x = 2\n' },
+      ctx,
+    );
+    expect(absolute.ok).toBe(true);
+    expect(absolute.summary).toContain('src/absolute.py');
+  });
+
+  it('does not strip a legitimate source directory when the workspace itself is named src', async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-path-name-'));
+    const namedSrc = new Workspace(path.join(parent, 'src'));
+    await fs.mkdir(namedSrc.root, { recursive: true });
+    const namedCtx = { ...ctx, ws: namedSrc };
+    const result = await writeFileTool.run(
+      { path: 'src/app.py', content: 'x = 3\n' },
+      namedCtx,
+    );
+    expect(result.ok).toBe(true);
+    expect(await namedSrc.readFile('src/app.py')).toBe('x = 3\n');
+  });
+
+  it('uses the step allowlist to canonicalize project-prefixed custom directories', async () => {
+    const customCtx = { ...ctx, allowedWrites: ['assets/generated/'] };
+    const result = await writeFileTool.run(
+      {
+        path: `${path.basename(ws.root)}/assets/generated/report.txt`,
+        content: 'ok\n',
+      },
+      customCtx,
+    );
+    expect(result.ok).toBe(true);
+    expect(await ws.readFile('assets/generated/report.txt')).toBe('ok\n');
+  });
+
   it('auto-scales write chunk budget by phase and step context', () => {
     expect(resolveWriteChunkBytes(1234, { phase: 'CODE' })).toBe(1234);
     const dynamic = resolveWriteChunkBytes('auto', {
@@ -112,6 +157,12 @@ describe('read_file & list_dir', () => {
     const l = await listDirTool.run({ path: 'src' }, ctx);
     expect(l.ok).toBe(true);
     expect((l.data as { entries: string[] }).entries).toContain('m.py');
+  });
+
+  it('rejects a missing read path instead of treating it as the workspace directory', async () => {
+    const r = await readFileTool.run({} as never, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('path must be a non-empty string');
   });
 
   it('rejects reads, writes, and listings outside the project directory', async () => {
@@ -266,6 +317,35 @@ describe('runTestsTool / runPythonTool summary', () => {
     expect(r.ok).toBe(false);
     expect(r.summary).not.toContain('Network API failure detected');
     expect(r.summary).toContain('npm test exit=1');
+  });
+
+  it('preserves both the first and last failure identities in a long test summary', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    const longMiddle = Array.from({ length: 80 }, (_, index) => `diagnostic line ${index} ${'x'.repeat(80)}`);
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runProgram() { throw new Error('not used'); },
+        async runTests() {
+          return {
+            exitCode: 1,
+            stdout: [...longMiddle, 'FAIL tests/last.test.ts > final contract'].join('\n'),
+            stderr: 'FAIL tests/first.test.ts > first contract',
+            timedOut: false,
+            durationMs: 1,
+          };
+        },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S006',
+      language: 'typescript',
+    };
+
+    const result = await runTestsTool.run({ args: ['tests/integration'] }, fakeCtx);
+    expect(result.summary).toContain('first contract');
+    expect(result.summary).toContain('final contract');
+    expect(result.summary?.length).toBeLessThanOrEqual(6000);
   });
 
   it('reports TypeScript run_program project commands without wrapping npm/npx/node in tsx', async () => {

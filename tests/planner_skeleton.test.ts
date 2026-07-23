@@ -498,6 +498,58 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     expect(plan.steps.every((step) => step.iterationId === 'P1')).toBe(true);
   });
 
+  it('激活后只展开 P2，并保留 P1 complete 与未来阶段目标', async () => {
+    const requirementDigest = 'Add presentation polish after the completed core utility.';
+    const phasePlan = {
+      requirementDigest,
+      globalPrompt: 'Preserve P1 behavior.',
+      projectType: 'application' as const,
+      complexityAssessment: {
+        level: 'moderate' as const,
+        rationale: 'Core and polish are separate iterations.',
+        splitRecommended: true,
+        userForcedPhaseSplit: false,
+      },
+      implementationPhases: [
+        {
+          id: 'P1',
+          title: 'Core',
+          objective: 'Completed core utility.',
+          status: 'complete' as const,
+          scope: ['Core'],
+          deliverables: ['Core utility'],
+          dependsOn: [],
+        },
+        {
+          id: 'P2',
+          title: 'Polish',
+          objective: 'Add presentation polish.',
+          status: 'current' as const,
+          scope: ['Presentation'],
+          deliverables: ['Polished output'],
+          dependsOn: ['P1'],
+        },
+      ],
+    };
+    const stepPlan = {
+      requirementDigest,
+      globalPrompt: 'Preserve P1 behavior.',
+      dependencies: ['pytest'],
+      steps: vModelSteps('P2', 1, 'src/presentation.py', 'tests/test_presentation.py'),
+    };
+    const planner = new Planner(fakeLLM(JSON.stringify(stepPlan)));
+
+    const plan = await planner.decomposePhase(
+      { rawRequirement: requirementDigest, clarifications: [], intent: 'feature' },
+      phasePlan,
+      'P2',
+    );
+
+    expect(plan.implementationPhases?.map((phase) => `${phase.id}:${phase.status}`))
+      .toEqual(['P1:complete', 'P2:current']);
+    expect(plan.steps.every((step) => step.iterationId === 'P2')).toBe(true);
+  });
+
   it('PhasePlan 校验失败时会把错误反馈给 Planner 并重试', async () => {
     const requirementDigest = 'Build a small number formatter and add presentation polish in a later phase.';
     const invalidPhasePlan = {

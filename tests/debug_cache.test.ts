@@ -41,6 +41,27 @@ describe('DebugCache', () => {
     expect(prompt).not.toContain('[D001] inspect tests/test_x.py');
   });
 
+  it('marks a RUNNING attempt unresolved only when runtime confirms interruption', async () => {
+    const dir = await tmp();
+    const file = path.join(dir, '.xcompiler', 'debug_cache.json');
+    const c1 = new DebugCache(file);
+    await c1.load();
+    await c1.recordAttempt('S006', {
+      attempt: 2,
+      reason: 'integration tests still fail',
+      failureLogTail: 'FAIL tests/integration/web-server-flow.test.ts',
+      contextMode: 'test-rollback',
+      testScopeArgs: ['tests/integration/web-server-flow.test.ts'],
+    });
+
+    const c2 = new DebugCache(file);
+    await c2.load();
+    expect(c2.hasUnresolvedFailure('S006')).toBe(false);
+    expect(await c2.markInterrupted('S006', 'process interrupted')).toBe(true);
+    expect(c2.hasUnresolvedFailure('S006')).toBe(true);
+    expect(c2.attempts('S006')[0]?.contextMode).toBe('test-rollback');
+  });
+
   it('truncates long failure logs and caps stored attempts', async () => {
     const dir = await tmp();
     const file = path.join(dir, '.xcompiler', 'debug_cache.json');

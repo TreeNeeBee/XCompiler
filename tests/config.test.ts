@@ -119,6 +119,24 @@ agent:
     }
   });
 
+  it('reports missing environment placeholders as structured load metadata', async () => {
+    const name = 'XC_TEST_INTENTIONALLY_MISSING_KEY';
+    const previous = process.env[name];
+    delete process.env[name];
+    try {
+      const cfg = baseConfig();
+      const provider = ((cfg.llm as Record<string, unknown>).providers as Record<string, Record<string, unknown>>)
+        .ollama_code!;
+      provider.api_key = `\${${name}}`;
+      const loaded = await loadConfigWithPath(await writeConfig(cfg));
+      expect(loaded.missingEnv).toEqual([name]);
+      expect(loaded.config.llm.providers.ollama_code?.api_key).toBe('');
+    } finally {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    }
+  });
+
   it('parses OpenAI-compatible json_schema response format capability', async () => {
     const cfg = baseConfig({
       llm: {
@@ -141,6 +159,33 @@ agent:
     const cfgPath = await writeConfig(cfg);
     const { config } = await loadConfigWithPath(cfgPath);
     expect(config.llm.providers.openrouter_hy3!.json_response_format).toBe('json_schema');
+  });
+
+  it('parses an OpenAI-compatible connection timeout separately from stream timeouts', async () => {
+    const cfg = baseConfig({
+      llm: {
+        default: 'openrouter',
+        providers: {
+          openrouter: {
+            type: 'openai',
+            api_key: 'dummy',
+            base_url: 'https://openrouter.ai/api/v1',
+            model: 'openrouter/free',
+            connect_timeout_ms: 45000,
+            stream_first_token_timeout_ms: 300000,
+            stream_idle_timeout_ms: 60000,
+          },
+        },
+        roles: {},
+        fallbacks: [],
+        role_fallbacks: {},
+        scores: {},
+      },
+    });
+    const { config } = await loadConfigWithPath(await writeConfig(cfg));
+    expect(config.llm.providers.openrouter!.connect_timeout_ms).toBe(45000);
+    expect(config.llm.providers.openrouter!.stream_first_token_timeout_ms).toBe(300000);
+    expect(config.llm.providers.openrouter!.stream_idle_timeout_ms).toBe(60000);
   });
 
   it('parses cluster provider tags and score bounds', async () => {
@@ -233,6 +278,7 @@ agent:
     const { config } = await loadConfigWithPath(cfgPath);
     expect(config.agent.sandboxes.python.mode).toBe('subprocess');
     expect(config.agent.sandboxes.python.local.sandbox_dir).toBe('.sandbox/python');
+    expect(config.agent.sandboxes.python.local.inherit_env).toBe(false);
     expect(config.agent.sandboxes.typescript.mode).toBe('docker');
     expect(config.agent.sandboxes.typescript.docker.image).toBe('node:24-slim');
     expect(config.agent.sandboxes.typescript.docker.limits.cpu).toBe(2);

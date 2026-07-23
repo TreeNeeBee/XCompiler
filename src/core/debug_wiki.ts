@@ -95,12 +95,19 @@ interface DebugWikiOperationLogEntry {
 const LAYERS: DebugWikiLayer[] = ['system', 'agent', 'external'];
 const EMPTY_STATS = { uses: 0, successes: 0, failures: 0 };
 
-export function defaultDebugWikiPath(): string {
+export function defaultDebugWikiPath(fallbackRoot?: string): string {
   const configured = xcEnv('PATH')?.trim();
-  const base = configured
+  const candidate = configured
     ? path.resolve(configured)
     : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const base = isFilesystemRoot(candidate) && fallbackRoot
+    ? path.resolve(fallbackRoot)
+    : candidate;
   return path.join(base, DEFAULT_DEBUG_WIKI_REL_PATH);
+}
+
+function isFilesystemRoot(candidate: string): boolean {
+  return path.resolve(candidate) === path.parse(path.resolve(candidate)).root;
 }
 
 export function bundledDebugWikiPath(): string {

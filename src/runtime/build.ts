@@ -205,9 +205,12 @@ function formatLanguageClarificationText(input: PlannerInput['clarifications']):
 export async function runCompile(opts: CompileOptions): Promise<{ planPath?: string }> {
   const io = opts.io ?? silentRuntimeIO;
   const ws = new Workspace(path.resolve(opts.workspace));
-  const { config: cfg, path: cfgPath } = await loadConfigWithPath(opts.configPath);
+  const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // Locale 必须在第一条输出之前生效，确保终端与审计文件从头到尾使用同一语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
+  if (missingEnv.length > 0) {
+    await runtimeLog(io, 'warning', t().system.configEnvMissing(missingEnv.join(', ')));
+  }
   await runtimeLog(io, 'success', t().compile.workspaceReady(ws.root));
 
   let lock;
@@ -335,7 +338,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   let clarificationQuestions: ClarifyQuestion[] = [];
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
   if (!opts.yes && !topicMode) {
-    const clarifyPlanner = new Planner(plannerClient, audit, initialLanguage.language);
+    const clarifyPlanner = new Planner(plannerClient, audit, initialLanguage.language, io.terminalOutput === true);
     trace('ora.clarify.start');
     const spin = io.progress(M.compile.spinClarify, { animate: false });
     trace('ora.clarify.started');
@@ -474,7 +477,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   trace('ora.spin2.started');
   let draft;
   try {
-    const planner = new Planner(plannerClient, audit, language);
+    const planner = new Planner(plannerClient, audit, language, io.terminalOutput === true);
     const plannerInput: PlannerInput = {
       rawRequirement: finalTopicMd,
       clarifications,

@@ -2,7 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { execRaw, formatExecFailure } from '../src/sandbox/subprocess.js';
+import { SubprocessSandbox, execRaw, formatExecFailure } from '../src/sandbox/subprocess.js';
+import { Workspace } from '../src/workspace/workspace.js';
 
 async function tempDir(name: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), `xcompiler-${name}-`));
@@ -66,5 +67,35 @@ describe('execRaw install progress watch', () => {
     expect(message).toContain('reason=npm install progress idle');
     expect(message).toContain('stdout:\nreal stdout error');
     expect(message).toContain('stderr:\nnpm warn deprecated package');
+  });
+});
+
+describe('SubprocessSandbox environment isolation', () => {
+  it('does not expose host secrets unless inheritance is explicitly enabled', async () => {
+    const dir = await tempDir('env-isolation');
+    const secretName = 'XCOMPILER_TEST_HOST_SECRET';
+    const previous = process.env[secretName];
+    process.env[secretName] = 'must-not-leak';
+    try {
+      const isolated = new SubprocessSandbox({
+        ws: new Workspace(dir),
+        language: 'typescript',
+        limits: { cpu: 1, memory_mb: 128, wall_seconds: 5, network: 'download-only' },
+      });
+      const hidden = await isolated.exec(process.execPath, ['-e', `process.stdout.write(process.env.${secretName} ?? '')`]);
+      expect(hidden.stdout).toBe('');
+
+      const inherited = new SubprocessSandbox({
+        ws: new Workspace(dir),
+        language: 'typescript',
+        inheritEnv: true,
+        limits: { cpu: 1, memory_mb: 128, wall_seconds: 5, network: 'download-only' },
+      });
+      const visible = await inherited.exec(process.execPath, ['-e', `process.stdout.write(process.env.${secretName} ?? '')`]);
+      expect(visible.stdout).toBe('must-not-leak');
+    } finally {
+      if (previous === undefined) delete process.env[secretName];
+      else process.env[secretName] = previous;
+    }
   });
 });

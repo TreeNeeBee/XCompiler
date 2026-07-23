@@ -75,6 +75,31 @@ describe('makeStreamReporter', () => {
     reporter.done();
   });
 
+  it('resets partial progress when a fallback provider starts', () => {
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const output = () => write.mock.calls.map((args) => String(args[0])).join('');
+    const reporter = makeStreamReporter('S005 Tester round 3', 'primary/model');
+
+    reporter.onToken('partial primary response');
+    vi.advanceTimersByTime(12_000);
+    const fallbackStart = write.mock.calls.length;
+    reporter.reset();
+    reporter.setModel('fallback/model');
+    reporter.onToken('ok');
+    vi.advanceTimersByTime(1_000);
+    reporter.done();
+
+    const fallbackOutput = write.mock.calls
+      .slice(fallbackStart)
+      .map((args) => String(args[0]))
+      .join('');
+    expect(output()).toContain('[fallback/model] $ S005 Tester round 3');
+    expect(fallbackOutput).toContain('00:01 · 2 chars · ok');
+    expect(fallbackOutput).not.toContain('00:13');
+    expect(fallbackOutput).toContain('2 chars · ok');
+    expect(fallbackOutput).not.toContain('partial primary response');
+  });
+
   it('emits periodic heartbeat lines in non-TTY logs without per-token spam', () => {
     Object.defineProperty(process.stderr, 'isTTY', { configurable: true, value: false });
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

@@ -170,6 +170,18 @@ export class DebugCache {
     return !!e && e.lastStatus === 'FAILED' && e.attempts.length > 0;
   }
 
+  /** 仅由运行入口在计划确有 stale RUNNING 时调用，保留 attempts 并转成可恢复失败。 */
+  async markInterrupted(stepId: string, reason: string): Promise<boolean> {
+    await this.load();
+    const cur = this.data.steps[stepId];
+    if (!cur || cur.lastStatus === 'DONE' || cur.attempts.length === 0) return false;
+    cur.lastStatus = 'FAILED';
+    cur.lastReason = reason.slice(0, 500);
+    cur.lastUpdated = new Date().toISOString();
+    await this.save();
+    return true;
+  }
+
   /** 追加一次尝试记录（在每次 retry 末尾调用）。failureLog 会自动截断到尾部 N 行。 */
   async recordAttempt(stepId: string, entry: Omit<DebugAttemptEntry, 'ts'> & { ts?: string }): Promise<void> {
     const tail = (s: string): string => {

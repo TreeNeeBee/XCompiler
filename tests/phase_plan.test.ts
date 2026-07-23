@@ -5,6 +5,7 @@ import path from 'node:path';
 import { buildPlan } from '../src/agents/planner.js';
 import type { Phase, Step } from '../src/core/plan.js';
 import {
+  advancePhasePlan,
   buildPhasePlanFromCurrentPlan,
   defaultPhasePlanPath,
   defaultPhasePlanStepPath,
@@ -72,6 +73,14 @@ describe('phase plan persistence', () => {
     expect(phasePlan.phases.find((phase) => phase.id === 'P1')?.planPath).toBe(phasePlanFileName('P1'));
     expect(phasePlan.phases.find((phase) => phase.id === 'P2')?.planPath).toBe(phasePlanFileName('P2'));
 
+    const advanced = advancePhasePlan(phasePlan);
+    expect(advanced.completedPhaseId).toBe('P1');
+    expect(advanced.nextPhase?.id).toBe('P2');
+    expect(advanced.phasePlan.currentPhaseId).toBe('P2');
+    expect(advanced.phasePlan.phases.find((phase) => phase.id === 'P1')?.status).toBe('complete');
+    expect(advanced.phasePlan.phases.find((phase) => phase.id === 'P2')?.status).toBe('current');
+    expect(phasePlan.phases.find((phase) => phase.id === 'P1')?.status).toBe('current');
+
     const loaded = await loadPlanTarget(phasePlanPath);
     expect(loaded.phasePlanPath).toBe(phasePlanPath);
     expect(loaded.planPath).toBe(currentPlanPath);
@@ -127,9 +136,64 @@ describe('phase plan persistence', () => {
     expect(loaded.plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')?.outputs)
       .toEqual(['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md']);
   });
+
+  it('accepts a materialized follow-up phase whose current status matches phaseId', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-phase-plan-p2-'));
+    const plan = buildPlan(
+      {
+        requirementDigest: 'Add reporting to the existing CLI.',
+        globalPrompt: 'Preserve the completed core workflow.',
+        dependencies: [],
+        complexityAssessment: {
+          level: 'moderate',
+          rationale: 'Core and reporting are separate iterations.',
+          splitRecommended: true,
+          userForcedPhaseSplit: false,
+        },
+        implementationPhases: [
+          {
+            id: 'P1',
+            title: 'Core CLI',
+            objective: 'Deliver the core workflow.',
+            status: 'complete',
+            scope: ['core'],
+            deliverables: ['working CLI'],
+            dependsOn: [],
+            verificationGate: {
+              summary: 'Core passed.',
+              checks: ['npm test'],
+              failurePolicy: 'Debug P1.',
+            },
+          },
+          {
+            id: 'P2',
+            title: 'Reporting',
+            objective: 'Deliver reporting features.',
+            status: 'current',
+            scope: ['reports'],
+            deliverables: ['report command'],
+            dependsOn: ['P1'],
+            verificationGate: {
+              summary: 'Reporting passes.',
+              checks: ['npm test'],
+              failurePolicy: 'Debug P2.',
+            },
+          },
+        ],
+        steps: vModelSteps('P2'),
+      },
+      { language: 'typescript', intent: 'feature' },
+    );
+    const planPath = path.join(workspace, 'plan.P2.json');
+    await savePlan(planPath, plan);
+
+    const loaded = await loadPlanTarget(planPath);
+    expect(loaded.plan.phaseId).toBe('P2');
+    expect(new Set(loaded.plan.steps.map((step) => step.iterationId))).toEqual(new Set(['P2']));
+  });
 });
 
-function vModelSteps(): Step[] {
+function vModelSteps(iterationId = 'P1'): Step[] {
   const phases: Phase[] = [
     'REQUIREMENT_ANALYSIS',
     'HIGH_LEVEL_DESIGN',
@@ -144,7 +208,7 @@ function vModelSteps(): Step[] {
     const id = `S${String(index + 1).padStart(3, '0')}`;
     return {
       id,
-      iterationId: 'P1',
+      iterationId,
       phase,
       title: `${phase} step`,
       description: `Complete ${phase}.`,

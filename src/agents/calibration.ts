@@ -17,7 +17,10 @@ import {
 } from '../core/docs.js';
 import { pathCoveredByOutputs } from '../core/architecture.js';
 import { getLanguageProfile } from '../core/language.js';
-import { isTestAssertionDiagnosticLine } from '../core/network_api_gate.js';
+import {
+  isLoopbackNetworkFailureLine,
+  isTestAssertionDiagnosticLine,
+} from '../core/network_api_gate.js';
 
 /**
  * 统一的 LLM 输出校准层（"calibration"）。
@@ -1093,7 +1096,7 @@ interface SuggestionRule {
 }
 
 function networkApiStatusGuidance(log: string): string {
-  const status = log.match(/\b(401|403|404|408|409|410|422|429|5\d\d)\b/)?.[1];
+  const status = extractNetworkStatus(log);
   if (!status) {
     return '先区分是认证/权限、URL 不存在、限流、超时还是服务端故障；';
   }
@@ -1113,6 +1116,31 @@ function networkApiStatusGuidance(log: string): string {
     return `HTTP ${status} 表示服务端故障：不要把它当成功降级，需切换可用 API 或提供明确失败退出路径；`;
   }
   return `HTTP ${status} 表示接口契约或请求参数不匹配：先核对参数/响应 schema，不匹配则切换更适合的 API；`;
+}
+
+function extractNetworkStatus(log: string): string | undefined {
+  const patterns = [
+    /\bHTTP\s*(?:status\s*)?(401|403|404|408|409|410|422|429|5\d\d)\b/i,
+    /\bstatus(?:\s*code)?\s*[=:]?\s*(401|403|404|408|409|410|422|429|5\d\d)\b/i,
+    /\b(?:api|request|fetch|接口|请求)\b[^\n]{0,80}\b(401|403|404|408|409|410|422|429|5\d\d)\b/i,
+    /\b(401|403|404|408|409|410|422|429|5\d\d)\b[^\n]{0,80}\b(?:api|request|fetch|接口|请求)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = log.match(pattern)?.[1];
+    if (match) return match;
+  }
+  return undefined;
+}
+
+function hasOnlyLoopbackNetworkEvidence(text: string): boolean {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  if (!lines.some(isLoopbackNetworkFailureLine)) return false;
+  return !lines.some((line) => {
+    if (isLoopbackNetworkFailureLine(line)) return false;
+    if (/^\s*Network API failure detected(?:\.|$)/i.test(line)) return false;
+    return /https?:\/\/(?!localhost\b|127(?:\.\d{1,3}){3}\b|\[?::1\]?\b)[^\s'")]+[^\n]{0,160}\b(?:failed|error|timeout|unreachable|unavailable|401|403|404|429|5\d\d)\b/i.test(line) ||
+      /\b(?:api|http|request|network|connection|timeout|timed out)\b[^\n]{0,120}\b(?:401|403|404|429|5\d\d)\b/i.test(line);
+  });
 }
 
 /**
@@ -1246,7 +1274,7 @@ const PYTHON_ERROR_RULES: SuggestionRule[] = [
   {
     code: 'network-api-failure',
     severity: 1,
-    skip: isLlmProviderFailureText,
+    skip: (text) => isLlmProviderFailureText(text) || hasOnlyLoopbackNetworkEvidence(text),
     ignoreMatch: (m, text) => isTestAssertionDiagnosticLine(lineAtIndex(text, m.index)),
     patterns: [
       /Network API failure detected/i,

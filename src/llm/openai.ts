@@ -1,8 +1,11 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import { Agent } from 'undici';
 import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export const DEFAULT_OPENAI_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
-export const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_OPENAI_CONNECT_TIMEOUT_MS = 60 * 1000;
+export const DEFAULT_OPENAI_STREAM_FIRST_TOKEN_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS = 60 * 1000;
 
 export interface OpenAIConfig {
   providerName?: string;
@@ -11,10 +14,14 @@ export interface OpenAIConfig {
   model: string;
   /** Structured JSON response format for OpenAI-compatible providers. */
   jsonResponseFormat?: 'json_object' | 'json_schema' | 'none';
-  /** 请求 wall-clock 总超时，毫秒。默认 15 分钟，0 表示无超时。 */
+  /** 非流式请求总超时；流式请求仅在首个内容 token 前生效。0 表示无超时。 */
   requestTimeoutMs?: number;
-  /** 流式模式下，连续多久没有新 token 即视为卡死并中断；默认 5 分钟，0 关闭。 */
+  /** DNS/TCP/TLS 建连超时；默认 60 秒，0 关闭。 */
+  connectTimeoutMs?: number;
+  /** 已收到内容后，连续多久没有新 token 即视为卡死并中断；默认 60 秒，0 关闭。 */
   streamIdleTimeoutMs?: number;
+  /** 流式模式等待首个内容 token 的超时；默认 5 分钟，0 关闭。 */
+  streamFirstTokenTimeoutMs?: number;
   /** 流式异常保护阈值；真实有效输出不会因长度本身被截断，loop/无效输出由 watchdog 中断。 */
   maxOutputChars?: number;
 }
@@ -36,8 +43,13 @@ interface OpenAIStreamChunk {
 
 export class OpenAIClient implements LLMClient {
   readonly name: string;
+  private readonly dispatcher: Agent;
+
   constructor(private readonly cfg: OpenAIConfig) {
     this.name = `openai:${cfg.model}`;
+    this.dispatcher = new Agent({
+      connect: { timeout: cfg.connectTimeoutMs ?? DEFAULT_OPENAI_CONNECT_TIMEOUT_MS },
+    });
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
@@ -65,7 +77,8 @@ export class OpenAIClient implements LLMClient {
         headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
-      });
+        dispatcher: this.dispatcher,
+      } as RequestInit & { dispatcher: Agent });
       if (!res.ok) {
         const text = await res.text();
         throw buildHttpError(this.cfg, res.status, res.statusText, text);
@@ -84,6 +97,8 @@ export class OpenAIClient implements LLMClient {
     const ctrl = new AbortController();
     const timeoutMs = this.cfg.requestTimeoutMs ?? DEFAULT_OPENAI_REQUEST_TIMEOUT_MS;
     const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS;
+    const firstTokenTimeoutMs =
+      this.cfg.streamFirstTokenTimeoutMs ?? DEFAULT_OPENAI_STREAM_FIRST_TOKEN_TIMEOUT_MS;
     const maxOutputChars = this.cfg.maxOutputChars ?? 200_000;
 
     // 把 watchdog 触发的中断原因记下来，因为底层 reader 在 abort 时
@@ -94,7 +109,7 @@ export class OpenAIClient implements LLMClient {
       ctrl.abort(err);
     };
 
-    const wallTimer =
+    let wallTimer =
       timeoutMs > 0
         ? setTimeout(
             () => abort(new Error(`OpenAI stream wall-clock ${timeoutMs}ms exceeded; aborting`)),
@@ -104,19 +119,24 @@ export class OpenAIClient implements LLMClient {
     let idleTimer: NodeJS.Timeout | null = null;
     let streamedContentChars = 0;
     const armIdle = () => {
-      if (idleTimeoutMs <= 0) return;
+      const activeTimeoutMs = streamedContentChars === 0 ? firstTokenTimeoutMs : idleTimeoutMs;
       if (idleTimer) clearTimeout(idleTimer);
+      if (activeTimeoutMs <= 0) {
+        idleTimer = null;
+        return;
+      }
       idleTimer = setTimeout(
         () => abort(new Error(
           streamedContentChars === 0
-            ? `OpenAI stream idle before first token for ${idleTimeoutMs}ms; aborting`
-            : `OpenAI stream idle for ${idleTimeoutMs}ms; aborting`,
+            ? `OpenAI stream idle before first token for ${activeTimeoutMs}ms; aborting`
+            : `OpenAI stream idle for ${activeTimeoutMs}ms; aborting`,
         )),
-        idleTimeoutMs,
+        activeTimeoutMs,
       );
     };
     const cleanup = () => {
       if (wallTimer) clearTimeout(wallTimer);
+      wallTimer = null;
       if (idleTimer) clearTimeout(idleTimer);
     };
 
@@ -132,7 +152,8 @@ export class OpenAIClient implements LLMClient {
         headers,
         body: JSON.stringify(body),
         signal: ctrl.signal,
-      });
+        dispatcher: this.dispatcher,
+      } as RequestInit & { dispatcher: Agent });
       if (!res.ok) {
         const text = await res.text();
         throw buildHttpError(this.cfg, res.status, res.statusText, text);
@@ -189,6 +210,10 @@ export class OpenAIClient implements LLMClient {
           }
           const piece = choice.delta?.content ?? choice.message?.content ?? '';
           if (!piece) continue;
+          if (streamedContentChars === 0 && wallTimer) {
+            clearTimeout(wallTimer);
+            wallTimer = null;
+          }
           aggregate += piece;
           streamedContentChars += piece.length;
           armIdle();
@@ -347,7 +372,11 @@ function hintForOpenAIError(cfg: OpenAIConfig, err: Error): string {
     hints.push('check base_url, network access, DNS/proxy settings, and whether the local server is running');
   }
   if (message.includes('timed out') || message.includes('idle')) {
-    hints.push('increase request_timeout_ms/stream_idle_timeout_ms only if the provider is still producing valid output');
+    if (message.includes('connect timeout')) {
+      hints.push('increase connect_timeout_ms for slow DNS/TCP/TLS establishment or fix network/proxy reachability');
+    } else {
+      hints.push('increase request_timeout_ms/stream_first_token_timeout_ms/stream_idle_timeout_ms only if the provider is still producing valid output');
+    }
   }
   if (hints.length === 0) {
     hints.push('check base_url, model id, provider quota, network access, and response_format support');

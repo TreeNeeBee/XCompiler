@@ -399,10 +399,11 @@ export function lintPlan(plan: Plan): LintIssue[] {
     });
   } else {
     const current = implementationPhases.filter((phase) => phase.status === 'current');
-    if (current.length !== 1 || current[0]?.id !== 'P1') {
+    const materializedPhaseId = plan.phaseId ?? 'P1';
+    if (current.length !== 1 || current[0]?.id !== materializedPhaseId) {
       issues.push({
         level: 'error',
-        message: 'implementationPhases must have exactly one current phase and it must be P1.',
+        message: `implementationPhases must have exactly one current phase and it must match plan.phaseId ${materializedPhaseId}.`,
       });
     }
     for (const phase of plannedOrCurrentImplementationPhases) {

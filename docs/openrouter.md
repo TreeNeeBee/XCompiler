@@ -52,8 +52,10 @@ llm:
       base_url: https://openrouter.ai/api/v1
       model: openrouter/free
       tags: [cluster]
+      connect_timeout_ms: 60000
       request_timeout_ms: 900000
-      stream_idle_timeout_ms: 300000
+      stream_first_token_timeout_ms: 300000
+      stream_idle_timeout_ms: 60000
   roles:
     Planner:   [openrouter_free]
     Architect: [openrouter_free]
@@ -69,6 +71,8 @@ llm:
 OpenRouter requires `OPENROUTER_API_KEY`. Local OpenAI-compatible endpoints may leave `api_key` empty when they run without authentication.
 
 If an OpenAI-compatible request fails, XCompiler reports the provider, model, base URL, request mode, HTTP status/body when available, and a concrete hint such as setting `OPENROUTER_API_KEY`, changing `json_response_format`, checking quota/rate limits, or switching provider.
+
+The three network timeouts cover different stages: `connect_timeout_ms` controls DNS/TCP/TLS establishment, `stream_first_token_timeout_ms` allows slow model startup, and `stream_idle_timeout_ms` detects a stalled stream after output has begun. Increase only the stage that actually timed out.
 
 ## 3. Choose A Free Model
 

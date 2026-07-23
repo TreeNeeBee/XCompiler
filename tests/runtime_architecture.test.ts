@@ -69,4 +69,10 @@ describe('Runtime architecture boundary', () => {
     expect(runtimeCommands).not.toMatch(/console\.(log|error|warn)/u);
     expect(runtimeCommands).not.toMatch(/process\.(exitCode|stdin|stdout|stderr)/u);
   });
+
+  it('configuration and router internals do not write directly to the terminal', async () => {
+    const config = await read('src/config/config.ts');
+    const router = await read('src/llm/router.ts');
+    expect(`${config}\n${router}`).not.toMatch(/console\.(log|error|warn)|process\.(stdout|stderr)\.write/u);
+  });
 });

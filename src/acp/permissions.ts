@@ -15,7 +15,7 @@ export function toAcpPermissionRequestParams(
   return {
     sessionId,
     toolCall: {
-      toolCallId: requestId,
+      toolCallId: request.id ?? requestId,
       title: `${request.operationType}: ${request.target}`,
       kind: permissionKind(request.operationType),
       status: 'pending',

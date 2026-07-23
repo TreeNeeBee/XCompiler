@@ -21,23 +21,26 @@ export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }>
     if (fileDiffs.length === 0) return { ok: false, error: 'no file diff parsed' };
     const changed: string[] = [];
     for (const fd of fileDiffs) {
-      const resolved = await resolveWorkspacePath(ctx.ws, fd.target, 'apply_patch', { forWrite: true });
+      const resolved = await resolveWorkspacePath(ctx.ws, fd.target, 'apply_patch', {
+        forWrite: true,
+        relativePathHints: ctx.allowedWrites,
+      });
       if (!resolved.ok) return { ok: false, error: resolved.error };
-      if (!isAllowedWrite(fd.target, ctx.allowedWrites)) {
-        return { ok: false, error: `write denied: ${fd.target} not in step writable allowlist` };
+      if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
+        return { ok: false, error: `write denied: ${resolved.rel} not in step writable allowlist` };
       }
       const abs = resolved.abs;
       let original = '';
       try {
         original = await fs.readFile(abs, 'utf8');
       } catch {
-        if (!fd.isNewFile) return { ok: false, error: `target file missing: ${fd.target}` };
+        if (!fd.isNewFile) return { ok: false, error: `target file missing: ${resolved.rel}` };
       }
       const next = applyHunks(original, fd.hunks);
-      if (next.error) return { ok: false, error: `${fd.target}: ${next.error}` };
+      if (next.error) return { ok: false, error: `${resolved.rel}: ${next.error}` };
       await fs.mkdir(path.dirname(abs), { recursive: true });
       await fs.writeFile(abs, next.content, 'utf8');
-      changed.push(fd.target);
+      changed.push(resolved.rel);
     }
     return { ok: true, data: { changedFiles: changed }, summary: `patched ${changed.join(', ')}` };
   },

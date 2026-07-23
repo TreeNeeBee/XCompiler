@@ -3,7 +3,6 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
-import { t } from '../i18n/index.js';
 import { xcEnv } from './env.js';
 
 const ProviderStringScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
@@ -35,10 +34,14 @@ const ProviderSchema = z.object({
    *   useful backups but should start below dedicated providers in score ranking.
    */
   tags: ProviderTagsSchema,
-  /** 请求 wall-clock 总超时（毫秒）。默认 15 分钟。0 = 不限制。 */
+  /** 非流式总超时；流式请求仅在首个内容 token 前生效。默认 15 分钟。0 = 不限制。 */
   request_timeout_ms: z.number().int().nonnegative().optional(),
-  /** 流式空闲超时（毫秒）。默认 5 分钟。0 = 不限制。 */
+  /** OpenAI-compatible DNS/TCP/TLS 建连超时（毫秒）。默认 60 秒。0 = 不限制。 */
+  connect_timeout_ms: z.number().int().nonnegative().optional(),
+  /** 收到首个 token 后的流式空闲超时（毫秒）。默认值由 transport 决定。0 = 不限制。 */
   stream_idle_timeout_ms: z.number().int().nonnegative().optional(),
+  /** 等待首个流式 token 的超时（毫秒）。默认 5 分钟。0 = 不限制。 */
+  stream_first_token_timeout_ms: z.number().int().nonnegative().optional(),
   /** 流式异常保护阈值。真实有效输出不会因长度本身被截断；0 = 关闭该阈值。 */
   max_output_chars: z.number().int().nonnegative().optional(),
   /**
@@ -85,10 +88,10 @@ const LocalSandboxSchema = z
   .object({
     sandbox_dir: z.string().min(1).optional(),
     python_bin: z.string().min(1).optional(),
-    inherit_env: z.boolean().optional(),
+    inherit_env: z.boolean().default(false),
     limits: SandboxLimitsSchema,
   })
-  .default(() => ({ limits: defaultSandboxLimits() }));
+  .default(() => ({ inherit_env: false, limits: defaultSandboxLimits() }));
 
 const DockerSandboxSchema = z
   .object({
@@ -117,7 +120,7 @@ const LanguageSandboxSchema = z
   })
   .default(() => ({
     mode: 'subprocess' as const,
-    local: { limits: defaultSandboxLimits() },
+    local: { inherit_env: false, limits: defaultSandboxLimits() },
     docker: {
       image: 'python:3.11-slim',
       workdir: '/workspace',
@@ -267,6 +270,7 @@ function defaultLanguageSandbox(
     mode,
     local: {
       sandbox_dir: `.sandbox/${language}`,
+      inherit_env: false,
       limits: { ...limits, expose_ports: [...(limits.expose_ports ?? [])] },
     },
     docker: {
@@ -336,6 +340,8 @@ export interface LoadedConfig {
   config: XCompilerConfig;
   /** 实际命中的 config 文件绝对路径（供 ScoreStore 在同目录下落盘 sidecar 评分文件）。 */
   path: string;
+  /** Referenced environment variables that were absent and expanded to empty strings. */
+  missingEnv: string[];
 }
 
 export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedConfig> {
@@ -346,8 +352,8 @@ export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedC
     try {
       const raw = await fs.readFile(abs, 'utf8');
       const expanded = expandEnv(raw);
-      const data = YAML.parse(expanded);
-      return { config: ConfigSchema.parse(data), path: abs };
+      const data = YAML.parse(expanded.text);
+      return { config: ConfigSchema.parse(data), path: abs, missingEnv: expanded.missing };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw err;
@@ -361,7 +367,7 @@ export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedC
   );
 }
 
-function expandEnv(s: string): string {
+function expandEnv(s: string): { text: string; missing: string[] } {
   const missing = new Set<string>();
   const out = s.replace(/\$\{([A-Z0-9_]+)\}/g, (_, name) => {
     const v = process.env[name];
@@ -371,10 +377,5 @@ function expandEnv(s: string): string {
     }
     return v;
   });
-  if (missing.size > 0) {
-    // 不抛错（OPENAI_* 在不使用 openai provider 时确实可缺），但给出明显提示。
-    // 若关键 provider 因此变成空 base_url，createClient 会兜底到 localhost。
-    console.warn(t().system.configEnvMissing([...missing].join(', ')));
-  }
-  return out;
+  return { text: out, missing: [...missing] };
 }

@@ -25,7 +25,10 @@ export const addDependencyTool: Tool<
       return { ok: false, error: 'invalid add_dependency args: packages must include at least one package name' };
     }
     const manifestPath = ctx.language === 'typescript' ? 'package.json' : 'requirements.txt';
-    const resolved = await resolveWorkspacePath(ctx.ws, manifestPath, 'add_dependency', { forWrite: true });
+    const resolved = await resolveWorkspacePath(ctx.ws, manifestPath, 'add_dependency', {
+      forWrite: true,
+      relativePathHints: ctx.allowedWrites,
+    });
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const abs = resolved.abs;
     const added: string[] = [];

@@ -60,4 +60,31 @@ describe('detectNetworkApiFailure', () => {
     expect(vitest).toBeNull();
     expect(pretty).toBeNull();
   });
+
+  it('ignores API errors deliberately emitted inside Vitest captured stderr', () => {
+    const log = [
+      'stderr | tests/integration/cli.test.ts > missing API key logs error',
+      '[ERROR] API key is required. Set NEWS_API_KEY env or use --api-key.',
+      '',
+      'FAIL  tests/integration/cli.test.ts > normal fetch saves briefing file',
+      'Error: Test timed out in 5000ms.',
+    ].join('\n');
+
+    expect(detectNetworkApiFailure(log)).toBeNull();
+  });
+
+  it('does not classify an application contract error after fetch as a network failure', () => {
+    expect(
+      detectNetworkApiFailure('[ERROR] Fetch failed: storage.save is not a function'),
+    ).toBeNull();
+  });
+
+  it('still detects a native fetch transport failure without extra details', () => {
+    expect(detectNetworkApiFailure('TypeError: fetch failed')).not.toBeNull();
+  });
+
+  it('does not treat loopback test-server failures as external API failures', () => {
+    expect(detectNetworkApiFailure('Error: connect ECONNREFUSED 127.0.0.1:80')).toBeNull();
+    expect(detectNetworkApiFailure('Request to http://localhost:3000 failed: connection refused')).toBeNull();
+  });
 });

@@ -132,6 +132,7 @@ Rules:
      rewrite the whole fixture with write_file and run_tests. After repeated failures on a complex domain format, stop inventing from memory and ask
      for a user sample or network reference.
      Never edit the implementation, the assertion, or mock out the parser to "fix" a parse error — fix the fixture first.
+   - [Time stability] Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
 6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
@@ -172,12 +173,13 @@ Mandatory rules:
 5. Design phases must not output src/ or tests/ files. HIGH_LEVEL_DESIGN is the only phase that may output \`package.json\` / \`tsconfig.json\`.
 6. Exactly one HIGH_LEVEL_DESIGN Step must output \`package.json\` for greenfield TypeScript plans; ensure one HIGH_LEVEL_DESIGN Step output \`package.json\`. It must include scripts for \`build\`, \`test\`, and preferably \`lint\`.
 7. Local TypeScript source imports must use explicit \`.ts\` ESM specifiers. Configure \`allowImportingTsExtensions: true\` and use \`tsc --noEmit\`. Generated TypeScript must be compatible with Node native type stripping: avoid enums, namespaces, parameter properties, and transform-required syntax.
-8. dependencies is an advisory runtime npm package list; the authoritative manifest is \`package.json\` from HIGH_LEVEL_DESIGN. Do not invent package names.
-9. Application/mixed projects need \`src/main.ts\` with a directly runnable \`main()\`; library/mixed projects need \`src/index.ts\` or equivalent public API plus API guide.
-10. complexityAssessment and implementationPhases follow the same rules as Python: simple => P1, moderate => at least P1+P2, complex => at least P1+P2+P3, forced phase split => set userForcedPhaseSplit=true.
-11. verificationGate failurePolicy must say: Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
-12. For non-trivial work, return architectureModules with sourcePaths and testPaths; CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
-13. TypeScript tests must use Vitest only. Never request Jest, ts-jest, @types/jest, ts-node, or nodemon in Step prompts or package.json; package.json must use "test": "vitest run" and "build": "tsc --noEmit".
+8. Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
+9. dependencies is an advisory runtime npm package list; the authoritative manifest is \`package.json\` from HIGH_LEVEL_DESIGN. Do not invent package names.
+10. Application/mixed projects need \`src/main.ts\` with a directly runnable \`main()\`; library/mixed projects need \`src/index.ts\` or equivalent public API plus API guide.
+11. complexityAssessment and implementationPhases follow the same rules as Python: simple => P1, moderate => at least P1+P2, complex => at least P1+P2+P3, forced phase split => set userForcedPhaseSplit=true.
+12. verificationGate failurePolicy must say: Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
+13. For non-trivial work, return architectureModules with sourcePaths and testPaths; CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
+14. TypeScript tests must use Vitest only. Never request Jest, ts-jest, @types/jest, ts-node, or nodemon in Step prompts or package.json; package.json must use "test": "vitest run" and "build": "tsc --noEmit".
 
 Output JSON shape is identical to Python and must include \`"projectType": "application | library | mixed"\`, with TypeScript paths such as \`src/example.ts\` and \`tests/example.test.ts\`; the first Step phase must be \`REQUIREMENT_ANALYSIS\`, not \`REQUIREMENT\`. There is no CLI project-type override.`;
 
@@ -200,6 +202,7 @@ Rules:
    - [Test convention] Tests use Vitest: \`import { describe, it, expect } from "vitest";\`. Test files live under \`tests/**/*.test.ts\`.
    - [Self-contained tests] Tests **must NOT** read a sample file that does not exist on disk. When a target function needs file input, either create the content inside the test or write fixtures under \`tests/fixtures/<name>\`.
    - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed", the **fixture itself is malformed**. read_file the fixture, prefer a user/workspace sample; if none exists, use http_fetch to obtain an authoritative public reference; construct minimal samples only for simple text formats and immediately run_tests. Never weaken the implementation/assertion, and never repeatedly invent complex domain fixtures from memory.
+   - [Time stability] Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
 4. When all outputs files exist and self-check passes, set done = true with empty actions.
 5. Correct any error in the next round's actions; never overstep authority or invent tools.
 6. [Large-file chunked writes] write_file / append_file content must stay under the current Step's runtime chunk limit shown in the tool docs.
@@ -298,7 +301,7 @@ const messages: Messages = {
   llm: {
     coderDebuggerSameModel: (model, coderProvider, debuggerProvider) =>
       `Model configuration advice: Coder (${coderProvider}) and Debugger (${debuggerProvider}) both use ${model}. Prefer different models so debugging provides an independent reasoning path.`,
-    invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); falling back to ${fallback}`,
+    invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); configure a valid HTTP(S) URL (default: ${fallback})`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} failed output validation; trying next`,
     providerCallFailed: (role, model) => `[${role}] provider ${model} failed; trying next`,
     scoreReadFailed: (p, message) => `failed to read ${p}: ${message}`,
@@ -315,6 +318,8 @@ const messages: Messages = {
     unhandledError: (message) => `Unhandled error: ${message}`,
     unsupportedPypiOnlyNetwork:
       'network=pypi-only is rejected because Docker cannot enforce a PyPI-only allowlist by itself. Use network=off for isolation or network=download-only for explicitly unrestricted outbound downloads.',
+    unsupportedSubprocessNetworkOff:
+      'sandbox network=off cannot be enforced in subprocess mode; use mode=docker or choose download-only/full explicitly.',
     dockerInsideContainerUnsupported:
       'XCompiler is running inside a container, so sandbox mode docker is unsupported because Docker-outside-of-Docker can mis-map bind mounts and docker.sock permissions. Use agent.sandboxes.<language>.mode=subprocess, run XCompiler on the host, or set XC_IN_CONTAINER=0 only in a controlled environment.',
     firejailUnsupported: 'sandbox=firejail is not implemented; use subprocess or docker.',
@@ -763,7 +768,7 @@ ${opts.baseline || '(missing baseline)'}
   : ''}Planning depth rules:
 - Unless the request is explicitly tiny (single function / toy script / one-file utility), do not collapse the solution into one source file and one test.
 - If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple architecture modules and Step.subTasks under CODE/MODULE_TEST macro Steps.
-- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 current only; moderate => P1 current + at least P2 planned; complex => P1 current + at least P2/P3 planned. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true. Every current/planned implementation phase must be represented by a full V-model cycle in steps, with Step.iterationId pointing to that phase.
+- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 current only; moderate => P1 current + at least P2 planned; complex => P1 current + at least P2/P3 planned. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true. Materialize a full V-model cycle only for the current phase; planned phases remain goals until activated.
 - Use HIGH_LEVEL_DESIGN/DETAILED_DESIGN steps to describe module boundaries, responsibilities, dependencies, and extension points that future incremental work can build on.
 - When baseline files already exist, prefer editing/extending those modules over creating shadow implementations with duplicate behaviour.
 

@@ -13,6 +13,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('never list tests/**/*.test.ts');
     expect(prompt).toContain('Vitest only');
     expect(prompt).toContain('Never request Jest');
+    expect(prompt).toContain('allowImportingTsExtensions');
   });
 
   it('keeps TypeScript StepPlan output ownership explicit in the two-level planner prompt', () => {
@@ -114,6 +115,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('TypeScript / Node.js best practice');
     expect(prompt).toContain('ESM relative imports with explicit ".ts" specifiers');
     expect(prompt).toContain("Node's native TypeScript type stripping");
+    expect(prompt).toContain('Never call `new Date()` / `date.today()` while hard-coding a calendar year');
     expect(prompt).not.toContain('sys.path.insert');
   });
 
