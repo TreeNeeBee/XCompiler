@@ -7,7 +7,7 @@ import type { XCompilerConfig } from '../src/config/config.js';
 
 const baseCfg = (sandbox: 'subprocess' | 'docker'): XCompilerConfig =>
   ({
-    llm: { default: 'ollama_code', providers: {}, roles: {}, fallbacks: [] },
+    llm: { providers: {}, roles: {}, fallbacks: [] },
     agent: {
       language: 'python',
       max_steps: 10,

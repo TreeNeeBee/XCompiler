@@ -17,7 +17,6 @@ import type { LLMClient } from '../src/llm/types.js';
 function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
   return {
     llm: {
-      default: 'ollama_code',
       providers: {
         ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
         ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
@@ -50,6 +49,9 @@ async function tmpDir(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-router-'));
 }
 
+/** 可用性探测 stub：单测不碰真实网络。 */
+const stubProbe = async () => ({ ok: true, latencyMs: 0, detail: 'stub reachable' });
+
 describe('LLMRouter fallback chain', () => {
   it('falls back to next provider when primary throws', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
@@ -70,14 +72,14 @@ describe('LLMRouter fallback chain', () => {
 
   it('uses explicit provider type instead of provider-name matching', () => {
     const cfg = mkCfg({
-      default: 'any_vendor_name',
       providers: {
         any_vendor_name: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8080/v1', model: 'local' },
         another_local_server: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8081/v1', model: 'mlx' },
       },
+      roles: { Coder: ['any_vendor_name'] },
     });
     const router = new LLMRouter(cfg);
-    expect(router.for('default').name).toBe('openai:local');
+    expect(router.for('Coder').name).toBe('openai:local');
   });
 
   it('role_fallbacks overrides global', async () => {
@@ -93,7 +95,7 @@ describe('LLMRouter fallback chain', () => {
   it('FallbackClient.chat tries each provider in order', async () => {
     // Manually construct a router and patch internal clients via reflection
     const cfg = mkCfg({ fallbacks: ['openai'] });
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     let firstCalls = 0;
@@ -125,7 +127,7 @@ describe('LLMRouter fallback chain', () => {
 
   it('reports all provider failures when the whole chain fails', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     clientsMap.set('ollama_code', {
@@ -145,10 +147,129 @@ describe('LLMRouter fallback chain', () => {
       .rejects.toThrow(/all LLM providers failed.*ollama_code\/fake-primary.*openai\/fake-secondary.*429/su);
   });
 
+  it('retries a switched-to provider once when the availability check confirms the endpoint is reachable', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const probed: string[] = [];
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, async (name) => {
+      probed.push(name);
+      return { ok: true, latencyMs: 1, detail: 'stub reachable' };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let primaryCalls = 0;
+    let secondaryCalls = 0;
+    const secondaryStreamingFlags: boolean[] = [];
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        primaryCalls++;
+        throw new Error('OpenAI stream idle before first token for 300000ms; aborting');
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async (_messages, options) => {
+        secondaryCalls++;
+        secondaryStreamingFlags.push(!!options?.onToken);
+        if (options?.onToken) {
+          throw new Error('OpenAI stream idle before first token for 300000ms; aborting');
+        }
+        return 'rescued';
+      },
+    });
+
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+      onToken: () => {},
+    });
+
+    expect(out).toBe('rescued');
+    // 首 token 超时不走无条件重试：可用性检查确认端点在线后才各补一次非流式重试。
+    expect(primaryCalls).toBe(2);
+    expect(secondaryCalls).toBe(2);
+    expect(secondaryStreamingFlags).toEqual([true, false]);
+    expect(probed).toContain('ollama_code');
+    expect(probed).toContain('openai');
+  });
+
+  it('skips a switched-to provider when the availability check reports it unreachable and another candidate remains', async () => {
+    const cfg = mkCfg({
+      providers: {
+        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
+        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
+        openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
+      },
+      roles: { Coder: ['ollama_code'] },
+      fallbacks: ['ollama_design', 'openai'],
+    });
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, async (name) => (
+      name === 'ollama_design'
+        ? { ok: false, latencyMs: 1, detail: 'connect ECONNREFUSED' }
+        : { ok: true, latencyMs: 1, detail: 'stub reachable' }
+    ));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let designCalls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        throw new Error('primary down');
+      },
+    });
+    clientsMap.set('ollama_design', {
+      name: 'fake-design',
+      chat: async () => {
+        designCalls++;
+        throw new Error('should have been skipped by the availability check');
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => 'ok',
+    });
+
+    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }]);
+
+    expect(out).toBe('ok');
+    // 切换目标探测不可达且后面还有候选 → 直接跳过，不浪费必然超时的 chat 请求。
+    expect(designCalls).toBe(0);
+  });
+
+  it('does not availability-retry non-transient chain failures such as quota exhaustion', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, async () => ({
+      ok: true,
+      latencyMs: 1,
+      detail: 'stub reachable',
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    let primaryCalls = 0;
+    let secondaryCalls = 0;
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async () => {
+        primaryCalls++;
+        throw new Error('OpenAI HTTP 401 unauthorized');
+      },
+    });
+    clientsMap.set('openai', {
+      name: 'fake-secondary',
+      chat: async () => {
+        secondaryCalls++;
+        throw new Error('OpenAI HTTP 429: free-models-per-day');
+      },
+    });
+
+    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }))
+      .rejects.toThrow(/all LLM providers failed/);
+    expect(primaryCalls).toBe(1);
+    expect(secondaryCalls).toBe(1);
+  });
+
   it('falls back when validate rejects a superficially successful response', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
     const scores = new ScoreStore('/tmp/x/config.yaml');
-    const router = new LLMRouter(cfg, undefined, scores);
+    const router = new LLMRouter(cfg, undefined, scores, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     let firstCalls = 0;
@@ -186,7 +307,7 @@ describe('LLMRouter fallback chain', () => {
   it('can disable success score boosts for workflow-level LLM calls', async () => {
     const cfg = mkCfg({});
     const scores = new ScoreStore('/tmp/x/config.yaml', { ollama_code: 0.4 });
-    const router = new LLMRouter(cfg, undefined, scores);
+    const router = new LLMRouter(cfg, undefined, scores, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     clientsMap.set('ollama_code', {
@@ -205,7 +326,7 @@ describe('LLMRouter fallback chain', () => {
   it('retries the same provider once for transient stream failures', async () => {
     const cfg = mkCfg({});
     const scores = new ScoreStore('/tmp/x/config.yaml');
-    const router = new LLMRouter(cfg, undefined, scores);
+    const router = new LLMRouter(cfg, undefined, scores, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     let calls = 0;
@@ -237,7 +358,7 @@ describe('LLMRouter fallback chain', () => {
 
   it('retries stream transport failures once without streaming on the same provider', async () => {
     const cfg = mkCfg({});
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     const sawStreaming: boolean[] = [];
@@ -262,9 +383,13 @@ describe('LLMRouter fallback chain', () => {
     expect(chunks).toEqual([]);
   });
 
-  it('does not retry without streaming when the stream idles before the first token', async () => {
+  it('skips the same-provider streaming retry on first-token idle unless the availability check confirms the endpoint', async () => {
     const cfg = mkCfg({});
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, async () => ({
+      ok: true,
+      latencyMs: 1,
+      detail: 'stub reachable',
+    }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     const sawStreaming: boolean[] = [];
@@ -281,12 +406,13 @@ describe('LLMRouter fallback chain', () => {
         onToken: () => {},
       }),
     ).rejects.toThrow(/before first token/u);
-    expect(sawStreaming).toEqual([true]);
+    // 不再有无条件的同 provider 流式重试；可用性检查确认在线后补一次非流式重试。
+    expect(sawStreaming).toEqual([true, false]);
   });
 
   it('waits and retries short provider 429 retry-after errors once', async () => {
     const cfg = mkCfg({});
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     let calls = 0;
@@ -308,7 +434,7 @@ describe('LLMRouter fallback chain', () => {
 
   it('treats fetch failed from a streaming request as a non-stream retry candidate', async () => {
     const cfg = mkCfg({});
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     const sawStreaming: boolean[] = [];
@@ -331,7 +457,7 @@ describe('LLMRouter fallback chain', () => {
 
   it('does not retry non-transient provider failures before fallback', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
-    const router = new LLMRouter(cfg);
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const clientsMap: Map<string, LLMClient> = (router as any).clients;
     let firstCalls = 0;
@@ -435,7 +561,7 @@ describe('LLMRouter score-sorted chain', () => {
   it('decays score on chat error and boosts on success', async () => {
     const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
-    const router = new LLMRouter(cfg, undefined, scores);
+    const router = new LLMRouter(cfg, undefined, scores, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const map: Map<string, LLMClient> = (router as any).clients;
     map.set('ollama_code', {

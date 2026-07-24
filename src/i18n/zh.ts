@@ -616,6 +616,7 @@ const messages: Messages = {
     sandboxStatus: (r) => `沙盒：${r}`,
     autoFixedSrcImports: (n, files) => `  ⚠ auto-fixed sys.path bootstrap in ${n} 个入口文件：${files}`,
     debugResumeNotice: (id, n) => `  ↻ ${id} 检测到上次会话以 FAILED 结束（已累积 ${n} 次尝试），本次首轮直接进入 Debugger 模式。`,
+    debugResumeInfraRetry: (id, n) => `  ↻ ${id} 上次会话仅留下 LLM 断连/限流等基础设施错误（${n} 次），已清理陈旧 debug 缓存，本次按正常流程重新执行该 Step。`,
     spinDebugRetry: (id, attempt, budget, cap, reason) => `🛠  ${id} DEBUG retry ${attempt}/${budget} (cap=${cap}) — ${reason}`,
     retryException: (a, b, msg) => `retry ${a}/${b} 抛出异常：${msg}`,
     fixSucceeded: (id, a) => `${id} 修复成功 (retry=${a})`,

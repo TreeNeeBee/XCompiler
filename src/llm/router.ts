@@ -7,11 +7,31 @@ import type { ScoreStore } from './scores.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import { t } from '../i18n/index.js';
 import type { PluginHost } from '../plugins/host.js';
+import {
+  isOllamaProvider,
+  isOpenAICompatibleProvider,
+  normalizeBaseUrl,
+  probeLLMProviderAvailability,
+  type LLMProbeResult,
+} from './health.js';
+
+// 兼容旧导入路径：这些 helper 已下沉到通用可用性模块 health.ts。
+export { isOllamaProvider, isOpenAICompatibleProvider, normalizeBaseUrl } from './health.js';
 
 type ProviderConfig = XCompilerConfig['llm']['providers'][string];
 
+/** 可用性检查注入点（测试用）；默认走 health.probeLLMProviderAvailability。 */
+export type ProviderAvailabilityProbe = (
+  name: string,
+  provider: ProviderConfig,
+) => Promise<LLMProbeResult>;
+
+/** 探测结果缓存时长：同一 provider 短时间内多次切换/重试不重复发起探测。 */
+const PROBE_CACHE_TTL_MS = 15_000;
+
 export class LLMRouter {
   private readonly clients = new Map<string, LLMClient>();
+  private readonly probeCache = new Map<string, { ts: number; result: LLMProbeResult }>();
 
   constructor(
     private readonly cfg: XCompilerConfig,
@@ -19,6 +39,8 @@ export class LLMRouter {
     private readonly scores?: ScoreStore,
     private readonly unavailable: ReadonlySet<string> = new Set(),
     private readonly plugins?: PluginHost,
+    private readonly probe: ProviderAvailabilityProbe = (name, provider) =>
+      probeLLMProviderAvailability(provider),
   ) {
     for (const [name, p] of Object.entries(cfg.llm.providers)) {
       const client = createClient(name, p);
@@ -27,13 +49,33 @@ export class LLMRouter {
   }
 
   /**
+   * 通用可用性检查（doctor 同源规则）：供 FallbackClient 在冷启动、provider 切换、
+   * 瞬时断连重试三个时机调用。结果按 maxAgeMs 缓存，永不抛错。
+   */
+  private async availability(name: string, maxAgeMs = PROBE_CACHE_TTL_MS): Promise<LLMProbeResult | undefined> {
+    const provider = this.cfg.llm.providers[name];
+    if (!provider) return undefined;
+    const cached = this.probeCache.get(name);
+    if (cached && Date.now() - cached.ts <= maxAgeMs) return cached.result;
+    let result: LLMProbeResult;
+    try {
+      result = await this.probe(name, provider);
+    } catch (err) {
+      result = { ok: false, latencyMs: 0, detail: err instanceof Error ? err.message : String(err) };
+    }
+    this.probeCache.set(name, { ts: Date.now(), result });
+    return result;
+  }
+
+  /**
    * 返回某角色的 LLM 客户端：自动包含按评分排序的候选链。
    *
-   * 候选集合：roles[role] (数组) ∪ role_fallbacks[role] ∪ default ∪ fallbacks，去重。
+   * 候选集合：roles[role] (数组) ∪ role_fallbacks[role] ∪ fallbacks，去重。
+   * 模型选择必须在配置中手动指定；不再存在隐式的 default provider。
    * 排序：按 ScoreStore 的评分降序；评分 = 0 的 provider 直接剔除。
    * 链中第一个调用成功即返回；失败 → 自动降评分并尝试下一个。
    */
-  for(role: Role | 'default' = 'default'): LLMClient {
+  for(role: Role): LLMClient {
     const candidates = this.resolveChain(role);
     if (candidates.length === 0) {
       throw new Error(`LLM provider not configured for role: ${role}`);
@@ -56,6 +98,7 @@ export class LLMRouter {
       this.audit,
       String(role),
       this.scores,
+      (name, maxAgeMs) => this.availability(name, maxAgeMs),
     );
     const observable = this.audit
       ? wrapWithAudit(composite, String(role), this.audit)
@@ -66,7 +109,7 @@ export class LLMRouter {
   }
 
   /** 返回某角色按当前评分/可用性解析后的首选 provider 与模型，供启动诊断使用。 */
-  primarySelection(role: Role | 'default'): { provider: string; model: string } | undefined {
+  primarySelection(role: Role): { provider: string; model: string } | undefined {
     const ranked = this.rankByScore(this.resolveChain(role));
     for (const provider of ranked) {
       const config = this.cfg.llm.providers[provider];
@@ -75,21 +118,18 @@ export class LLMRouter {
     return undefined;
   }
 
-  private resolveChain(role: Role | 'default'): string[] {
+  private resolveChain(role: Role): string[] {
     const out: string[] = [];
     const push = (n: string | undefined) => {
       if (n && !out.includes(n)) out.push(n);
     };
-    if (role !== 'default') {
-      const explicit = this.cfg.llm.role_fallbacks?.[role];
-      if (explicit && explicit.length > 0) {
-        for (const n of explicit) push(n);
-        return out;
-      }
-      // roles[role] 现已是数组形式（schema transform 强制）
-      for (const n of this.cfg.llm.roles?.[role] ?? []) push(n);
+    const explicit = this.cfg.llm.role_fallbacks?.[role];
+    if (explicit && explicit.length > 0) {
+      for (const n of explicit) push(n);
+      return out;
     }
-    push(this.cfg.llm.default);
+    // roles[role] 现已是数组形式（schema transform 强制）
+    for (const n of this.cfg.llm.roles?.[role] ?? []) push(n);
     for (const f of this.cfg.llm.fallbacks ?? []) push(f);
     return out;
   }
@@ -109,23 +149,60 @@ export class LLMRouter {
 class FallbackClient implements LLMClient {
   readonly name: string;
   private static readonly MAX_TRANSIENT_PROVIDER_ATTEMPTS = 2;
+  /** 冷启动可用性检查的新鲜度：进程内首次使用后长时间复用。 */
+  private static readonly COLD_START_PROBE_MAX_AGE_MS = 10 * 60_000;
+  /** 瞬时断连重试门控的新鲜度：必须接近实时。 */
+  private static readonly RETRY_GATE_PROBE_MAX_AGE_MS = 5_000;
 
   constructor(
     private readonly chain: { name: string; client: LLMClient }[],
     private readonly audit: AuditLogger | undefined,
     private readonly role: string,
     private readonly scores?: ScoreStore,
+    private readonly availability?: (name: string, maxAgeMs?: number) => Promise<LLMProbeResult | undefined>,
   ) {
     this.name = chain.length === 1
       ? chain[0]!.client.name
       : `chain[${chain.map((c) => c.client.name).join('>')}]`;
   }
 
+  /**
+   * 通用可用性规则（替代早期的特殊非流式救援请求）：
+   *  1. 冷启动 —— 本次 chat 的首选 provider 在使用前做一次 doctor 同源的端点探测，
+   *     结果仅审计记录（不阻断首选，避免探测误判把唯一可用链路提前判死）。
+   *  2. 切换 —— 故障转移到下一个 provider 前先探测：不可达且后面还有候选 → 直接跳过，
+   *     不再把时间耗在必然超时的 chat 请求上；是最后一个候选时仍然一试。
+   *  3. 断连重试 —— chat 抛连接类瞬时错误（首 token 超时/建连失败/断连等）时，
+   *     先探测确认端点在线再重试一次（流式错误降级为非流式）；端点不可达 → 立即切换。
+   */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     let lastErr: unknown;
     const failures: string[] = [];
     for (let i = 0; i < this.chain.length; i++) {
       const c = this.chain[i]!;
+      // 冷启动 / 切换时的可用性检查（规则 1 / 2）。
+      const isSwitch = i > 0;
+      const health = await this.availability?.(
+        c.name,
+        isSwitch ? PROBE_CACHE_TTL_MS : FallbackClient.COLD_START_PROBE_MAX_AGE_MS,
+      );
+      if (health && !health.ok) {
+        await this.audit?.event(
+          'note',
+          `${this.role} availability check failed for ${c.client.name}: ${health.detail}`,
+          {
+            messageId: 'llm.provider_probe_unreachable',
+            provider: c.name,
+            switch: isSwitch,
+            latencyMs: health.latencyMs,
+            detail: health.detail,
+          },
+        );
+        if (isSwitch && i < this.chain.length - 1) {
+          failures.push(`${c.name}/${c.client.name}: availability check failed: ${health.detail}`);
+          continue;
+        }
+      }
       let attemptOptions = options;
       for (let providerAttempt = 1; providerAttempt <= FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS; providerAttempt++) {
         let out: string;
@@ -162,6 +239,31 @@ class FallbackClient implements LLMClient {
               await delay(retryDelayMs);
             }
             continue;
+          }
+          // 规则 3：连接类瞬时错误（含首 token 超时等不在常规重试集内的错误）→
+          // 用可用性检查门控一次重试：端点确认在线才重试（流式降级为非流式），
+          // 端点不可达则立即故障转移。
+          if (
+            providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS &&
+            isTransientConnectivityLLMError(err)
+          ) {
+            const gate = await this.availability?.(c.name, FallbackClient.RETRY_GATE_PROBE_MAX_AGE_MS);
+            if (gate?.ok) {
+              attemptOptions = withoutStreamingOptions(attemptOptions);
+              await this.audit?.event(
+                'note',
+                `${this.role} availability check confirmed ${c.client.name} is reachable; retrying without streaming after transient connectivity failure`,
+                {
+                  messageId: 'llm.provider_probe_retry',
+                  provider: c.name,
+                  attempt: i + 1,
+                  providerAttempt,
+                  probeLatencyMs: gate.latencyMs,
+                  error: errorMessage(err),
+                },
+              );
+              continue;
+            }
           }
           this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
           failures.push(formatProviderFailure(c.name, c.client.name, err));
@@ -267,6 +369,23 @@ function isRetryableLLMError(err: unknown): boolean {
   );
 }
 
+/** 连接类瞬时错误：首 token/空闲超时、建连失败、连接被断等；经可用性检查确认端点在线后可重试一次。 */
+function isTransientConnectivityLLMError(err: unknown): boolean {
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('stream idle') ||
+    msg.includes('stream wall-clock') ||
+    msg.includes('timed out') ||
+    msg.includes('fetch failed') ||
+    msg.includes('terminated') ||
+    msg.includes('socket hang up') ||
+    msg.includes('econnreset') ||
+    msg.includes('econnrefused') ||
+    msg.includes('stream response aborted') ||
+    msg.includes('response aborted')
+  );
+}
+
 function retryDelayForLLMError(err: unknown): number {
   const msg = errorMessage(err);
   if (!/\b(?:http\s*)?429\b/i.test(msg)) return 0;
@@ -332,32 +451,6 @@ function createClient(
   return null;
 }
 
-/** Providers backed by Ollama's native /api/chat protocol. */
-export function isOllamaProvider(provider: Pick<ProviderConfig, 'type'>): boolean {
-  return provider.type === 'ollama';
-}
-
-/** Providers backed by OpenAI-compatible /v1/chat/completions APIs. */
-export function isOpenAICompatibleProvider(provider: Pick<ProviderConfig, 'type'>): boolean {
-  return provider.type === 'openai';
-}
-
 /**
- * 规整 LLM provider base_url：
- *  - 空 / 仅空白 → fallback；
- *  - 去首尾空白和尾部 '/'；
- *  - 缺少 scheme 时自动补 `http://`；
- *  - 不能解析为合法 URL → fail configuration immediately.
+ * 规整 LLM provider base_url 等 helper 已移入 ./health.js（顶部 re-export 保持旧导入路径兼容）。
  */
-export function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
-  const trimmed = (raw ?? '').trim().replace(/\/+$/, '');
-  if (trimmed.length === 0) return fallback;
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-  try {
-    // 验证可解析
-    new URL(withScheme);
-    return withScheme;
-  } catch {
-    throw new Error(t().llm.invalidBaseUrl(JSON.stringify(raw), fallback));
-  }
-}

@@ -239,7 +239,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     baselinePlanFile: opts.baselinePlanFile ?? '',
     yes: !!opts.yes,
     roles: cfg.llm.roles,
-    default_provider: cfg.llm.default,
   });
   const pluginHost = new PluginHost({
     plugins: opts.plugins,

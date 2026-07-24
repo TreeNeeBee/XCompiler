@@ -422,8 +422,19 @@ export class PhaseEngine {
         const r = await this.opts.sandbox.build(this.profile.manifestFile);
         spin?.succeed(t().engine.sandboxReady(r.reason));
       } catch (err) {
-        spin?.fail((err as Error).message);
-        throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        spin?.fail(message);
+        // 依赖安装属于基础设施失败（典型：npm/pip 网络超时）：返回结构化失败而非抛未处理异常，
+        // 下一次 xcompiler run 会在启动时重新构建沙盒并从断点恢复。
+        const failedStepId = order.find((s) => s.status !== 'DONE')?.id ?? order[0]?.id ?? 'S000';
+        this.lastFailure = { reason: sandboxBuildFailureReason(message), failureLog: message };
+        return {
+          totalSteps: order.length,
+          executedSteps: 0,
+          failedStepId,
+          failureLog: message,
+          failureReason: this.lastFailure.reason,
+        };
       }
     }
 
@@ -503,8 +514,18 @@ export class PhaseEngine {
           const r = await this.opts.sandbox.build(this.profile.manifestFile);
           spin?.succeed(t().engine.sandboxStatus(r.reason));
         } catch (err) {
-          spin?.fail((err as Error).message);
-          throw err;
+          const message = err instanceof Error ? err.message : String(err);
+          spin?.fail(message);
+          // 同启动期 build：不把已 DONE 的 step 改回 FAILED（产物已验收），只以结构化失败结束本次 run；
+          // 下次 run 启动时会重试沙盒构建并从下一个未完成 step 继续。
+          this.lastFailure = { reason: sandboxBuildFailureReason(message), failureLog: message };
+          return {
+            totalSteps: order.length,
+            executedSteps: executed,
+            failedStepId: step.id,
+            failureLog: message,
+            failureReason: this.lastFailure.reason,
+          };
         }
       }
 
@@ -1284,29 +1305,26 @@ export class PhaseEngine {
         const attempts = this.debugCache.attempts(step.id);
         const last = attempts.slice(-1)[0]!;
         const resume = latestActionableDebugAttempt(attempts) ?? last;
+        const resumeFailureLog = cleanFailureLogForDebugContext(resume.failureLogTail);
         const cachedTestScopeArgs = inferCachedTestScopeArgs(resume);
         const cachedContextMode = resume.contextMode ?? (cachedTestScopeArgs.length > 0 ? 'test-rollback' : undefined);
+        if (isNonDebuggableInfrastructureFailure(resume.reason, resumeFailureLog)) {
+          // 上一次会话只留下 LLM provider 断连/限流等基础设施错误，没有任何可修复的代码线索。
+          // 不能拿陈旧的断连记录直接判死本次 run（否则只有手删 debug_cache.json 才能恢复）；
+          // 清掉被污染的缓存条目，按正常流程重新执行该 Step。若 LLM 仍不可用，
+          // 本次尝试会现场失败并走既有的基础设施失败退出路径，而不会持续累积。
+          this.log(chalk.yellow(t().engine.debugResumeInfraRetry(step.id, attempts.length)));
+          await this.debugCache.markDone(step.id);
+          priorPrompt = '';
+          initial = await this.runOneAttempt(plan, step);
+        } else {
         this.log(
           chalk.yellow(
             t().engine.debugResumeNotice(step.id, attempts.length),
           ),
         );
         if (this.isVModelTestPhase(step.phase)) {
-          const resumeFailureLog = cleanFailureLogForDebugContext(resume.failureLogTail);
-          if (isNonDebuggableInfrastructureFailure(resume.reason, resumeFailureLog)) {
-            const reason = resume.reason || `${step.phase} had an unresolved LLM provider failure from a previous run.`;
-            initial = {
-              ok: false,
-              failureLog: [t().engine.reasonLine(reason), priorPrompt, resumeFailureLog].filter(Boolean).join('\n'),
-              reason,
-              issueKind: 'infrastructure',
-              evidence: {
-                stage: 'cached-infrastructure-failure',
-                role: step.role,
-                attempts: attempts.length,
-              },
-            };
-          } else if (
+          if (
             !shouldRollbackTestPhaseFailure(resume.reason, resumeFailureLog) ||
             isCachedTestArtifactRegressionAfterPassingVerification(step, resumeFailureLog)
           ) {
@@ -1344,7 +1362,7 @@ export class PhaseEngine {
         } else {
           initial = await this.runOneAttempt(plan, step, {
             asDebugger: true,
-            failureLog: cleanFailureLogForDebugContext(resume.failureLogTail),
+            failureLog: resumeFailureLog,
             reason: resume.reason,
             priorAttemptsPrompt: priorPrompt,
             extraAllowedWrites: inheritedExtraAllowedWrites,
@@ -1353,6 +1371,7 @@ export class PhaseEngine {
             issueId: activeIssueId,
             completedBeforeDebug,
           });
+        }
         }
       } else {
         initial = await this.runOneAttempt(plan, step);
@@ -3033,10 +3052,17 @@ function extractFailedTestPaths(text: string): string[] {
   return dedup(found);
 }
 
+/** 沙盒依赖安装失败的一行摘要；归类为基础设施失败，不进 Debugger。 */
+function sandboxBuildFailureReason(message: string): string {
+  const firstLine = message.split('\n', 1)[0] ?? '';
+  return `sandbox dependency install failed: ${firstLine.slice(0, 300)}`;
+}
+
 function isNonDebuggableInfrastructureFailure(reason?: string, failureLog?: string): boolean {
   const text = `${reason ?? ''}\n${failureLog ?? ''}`.toLowerCase();
   if (/low-quality debugger response/u.test(text)) return false;
   return (
+    /sandbox dependency install failed|npm dependency install failed|pip install failed/u.test(text) ||
     /permission denied for code validation/u.test(text) ||
     /typeerror:\s*fetch failed/u.test(text) ||
 	    /(?:openai|ollama) http (?:401|403|408|409|429|5\d\d)\b/u.test(text) ||

@@ -1215,6 +1215,77 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(auditLog).toContain('engine.test_phase_rollback');
   });
 
+  it('clears infra-only cached debug history and reruns the step normally instead of exiting', async () => {
+    const plan = fakePlan();
+    const codeStep = plan.steps.find((step) => step.phase === 'CODE')!;
+    plan.steps = [{ ...codeStep, dependsOn: [] }];
+    const planPath = path.join(tmp, 'plan.json');
+    await savePlan(planPath, plan);
+    await fs.mkdir(path.join(tmp, '.xcompiler'), { recursive: true });
+    await fs.writeFile(
+      path.join(tmp, '.xcompiler/debug_cache.json'),
+      JSON.stringify({
+        version: 1,
+        steps: {
+          [codeStep.id]: {
+            lastUpdated: new Date().toISOString(),
+            lastStatus: 'FAILED',
+            lastReason: 'all LLM providers failed for role Coder',
+            attempts: [
+              {
+                attempt: 0,
+                ts: new Date().toISOString(),
+                reason: 'all LLM providers failed for role Coder: openrouter_free/openrouter/free: OpenAI stream idle before first token for 300000ms; aborting',
+                failureLogTail: 'OpenAI stream idle before first token for 300000ms; aborting',
+              },
+              {
+                attempt: 1,
+                ts: new Date().toISOString(),
+                reason: 'all LLM providers failed for role Coder: TypeError: fetch failed',
+                failureLogTail: 'TypeError: fetch failed',
+              },
+            ],
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    // 只提供 Coder：若引擎错误地沿用旧行为（合成失败退出或进入 Debugger resume），
+    // FakeRouter 会因缺少 Debugger 而失败，failedStepId 将被设置。
+    const coder = new CapturingScriptedLLM([
+      JSON.stringify({
+        thoughts: 'provider connectivity restored; write implementation normally',
+        actions: [
+          { tool: 'write_file', args: { path: 'src/hello.py', content: 'def hi():\n    return 1\n' } },
+          { tool: 'write_file', args: { path: 'docs/tests/unit-test-plan.md', content: '# unit plan\n' } },
+        ],
+        done: true,
+      }),
+    ]);
+    const router = new FakeRouter({ Coder: coder });
+    const engine = new PhaseEngine({
+      ws,
+      git,
+      sandbox: new CodeValidationSandbox(ws),
+      router: router as unknown as LLMRouter,
+      audit,
+      planPath,
+      maxRoundsPerStep: 1,
+      maxDebugRetries: 1,
+    });
+
+    const result = await engine.run(plan);
+
+    expect(result.failedStepId).toBeUndefined();
+    expect(coder.calls.length).toBe(1);
+    expect(coder.lastUser).not.toContain('历史 DEBUG 尝试');
+    const cache = JSON.parse(await fs.readFile(path.join(tmp, '.xcompiler/debug_cache.json'), 'utf8')) as {
+      steps: Record<string, unknown>;
+    };
+    expect(cache.steps[codeStep.id]).toBeUndefined();
+  });
+
   it('rolls INTEGRATION_TEST gate failures back to DETAILED_DESIGN, not HIGH_LEVEL_DESIGN', async () => {
     const plan = fakePlan();
     const detailedStep = plan.steps.find((step) => step.phase === 'DETAILED_DESIGN')!;
@@ -1740,11 +1811,18 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     expect(issueLog).toContain('"event":"unresolved"');
     expect(issueLog).not.toContain('"event":"routed"');
 
+    const resumedTester = new ThrowingLLM(
+      new Error(
+        'OpenAI HTTP 429: {"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"openrouter/free is temporarily rate-limited upstream","retry_after_seconds":8}}}',
+      ),
+    );
     const resumed = new PhaseEngine({
       ws,
       git,
       sandbox,
-      router: new FakeRouter({}) as unknown as LLMRouter,
+      // 仅提供 Tester：缓存里只有基础设施失败时，恢复应现场重试正常流程而不是拿陈旧断连记录直接判死，
+      // 也不得路由进 Debugger。
+      router: new FakeRouter({ Tester: resumedTester }) as unknown as LLMRouter,
       audit,
       planPath,
       maxRoundsPerStep: 1,
@@ -1752,6 +1830,7 @@ describe('PhaseEngine end-to-end (no real LLM, no real sandbox build)', () => {
     });
     const resumedResult = await resumed.run(plan);
     expect(resumedResult.failedStepId).toBe('S005');
+    expect(resumedTester.calls).toBe(1);
     expect(resumedResult.failureReason).toMatch(/OpenAI HTTP 429|provider|rate/i);
     expect(resumedResult.failureReason).not.toMatch(/rolling back to the paired/i);
     const resumedIssueLog = await ws.readFile('.xcompiler/issues/issues.jsonl');

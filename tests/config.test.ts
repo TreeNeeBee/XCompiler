@@ -5,14 +5,23 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { getXCompilerPath, loadConfigWithPath } from '../src/config/config.js';
 
+function allRoles(provider: string): Record<string, string[]> {
+  return {
+    Planner: [provider],
+    Architect: [provider],
+    Coder: [provider],
+    Tester: [provider],
+    Debugger: [provider],
+  };
+}
+
 function baseConfig(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     llm: {
-      default: 'ollama_code',
       providers: {
         ollama_code: { type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen' },
       },
-      roles: {},
+      roles: allRoles('ollama_code'),
       fallbacks: [],
       role_fallbacks: {},
       scores: {},
@@ -86,14 +95,18 @@ describe('config locale', () => {
       process.env.XC_TEST_OPENAI_BASE_URL = 'http://127.0.0.1:11435/v1';
       const cfgPath = await writeRawConfig(`
 llm:
-  default: openai
   providers:
     openai:
       type: openai
       api_key: \${XC_TEST_NUMERIC_API_KEY}
       base_url: \${XC_TEST_OPENAI_BASE_URL}
       model: gpt-4o-mini
-  roles: {}
+  roles:
+    Planner:   [openai]
+    Architect: [openai]
+    Coder:     [openai]
+    Tester:    [openai]
+    Debugger:  [openai]
   fallbacks: []
   role_fallbacks: {}
   scores: {}
@@ -140,7 +153,6 @@ agent:
   it('parses OpenAI-compatible json_schema response format capability', async () => {
     const cfg = baseConfig({
       llm: {
-        default: 'openrouter_hy3',
         providers: {
           openrouter_hy3: {
             type: 'openai',
@@ -150,7 +162,7 @@ agent:
             json_response_format: 'json_schema',
           },
         },
-        roles: { Coder: ['openrouter_hy3'] },
+        roles: allRoles('openrouter_hy3'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -164,7 +176,6 @@ agent:
   it('parses an OpenAI-compatible connection timeout separately from stream timeouts', async () => {
     const cfg = baseConfig({
       llm: {
-        default: 'openrouter',
         providers: {
           openrouter: {
             type: 'openai',
@@ -176,7 +187,7 @@ agent:
             stream_idle_timeout_ms: 60000,
           },
         },
-        roles: {},
+        roles: allRoles('openrouter'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -191,7 +202,6 @@ agent:
   it('parses cluster provider tags and score bounds', async () => {
     const cfg = baseConfig({
       llm: {
-        default: 'openrouter_free',
         providers: {
           openrouter_free: {
             type: 'openai',
@@ -201,7 +211,7 @@ agent:
             tags: ['Cluster'],
           },
         },
-        roles: { Coder: ['openrouter_free'] },
+        roles: allRoles('openrouter_free'),
         fallbacks: [],
         role_fallbacks: {},
         cluster_score_min: 0.2,
@@ -219,14 +229,18 @@ agent:
   it('parses language-specific sandbox profiles without requiring agent.language', async () => {
     const cfgPath = await writeRawConfig(`
 llm:
-  default: openrouter_free
   providers:
     openrouter_free:
       type: openai
       api_key: dummy
       base_url: https://openrouter.ai/api/v1
       model: openrouter/free
-  roles: {}
+  roles:
+    Planner:   [openrouter_free]
+    Architect: [openrouter_free]
+    Coder:     [openrouter_free]
+    Tester:    [openrouter_free]
+    Debugger:  [openrouter_free]
   fallbacks: []
   role_fallbacks: {}
   scores: {}
@@ -290,6 +304,32 @@ agent:
     (cfg.llm as Record<string, unknown>).cluster_score_max = 0.5;
     const cfgPath = await writeConfig(cfg);
     await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/cluster_score_min/);
+  });
+
+  it('rejects the removed llm.default option', async () => {
+    const cfg = baseConfig();
+    (cfg.llm as Record<string, unknown>).default = 'ollama_code';
+    const cfgPath = await writeConfig(cfg);
+    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/llm\.default has been removed/);
+  });
+
+  it('rejects configs where a role has no manually specified provider', async () => {
+    const cfg = baseConfig();
+    const roles = (cfg.llm as Record<string, unknown>).roles as Record<string, string[]>;
+    delete roles.Debugger;
+    const cfgPath = await writeConfig(cfg);
+    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/llm\.roles\.Debugger/);
+  });
+
+  it('accepts role coverage supplied via role_fallbacks', async () => {
+    const cfg = baseConfig();
+    const llm = cfg.llm as Record<string, unknown>;
+    const roles = llm.roles as Record<string, string[]>;
+    delete roles.Debugger;
+    llm.role_fallbacks = { Debugger: ['ollama_code'] };
+    const cfgPath = await writeConfig(cfg);
+    const { config } = await loadConfigWithPath(cfgPath);
+    expect(config.llm.role_fallbacks.Debugger).toEqual(['ollama_code']);
   });
 
   it('prefers XC_PATH as the short global config directory', async () => {

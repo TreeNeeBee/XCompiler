@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, constants as fsConstants } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -122,9 +122,51 @@ export async function loadXCompilerProject(projectFilePath: string): Promise<Loa
   const data = XCompilerProjectFileSchema.parse(JSON.parse(raw));
   const base = path.dirname(filePath);
   const workspace = path.resolve(base, data.workspace);
+  await assertSafeProjectWorkspace(filePath, workspace);
   const planPath = path.resolve(base, data.planPath);
   const configPath = data.configPath ? path.resolve(base, data.configPath) : undefined;
   return { filePath, data, workspace, planPath, configPath };
+}
+
+/**
+ * 校验 .xc 里记录的（绝对）workspace 路径，防止两类风险：
+ * 1. 写入泄漏：项目目录被移动/复制后，.xc 中陈旧的绝对路径仍指向旧位置，
+ *    继续执行会把生成物写进无关目录。要求 .xc 文件自身必须位于其声明的 workspace 内。
+ * 2. 权限错配：workspace 存在但当前用户不可写（例如 root/容器里创建后回到普通用户）。
+ */
+async function assertSafeProjectWorkspace(projectFilePath: string, workspace: string): Promise<void> {
+  let stat;
+  try {
+    stat = await fs.stat(workspace);
+  } catch {
+    throw new Error(
+      `XCompiler project workspace does not exist: ${workspace}\n` +
+        `The workspace path stored in ${projectFilePath} is stale (project moved or renamed?). ` +
+        `Update the "workspace" field to the project's current absolute path, or delete the .xc file and rerun xcompiler build.`,
+    );
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`XCompiler project workspace is not a directory: ${workspace}`);
+  }
+  const realWorkspace = await fs.realpath(workspace).catch(() => workspace);
+  const realProjectDir = await fs.realpath(path.dirname(projectFilePath)).catch(() => path.dirname(projectFilePath));
+  if (realProjectDir !== realWorkspace && !realProjectDir.startsWith(realWorkspace + path.sep)) {
+    throw new Error(
+      `XCompiler project file ${projectFilePath} is not inside its declared workspace ${workspace}.\n` +
+        `Refusing to run: executing against a workspace that does not contain the project file would leak writes ` +
+        `into an unrelated directory (stale absolute path after moving/copying the project?). ` +
+        `Fix the "workspace" field or delete the .xc file and rerun xcompiler build.`,
+    );
+  }
+  try {
+    await fs.access(workspace, fsConstants.W_OK);
+  } catch {
+    throw new Error(
+      `XCompiler project workspace is not writable by the current user: ${workspace}\n` +
+        `Permission mismatch (workspace created by another user / root / container?). ` +
+        `Fix ownership or permissions before running XCompiler.`,
+    );
+  }
 }
 
 export async function updateProjectFile(opts: UpdateProjectFileOptions): Promise<string> {
@@ -162,7 +204,8 @@ export async function updateProjectFile(opts: UpdateProjectFileOptions): Promise
     kind: XCOMPILER_PROJECT_KIND,
     version: XCOMPILER_PROJECT_VERSION,
     name: existing?.name ?? sanitizeProjectName(path.basename(workspace) || 'project'),
-    workspace: relativeFrom(base, workspace),
+    // workspace 始终写绝对路径；加载时由 assertSafeProjectWorkspace 校验陈旧路径/权限。
+    workspace,
     planPath: relativeFrom(base, planPath),
     configPath:
       opts.configPath !== undefined

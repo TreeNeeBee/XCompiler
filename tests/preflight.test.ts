@@ -6,7 +6,6 @@ import type { XCompilerConfig } from '../src/config/config.js';
 function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig {
   return {
     llm: {
-      default: 'ollama_code',
       providers: {
         ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
         ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
@@ -131,7 +130,6 @@ describe('preflightProviders', () => {
 
   it('revives a non-Ollama provider disabled by historical sidecar score', async () => {
     const cfg = mkCfg({
-      default: 'openai',
       providers: {
         openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
       },
@@ -148,7 +146,6 @@ describe('preflightProviders', () => {
 
   it('respects an explicit config score=0 for non-Ollama providers', async () => {
     const cfg = mkCfg({
-      default: 'openai',
       providers: {
         openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
       },

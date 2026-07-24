@@ -8,17 +8,26 @@ import { setLocale } from '../src/i18n/index.js';
 
 setLocale('en');
 
+function allRoles(provider: string): Record<string, string[]> {
+  return {
+    Planner: [provider],
+    Architect: [provider],
+    Coder: [provider],
+    Tester: [provider],
+    Debugger: [provider],
+  };
+}
+
 async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-doctor-'));
   const cfgPath = path.join(dir, 'config.yaml');
   const base = {
     locale: 'en',
     llm: {
-      default: 'ollama_code',
       providers: {
         ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
       },
-      roles: { Coder: ['ollama_code'] },
+      roles: allRoles('ollama_code'),
       fallbacks: [],
       role_fallbacks: {},
       scores: {},
@@ -59,11 +68,10 @@ describe('doctor', () => {
   it('flags openai provider with empty api_key', async () => {
     const cfgPath = await writeCfg({
       llm: {
-        default: 'openai',
         providers: {
           openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
-        roles: {},
+        roles: allRoles('openai'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -77,7 +85,6 @@ describe('doctor', () => {
   it('flags OpenRouter provider with empty api_key', async () => {
     const cfgPath = await writeCfg({
       llm: {
-        default: 'openrouter_free',
         providers: {
           openrouter_free: {
             type: 'openai',
@@ -86,7 +93,7 @@ describe('doctor', () => {
             model: 'openrouter/free',
           },
         },
-        roles: { Coder: ['openrouter_free'] },
+        roles: allRoles('openrouter_free'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -101,7 +108,6 @@ describe('doctor', () => {
   it('allows local OpenAI-compatible provider without api_key', async () => {
     const cfgPath = await writeCfg({
       llm: {
-        default: 'local_openai',
         providers: {
           local_openai: {
             type: 'openai',
@@ -110,7 +116,7 @@ describe('doctor', () => {
             model: 'local-model',
           },
         },
-        roles: { Coder: ['local_openai'] },
+        roles: allRoles('local_openai'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -125,12 +131,11 @@ describe('doctor', () => {
   it('only warns for an unused openai provider with empty api_key', async () => {
     const cfgPath = await writeCfg({
       llm: {
-        default: 'ollama_code',
         providers: {
           ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
           openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
-        roles: { Coder: ['ollama_code'] },
+        roles: allRoles('ollama_code'),
         fallbacks: [],
         role_fallbacks: {},
         scores: {},
@@ -145,11 +150,10 @@ describe('doctor', () => {
   it('flags role with no live provider (score=0)', async () => {
     const cfgPath = await writeCfg({
       llm: {
-        default: 'ollama_code',
         providers: {
           ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
         },
-        roles: { Coder: ['ollama_code'] },
+        roles: allRoles('ollama_code'),
         fallbacks: [],
         role_fallbacks: {},
         scores: { ollama_code: 0 },

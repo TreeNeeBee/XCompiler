@@ -44,7 +44,6 @@ OPENROUTER_MODEL=openrouter/free
 
 ```yaml
 llm:
-  default: openrouter_free
   providers:
     openrouter_free:
       type: openai

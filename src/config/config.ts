@@ -4,6 +4,7 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
 import { xcEnv } from './env.js';
+import { ROLES } from '../core/plan.js';
 
 const ProviderStringScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
 const OptionalProviderStringSchema = ProviderStringScalarSchema.nullish().transform((v) =>
@@ -139,7 +140,8 @@ const SandboxesSchema = z
   .default({});
 
 const LlmSchema = z.object({
-  default: z.string(),
+  /** @removed `llm.default` 已移除：模型选择必须通过 llm.roles 手动指定。保留字段仅用于给出明确的迁移报错。 */
+  default: z.unknown().optional(),
   providers: z.record(z.string(), ProviderSchema),
   /**
    * 角色 → provider 数组的映射。
@@ -173,6 +175,29 @@ const LlmSchema = z.object({
   cluster_score_min: z.number().min(0.1).max(1).optional(),
   cluster_score_max: z.number().min(0.1).max(1).optional(),
 }).superRefine((llm, ctx) => {
+  if (llm.default !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['default'],
+      message:
+        'llm.default has been removed: model selection must be specified manually. ' +
+        'Delete llm.default and assign providers to every role via llm.roles ' +
+        '(optionally llm.role_fallbacks / llm.fallbacks).',
+    });
+  }
+  for (const role of ROLES) {
+    const explicit = llm.role_fallbacks[role] ?? [];
+    const pool = llm.roles[role] ?? [];
+    if (explicit.length === 0 && pool.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['roles', role],
+        message:
+          `llm.roles.${role} must list at least one provider: ` +
+          'model selection is manual (llm.default has been removed).',
+      });
+    }
+  }
   const min = llm.cluster_score_min ?? 0.2;
   const max = llm.cluster_score_max ?? 0.5;
   if (min > max) {
@@ -182,7 +207,7 @@ const LlmSchema = z.object({
       message: 'cluster_score_min must be less than or equal to cluster_score_max',
     });
   }
-});
+}).transform(({ default: _removedDefault, ...rest }) => rest);
 
 const AgentSchema = z
   .object({

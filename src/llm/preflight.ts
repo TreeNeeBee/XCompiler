@@ -1,14 +1,8 @@
 import type { XCompilerConfig } from '../config/config.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
-import { getJson } from './ollama.js';
-import { isOllamaProvider, normalizeBaseUrl } from './router.js';
+import { fetchOllamaTags, isOllamaProvider, normalizeBaseUrl } from './health.js';
 import { ScoreStore } from './scores.js';
-
-/** ollama 的 /api/tags 响应签名（仅取 model 字段）。 */
-interface OllamaTagsResponse {
-  models?: Array<{ name?: string; model?: string }>;
-}
 
 export interface PreflightOptions {
   /** 探活超时（毫秒），默认 3000。 */
@@ -48,7 +42,7 @@ export async function preflightProviders(
   options: PreflightOptions = {},
 ): Promise<PreflightResult> {
   const probeTimeoutMs = options.probeTimeoutMs ?? 3000;
-  const fetchTags = options.fetchTags ?? defaultFetchTags;
+  const fetchTags = options.fetchTags ?? fetchOllamaTags;
   const result: PreflightResult = { zeroed: [], unreachable: [], revived: [], autoAdded: {}, tags: {} };
 
   // 1) 收集所有 ollama provider 及其 base_url
@@ -169,13 +163,11 @@ export async function preflightProviders(
   return result;
 }
 
-/** 角色 → 候选 provider 数组（roles[role] 为空则用 default + fallbacks）。 */
+/** 角色 → 候选 provider 数组（模型选择必须手动指定；roles[role] + fallbacks，无隐式 default）。 */
 function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
   const explicit = cfg.llm.role_fallbacks?.[role];
   if (explicit && explicit.length > 0) return explicit;
-  const fromRoles = cfg.llm.roles?.[role] ?? [];
-  if (fromRoles.length > 0) return [...fromRoles, ...(cfg.llm.fallbacks ?? [])];
-  return [cfg.llm.default, ...(cfg.llm.fallbacks ?? [])];
+  return [...(cfg.llm.roles?.[role] ?? []), ...(cfg.llm.fallbacks ?? [])];
 }
 
 function listRolesWithoutLiveProvider(
@@ -188,7 +180,6 @@ function listRolesWithoutLiveProvider(
     ...Object.keys(cfg.llm.roles ?? {}),
     ...Object.keys(cfg.llm.role_fallbacks ?? {}),
   ]);
-  if (rolesToCheck.size === 0) rolesToCheck.add('default');
   const out: string[] = [];
   for (const r of rolesToCheck) {
     const cands = candidatesForRole(cfg, r);
@@ -221,14 +212,4 @@ function reviveScoreZeroNonOllamaCandidates(
     }
   }
   return revived;
-}
-
-async function defaultFetchTags(baseUrl: string, timeoutMs: number): Promise<string[]> {
-  const url = new URL('/api/tags', baseUrl);
-  const text = await getJson(url, timeoutMs);
-  const parsed = JSON.parse(text) as OllamaTagsResponse;
-  const items = parsed.models ?? [];
-  return items
-    .map((m) => (typeof m.name === 'string' ? m.name : m.model))
-    .filter((s): s is string => !!s);
 }

@@ -619,6 +619,7 @@ const messages: Messages = {
     sandboxStatus: (r) => `sandbox: ${r}`,
     autoFixedSrcImports: (n, files) => `  ⚠ auto-fixed sys.path bootstrap in ${n} entry file(s): ${files}`,
     debugResumeNotice: (id, n) => `  ↻ ${id} previous session ended FAILED (${n} attempts so far); first round of this run goes straight into Debugger mode.`,
+    debugResumeInfraRetry: (id, n) => `  ↻ ${id} previous session only recorded LLM provider/connectivity failures (${n} attempt(s)); clearing the stale debug cache entry and rerunning the step normally.`,
     spinDebugRetry: (id, attempt, budget, cap, reason) => `🛠  ${id} DEBUG retry ${attempt}/${budget} (cap=${cap}) — ${reason}`,
     retryException: (a, b, msg) => `retry ${a}/${b} threw: ${msg}`,
     fixSucceeded: (id, a) => `${id} fix succeeded (retry=${a})`,

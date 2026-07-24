@@ -10,8 +10,13 @@
  *            is registered in the default tool registry.
  */
 import { loadConfigWithPath, type XCompilerConfig } from '../config/config.js';
-import { isOllamaProvider, isOpenAICompatibleProvider, normalizeBaseUrl } from '../llm/router.js';
-import { getJson } from '../llm/ollama.js';
+import {
+  fetchOllamaTags,
+  fetchOpenAIModels,
+  isOllamaProvider,
+  isOpenAICompatibleProvider,
+  normalizeBaseUrl,
+} from '../llm/health.js';
 import { execRaw } from '../sandbox/subprocess.js';
 import { isRunningInContainer } from '../sandbox/factory.js';
 import { buildDefaultRegistry } from '../tools/index.js';
@@ -117,7 +122,6 @@ async function checkLlm(
   sec.items.push({ level: 'ok', message: M.llmProviderListed(providers.length) });
 
   const referencedProviders = new Set<string>([
-    cfg.llm.default,
     ...(cfg.llm.fallbacks ?? []),
     ...Object.values(cfg.llm.roles ?? {}).flat(),
     ...Object.values(cfg.llm.role_fallbacks ?? {}).flat(),
@@ -203,11 +207,9 @@ async function checkLlm(
 
   // 2d) role coverage
   const roles = new Set<string>([
-    cfg.llm.default,
     ...Object.keys(cfg.llm.roles ?? {}),
     ...Object.keys(cfg.llm.role_fallbacks ?? {}),
   ]);
-  // remove the synthetic "default" key when we used it as a sentinel
   for (const role of roles) {
     const cands = candidatesForRole(cfg, role);
     const live = cands.find((n) => {
@@ -239,39 +241,7 @@ async function checkLlm(
 function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
   const explicit = cfg.llm.role_fallbacks?.[role];
   if (explicit && explicit.length > 0) return explicit;
-  const fromRoles = cfg.llm.roles?.[role] ?? [];
-  if (fromRoles.length > 0) return [...fromRoles, ...(cfg.llm.fallbacks ?? [])];
-  return [cfg.llm.default, ...(cfg.llm.fallbacks ?? [])];
-}
-
-async function fetchOllamaTags(baseUrl: string, timeoutMs: number): Promise<string[]> {
-  const url = new URL('/api/tags', baseUrl);
-  const text = await getJson(url, timeoutMs);
-  const parsed = JSON.parse(text) as { models?: Array<{ name?: string; model?: string }> };
-  return (parsed.models ?? [])
-    .map((m) => (typeof m.name === 'string' ? m.name : m.model))
-    .filter((s): s is string => !!s);
-}
-
-async function fetchOpenAIModels(baseUrl: string, apiKey: string, timeoutMs: number): Promise<string[]> {
-  const url = `${baseUrl.replace(/\/$/, '')}/models`;
-  const ctrl = new AbortController();
-  const t = timeoutMs > 0 ? setTimeout(() => ctrl.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs) : null;
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
-      signal: ctrl.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${body.slice(0, 200)}`);
-    }
-    const json = (await res.json()) as { data?: Array<{ id?: string }> };
-    return (json.data ?? []).map((d) => d.id).filter((s): s is string => !!s);
-  } finally {
-    if (t) clearTimeout(t);
-  }
+  return [...(cfg.llm.roles?.[role] ?? []), ...(cfg.llm.fallbacks ?? [])];
 }
 
 function openAIEndpointRequiresApiKey(baseUrl: string): boolean {

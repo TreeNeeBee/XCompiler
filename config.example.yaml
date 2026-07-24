@@ -1,9 +1,9 @@
 locale: zh  # CLI / prompt 语言：en 或 zh
 
 llm:
-  # Default: OpenRouter Free mode through an OpenAI-compatible /v1 endpoint.
-  # Uses OpenRouter's free-route alias by default.
-  default: openrouter_free
+  # 模型选择必须手动指定：每个角色都要在下方 roles 中显式列出 provider，
+  # 不再支持 llm.default 隐式全局默认 provider。
+  # Default template: OpenRouter Free mode through an OpenAI-compatible /v1 endpoint.
   providers:
     openrouter_free:
       type: openai

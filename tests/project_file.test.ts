@@ -90,7 +90,62 @@ describe('XCompiler project file', () => {
     expect(progress.failedStepId).toBe('S002');
     expect(progress.percent).toBe(33);
   });
+
+  it('stores the workspace as an absolute path in the .xc file', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-'));
+    const projectFile = await updateProjectFile({
+      workspace,
+      planPath: path.join(workspace, 'plan.json'),
+      command: 'build',
+      plan: samplePlan([['S001', 'DONE']]),
+    });
+    const raw = JSON.parse(await fs.readFile(projectFile, 'utf8')) as { workspace: string };
+    expect(path.isAbsolute(raw.workspace)).toBe(true);
+    expect(raw.workspace).toBe(path.resolve(workspace));
+  });
+
+  it('rejects a stale workspace path that no longer exists', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-'));
+    const projectFile = path.join(workspace, 'stale.xc');
+    await fs.writeFile(projectFile, JSON.stringify(projectFilePayload(path.join(workspace, 'moved-away'))));
+
+    await expect(loadXCompilerProject(projectFile)).rejects.toThrow(/does not exist/);
+  });
+
+  it('rejects a workspace that does not contain the project file (write-leak guard)', async () => {
+    const wsA = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-a-'));
+    const wsB = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-b-'));
+    const projectFile = path.join(wsA, 'leak.xc');
+    await fs.writeFile(projectFile, JSON.stringify(projectFilePayload(wsB)));
+
+    await expect(loadXCompilerProject(projectFile)).rejects.toThrow(/not inside its declared workspace/);
+  });
+
+  it('rejects a workspace without write permission (permission mismatch guard)', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-'));
+    const projectFile = path.join(workspace, 'readonly.xc');
+    await fs.writeFile(projectFile, JSON.stringify(projectFilePayload(workspace)));
+    await fs.chmod(workspace, 0o555);
+    try {
+      await expect(loadXCompilerProject(projectFile)).rejects.toThrow(/not writable/);
+    } finally {
+      await fs.chmod(workspace, 0o755);
+    }
+  });
 });
+
+function projectFilePayload(workspace: string): Record<string, unknown> {
+  return {
+    kind: XCOMPILER_PROJECT_KIND,
+    version: '1',
+    name: 'sample',
+    workspace,
+    planPath: 'plan.json',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    history: [],
+  };
+}
 
 function samplePlan(statuses: Array<[string, Plan['steps'][number]['status']]>): Plan {
   return {
