@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { TestPhaseValidator } from '../src/application/execution/test_phase_validator.js';
-import type { Plan, Step } from '../src/core/plan.js';
+import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import {
   verificationSupplementRoot,
   verificationSupplementUpwardPrefix,
-} from '../src/core/test_assets.js';
+} from '../src/domain/quality/test_assets.js';
 
 /** Hybrid ownership: S1-S4 author baselines; S5-S8 may add isolated risk supplements and run all. */
 describe('external boundary contract per V-model level', () => {
@@ -103,7 +103,7 @@ describe('external boundary contract per V-model level', () => {
 
   it('lets the source phase capture fixtures while keeping verification read-only', async () => {
     const { computeStepAllowedWrites } = await import('../src/application/execution/execution_context.js');
-    const { pairedTestAssetPaths } = await import('../src/core/test_assets.js');
+    const { pairedTestAssetPaths } = await import('../src/domain/quality/test_assets.js');
     const plan = networkPlan('UNIT_TEST', 'tests/unit/upstream.test.ts');
     const unit = plan.steps.find((candidate) => candidate.phase === 'UNIT_TEST')!;
 

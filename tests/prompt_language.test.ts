@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { getLanguageProfile } from '../src/core/language.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { setLocale, t } from '../src/i18n/index.js';
 import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
 

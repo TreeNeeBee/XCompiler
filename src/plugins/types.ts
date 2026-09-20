@@ -1,6 +1,6 @@
 import type { ClarifyQuestion, PlannerInput } from '../agents/planner.js';
 import type { AuditLogger } from '../audit/audit.js';
-import type { Plan, PlanIntent, Role, Step } from '../core/plan.js';
+import type { Plan, PlanIntent, Role, Step } from '../domain/planning/execution_plan.js';
 import type { ChatMessage, ChatOptions } from '../llm/types.js';
 import type { AgentSkillMetadata, SkillSource } from '../skills/types.js';
 import type { Tool, ToolContext, ToolResult } from '../tools/types.js';

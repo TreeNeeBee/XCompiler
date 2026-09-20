@@ -1,5 +1,5 @@
-import { buildDebugBrief } from '../../core/debug_brief.js';
-import type { DebugWiki } from '../../core/debug_wiki.js';
+import { buildDebugBrief } from './debug_brief.js';
+import type { DebugWikiPort } from '../knowledge/debug_wiki.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { TicketSchema, type BugTicket } from '../../domain/tickets/ticket.js';
@@ -9,7 +9,7 @@ import { executionPhaseFor } from './execution_adapter.js';
 export class VerifiedBugKnowledgeService {
   constructor(
     private readonly repository: DomainObjectRepositoryPort,
-    private readonly wiki: DebugWiki,
+    private readonly wiki: DebugWikiPort,
     private readonly language: 'python' | 'typescript',
   ) {}
 

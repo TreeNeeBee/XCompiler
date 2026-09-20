@@ -86,24 +86,24 @@ describe('run_tests refuses selectors nobody has written', () => {
  */
 describe('runner-cannot-find-test reaches the live repair path', () => {
   const brief = async (failureLog: string) => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     return buildDebugBrief({ failureLog, phase: 'CODE' });
   };
 
   it('classifies pytest exit=4 as unwritten outputs and retrieves the entry', async () => {
-    const { DebugWiki, bundledDebugWikiPath } = await import('../src/core/debug_wiki.js');
+    const { FileDebugWiki, bundledDebugWikiPath } = await import('../src/infrastructure/knowledge/file_debug_wiki.js');
     const b = await brief('pytest exit=4 args=tests/test_dbc_parser.py\nERROR: file or directory not found: tests/test_dbc_parser.py');
     expect(b.category).toBe('missing_output');
     expect(b.debugDemand).toMatch(/Create or repair the declared output files/u);
-    const matches = await new DebugWiki(bundledDebugWikiPath()).search(b, { limit: 3 });
+    const matches = await new FileDebugWiki(bundledDebugWikiPath()).search(b, { limit: 3 });
     expect(matches[0]?.entry.id).toBe('agent.calibration.unwritten-test-file');
   });
 
   it('does the same for vitest finding nothing', async () => {
-    const { DebugWiki, bundledDebugWikiPath } = await import('../src/core/debug_wiki.js');
+    const { FileDebugWiki, bundledDebugWikiPath } = await import('../src/infrastructure/knowledge/file_debug_wiki.js');
     const b = await brief('npm test exit=1\nNo test files found, exiting with code 1');
     expect(b.category).toBe('missing_output');
-    const matches = await new DebugWiki(bundledDebugWikiPath()).search(b, { limit: 3 });
+    const matches = await new FileDebugWiki(bundledDebugWikiPath()).search(b, { limit: 3 });
     expect(matches[0]?.entry.id).toBe('agent.calibration.unwritten-test-file');
   });
 

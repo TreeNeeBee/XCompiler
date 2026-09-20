@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Plan } from '../../core/plan.js';
+import type { Plan } from '../../domain/planning/execution_plan.js';
 import type { Workspace } from '../../workspace/workspace.js';
 
 const MAX_DEBUG_DEPENDENCY_PATHS = 12;

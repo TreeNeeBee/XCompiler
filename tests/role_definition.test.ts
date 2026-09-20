@@ -12,7 +12,7 @@ import { RoleDefinitionSchema, reviseRoleDefinition } from '../src/domain/workfl
 import { reviseActor } from '../src/domain/project_management/index.js';
 import { TicketSchema, type Ticket } from '../src/domain/tickets/ticket.js';
 import { createObjectEnvelope } from '../src/domain/objects/object_envelope.js';
-import { PLAN_VERSION, type Plan } from '../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 
 async function project() {

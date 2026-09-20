@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { calibratePlanCoverage } from '../src/agents/calibration.js';
-import { lintPlan } from '../src/core/lint.js';
-import type { Step, Plan } from '../src/core/plan.js';
+import { lintPlan } from '../src/domain/planning/plan_lint.js';
+import type { Step, Plan } from '../src/domain/planning/execution_plan.js';
 
 const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'];
 

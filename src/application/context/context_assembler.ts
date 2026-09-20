@@ -3,8 +3,8 @@ import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import type { Ticket, TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import type { ContextRecord } from '../../domain/context/context_record.js';
-import type { DebugBrief } from '../../core/debug_brief.js';
-import type { DebugWikiMatch } from '../../core/debug_wiki.js';
+import type { DebugBrief } from '../execution/debug_brief.js';
+import type { DebugWikiMatch } from '../knowledge/debug_wiki.js';
 import { isCorrectiveTicket } from '../../domain/tickets/ticket.js';
 import { ContextService } from './context_service.js';
 

@@ -10,8 +10,9 @@ import {
   refreshProjectMemory,
   selectMemoryContractsForStep,
   selectMemorySnippetsForStep,
-} from '../src/core/project_memory.js';
-import type { Step } from '../src/core/plan.js';
+} from '../src/application/context/project_memory.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
+import { FilePlanStore } from '../src/infrastructure/planning/file_plan_store.js';
 
 const step = (overrides: Partial<Step> = {}): Step =>
   ({
@@ -32,6 +33,8 @@ const step = (overrides: Partial<Step> = {}): Step =>
   }) as Step;
 
 describe('project memory', () => {
+  const planStore = new FilePlanStore();
+
   it('captures docs, manifests and implementation snippets', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-memory-'));
     const ws = new Workspace(root);
@@ -53,7 +56,7 @@ describe('project memory', () => {
     await ws.writeFile('src/reporting/service.ts', 'export class ReportingService { exportCsv() { return "csv"; } }\n');
     await ws.writeFile('tests/reporting/service.test.ts', 'import { describe, it, expect } from "vitest";\n');
 
-    const memory = await buildProjectMemory(ws, { language: 'typescript', intent: 'feature' });
+    const memory = await buildProjectMemory(ws, { planStore, language: 'typescript', intent: 'feature' });
 
     expect(memory.summary).toContain('## Project memory');
     expect(memory.summary).toContain('Invoice reporting with CSV export.');
@@ -77,7 +80,7 @@ describe('project memory', () => {
     await ws.writeFile('docs/topic.md', 'Existing export workflow.');
     await ws.writeFile('src/exporter.ts', 'export function exportData() { return "done"; }\n');
 
-    await refreshProjectMemory(ws, state, { language: 'typescript', intent: 'feature' });
+    await refreshProjectMemory(ws, state, { planStore, language: 'typescript', intent: 'feature' });
     const loaded = await loadProjectMemory(state);
 
     expect(loaded?.summary).toContain('Existing export workflow.');
@@ -98,7 +101,7 @@ describe('project memory', () => {
     await ws.writeFile('docs/self_bootstrap.md', 'Generation N builds N+1 in an isolated worktree.');
     await ws.writeFile('package.json', JSON.stringify({ name: '@xcompiler/cli' }));
 
-    const memory = await buildProjectMemory(ws, { language: 'typescript', intent: 'self' });
+    const memory = await buildProjectMemory(ws, { planStore, language: 'typescript', intent: 'self' });
 
     expect(memory.summary).toContain('Stable runtime and V-model architecture.');
     expect(memory.summary).toContain('Generation N builds N+1');
@@ -114,7 +117,7 @@ describe('project memory', () => {
     await ws.writeFile('src/reporting/service.ts', 'export class ReportingService { exportCsv() { return "csv"; } }\n');
     await ws.writeFile('src/auth/service.ts', 'export class AuthService { login() { return true; } }\n');
 
-    const memory = await buildProjectMemory(ws, { language: 'typescript', intent: 'feature' });
+    const memory = await buildProjectMemory(ws, { planStore, language: 'typescript', intent: 'feature' });
     const snippets = selectMemorySnippetsForStep(memory, step());
     const contracts = selectMemoryContractsForStep(memory, step());
 

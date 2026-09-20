@@ -17,20 +17,23 @@ import {
   type DraftPhasePlan,
   type PlannerInput,
 } from '../agents/planner.js';
-import { PlanSchema } from '../core/plan.js';
-import { DOC_NAMES } from '../core/docs.js';
-import { loadIncrementalBaseline, isIncrementalIntent } from '../core/incremental.js';
-import { lintPlan } from '../core/lint.js';
-import { refreshProjectMemory } from '../core/project_memory.js';
-import { renderPlanMarkdown } from '../core/render.js';
-import { loadPhasePlan, savePhasePlan, savePlan } from '../core/storage.js';
+import { PlanSchema } from '../domain/planning/execution_plan.js';
+import { DOC_NAMES } from '../domain/planning/document_contract.js';
+import { loadIncrementalBaseline, isIncrementalIntent } from '../application/planning/incremental.js';
+import { lintPlan } from '../domain/planning/plan_lint.js';
+import { refreshProjectMemory } from '../application/context/project_memory.js';
+import { renderPlanMarkdown } from '../application/planning/plan_renderer.js';
+import { FilePlanStore } from '../infrastructure/planning/file_plan_store.js';
+import type { PlanStorePort } from '../domain/ports/plan_store.js';
 import {
   buildPhasePlanCheckpoint,
+} from '../domain/planning/phase_plan_checkpoint.js';
+import {
   buildPhasePlanFromCurrentPlan,
   defaultPhasePlanPath,
   defaultPhasePlanStepPath,
-} from '../core/phase_plan.js';
-import { updateProjectFile } from '../core/project_file.js';
+} from '../application/planning/phase_plan_files.js';
+import { updateProjectFile } from '../infrastructure/project/project_manifest.js';
 import {
   compileProjectExtension,
   compileProjectGraph,
@@ -41,9 +44,9 @@ import {
 import { DomainAuditTrail } from '../application/observability/domain_audit_trail.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
 import { AuditLogger } from '../audit/audit.js';
-import { acquireLock, LockError } from '../core/lock.js';
+import { acquireLock, LockError } from '../infrastructure/locking/file_lock.js';
 import { setLocale, t } from '../i18n/index.js';
-import type { Language, PlanIntent } from '../core/plan.js';
+import type { Language, PlanIntent } from '../domain/planning/execution_plan.js';
 import { PluginHost } from '../plugins/host.js';
 import type { XCompilerPlugin } from '../plugins/types.js';
 import { hasXcEnv, xcEnv } from '../config/env.js';
@@ -140,6 +143,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   // XCompiler's own registry, audit trail, or fixtures.
   const container = new ProjectContainer(path.resolve(opts.workspace));
   const ws = container.canonical().workspace;
+  const planStore = new FilePlanStore();
   const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // Locale 必须在第一条输出之前生效，确保终端与审计文件从头到尾使用同一语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
@@ -225,6 +229,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const baseline =
     isIncrementalIntent(intent)
       ? await loadIncrementalBaseline(ws, container.state, {
+          planStore,
           planPath: opts.baselinePlanFile ?? container.phasePlanPath(),
         })
       : { summary: '', sources: [] };
@@ -444,7 +449,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     baselineSummary: baseline.summary,
     userAddenda,
   });
-  let existingPhasePlan = await tryLoadPhasePlan(phasePlanPath);
+  let existingPhasePlan = await tryLoadPhasePlan(phasePlanPath, planStore);
   const phasePlanBaseline = existingPhasePlan;
   trace('ora.spin2.start');
   const spin2 = io.progress(M.compile.spinDecompose, { animate: false });
@@ -521,7 +526,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
         sourceDigest: phasePlanSourceDigest,
         existing: existingPhasePlan,
       });
-      await savePhasePlan(phasePlanPath, existingPhasePlan);
+      await planStore.savePhasePlan(phasePlanPath, existingPhasePlan);
       await audit.event('plan.persist', `PhasePlan checkpoint persisted: ${phasePlanPath}`, {
         messageId: 'compile.phase_plan_checkpoint_persisted',
         phasePlanPath,
@@ -639,7 +644,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
 
   // 7. Persist
   const planPath = defaultPhasePlanStepPath(path.dirname(phasePlanPath), persistedPlan.phaseId ?? 'P1');
-  await savePlan(planPath, persistedPlan);
+  await planStore.savePlan(planPath, persistedPlan);
   const phasePlan = buildPhasePlanFromCurrentPlan({
     plan: persistedPlan,
     phasePlanPath,
@@ -648,11 +653,12 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       ? { ...phasePlanBaseline, sourceDigest: existingPhasePlan?.sourceDigest }
       : existingPhasePlan,
   });
-  await savePhasePlan(phasePlanPath, phasePlan);
+  await planStore.savePhasePlan(phasePlanPath, phasePlan);
   // 归档上一版本（如有），再写入新版本。topic.md 已在第 3.5 步落盘，这里只处理 plan.
   await archiveIfExists(ws, DOC_NAMES.plan, audit, container.state);
   await ws.writeFile(DOC_NAMES.plan, planMd);
   await refreshProjectMemory(ws, container.state, {
+    planStore,
     planPath,
     language: persistedPlan.language,
     intent: persistedPlan.intent,
@@ -821,9 +827,12 @@ function isPlannerTransportFailure(message: string): boolean {
   );
 }
 
-async function tryLoadPhasePlan(phasePlanPath: string) {
+async function tryLoadPhasePlan(
+  phasePlanPath: string,
+  planStore: Pick<PlanStorePort, 'loadPhasePlan'>,
+) {
   try {
-    return await loadPhasePlan(phasePlanPath);
+    return await planStore.loadPhasePlan(phasePlanPath);
   } catch {
     return undefined;
   }

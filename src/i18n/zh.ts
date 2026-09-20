@@ -1,4 +1,4 @@
-import type { LanguageProfile } from '../core/language.js';
+import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
 const PYTHON_PLANNER_SYSTEM = `你是 XCompiler 系统的 Planner。你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。

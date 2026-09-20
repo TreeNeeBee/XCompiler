@@ -1,13 +1,13 @@
 import {
   V_MODEL_DEVELOPMENT_PHASES,
   type Step,
-} from '../../core/plan.js';
+} from '../../domain/planning/execution_plan.js';
 import {
   normalizeQualityAssessment,
   qualityAssessmentConsistencyIssues,
   resolveQualityGate,
   type StageQualityAssessment,
-} from '../../core/quality_gate.js';
+} from '../../domain/quality/stage_quality.js';
 import { t } from '../../i18n/index.js';
 import type { ToolResult } from '../../tools/types.js';
 

@@ -7,7 +7,7 @@ import { ProjectGraphPersistenceService } from '../src/application/planning/proj
 import { ContextService } from '../src/application/context/context_service.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { ProjectContainer } from '../src/workspace/project_container.js';
-import { PLAN_VERSION, type Plan } from '../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 
 /**

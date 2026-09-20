@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   inspectPairedSourceTests,
   mergePairedSourceTestQuality,
-} from '../src/core/paired_test_contract.js';
-import type { Language, Plan, Step } from '../src/core/plan.js';
+} from '../src/application/execution/paired_test_contract.js';
+import type { Language, Plan, Step } from '../src/domain/planning/execution_plan.js';
 import { Workspace } from '../src/workspace/workspace.js';
 
 describe('paired source test product-reference contract', () => {

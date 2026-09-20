@@ -3,7 +3,7 @@ import {
   type CheckLevel,
   type DoctorOptions,
   type DoctorReport,
-} from '../core/doctor.js';
+} from '../application/diagnostics/doctor.js';
 
 export interface RuntimeDoctorOptions extends DoctorOptions {
   /** Exit non-zero on warnings as well as failures. */

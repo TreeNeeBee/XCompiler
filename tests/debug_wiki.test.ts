@@ -2,20 +2,34 @@ import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildDebugBrief } from '../src/core/debug_brief.js';
+import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
 import {
   DEFAULT_DEBUG_WIKI_REL_PATH,
-  DebugWiki,
+  FileDebugWiki,
   defaultDebugWikiPath,
   renderDebugWikiMatchesForPrompt,
-} from '../src/core/debug_wiki.js';
+} from '../src/infrastructure/knowledge/file_debug_wiki.js';
 
 async function tmpRoot(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-debug-wiki-'));
   return path.join(dir, 'debug-wiki');
 }
 
-describe('DebugWiki', () => {
+describe('FileDebugWiki', () => {
+  it('defaults to the installation root when no path override is configured', () => {
+    const keys = ['XC_PATH', 'XCOMPILER_PATH'] as const;
+    const previous = keys.map((key) => process.env[key]);
+    for (const key of keys) delete process.env[key];
+    try {
+      expect(defaultDebugWikiPath()).toBe(path.resolve(__dirname, '..', DEFAULT_DEBUG_WIKI_REL_PATH));
+    } finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  });
+
   it('defaults to the configured XCompiler path instead of a generated project workspace', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-debug-wiki-root-'));
     const previous = process.env.XC_PATH;
@@ -42,7 +56,7 @@ describe('DebugWiki', () => {
 
   it('records a resolved Bug Ticket and retrieves it by debug brief', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const brief = buildDebugBrief({
       reason: 'Test gate: tests exit=1',
       failureLog: 'FAILED tests/test_parser.py::test_signal_scale\nAssertionError: expected scale 0.1',
@@ -84,7 +98,7 @@ describe('DebugWiki', () => {
 
   it('marks a used entry for review when the solution fails', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const brief = buildDebugBrief({
       reason: 'run_tests failed',
       failureLog: 'SyntaxError: unterminated string literal in src/main.py',
@@ -118,7 +132,7 @@ describe('DebugWiki', () => {
       reason: 'Debugger repeated the same broken patch',
     });
 
-    const reloaded = new DebugWiki(root);
+    const reloaded = new FileDebugWiki(root);
     await reloaded.load();
     const storedPage = await fs.readFile(path.join(root, 'wiki', 'external', `${id}.md`), 'utf8');
     expect(storedPage).toContain('status: needs_review');
@@ -129,7 +143,7 @@ describe('DebugWiki', () => {
 
   it('stores bundled agent feedback as an overlay and corrects it after a successful repair', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const brief = buildDebugBrief({
       reason: 'Network API failure detected',
       failureLog: 'http_fetch GET https://old.example/api -> HTTP 403 Forbidden',
@@ -161,7 +175,7 @@ describe('DebugWiki', () => {
 
     await expect(fs.readFile(path.join(root, 'wiki', 'external', 'feedback.jsonl'), 'utf8'))
       .resolves.toContain('agent.calibration.network-api');
-    const reloaded = new DebugWiki(root);
+    const reloaded = new FileDebugWiki(root);
     await reloaded.load();
     const index = JSON.parse(await fs.readFile(path.join(root, 'index.json'), 'utf8')) as {
       entries: Array<{ id: string; status: string }>;
@@ -190,7 +204,7 @@ describe('DebugWiki', () => {
 
   it('creates a replacement instead of reactivating another Bug\'s reviewed entry', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const brief = buildDebugBrief({
       reason: 'Network API failure detected',
       failureLog: 'http_fetch GET https://old.example/api -> HTTP 403 Forbidden',
@@ -226,7 +240,7 @@ describe('DebugWiki', () => {
       usedEntryIds: [id],
     });
 
-    const reloaded = new DebugWiki(root);
+    const reloaded = new FileDebugWiki(root);
     await reloaded.load();
     const index = JSON.parse(await fs.readFile(path.join(root, 'index.json'), 'utf8')) as {
       entries: Array<{ id: string; status: string }>;
@@ -246,7 +260,7 @@ describe('DebugWiki', () => {
 
   it('does not merge a different Bug into an active retrieved entry', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const firstBrief = buildDebugBrief({
       reason: 'functional test failed',
       failureLog: 'tests/functional/cli.test.ts: CLI exited with status 1',
@@ -299,7 +313,7 @@ describe('DebugWiki', () => {
 
   it('quarantines legacy pages that merged several unrelated solutions', async () => {
     const root = await tmpRoot();
-    const wiki = new DebugWiki(root);
+    const wiki = new FileDebugWiki(root);
     const brief = buildDebugBrief({
       reason: 'functional test failed',
       failureLog: 'tests/functional/cli.test.ts exited with status 1',
@@ -328,7 +342,7 @@ describe('DebugWiki', () => {
       solution: 'Third unrelated guess.',
     });
 
-    const reloaded = new DebugWiki(root);
+    const reloaded = new FileDebugWiki(root);
     const match = (await reloaded.search(brief)).find((item) => item.entry.id === first.created)!;
     expect(match.entry.status).toBe('needs_review');
     const rendered = renderDebugWikiMatchesForPrompt([match]);

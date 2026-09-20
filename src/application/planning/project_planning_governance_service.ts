@@ -1,4 +1,4 @@
-import type { Plan } from '../../core/plan.js';
+import type { Plan } from '../../domain/planning/execution_plan.js';
 import type { Project } from '../../domain/projects/project.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { GovernanceService } from '../project_management/governance_service.js';

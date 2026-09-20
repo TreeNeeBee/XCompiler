@@ -4,7 +4,7 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
 import { xcEnv } from './env.js';
-import { ROLES } from '../core/plan.js';
+import { ROLES } from '../domain/planning/execution_plan.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../llm/window.js';
 import { DEFAULT_PROVIDER_RETRY } from '../llm/retry.js';
 

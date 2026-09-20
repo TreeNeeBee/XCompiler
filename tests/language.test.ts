@@ -4,8 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
 import { AuditLogger } from '../src/audit/audit.js';
-import { getLanguageProfile } from '../src/core/language.js';
-import { inspectLanguageProjectContract } from '../src/core/language_project_contract.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
+import { inspectLanguageProjectContract } from '../src/application/execution/language_project_contract.js';
 
 describe('TypeScript language profile', () => {
   it('splits known third-party type-only imports before entry probes', async () => {

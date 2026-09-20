@@ -9,6 +9,7 @@ import { SkillRegistry } from '../src/skills/index.js';
 import type { LLMClient } from '../src/llm/types.js';
 import type { XCompilerPlugin, XCompilerPluginManifest } from '../src/plugins/types.js';
 import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../src/version.js';
+import { AuditPersistenceError } from '../src/audit/errors.js';
 
 const pluginManifest = (
   id: string,
@@ -22,6 +23,34 @@ const pluginManifest = (
 });
 
 describe('PluginHost', () => {
+  it('retains the storage interruption when its error hook also fails', async () => {
+    const original = new AuditPersistenceError({
+      operation: 'append-jsonl', target: '/example/audit.jsonl', eventKind: 'llm.error',
+    }, { cause: new Error('original storage cause'), record: { protected: 'original event' } });
+    const secondary = new Error('plugin notification failed');
+    const notified: unknown[] = [];
+    const host = new PluginHost({
+      strict: true,
+      plugins: [{
+        manifest: pluginManifest('storage-notification'),
+        setup(api) {
+          api.on('llm.error', (event) => { notified.push(event.error); throw secondary; });
+        },
+      }],
+    });
+    const result: unknown = await host.wrapLLM({
+      name: 'offline', chat: async () => { throw original; },
+    }, 'Coder').chat([]).then(() => undefined, (error: unknown) => error);
+    expect(result).toBeInstanceOf(AuditPersistenceError);
+    if (!(result instanceof AuditPersistenceError)) throw new Error('Expected storage interruption');
+    expect(result.failure).toEqual(original.failure);
+    expect(result.record).toBe(original.record);
+    expect(result.cause).toBeInstanceOf(AggregateError);
+    expect((result.cause as AggregateError).errors[0]).toBe(original);
+    expect((result.cause as AggregateError).errors[1]).toBeInstanceOf(Error);
+    expect(notified).toEqual([original]);
+  });
+
   it('runs hooks by priority and keeps registration order for ties', async () => {
     const calls: string[] = [];
     const plugin: XCompilerPlugin = {

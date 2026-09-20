@@ -77,7 +77,7 @@ describe('every domain role speaks as itself', () => {
   it('names a configured role for every domain role, with no gaps', async () => {
     const { defaultAgentForRole } = await import('../src/domain/workflow/role_profile.js');
     const { DOMAIN_ROLES } = await import('../src/domain/workflow/role.js');
-    const { ROLES } = await import('../src/core/plan.js');
+    const { ROLES } = await import('../src/domain/planning/execution_plan.js');
     for (const role of DOMAIN_ROLES) {
       expect(ROLES).toContain(defaultAgentForRole(role));
     }

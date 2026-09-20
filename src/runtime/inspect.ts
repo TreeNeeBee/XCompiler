@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { DEFAULT_PHASE_PLAN_FILE } from '../core/phase_plan.js';
-import { loadPlanTarget } from '../core/storage.js';
+import { DEFAULT_PHASE_PLAN_FILE } from '../domain/planning/phase_plan_checkpoint.js';
+import { FilePlanStore } from '../infrastructure/planning/file_plan_store.js';
 import type { Step } from '../domain/steps/step.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../workspace/workspace.js';
@@ -36,13 +36,14 @@ export interface LsResult {
 }
 
 export async function runLsCommand(opts: LsOptions): Promise<LsResult> {
+  const planStore = new FilePlanStore();
   const root = path.resolve(opts.workspace);
   const found = await findPlans(root, opts.maxDepth ?? 4);
   const plans: LsPlanEntry[] = [];
   for (const file of found) {
     const relativePath = path.relative(root, file) || file;
     try {
-      const loaded = await loadPlanTarget(file);
+      const loaded = await planStore.loadPlanTarget(file);
       const plan = loaded.plan;
       const container = await findProjectContainer(path.dirname(file));
       const repository = new DomainObjectRepository(
@@ -99,13 +100,14 @@ export interface ShowResult {
 }
 
 export async function runShowCommand(opts: ShowOptions): Promise<ShowResult> {
+  const planStore = new FilePlanStore();
   const root = path.resolve(opts.workspace);
   const container = await findProjectContainer(root);
   const controlRoot = container?.control.root ?? root;
   const canonicalRoot = container?.canonical().workspace.root ?? root;
   const stateRoot = container?.state.root ?? path.join(root, '.xcompiler');
   const requestedPlanPath = opts.planPath ? path.resolve(opts.planPath) : await defaultInspectPlanPath(controlRoot);
-  const loaded = await loadPlanTarget(requestedPlanPath);
+  const loaded = await planStore.loadPlanTarget(requestedPlanPath);
   const planPath = loaded.planPath;
   const repository = new DomainObjectRepository(new Workspace(stateRoot));
   await repository.load();

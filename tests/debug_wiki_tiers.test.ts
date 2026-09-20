@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DebugWiki } from '../src/core/debug_wiki.js';
-import { buildDebugBrief } from '../src/core/debug_brief.js';
+import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
+import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
 
 async function roots() {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-wiki-tiers-'));
@@ -38,7 +38,7 @@ function resolution(summary: string) {
 describe('debug wiki tiers', () => {
   it('writes a run-time finding to the project tier, not the shared one', async () => {
     const { installation, project } = await roots();
-    const wiki = new DebugWiki(installation, { projectPath: project });
+    const wiki = new FileDebugWiki(installation, { projectPath: project });
     await wiki.load();
     const persisted = await wiki.recordResolution(resolution('parser rejects empty input'));
 
@@ -52,11 +52,11 @@ describe('debug wiki tiers', () => {
 
   it('keeps one project findings invisible to another project', async () => {
     const { installation, project, otherProject } = await roots();
-    const first = new DebugWiki(installation, { projectPath: project });
+    const first = new FileDebugWiki(installation, { projectPath: project });
     await first.load();
     await first.recordResolution(resolution('parser rejects empty input'));
 
-    const second = new DebugWiki(installation, { projectPath: otherProject });
+    const second = new FileDebugWiki(installation, { projectPath: otherProject });
     await second.load();
     const matches = await second.search(
       buildDebugBrief({
@@ -72,11 +72,11 @@ describe('debug wiki tiers', () => {
 
   it('still finds its own project findings on a later run', async () => {
     const { installation, project } = await roots();
-    const first = new DebugWiki(installation, { projectPath: project });
+    const first = new FileDebugWiki(installation, { projectPath: project });
     await first.load();
     await first.recordResolution(resolution('parser rejects empty input'));
 
-    const reopened = new DebugWiki(installation, { projectPath: project });
+    const reopened = new FileDebugWiki(installation, { projectPath: project });
     await reopened.load();
     const matches = await reopened.search(
       buildDebugBrief({
@@ -92,7 +92,7 @@ describe('debug wiki tiers', () => {
 
   it('falls back to the shared writable tier when no project root is configured', async () => {
     const { installation } = await roots();
-    const wiki = new DebugWiki(installation);
+    const wiki = new FileDebugWiki(installation);
     await wiki.load();
     const persisted = await wiki.recordResolution(resolution('generic ecosystem issue'));
     expect(persisted.created).toMatch(/^external\./u);

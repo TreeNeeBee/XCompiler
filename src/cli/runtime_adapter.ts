@@ -4,7 +4,7 @@ import { spinner as ora } from '../util/spinner.js';
 import type {
   RuntimeIO, RuntimeInteraction, RuntimeLogLevel, RuntimePermissionPolicy, RuntimeProgress,
 } from '../runtime.js';
-import { isCancellationError } from '../core/cancellation.js';
+import { isCancellationError } from '../util/cancellation.js';
 
 function renderLog(level: RuntimeLogLevel, message: string): void {
   switch (level) {

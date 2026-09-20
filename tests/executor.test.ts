@@ -8,8 +8,9 @@ import { isCompleteTurnJson, StepExecutor, verifyOutputs } from '../src/agents/e
 import { rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import { LLMRequestError } from '../src/llm/errors.js';
-import type { Step } from '../src/core/plan.js';
-import { getLanguageProfile } from '../src/core/language.js';
+import { AuditPersistenceError } from '../src/audit/errors.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import type { Tool, ToolContext, ToolExecutionEvent } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
@@ -61,6 +62,26 @@ const baseStep: Step = {
 };
 
 describe('StepExecutor system prompt assembly', () => {
+  it('returns a storage interruption unchanged without another model turn or partial-output audit', async () => {
+    const original = new AuditPersistenceError({
+      operation: 'append-jsonl', target: path.join(tmp, 'audit/audit.jsonl'), eventKind: 'llm.error',
+    }, { cause: new Error('filesystem failure') });
+    const chat = vi.fn(async () => { throw original; });
+    const artifactPath = vi.fn(() => { throw new Error('secondary sink failure'); });
+    const executorTurn = vi.fn(async () => { throw new Error('secondary sink failure'); });
+    const event = vi.fn(async () => { throw new Error('secondary sink failure'); });
+    const exec = new StepExecutor({ llm: { name: 'offline', chat }, maxRounds: 3 });
+    await expect(exec.run({
+      step: baseStep, tools: [writeFileTool],
+      ctx: { ...ctx, audit: { artifactPath, executorTurn, event } as unknown as ToolContext['audit'] },
+    })).rejects.toBe(original);
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(artifactPath).not.toHaveBeenCalled();
+    expect(executorTurn).not.toHaveBeenCalled();
+    expect(event).not.toHaveBeenCalled();
+    await expect(fs.access(path.join(tmp, 'src/x.py'))).rejects.toThrow();
+  });
+
   it('renders the readable Step name while retaining the canonical UUID in tool events', async () => {
     const canonicalId = '019fbc80-af28-728a-949c-1ac2396a57d0';
     const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -5429,7 +5450,7 @@ describe('stale quality assessment feedback', () => {
 
   it('asks for a re-assessment instead of naming a field that does not exist', async () => {
     const { missingQualityAssessmentFields } = await import('../src/agents/execution/feedback_renderer.js');
-    const { normalizeQualityAssessment } = await import('../src/core/quality_gate.js');
+    const { normalizeQualityAssessment } = await import('../src/domain/quality/stage_quality.js');
     const complete = normalizeQualityAssessment({
       completion: 1, upstreamAlignment: 1, metrics: {}, evidence: ['docs written'],
     })!;
@@ -5448,7 +5469,7 @@ describe('stale quality assessment feedback', () => {
    */
   it('is not silenced by adding the field the old message named', async () => {
     const { missingQualityAssessmentFields } = await import('../src/agents/execution/feedback_renderer.js');
-    const { normalizeQualityAssessment } = await import('../src/core/quality_gate.js');
+    const { normalizeQualityAssessment } = await import('../src/domain/quality/stage_quality.js');
     const obedient = normalizeQualityAssessment({
       completion: 1, upstreamAlignment: 1, metrics: {}, evidence: ['docs written'],
       postToolEvidence: 'run_tests passed after the write',
@@ -5483,7 +5504,7 @@ describe('absent versus stale quality assessment', () => {
   // The staleness line still has to appear where it is the actual problem.
   it('still asks for one when an assessment exists but predates the tools', async () => {
     const { missingQualityAssessmentFields } = await import('../src/agents/execution/feedback_renderer.js');
-    const { normalizeQualityAssessment } = await import('../src/core/quality_gate.js');
+    const { normalizeQualityAssessment } = await import('../src/domain/quality/stage_quality.js');
     const complete = normalizeQualityAssessment({
       completion: 1, upstreamAlignment: 1, metrics: {}, evidence: ['written'],
     })!;

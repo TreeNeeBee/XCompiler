@@ -4,11 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildPlan } from '../src/agents/planner.js';
 import { resolveCompileLanguage } from '../src/application/planning/requirement_intake.js';
-import { loadIncrementalBaseline } from '../src/core/incremental.js';
-import { PROJECT_MEMORY_PATH, refreshProjectMemory } from '../src/core/project_memory.js';
-import { renderPlanMarkdown } from '../src/core/render.js';
-import { PlanSchema, type Step } from '../src/core/plan.js';
-import { buildPhasePlanFromCurrentPlan } from '../src/core/phase_plan.js';
+import { loadIncrementalBaseline } from '../src/application/planning/incremental.js';
+import { PROJECT_MEMORY_PATH, refreshProjectMemory } from '../src/application/context/project_memory.js';
+import { renderPlanMarkdown } from '../src/application/planning/plan_renderer.js';
+import { PlanSchema, type Step } from '../src/domain/planning/execution_plan.js';
+import { buildPhasePlanFromCurrentPlan } from '../src/application/planning/phase_plan_files.js';
+import { FilePlanStore } from '../src/infrastructure/planning/file_plan_store.js';
 import { setLocale, t } from '../src/i18n/index.js';
 import { Workspace } from '../src/workspace/workspace.js';
 
@@ -31,6 +32,8 @@ const baseStep = (over: Partial<Step> = {}): Step =>
   }) as Step;
 
 describe('incremental development support', () => {
+  const planStore = new FilePlanStore();
+
   beforeEach(() => setLocale('en'));
 
   it('summarizes an existing workspace baseline', async () => {
@@ -69,7 +72,7 @@ describe('incremental development support', () => {
     await ws.writeFile('src/main.ts', 'export const main = () => "ok";\n');
     await ws.writeFile('tests/main.test.ts', 'import { expect, test } from "vitest";\n');
 
-    const baseline = await loadIncrementalBaseline(ws, state);
+    const baseline = await loadIncrementalBaseline(ws, state, { planStore });
 
     expect(baseline.summary).toContain('## Existing phase plan summary');
     expect(baseline.summary).toContain('- language: typescript');
@@ -110,7 +113,7 @@ describe('incremental development support', () => {
 
     await fs.writeFile(externalPlanPath, `${JSON.stringify(externalPlan, null, 2)}\n`, 'utf8');
 
-    const baseline = await loadIncrementalBaseline(ws, state, { planPath: externalPlanPath });
+    const baseline = await loadIncrementalBaseline(ws, state, { planStore, planPath: externalPlanPath });
 
     expect(baseline.summary).toContain('## Existing plan summary');
     expect(baseline.summary).toContain('- intent: refactor');
@@ -124,9 +127,9 @@ describe('incremental development support', () => {
     const state = new Workspace(path.join(root, '.xcompiler'));
     await ws.writeFile('docs/topic.md', 'Existing project supports invoice exports.');
     await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "csv"; }\n');
-    await refreshProjectMemory(ws, state, { language: 'typescript', intent: 'feature' });
+    await refreshProjectMemory(ws, state, { planStore, language: 'typescript', intent: 'feature' });
 
-    const baseline = await loadIncrementalBaseline(ws, state);
+    const baseline = await loadIncrementalBaseline(ws, state, { planStore });
 
     expect(baseline.summary).toContain('## Existing project memory');
     expect(baseline.summary).toContain('invoice exports');
@@ -140,11 +143,11 @@ describe('incremental development support', () => {
     const state = new Workspace(path.join(root, '.xcompiler'));
     await ws.writeFile('docs/topic.md', 'Old topic');
     await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "old"; }\n');
-    await refreshProjectMemory(ws, state, { language: 'typescript', intent: 'feature' });
+    await refreshProjectMemory(ws, state, { planStore, language: 'typescript', intent: 'feature' });
     await ws.writeFile('docs/topic.md', 'Fresh topic after manual edits');
     await ws.writeFile('src/exporter.ts', 'export function exportInvoices() { return "fresh"; }\n');
 
-    const baseline = await loadIncrementalBaseline(ws, state);
+    const baseline = await loadIncrementalBaseline(ws, state, { planStore });
 
     expect(baseline.summary).toContain('Fresh topic after manual edits');
     expect(baseline.summary).toContain('return "fresh";');
@@ -170,7 +173,7 @@ describe('incremental development support', () => {
       ].join('\n'),
     );
 
-    const baseline = await loadIncrementalBaseline(ws, state);
+    const baseline = await loadIncrementalBaseline(ws, state, { planStore });
 
     expect(baseline.summary).toContain('Add export support.');
     expect(baseline.summary).not.toContain('Old generated baseline that must not recurse.');

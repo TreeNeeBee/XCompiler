@@ -1,10 +1,10 @@
-import { ArchitectureModuleSchema } from '../src/core/plan.js';
+import { ArchitectureModuleSchema } from '../src/domain/planning/execution_plan.js';
 import { describe, it, expect } from 'vitest';
 import { buildPlan } from '../src/agents/planner.js';
-import { lintPlan } from '../src/core/lint.js';
-import { PlanSchema } from '../src/core/plan.js';
-import { renderPlanMarkdown } from '../src/core/render.js';
-import type { Step } from '../src/core/plan.js';
+import { lintPlan } from '../src/domain/planning/plan_lint.js';
+import { PlanSchema } from '../src/domain/planning/execution_plan.js';
+import { renderPlanMarkdown } from '../src/application/planning/plan_renderer.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
 
 const baseStep = (over: Partial<Step>): Step =>
   ({

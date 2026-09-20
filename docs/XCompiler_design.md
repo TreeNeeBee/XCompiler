@@ -13,29 +13,26 @@
 
 ## 2. 分层架构
 
-```text
-CLI / ACP / future adapters
-             |
-             v
-XCompiler Runtime
-  Build Service | Run Service | Events | Permissions
-             |
-             v
-Application execution
-  ProjectOrchestrator(PM) | WorkScheduler | CorrectiveWorkflow
-  DomainAttemptRunner | Quality | Record/Replay | Projection
-             |
-             v
-Domain
-  Project | Phase | Step | Ticket | Assignment | Decision | Risk | Evidence
-             |
-             v
-Infrastructure
-  DomainObjectRepository | ObjectRegistry | Workspace | Git | Sandbox
-             |
-             v
-Agents | Skills | Tools | Plugins | LLM Router | Debug Wiki
+```mermaid
+flowchart TD
+  Adapters[CLI / ACP / future adapters] --> Runtime[XCompiler Runtime]
+  Runtime --> Application[Application: PM / planning / execution]
+  Runtime --> Infrastructure[Infrastructure: persistence / Git / Wiki]
+  Runtime --> Capabilities[Agents / LLM / Skills / Tools / Plugins / Sandbox]
+  Application --> Domain[Domain: objects / lifecycle / policy / ports]
+  Application --> Capabilities
+  Infrastructure --> Domain
 ```
+
+图中的箭头表示主要依赖方向。Runtime 组装具体实现并注入 Application；Domain 不反向依赖
+Infrastructure，也不读取文件或启动进程。Infrastructure 还可实现 Application 声明的能力端口，
+例如 `DebugWikiPort`，Application 不导入其文件实现。
+
+0.4 已在工作树中移除 `src/core/`：计划、门禁等纯契约归入 Domain；规划推进、报告和执行协调
+归入 Application；计划、项目清单和 Wiki 的文件存储归入 Infrastructure。`PlanStorePort` 区分
+文档结构读取与严格执行计划加载，避免增量规划摘要意外触发执行门禁。Runtime 注入
+`FilePlanStore`、`FileDebugWiki` 和对象仓库；这些迁移仍待统一验证，进度见
+[0.4 交接记录](features/0.4.0/HANDOVER.md)。
 
 Adapter 只负责参数或协议、配置、交互、输出和退出码。它不得直接调用 Planner、Agent、Tool、Plugin、Memory、文件系统或命令执行实现。
 

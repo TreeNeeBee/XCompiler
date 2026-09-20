@@ -1,7 +1,7 @@
 import type { Workspace } from '../workspace/workspace.js';
 import type { Sandbox } from '../sandbox/types.js';
 import type { AuditLogger } from '../audit/audit.js';
-import type { Language } from '../core/plan.js';
+import type { Language } from '../domain/planning/execution_plan.js';
 import type { StepType } from '../domain/steps/step.js';
 import type { RecordReplayController } from '../application/record_replay/controller.js';
 import type { FileTreeSink } from './workspace_write.js';

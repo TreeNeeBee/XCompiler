@@ -11,16 +11,16 @@ import {
   type Language,
   type PlanIntent,
   type ProjectType,
-} from '../core/plan.js';
-import { lintPlan } from '../core/lint.js';
-import { getLanguageProfile } from '../core/language.js';
-import { withDefaultQualityGate } from '../core/quality_gate.js';
+} from '../domain/planning/execution_plan.js';
+import { lintPlan } from '../domain/planning/plan_lint.js';
+import { getLanguageProfile } from '../application/execution/language_support.js';
+import { withDefaultQualityGate } from '../domain/quality/stage_quality.js';
 import {
   analyzeArchitectureDemand,
   architectureImplementationPaths,
   pathCoveredByOutputs,
   validateArchitectureContract,
-} from '../core/architecture.js';
+} from '../domain/planning/architecture_policy.js';
 import type { LLMClient } from '../llm/types.js';
 import {
   PlannerContractViolation,

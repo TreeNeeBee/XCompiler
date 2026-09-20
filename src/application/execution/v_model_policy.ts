@@ -1,11 +1,11 @@
 import {
   compactFailureEvidence,
-} from '../../core/debug_brief.js';
-import type { LanguageProfile } from '../../core/language.js';
+} from './debug_brief.js';
+import type { LanguageProfile } from './language_support.js';
 import {
   type Plan,
   type Step,
-} from '../../core/plan.js';
+} from '../../domain/planning/execution_plan.js';
 
 export function hasTypeScriptConfigOutput(
   outputs: string[],

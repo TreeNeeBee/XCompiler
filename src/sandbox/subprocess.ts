@@ -6,7 +6,7 @@ import os from 'node:os';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
-import type { Language } from '../core/plan.js';
+import type { Language } from '../domain/planning/execution_plan.js';
 import type {
   Sandbox,
   SandboxBuildOptions,

@@ -2,7 +2,7 @@ import path from 'node:path';
 import {
   VERIFICATION_SUPPLEMENT_DIR,
   verificationSupplementUpwardPrefix,
-} from '../core/test_assets.js';
+} from '../domain/quality/test_assets.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type { ChatOptions, LLMClient } from '../llm/types.js';
@@ -10,20 +10,20 @@ import {
   V_MODEL_DEVELOPMENT_PHASES,
   V_MODEL_TEST_PHASES,
   type Step,
-} from '../core/plan.js';
+} from '../domain/planning/execution_plan.js';
 import {
   normalizeQualityAssessment,
   qualityAssessmentShapeIssues,
   type StageQualityAssessment,
-} from '../core/quality_gate.js';
+} from '../domain/quality/stage_quality.js';
 import type {
   ChangeRequestTicket,
   EnhancementTicket,
   Ticket,
 } from '../domain/tickets/ticket.js';
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../domain/tickets/ticket.js';
-import { getLanguageProfile, type LanguageProfile } from '../core/language.js';
-import { RECORDED_FIXTURE_DIR } from '../core/external_dependency_contract.js';
+import { getLanguageProfile, type LanguageProfile } from '../application/execution/language_support.js';
+import { RECORDED_FIXTURE_DIR } from '../domain/quality/external_dependency.js';
 import { isUnownedStepFailure } from '../tools/types.js';
 import type { ToolFailureCode } from '../tools/types.js';
 import type {
@@ -32,6 +32,7 @@ import type {
   ToolResult,
 } from '../tools/types.js';
 import { isContentRejectionExhausted } from '../llm/errors.js';
+import { AuditPersistenceError } from '../audit/errors.js';
 import { makeStreamReporter } from '../llm/stream.js';
 import { t } from '../i18n/index.js';
 import { updateOperationWindow } from '../llm/window.js';
@@ -494,6 +495,8 @@ export class StepExecutor {
         providers.add(provider ?? this.opts.llm.name);
       } catch (err) {
         rep.done('failed');
+        // Storage loss is an infrastructure interruption, not model-output repair feedback.
+        if (err instanceof AuditPersistenceError) throw err;
         const errMsg = (err as Error).message;
         actualRounds = round;
         // Partial model output is diagnostic evidence, never a generated-project deliverable.

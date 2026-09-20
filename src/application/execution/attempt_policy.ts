@@ -6,15 +6,15 @@ import {
   renderDebugBriefForPrompt,
   type DebugBrief,
   type DebugBriefInput,
-} from '../../core/debug_brief.js';
-import type { ArchitectureModule, Plan, Step } from '../../core/plan.js';
-import type { PairedSourceTestInspection } from '../../core/paired_test_contract.js';
-import type { StageQualityAssessment } from '../../core/quality_gate.js';
-import { defaultQualityGateForPhase } from '../../core/quality_gate.js';
+} from './debug_brief.js';
+import type { ArchitectureModule, Plan, Step } from '../../domain/planning/execution_plan.js';
+import type { PairedSourceTestInspection } from './paired_test_contract.js';
+import type { StageQualityAssessment } from '../../domain/quality/stage_quality.js';
+import { defaultQualityGateForPhase } from '../../domain/quality/stage_quality.js';
 import {
   developmentBaselineTestAssetPaths,
   pairedTestAssetPaths,
-} from '../../core/test_assets.js';
+} from '../../domain/quality/test_assets.js';
 import type { DomainLog } from '../../domain/observability/records.js';
 import type { AttemptFailure } from './failure_classification.js';
 import { workStepId, type Ticket } from '../../domain/tickets/ticket.js';

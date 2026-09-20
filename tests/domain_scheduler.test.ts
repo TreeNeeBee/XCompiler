@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Plan } from '../src/core/plan.js';
+import type { Plan } from '../src/domain/planning/execution_plan.js';
 import { QualityAssessmentService } from '../src/application/execution/quality_assessment_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';

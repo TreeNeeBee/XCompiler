@@ -2,7 +2,7 @@ import path from 'node:path';
 import { recordWorkspaceWrite, writeWorkspaceFile } from './workspace_write.js';
 import { promises as fs } from 'node:fs';
 import { deniedRuntimeOwnedWrite, deniedWrite, isAllowedWrite, type Tool } from './types.js';
-import { runtimeOwnedAllows, runtimeOwnedFile } from '../core/runtime_owned_files.js';
+import { runtimeOwnedAllows, runtimeOwnedFile } from '../domain/workspace/runtime_owned_file.js';
 import { resolveWorkspacePath } from './path_guard.js';
 import {
   DEFAULT_CONTEXT_WINDOW_TOKENS,

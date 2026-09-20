@@ -1,13 +1,13 @@
-import { TEST_FIXTURE_DIR } from '../../core/external_dependency_contract.js';
+import { TEST_FIXTURE_DIR } from '../../domain/quality/external_dependency.js';
 import { isTestFilePath, normalizeGitPath } from './v_model_policy.js';
-import type { LanguageProfile } from '../../core/language.js';
+import type { LanguageProfile } from './language_support.js';
 import type { Ticket } from '../../domain/tickets/ticket.js';
 import {
   PHASE_ORDER,
   V_MODEL_TEST_PHASES,
   type Plan,
   type Step,
-} from '../../core/plan.js';
+} from '../../domain/planning/execution_plan.js';
 import { hasTypeScriptConfigOutput } from './v_model_policy.js';
 
 export function buildDownstreamContextSnippet(plan: Plan, step: Step): string {

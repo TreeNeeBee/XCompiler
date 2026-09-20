@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { bundledInstallationRoot } from '../../config/installation_root.js';
 import { DOMAIN_ROLES, type DomainRole } from '../../domain/workflow/role.js';
 import type { RoleTemplateOverlay } from '../../domain/workflow/role_definition.js';
 
@@ -32,7 +32,7 @@ export function defaultRoleTemplatePath(fallbackRoot?: string): string {
   const configured = process.env.XC_PATH?.trim();
   const candidate = configured
     ? path.resolve(configured)
-    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    : bundledInstallationRoot();
   const base = path.parse(candidate).root === candidate && fallbackRoot
     ? path.resolve(fallbackRoot)
     : candidate;

@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { z } from 'zod';
+import { AuditPersistenceError } from '../../audit/errors.js';
 import {
   RecordReplayError,
+  RECORD_REPLAY_CHANNELS,
   type RecordReplayChannel,
   type RecordReplayEntry,
   type RecordReplayMode,
@@ -100,8 +103,42 @@ export class RecordReplayController {
     const request = redactAndCanonicalize(input.request, this.redactedFields);
     assertNoObviousSecret(request);
     const requestKey = hashValue({ channel: input.channel, operation: input.operation, request });
-    const entries = await this.options.store.find(input.channel, requestKey);
-    const valid = verifyEntryChain(entries);
+    let entries: RecordReplayEntry[];
+    try {
+      entries = await this.options.store.find(input.channel, requestKey);
+    } catch (cause) {
+      if (cause instanceof AuditPersistenceError || cause instanceof RecordReplayError) throw cause;
+      throw new AuditPersistenceError({
+        operation: 'read-recording',
+        target: `${input.channel}:${requestKey}`,
+        eventKind: 'record-replay',
+        messageId: 'record_replay.read_failed',
+        systemCode: systemErrorCode(cause),
+      }, { cause, record: { channel: input.channel, operation: input.operation, requestKey, request } });
+    }
+    let valid: RecordReplayEntry[];
+    try {
+      valid = verifyEntryChain(entries);
+      for (const entry of valid) {
+        if (entry.channel !== input.channel || entry.operation !== input.operation || entry.requestKey !== requestKey) {
+          throw new RecordReplayError('record_corrupt', 'Recording does not match the requested interaction', {
+            entryId: entry.id,
+            recordedChannel: entry.channel,
+            recordedOperation: entry.operation,
+            recordedRequestKey: entry.requestKey,
+          });
+        }
+      }
+    } catch (cause) {
+      if (!(cause instanceof RecordReplayError)) throw cause;
+      throw new RecordReplayError(cause.code, cause.message, {
+        ...cause.details,
+        channel: input.channel,
+        operation: input.operation,
+        requestKey,
+        target: typeof cause.details.target === 'string' ? cause.details.target : `${input.channel}:${requestKey}`,
+      }, { cause });
+    }
     const active = activeEntries(valid);
     const distinctResponses = new Map(active.map((entry) => [entry.responseHash, entry]));
     if (distinctResponses.size > 1 && this.mode !== 'refresh') {
@@ -141,32 +178,73 @@ export class RecordReplayController {
       recordedAt: new Date().toISOString(),
     };
     const entry: RecordReplayEntry = { ...base, entryHash: hashValue(base) };
-    await this.options.store.append(entry);
+    try {
+      await this.options.store.append(entry);
+    } catch (cause) {
+      if (cause instanceof RecordReplayError) throw cause;
+      const failure = cause instanceof AuditPersistenceError ? cause.failure : {
+        operation: 'write-recording' as const,
+        target: `${input.channel}:${requestKey}`,
+        eventKind: 'record-replay',
+        messageId: 'record_replay.write_failed',
+        systemCode: systemErrorCode(cause),
+      };
+      // Keep the generated response, already protected by the recording policy, even when the
+      // adapter could not commit it. A retained record is evidence of failure, not a saved fixture.
+      throw new AuditPersistenceError(failure, { cause, record: entry });
+    }
     this.usageByChannel[input.channel].recorded += 1;
     return response;
   }
 }
 
-export function verifyEntry(entry: RecordReplayEntry): RecordReplayEntry {
-  if (entry.version !== 2 || !Array.isArray(entry.supersedesEntryIds)) {
-    throw new RecordReplayError(
-      'record_corrupt',
-      `Recording ${entry.id ?? '(unknown)'} is not a version 2 fixture; rebuild it with XCompiler 0.3`,
-    );
-  }
-  if (entry.responseHash !== hashValue(entry.response)) {
-    throw new RecordReplayError('record_corrupt', `Recording ${entry.id} response hash is invalid`);
-  }
-  const { entryHash, ...base } = entry;
-  if (entryHash !== hashValue(base)) {
-    throw new RecordReplayError('record_corrupt', `Recording ${entry.id} entry hash is invalid`);
-  }
-  return entry;
+function systemErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
 }
 
-export function verifyEntryChain(entries: readonly RecordReplayEntry[]): RecordReplayEntry[] {
-  if (entries.length === 0) return [];
-  const verified = entries.map(verifyEntry);
+const RecordingEnvelopeSchema = z.object({
+  version: z.literal(2),
+  id: z.string(),
+  channel: z.enum(RECORD_REPLAY_CHANNELS),
+  operation: z.string(),
+  requestKey: z.string(),
+  request: z.unknown(),
+  response: z.unknown(),
+  responseHash: z.string(),
+  supersedesEntryIds: z.array(z.string()),
+  previousEntryHash: z.string().optional(),
+  entryHash: z.string(),
+  recordedAt: z.string(),
+}).passthrough();
+
+export function verifyEntry(value: unknown): RecordReplayEntry {
+  try {
+    RecordingEnvelopeSchema.parse(value);
+    // Validate the shape without normalizing the object used for its historical hash.
+    const entry = value as RecordReplayEntry;
+    if (entry.responseHash !== hashValue(entry.response)) {
+      throw new Error(`Recording ${entry.id} response hash is invalid`);
+    }
+    const { entryHash, ...base } = entry;
+    if (entryHash !== hashValue(base)) {
+      throw new Error(`Recording ${entry.id} entry hash is invalid`);
+    }
+    return entry;
+  } catch (cause) {
+    throw new RecordReplayError('record_corrupt', 'Recording structure or hashes are invalid', {}, { cause });
+  }
+}
+
+export function verifyEntryChain(entries: unknown): RecordReplayEntry[] {
+  let values: unknown[];
+  try {
+    values = z.array(z.unknown()).parse(entries);
+  } catch (cause) {
+    throw new RecordReplayError('record_corrupt', 'Recording chain must be an array', {}, { cause });
+  }
+  if (values.length === 0) return [];
+  const verified = Array.from(values, verifyEntry);
   const roots = verified.filter((entry) => !entry.previousEntryHash);
   if (roots.length !== 1) {
     throw new RecordReplayError('record_corrupt', 'Recording chain must contain exactly one root', {

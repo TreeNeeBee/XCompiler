@@ -1,7 +1,9 @@
 import { computeRetryDelayMs, DEFAULT_PROVIDER_RETRY, type ProviderRetryPolicy } from './retry.js';
+import { randomUUID } from 'node:crypto';
 import type { XCompilerConfig } from '../config/config.js';
-import type { Role } from '../core/plan.js';
+import type { Role } from '../domain/planning/execution_plan.js';
 import type { AuditLogger } from '../audit/audit.js';
+import { AuditPersistenceError } from '../audit/errors.js';
 import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
 import type { ScoreStore } from './scores.js';
@@ -22,7 +24,15 @@ import {
 } from './window.js';
 import { isLLMRequestError, LLMRequestError } from './errors.js';
 import type { RecordReplayController } from '../application/record_replay/controller.js';
-import { isCancellationError } from '../core/cancellation.js';
+import { isCancellationError } from '../util/cancellation.js';
+import { z } from 'zod';
+import { RecordReplayError } from '../application/record_replay/types.js';
+import {
+  captureResponseEvidence,
+  ProviderResponseEvidenceSchema,
+  type ProviderResponseEvidence,
+  type RoutedResponseEvidence,
+} from './response_evidence.js';
 
 
 type ProviderConfig = XCompilerConfig['llm']['providers'][string];
@@ -110,7 +120,7 @@ export class LLMRouter {
    */
   private async diagnoseStall(info: { silentForMs: number; provider?: string; model?: string }): Promise<string | undefined> {
     try {
-      const { runDoctor } = await import('../core/doctor.js');
+      const { runDoctor } = await import('../application/diagnostics/doctor.js');
       const report = await runDoctor({ configPath: this.configPath, probeTimeoutMs: 10_000 });
       const bad = report.sections
         .flatMap((section) => section.items
@@ -297,6 +307,7 @@ class FallbackClient implements LLMClient {
    *     先探测确认端点在线再重试一次（流式错误降级为非流式）；端点不可达 → 立即切换。
    */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+    const logicalRequestId = options?.logicalRequestId === undefined ? randomUUID() : z.uuid().parse(options.logicalRequestId);
     let lastErr: unknown;
     const failures: string[] = [];
     // Whether each recorded failure was the provider itself failing, or the model's content being
@@ -339,6 +350,8 @@ class FallbackClient implements LLMClient {
         1 + c.retry.max_retries,
       );
       for (let providerAttempt = 1; providerAttempt <= maxProviderAttempts; providerAttempt++) {
+        const providerAttemptId = randomUUID();
+        const observations: ProviderResponseEvidence[] = [];
         let out: string;
         try {
           options?.onProviderStart?.(c.name, c.client.name, {
@@ -348,7 +361,7 @@ class FallbackClient implements LLMClient {
         } catch { /* display only */ }
         const operationWindow = resolveSkillOperationWindow({
           contextWindowTokens: c.contextWindowTokens,
-          promptChars: messages.reduce((sum, message) => sum + message.content.length, 0),
+          promptChars: providerMessages.reduce((sum, message) => sum + message.content.length, 0),
         });
         if (providerAttempt === 1) {
           await this.audit?.event(
@@ -377,13 +390,38 @@ class FallbackClient implements LLMClient {
           // The caller supplies the explanation because the transport may not import it. A caller
           // that already wants its own stall handling keeps it.
           onStall: attemptOptions?.onStall ?? this.diagnoseStall,
+          // Each transport attempt gets a fresh collector, including retries and fallback. Caller
+          // callbacks cannot replace the evidence used for this attempt's required audit.
+          onProviderResponse: (response) => { observations.push(response); },
         };
+        const attemptMessages = providerMessages.map((message) => Object.freeze({ ...message }));
+        Object.freeze(attemptMessages);
+        // Guard failures are request/evidence failures, outside all provider retry and score paths.
+        await options?.beforeProviderRequest?.({
+          logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+          messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
+        });
         try {
-          out = await c.client.chat(providerMessages, providerOptions);
+          out = await c.client.chat(attemptMessages, providerOptions);
         } catch (err) {
           // Host/user cancellation is control flow, not provider quality. It must never consume a
           // fallback, trigger a retry, or alter the provider's score.
           if (isCancellationError(err, options?.signal)) throw err;
+          if (err instanceof AuditPersistenceError) throw err;
+          if (err instanceof RecordReplayError) {
+            // This is the compiler's recorded model response, not a generated-project fixture.
+            // Preserve corruption as unavailable required evidence through Executor and PM.
+            if (err.code === 'record_corrupt') throw new AuditPersistenceError({
+              operation: 'validate-recording',
+              target: typeof err.details.target === 'string' ? err.details.target : `llm:${c.name}`,
+              eventKind: 'llm.response',
+              messageId: 'llm.recording_invalid',
+              logicalRequestId,
+              providerAttemptId,
+              systemCode: err.code,
+            }, { cause: err });
+            throw err;
+          }
           lastErr = err;
           const rateLimited = isRateLimitedLLMError(err);
           const attemptCap = rateLimited
@@ -468,6 +506,14 @@ class FallbackClient implements LLMClient {
           );
           break;
         }
+        const responseEvidence: RoutedResponseEvidence = Object.freeze({
+          logicalRequestId,
+          providerAttemptId,
+          provider: c.name,
+          model: c.client.name,
+          output: out,
+          capture: captureResponseEvidence(observations, out),
+        });
         if (options?.validate) {
           try {
             options.validate(out);
@@ -478,16 +524,26 @@ class FallbackClient implements LLMClient {
               t().llm.providerValidationFailed(this.role, c.client.name),
               {
                 messageId: 'llm.provider_validation_failed',
+                logicalRequestId,
+                providerAttemptId,
+                role: this.role,
                 provider: c.name,
+                model: c.client.name,
                 attempt: i + 1,
                 providerAttempt,
                 remaining: this.chain.length - i - 1,
                 error: validationError,
+                // Feedback may be bounded, but the rejected candidate and its actual prompt must
+                // remain available in the raw audit before the next provider attempt starts.
+                output: out,
+                responseEvidence,
+                requestMessages: attemptMessages,
                 output_preview: out.slice(0, 400),
                 output_tail: out.slice(-400),
                 output_chars: out.length,
                 output_has_done: /"done"\s*:/u.test(out),
               },
+              { persistence: 'required' },
             );
             if (providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS) {
               const rejectedOutput = validationOutputForRetry(
@@ -506,6 +562,8 @@ class FallbackClient implements LLMClient {
                 t().llm.providerValidationRetry(this.role, c.client.name),
                 {
                   messageId: 'llm.provider_validation_retry',
+                  logicalRequestId,
+                  providerAttemptId,
                   provider: c.name,
                   attempt: i + 1,
                   providerAttempt,
@@ -523,6 +581,20 @@ class FallbackClient implements LLMClient {
             break;
           }
         }
+        await this.audit?.event('llm.response', `${this.role} response from ${c.client.name}`, {
+          messageId: 'llm.provider_response',
+          logicalRequestId,
+          providerAttemptId,
+          role: this.role,
+          provider: c.name,
+          model: c.client.name,
+          output: out,
+          requestMessages: attemptMessages,
+          responseEvidence,
+        }, { persistence: 'required' });
+        // This is outside the transport/validation catches: an evidence consumer failure cannot
+        // request another response, reset an allowance, or count as provider quality.
+        options?.onResponse?.(responseEvidence);
         if (options?.scoreSuccess !== false) {
           this.scores?.boost(c.name, `success in role ${this.role}`);
         }
@@ -698,6 +770,8 @@ function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMC
         await audit.llmResponse(role, inner.name, out);
         return out;
       } catch (err) {
+        // Retrying the failed audit here could replace the original storage failure.
+        if (err instanceof AuditPersistenceError) throw err;
         await audit.llmError(role, inner.name, err);
         throw err;
       }
@@ -748,7 +822,8 @@ function recordReplayClient(
   return {
     name: inner.name,
     async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-      return controller.execute({
+      let executedLive = false;
+      const result: unknown = await controller.execute({
         channel: 'llm',
         operation: 'chat',
         request: {
@@ -761,7 +836,31 @@ function recordReplayClient(
             responseFormat: options?.responseFormat,
           },
         },
-      }, () => inner.chat(messages, options));
+      }, async () => {
+        executedLive = true;
+        const observations: ProviderResponseEvidence[] = [];
+        const output = await inner.chat(messages, {
+          ...options,
+          onProviderResponse: (response) => { observations.push(response); },
+        });
+        return { format: 'xcompiler.llm-response/1' as const, output, observations };
+      });
+      // Existing text-only recordings have no completion facts. Preserve their text, explicitly
+      // leaving the Router capture unavailable; never synthesize a stop signal from fixture text.
+      if (typeof result === 'string') return result;
+      const envelope = RecordedResponseSchema.safeParse(result);
+      if (!envelope.success) throw new RecordReplayError('record_corrupt',
+        'Recorded LLM response evidence has an invalid structure', { provider, model: inner.name });
+      for (const response of envelope.data.observations) {
+        options?.onProviderResponse?.({ ...response, source: executedLive ? 'live' : 'replay' });
+      }
+      return envelope.data.output;
     },
   };
 }
+
+const RecordedResponseSchema = z.object({
+  format: z.literal('xcompiler.llm-response/1'),
+  output: z.string(),
+  observations: z.array(ProviderResponseEvidenceSchema),
+}).strict();

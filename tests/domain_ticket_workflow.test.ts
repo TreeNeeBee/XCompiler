@@ -15,7 +15,7 @@ import { QualityAssessmentService } from '../src/application/execution/quality_a
 import type { Step } from '../src/domain/steps/step.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../src/workspace/workspace.js';
-import type { Plan } from '../src/core/plan.js';
+import type { Plan } from '../src/domain/planning/execution_plan.js';
 import { bugContracts, failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.js';
 import { buildBugFailureContracts } from '../src/application/project_management/bug_verification.js';
 

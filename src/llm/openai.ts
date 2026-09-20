@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import type { StreamProgress } from './errors.js';
+import type { ProviderResponseEvidence } from './response_evidence.js';
 import { Agent } from 'undici';
 import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 import {
@@ -210,6 +211,8 @@ export class OpenAIClient implements LLMClient {
     const stall = armStallDiagnosis(this.cfg, options);
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
+    const responseEvidence = newResponseEvidence(this.cfg.model, 'non-stream');
+    let responseOutput: string;
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -222,7 +225,9 @@ export class OpenAIClient implements LLMClient {
         const text = await res.text();
         throw buildHttpError(this.cfg, res.status, res.statusText, text);
       }
-      const json = (await res.json()) as OpenAIChatResponse;
+      const raw: unknown = await res.json();
+      recordResponseFrame(responseEvidence, raw);
+      const json = raw as OpenAIChatResponse;
       if (json.error) throw new Error(`OpenAI error: ${json.error.message}`);
       const content = json.choices?.[0]?.message?.content;
       // A reasoning model answers with `content: null` and its text in `reasoning` when the token
@@ -238,7 +243,7 @@ export class OpenAIClient implements LLMClient {
           );
         }
       }
-      return content ?? '';
+      responseOutput = content ?? '';
     } catch (err) {
       throw wrapOpenAIError(this.cfg, withStallDiagnosis(err, stall.diagnosis()), 'non-stream');
     } finally {
@@ -246,6 +251,8 @@ export class OpenAIClient implements LLMClient {
       if (timer) clearTimeout(timer);
       unbindAbort();
     }
+    options?.onProviderResponse?.({ ...responseEvidence, output: responseOutput });
+    return responseOutput;
   }
 
   private async streamChat(url: string, body: Record<string, unknown>, options: ChatOptions): Promise<string> {
@@ -324,6 +331,8 @@ export class OpenAIClient implements LLMClient {
       accept: 'text/event-stream',
     };
     if (this.cfg.apiKey) headers.authorization = `Bearer ${this.cfg.apiKey}`;
+    const responseEvidence = newResponseEvidence(this.cfg.model, 'stream');
+    let responseOutput: string;
     try {
       armIdle();
       // `fetch` settles when the response headers arrive, which makes this the one place the two
@@ -382,21 +391,27 @@ export class OpenAIClient implements LLMClient {
       };
       const onData = (data: string) => {
         if (data === '[DONE]') {
+          if (!done) responseEvidence.termination = 'done-marker';
           done = true;
           return;
         }
-        let chunk: OpenAIStreamChunk;
+        let parsed: unknown;
         try {
-          chunk = JSON.parse(data) as OpenAIStreamChunk;
+          parsed = JSON.parse(data);
         } catch {
+          responseEvidence.discardedFrames++;
           return;
         }
+        if (!recordResponseFrame(responseEvidence, parsed)) return;
+        const chunk = parsed as OpenAIStreamChunk;
         if (chunk.error) throw new Error(`OpenAI error: ${chunk.error.message ?? JSON.stringify(chunk.error)}`);
         if (chunk.done === true) {
+          if (!done) responseEvidence.termination = 'provider-done';
           done = true;
         }
         let terminalChoice = false;
         for (const choice of chunk.choices ?? []) {
+          if (!isResponseObject(choice)) continue;
           if (choice.finish_reason && choice.finish_reason !== 'tool_calls') {
             terminalChoice = true;
           }
@@ -440,11 +455,18 @@ export class OpenAIClient implements LLMClient {
             throw new Error(`OpenAI stream exceeded ${maxOutputChars} chars without a valid JSON prefix; aborting`);
           }
           if (shouldStopByContent()) {
+            responseEvidence.termination = 'local-stop';
             done = true;
             return;
           }
         }
-        if (terminalChoice || shouldStopByContent()) done = true;
+        if (terminalChoice) {
+          if (!done) responseEvidence.termination = 'finish-reason';
+          done = true;
+        } else if (shouldStopByContent()) {
+          responseEvidence.termination = 'local-stop';
+          done = true;
+        }
       };
 
       try {
@@ -488,14 +510,74 @@ export class OpenAIClient implements LLMClient {
       if (embeddedProtocolError) {
         throw new Error(`OpenAI error: ${embeddedProtocolError}`);
       }
-      return aggregate;
+      responseOutput = aggregate;
     } catch (err) {
       throw wrapOpenAIError(this.cfg, withStallDiagnosis(err, stall.diagnosis()), 'stream', abortProgress);
     } finally {
       stall.cleanup();
       cleanup();
     }
+    options.onProviderResponse?.({ ...responseEvidence, output: responseOutput });
+    return responseOutput;
   }
+}
+
+function newResponseEvidence(
+  requestedModel: string,
+  transport: ProviderResponseEvidence['transport'],
+): ProviderResponseEvidence {
+  return {
+    schemaVersion: 1,
+    source: 'live',
+    protocol: 'openai',
+    requestedModel,
+    reportedModels: [],
+    transport,
+    termination: transport === 'stream' ? 'eof' : 'response',
+    finishReasons: [],
+    choiceIndexes: [],
+    maxChoicesPerFrame: 0,
+    discardedFrames: 0,
+    output: '',
+  };
+}
+
+function isResponseObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Records the whole frame, including choices the existing content path may not consume. */
+function recordResponseFrame(evidence: ProviderResponseEvidence, value: unknown): boolean {
+  if (!isResponseObject(value)) {
+    evidence.discardedFrames++;
+    return false;
+  }
+  if (typeof value.model === 'string' && value.model.length > 0 && !evidence.reportedModels.includes(value.model)) {
+    evidence.reportedModels.push(value.model);
+  }
+  if (value.choices === undefined || value.choices === null) return true;
+  if (!Array.isArray(value.choices)) {
+    evidence.discardedFrames++;
+    return false;
+  }
+  evidence.maxChoicesPerFrame = Math.max(evidence.maxChoicesPerFrame, value.choices.length);
+  let discardedChoice = false;
+  for (const choice of value.choices) {
+    if (!isResponseObject(choice)) {
+      discardedChoice = true;
+      continue;
+    }
+    if (
+      typeof choice.index === 'number' && Number.isInteger(choice.index) && choice.index >= 0 &&
+      !evidence.choiceIndexes.includes(choice.index)
+    ) evidence.choiceIndexes.push(choice.index);
+    if (
+      typeof choice.finish_reason === 'string' && choice.finish_reason.length > 0 &&
+      !evidence.finishReasons.includes(choice.finish_reason)
+    ) evidence.finishReasons.push(choice.finish_reason);
+  }
+  if (discardedChoice) evidence.discardedFrames++;
+  return true;
 }
 
 /**

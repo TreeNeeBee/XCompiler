@@ -1,21 +1,21 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../../workspace/workspace.js';
-import { testPlanDocForIteration } from '../../core/docs.js';
+import { testPlanDocForIteration } from '../../domain/planning/document_contract.js';
 import {
   V_MODEL_TEST_TO_SOURCE_PHASE,
   type Plan,
   type Step,
-} from '../../core/plan.js';
+} from '../../domain/planning/execution_plan.js';
 import {
   inspectPairedSourceTests,
   type PairedSourceTestInspection,
-} from '../../core/paired_test_contract.js';
+} from './paired_test_contract.js';
 import {
   pairedTestAssetPaths,
   verificationSupplementRoot,
   verificationSupplementUpwardPrefix,
-} from '../../core/test_assets.js';
+} from '../../domain/quality/test_assets.js';
 import {
   hasExecutableTestDeclaration,
   isTestFilePath,

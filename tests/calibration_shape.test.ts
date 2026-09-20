@@ -5,7 +5,7 @@ import {
   calibrateStepShape,
   ensureEssentialToolRefs,
 } from '../src/agents/calibration.js';
-import type { Step } from '../src/core/plan.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
 
 describe('calibrateStepShape', () => {
   it('backfills missing role / acceptance / systemPrompt with phase-aware defaults', () => {

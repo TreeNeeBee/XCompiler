@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { loadXCompilerProject } from '../core/project_file.js';
-import { DEFAULT_PHASE_PLAN_FILE } from '../core/phase_plan.js';
+import { loadXCompilerProject } from '../infrastructure/project/project_manifest.js';
+import { DEFAULT_PHASE_PLAN_FILE } from '../domain/planning/phase_plan_checkpoint.js';
 import {
   ContainerLayoutError,
   findProjectContainer,

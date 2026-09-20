@@ -229,7 +229,7 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | [docs/versioning.md](docs/versioning.md) | 版本源、release 脚本、tag 策略 |
 | [docs/self_bootstrap.md](docs/self_bootstrap.md) | 自举开发与 qualification gates |
 | [docs/deploy.md](docs/deploy.md) | 本地、Docker、native package 部署 |
-| [docs/XCompiler_user_fixture_plan.md](docs/XCompiler_user_fixture_plan.md) | 未实施的设计：向一次运行提供真实用户样例（`--fixture`），方案已定 |
+| [docs/features/0.5.0/user_fixture.md](docs/features/0.5.0/user_fixture.md) | 0.5.0 规划：导入真实用户样例（`--fixture`），接口和生命周期待确认 |
 | [docs/archive/](docs/archive/) | 已交付的设计与重构计划，保留代码本身不再解释的决策依据；不是当前文档 |
 
 ---

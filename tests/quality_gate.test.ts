@@ -4,8 +4,8 @@ import {
   evaluateQualityGate,
   normalizeQualityAssessment,
   qualityAssessmentConsistencyIssues,
-} from '../src/core/quality_gate.js';
-import type { Step } from '../src/core/plan.js';
+} from '../src/domain/quality/stage_quality.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
 
 describe('LLM quality evidence normalization', () => {
   it('preserves independently routable gate findings', () => {

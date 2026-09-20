@@ -412,7 +412,7 @@ agent:
 // Step's role would put the judge in the position of doing the work it later assesses.
 describe('ProjectManager is a judging role, not an executing one', () => {
   it('is configurable as an LLM role', async () => {
-    const { ROLES } = await import('../src/core/plan.js');
+    const { ROLES } = await import('../src/domain/planning/execution_plan.js');
     expect(ROLES).toContain('ProjectManager');
   });
 
@@ -427,7 +427,7 @@ describe('ProjectManager is a judging role, not an executing one', () => {
   });
 
   it('cannot be assigned as the role that runs a Step', async () => {
-    const { StepSchema } = await import('../src/core/plan.js');
+    const { StepSchema } = await import('../src/domain/planning/execution_plan.js');
     const step = {
       id: 'S001', iterationId: 'P1', phase: 'REQUIREMENT_ANALYSIS', title: 't', description: 'd',
       systemPrompt: 'p', acceptance: 'a', maxAttempts: 3,

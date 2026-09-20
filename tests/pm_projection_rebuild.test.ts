@@ -11,7 +11,7 @@ import {
 } from '../src/infrastructure/projections/file_project_projection.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../src/workspace/workspace.js';
-import { PLAN_VERSION, type Plan } from '../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 
 /**

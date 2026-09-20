@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
-import type { Language } from '../core/plan.js';
+import type { Language } from '../domain/planning/execution_plan.js';
 import type { Sandbox, SandboxBuildOptions, SandboxLimits, ExecResult, ExecExtra } from './types.js';
 import { SANDBOX_GUEST_ENVIRONMENT_DIR } from './environment.js';
 import { normalizeTypeScriptTestArgs } from './test_args.js';

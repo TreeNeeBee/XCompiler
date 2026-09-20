@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Plan } from '../src/core/plan.js';
+import type { Plan } from '../src/domain/planning/execution_plan.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../src/application/project_management/orchestrator.js';
 import type { AttemptInput, AttemptResult } from '../src/application/execution/attempt_runner.js';
 import { compileProjectGraph } from '../src/domain/planning/compiler.js';
@@ -16,8 +16,56 @@ import { Workspace } from '../src/workspace/workspace.js';
 import { reviseActor } from '../src/domain/project_management/index.js';
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../src/domain/tickets/ticket.js';
 import { failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.js';
+import { AuditPersistenceError } from '../src/audit/errors.js';
+import { classifyFailure } from '../src/application/execution/failure_classification.js';
 
 describe('ProjectOrchestrator', () => {
+  it('parks a storage interruption without a Bug, merge or provider retry', async () => {
+    const setup = await fixture();
+    const projectionWriter = new FileProjectProjectionWriter(setup.workspace);
+    const storageError = new AuditPersistenceError({
+      operation: 'append-jsonl', target: setup.workspace.abs('audit/audit.jsonl'),
+      eventKind: 'llm.error', messageId: 'llm.provider_validation_failed',
+    }, { cause: new Error('fixture write failure') });
+    let attempts = 0;
+    let merges = 0;
+    let auditAvailable = true;
+    const runner = {
+      initialize: async () => undefined,
+      run: async (): Promise<AttemptResult> => {
+        attempts++;
+        auditAvailable = false;
+        const failure = classifyFailure(storageError);
+        return {
+          ok: false, failure, failureKind: failure.kind,
+          reason: failure.message, failureLog: failure.message,
+          changedFiles: [], wikiEntryIds: [], testOutcomes: [], gateFindings: [],
+        };
+      },
+    };
+    const engine = new ProjectOrchestrator({
+      ...options(setup.workspace, setup.repository, runner),
+      projectionWriter,
+      audit: { event: async () => {
+        if (!auditAvailable) throw new Error('failed sink must not replace the interruption');
+      } } as unknown as ProjectOrchestratorOptions['audit'],
+      integrateTicket: async () => { merges++; throw new Error('unexpected merge'); },
+    }, setup.plan);
+
+    const result = await engine.run(setup.graph.phases[0]!.id);
+    expect(result.failureReason).toContain('Required evidence storage failed');
+    expect(attempts).toBe(1);
+    expect(merges).toBe(0);
+    const firstStep = await setup.repository.read(setup.graph.steps[0]!.id);
+    const tickets = await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id });
+    const story = tickets.find((ticket) => ticket.objectType === 'ticket' && ticket.stepId === firstStep.id);
+    expect(firstStep).toMatchObject({ state: 'pending', pendingReason: 'interrupted', attempts: 0 });
+    expect(story).toMatchObject({ state: 'pending', pendingReason: 'interrupted', attempts: 0 });
+    expect(tickets.some((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug')).toBe(false);
+    const projection = await projectionWriter.read(setup.graph.project.id);
+    expect(projection?.activeTickets.find((ticket) => ticket.id === story?.id)?.state).toBe('pending');
+  });
+
   it('returns cancelled attempt capacity to PM without opening a project defect', async () => {
     const setup = await fixture();
     const cancelled = new Error('CLI task cancelled by SIGINT');

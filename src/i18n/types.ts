@@ -1,4 +1,4 @@
-import type { LanguageProfile } from '../core/language.js';
+import type { LanguageProfile } from '../application/execution/language_support.js';
 
 /**
  * Locale code (ISO 639-1 lowercase). Currently only 'en' (default) and 'zh'.

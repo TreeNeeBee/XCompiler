@@ -69,7 +69,7 @@ describe('scenario verdict carries Ticket type and owning Step', () => {
 
 describe('status codes remain diagnostic evidence rather than Ticket routing rules', () => {
   it('is read as a refusal, not as an exception', async () => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     const brief = buildDebugBrief({
       reason: 'phase delivery gate',
       failureLog: '- public-source: Request failed with status code 403',
@@ -83,7 +83,7 @@ describe('status codes remain diagnostic evidence rather than Ticket routing rul
   it('still leaves our own provider outage out of it', async () => {
     // `fetch failed` from the availability probe is XCompiler's own request, and claiming it told
     // the generated project to rewrite working code.
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     const brief = buildDebugBrief({
       reason: 'provider outage',
       failureLog: 'Tester availability check failed for qwen_plus: fetch failed',
@@ -123,8 +123,8 @@ describe('the process result is evidence, not a verdict', () => {
     // passing. Reading network wording out of its own report decided `ok` before the judge did, so
     // the judge's agreement became "exited unsuccessfully but returned ok=true" — a thrown run on
     // the exact shape this kind of project produces every time it degrades.
-    const { runProjectAudit } = await import('../src/core/project_audit.js');
-    const { getLanguageProfile } = await import('../src/core/language.js');
+    const { runProjectAudit } = await import('../src/application/delivery/project_audit.js');
+    const { getLanguageProfile } = await import('../src/application/execution/language_support.js');
     const degraded = '# report\n\n## failed sources\n\n- upstream: Request failed with status code 403\n';
 
     const result = await runProjectAudit({
@@ -142,8 +142,8 @@ describe('the process result is evidence, not a verdict', () => {
   it('takes a fresh snapshot before each scenario', async () => {
     // One snapshot for the whole Phase credits the audit's own checks, and every earlier scenario,
     // to whichever scenario is being judged.
-    const { runProjectAudit } = await import('../src/core/project_audit.js');
-    const { getLanguageProfile } = await import('../src/core/language.js');
+    const { runProjectAudit } = await import('../src/application/delivery/project_audit.js');
+    const { getLanguageProfile } = await import('../src/application/execution/language_support.js');
     let snapshots = 0;
 
     await runProjectAudit({

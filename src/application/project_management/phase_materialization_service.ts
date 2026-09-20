@@ -1,4 +1,4 @@
-import type { Plan } from '../../core/plan.js';
+import type { Plan } from '../../domain/planning/execution_plan.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import { compilePhaseMaterialization } from '../../domain/planning/compiler.js';

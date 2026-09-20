@@ -1,4 +1,4 @@
-import type { Language } from '../../core/plan.js';
+import type { Language } from '../../domain/planning/execution_plan.js';
 import type { Sandbox } from '../../sandbox/types.js';
 import type { GateCheckResult } from '../../domain/workspace/merge_request.js';
 import { classifyFailure } from '../execution/failure_classification.js';

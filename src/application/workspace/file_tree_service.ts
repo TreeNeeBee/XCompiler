@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { ReadWriteLock } from '../../core/rwlock.js';
+import { ReadWriteLock } from '../../util/rwlock.js';
 import { createObjectEnvelope, reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';

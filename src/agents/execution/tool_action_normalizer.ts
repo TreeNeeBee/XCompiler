@@ -1,4 +1,4 @@
-import type { Step } from '../../core/plan.js';
+import type { Step } from '../../domain/planning/execution_plan.js';
 import type { Tool, ToolContext, ToolResult } from '../../tools/types.js';
 import type { LLMAction } from './turn_parser.js';
 

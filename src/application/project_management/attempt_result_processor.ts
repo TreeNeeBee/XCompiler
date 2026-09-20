@@ -9,12 +9,13 @@ import {
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import type { AuditLogger } from '../../audit/audit.js';
 import { changelistEntries, type AttemptResult } from '../execution/attempt_runner.js';
+import { isEvidencePersistenceFailure } from '../execution/failure_classification.js';
 import type { ProjectController, ScheduledWork } from './project_controller.js';
 import { workModeFor } from './work_scheduler.js';
 import type { TicketRegistrationService } from './ticket_registration_service.js';
 import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
-import { isExecutableTestPath } from '../../core/test_assets.js';
-import type { Language } from '../../core/plan.js';
+import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
+import type { Language } from '../../domain/planning/execution_plan.js';
 
 export interface AttemptResultProcessorOptions {
   repository: DomainObjectRepositoryPort;
@@ -222,6 +223,15 @@ export class AttemptResultProcessor {
       return { action: 'continue' };
     }
     if (result.failureKind === 'infrastructure') {
+      if (isEvidencePersistenceFailure(result.failure)) {
+        const reason = result.reason ?? result.failure!.message;
+        // The state service records the interruption in the registry, outside the failed sink.
+        await this.options.controller.deferEvidencePersistenceFailure(work, reason);
+        return {
+          action: 'stop',
+          reason: `Required evidence storage failed; ${work.ticket.name} is pending without a defect Ticket: ${result.failureLog ?? reason}`,
+        };
+      }
       const reason = result.reason ?? 'LLM infrastructure request failed.';
       const permissionBlocked = result.failure?.code === 'permission_blocked';
       if (permissionBlocked) await this.options.controller.deferPermissionBlocked(work, reason);

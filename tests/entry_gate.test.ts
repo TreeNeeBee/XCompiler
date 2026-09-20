@@ -7,8 +7,8 @@ import {
   injectSrcBootstrap,
   autoFixSrcImports,
   probeEntrypoint,
-} from '../src/core/entry_gate.js';
-import { getLanguageProfile } from '../src/core/language.js';
+} from '../src/application/execution/entry_gate.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Sandbox, ExecResult, ExecExtra } from '../src/sandbox/types.js';

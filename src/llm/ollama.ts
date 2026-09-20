@@ -2,6 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { URL } from 'node:url';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import type { ProviderResponseEvidence } from './response_evidence.js';
 import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export const DEFAULT_OLLAMA_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
@@ -21,9 +22,18 @@ export interface OllamaConfig {
 }
 
 interface OllamaChatResponse {
+  model?: string;
   message?: { role: string; content: string };
   error?: string;
   done?: boolean;
+  done_reason?: string;
+}
+
+interface OllamaStreamCompletion {
+  termination: 'provider-done' | 'eof' | 'local-stop';
+  reportedModels: string[];
+  finishReasons: string[];
+  discardedFrames: number;
 }
 
 export class OllamaClient implements LLMClient {
@@ -50,7 +60,8 @@ export class OllamaClient implements LLMClient {
     const idleTimeoutMs = this.cfg.streamIdleTimeoutMs ?? DEFAULT_OLLAMA_STREAM_IDLE_TIMEOUT_MS;
     const maxOutputChars = this.cfg.maxOutputChars ?? 200_000;
     if (stream) {
-      return streamPostNdjson(
+      let completion: OllamaStreamCompletion | undefined;
+      const output = await streamPostNdjson(
         url,
         body,
         { timeoutMs, idleTimeoutMs, maxOutputChars },
@@ -77,7 +88,13 @@ export class OllamaClient implements LLMClient {
             return false;
           }
         },
+        (facts) => { completion = facts; },
       );
+      // Report outside partial-output predicates and their deliberately ignored errors.
+      if (completion) {
+        options?.onProviderResponse?.(this.responseEvidence(output, 'stream', completion));
+      }
+      return output;
     }
     const text = await postJson(url, body, timeoutMs);
     let json: OllamaChatResponse;
@@ -89,7 +106,34 @@ export class OllamaClient implements LLMClient {
       });
     }
     if (json.error) throw new Error(`Ollama error: ${json.error}`);
-    return json.message?.content ?? '';
+    const output = json.message?.content ?? '';
+    options?.onProviderResponse?.(this.responseEvidence(output, 'non-stream', {
+      termination: json.done === true ? 'provider-done' : 'response',
+      reportedModels: typeof json.model === 'string' && json.model.length > 0 ? [json.model] : [],
+      finishReasons: typeof json.done_reason === 'string' && json.done_reason.length > 0 ? [json.done_reason] : [],
+      discardedFrames: 0,
+    }));
+    return output;
+  }
+
+  private responseEvidence(
+    output: string,
+    transport: ProviderResponseEvidence['transport'],
+    completion: Omit<OllamaStreamCompletion, 'termination'> & {
+      termination: OllamaStreamCompletion['termination'] | 'response';
+    },
+  ): ProviderResponseEvidence {
+    return {
+      schemaVersion: 1,
+      source: 'live',
+      output,
+      protocol: 'ollama',
+      requestedModel: this.cfg.model,
+      transport,
+      ...completion,
+      choiceIndexes: [],
+      maxChoicesPerFrame: 0,
+    };
   }
 }
 
@@ -114,6 +158,7 @@ export function streamPostNdjson(
   watchdog: StreamWatchdog,
   onLine: (line: string) => void,
   shouldStopWhen?: (aggregate: string) => boolean,
+  onCompletion?: (completion: OllamaStreamCompletion) => void,
 ): Promise<string> {
   const lib = url.protocol === 'https:' ? https : http;
   const payload = JSON.stringify(body);
@@ -129,13 +174,19 @@ export function streamPostNdjson(
       idleTimer = null;
       wallTimer = null;
     };
-    const finish = (value: string) => {
+    const finish = (value: string, completion: OllamaStreamCompletion) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve(value);
-      response?.destroy();
-      req.destroy();
+      try {
+        onCompletion?.(completion);
+        resolve(value);
+      } catch (error) {
+        reject(error);
+      } finally {
+        response?.destroy();
+        req.destroy();
+      }
     };
     const fail = (err: Error) => {
       if (settled) return;
@@ -174,6 +225,18 @@ export function streamPostNdjson(
         let aggregate = '';
         let buf = '';
         let errBody = '';
+        const reportedModels = new Set<string>();
+        const finishReasons = new Set<string>();
+        let discardedFrames = 0;
+        const finishResponse = (termination: OllamaStreamCompletion['termination']) => {
+          finish(aggregate, {
+            termination,
+            reportedModels: [...reportedModels],
+            finishReasons: [...finishReasons],
+            // Preserve the existing parser's output: unconsumed lines/tails are evidence of loss.
+            discardedFrames: discardedFrames + buf.split('\n').filter((line) => line.trim()).length,
+          });
+        };
         const repeatDetector = new RepeatTokenDetector();
         const isError = !res.statusCode || res.statusCode >= 400;
         armIdle();
@@ -194,6 +257,11 @@ export function streamPostNdjson(
             let obj: OllamaChatResponse | null = null;
             try {
               obj = JSON.parse(line) as OllamaChatResponse;
+              if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+                throw new TypeError('Ollama NDJSON frame must be an object');
+              }
+              if (typeof obj.model === 'string' && obj.model.length > 0) reportedModels.add(obj.model);
+              if (typeof obj.done_reason === 'string' && obj.done_reason.length > 0) finishReasons.add(obj.done_reason);
               const piece = obj.message?.content;
               if (piece) {
                 aggregate += piece;
@@ -221,7 +289,7 @@ export function streamPostNdjson(
                 return;
               }
             } catch {
-              /* skip */
+              discardedFrames += 1;
             }
             try {
               onLine(line);
@@ -230,12 +298,12 @@ export function streamPostNdjson(
               return;
             }
             if (obj?.done === true) {
-              finish(aggregate);
+              finishResponse('provider-done');
               return;
             }
             try {
               if (shouldStopWhen?.(aggregate)) {
-                finish(aggregate);
+                finishResponse('local-stop');
                 return;
               }
             } catch {
@@ -259,7 +327,7 @@ export function streamPostNdjson(
           if (isError) {
             fail(new Error(`HTTP ${res.statusCode}: ${errBody.slice(0, 500)}`));
           } else {
-            finish(aggregate);
+            finishResponse('eof');
           }
         });
         res.on('error', (e) => {

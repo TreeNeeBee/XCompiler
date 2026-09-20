@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   ROLE_TEMPLATE_REL_PATH,
+  defaultRoleTemplatePath,
   loadRoleTemplates,
 } from '../src/infrastructure/roles/role_template_store.js';
 import { seedRoleDefinition } from '../src/domain/workflow/role_definition.js';
@@ -20,6 +21,17 @@ async function templateDir(files: Record<string, string>): Promise<string> {
 }
 
 describe('installation role templates', () => {
+  it('defaults to the installation root when no path override is configured', () => {
+    const previous = process.env.XC_PATH;
+    delete process.env.XC_PATH;
+    try {
+      expect(defaultRoleTemplatePath()).toBe(path.resolve(__dirname, '..', ROLE_TEMPLATE_REL_PATH));
+    } finally {
+      if (previous === undefined) delete process.env.XC_PATH;
+      else process.env.XC_PATH = previous;
+    }
+  });
+
   it('treats a missing template directory as no overrides', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xc-roletpl-'));
     expect(await loadRoleTemplates(path.join(root, ROLE_TEMPLATE_REL_PATH))).toEqual({});

@@ -22,7 +22,7 @@ import type { ScheduledWork } from './work_scheduler.js';
 import { TicketWorkflow } from './ticket_workflow.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
 import { TicketBlockerService } from './ticket_blocker_service.js';
-import { VERIFICATION_SUPPLEMENT_DIR } from '../../core/test_assets.js';
+import { VERIFICATION_SUPPLEMENT_DIR } from '../../domain/quality/test_assets.js';
 import { normalizeGitPath } from '../execution/v_model_policy.js';
 import {
   buildBugFailureContracts,

@@ -1,5 +1,6 @@
 import { isLLMRequestError } from '../../llm/errors.js';
 import { RecordReplayError } from '../record_replay/types.js';
+import { AuditPersistenceError, EVIDENCE_PERSISTENCE_FAILURE } from '../../audit/errors.js';
 
 export type AttemptFailureKind = 'execution' | 'infrastructure';
 
@@ -16,8 +17,8 @@ export interface AttemptFailure {
 
 /**
  * Infrastructure failures happen outside the generated project and must never
- * enter the V-model defect loop. Keep this deliberately provider-specific so a
- * network/API failure produced by the project itself still becomes a Bug.
+ * enter the V-model defect loop. Storage interruption requires our typed producer error;
+ * a network/API or filesystem failure produced by the project itself still belongs to its flow.
  */
 /** Classifies a reason this runtime authored, so provider phrasing in it is trustworthy. */
 export function classifyAttemptFailure(reason: unknown): AttemptFailureKind {
@@ -41,6 +42,17 @@ export function classifyFailure(
   reason: unknown,
   options: ClassifyFailureOptions = {},
 ): AttemptFailure {
+  if (reason instanceof AuditPersistenceError) {
+    return {
+      kind: 'infrastructure',
+      category: 'internal',
+      code: reason.code,
+      message: reason.message,
+      retryable: false,
+      switchProvider: false,
+      details: { ...reason.failure },
+    };
+  }
   if (isLLMRequestError(reason)) {
     return {
       kind: 'infrastructure',
@@ -104,6 +116,11 @@ export function classifyFailure(
     retryable: true,
     switchProvider: false,
   };
+}
+
+export function isEvidencePersistenceFailure(failure: AttemptFailure | undefined): boolean {
+  return failure?.kind === 'infrastructure' && failure.category === 'internal'
+    && failure.code === EVIDENCE_PERSISTENCE_FAILURE;
 }
 
 /**

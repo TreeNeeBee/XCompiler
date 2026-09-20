@@ -3,8 +3,8 @@ import type {
   ClarifyQuestion,
   PlannerInput,
 } from '../../agents/planner.js';
-import { isIncrementalIntent } from '../../core/incremental.js';
-import type { Language, PlanIntent } from '../../core/plan.js';
+import { isIncrementalIntent } from './incremental.js';
+import type { Language, PlanIntent } from '../../domain/planning/execution_plan.js';
 import { t } from '../../i18n/index.js';
 
 export function formatClarificationQuestion(question: ClarifyQuestion): string {

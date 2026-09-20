@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import YAML from 'yaml';
+import { buildPlan } from '../../src/agents/planner.js';
 import { runCompile } from '../../src/runtime/build.js';
 import type { RuntimeIO, RuntimeInteraction } from '../../src/runtime/io.js';
-import { ROLES } from '../../src/core/plan.js';
+import { ROLES } from '../../src/domain/planning/execution_plan.js';
 
 /**
  * Which role actually spoke, observed from the wire.
@@ -179,5 +180,40 @@ describe('build speaks to the user as PM', () => {
     expect(captured.length).toBeGreaterThan(0);
     expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
     expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_ROLE.ProjectManager);
+  });
+
+  it('passes a readable incremental baseline through Runtime to the planning request', { timeout: 30_000 }, async () => {
+    const configPath = await writeConfig(root, baseUrl);
+    const topicFile = path.join(root, 'topic.md');
+    await fs.writeFile(topicFile, '# Topic\n\nImprove the existing report output.\n');
+    const baselinePlanFile = path.join(root, 'baseline-plan.json');
+    const requirementDigest = 'The existing report preserves the source row order and includes an audit footer.';
+    const baseline = buildPlan({
+      requirementDigest,
+      globalPrompt: 'Preserve the existing reporting behavior.',
+      dependencies: [],
+      steps: [{
+        id: 'S001', iterationId: 'P1', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner',
+        title: 'Requirement', description: 'Record the reporting contract.',
+        systemPrompt: 'Document the accepted reporting requirement.',
+        tools: ['write_file'], inputs: [], outputs: ['docs/01-requirement-analysis.md'],
+        dependsOn: [], acceptance: 'The reporting contract is recorded.', maxAttempts: 3,
+      }],
+    }, { language: 'typescript', intent: 'refactor' });
+    // The current-schema baseline is readable even though this one-Step draft cannot execute.
+    await fs.writeFile(baselinePlanFile, JSON.stringify(baseline));
+
+    // The loopback server only supplies clarification replies, so planning must reject its reply.
+    // Observe the outbound baseline before that boundary; no completed plan is claimed here.
+    await expect(runCompile({
+      workspace: path.join(root, 'container'),
+      name: 'incremental-wiring', configPath, topicFile, baselinePlanFile,
+      intent: 'refactor', io: cancellingIO(),
+    })).rejects.toThrow();
+
+    expect(captured.length).toBeGreaterThan(0);
+    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(captured[0]!.prompt).toContain('## Existing plan summary');
+    expect(captured[0]!.prompt).toContain(requirementDigest);
   });
 });

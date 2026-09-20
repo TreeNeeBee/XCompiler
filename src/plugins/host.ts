@@ -1,4 +1,5 @@
 import type { AuditLogger } from '../audit/audit.js';
+import { AuditPersistenceError } from '../audit/errors.js';
 import { t } from '../i18n/index.js';
 import type { LLMClient } from '../llm/types.js';
 import type { Tool } from '../tools/types.js';
@@ -149,6 +150,15 @@ export class PluginHost {
     return {
       name: client.name,
       chat: async (messages, options) => {
+        // Snapshot framework-owned evidence channels before any hook can replace the options.
+        const requestBoundary = {
+          logicalRequestId: options?.logicalRequestId,
+          beforeProviderRequest: options?.beforeProviderRequest,
+          onResponse: options?.onResponse,
+        };
+        const identifiedRequestOptions = options?.logicalRequestId === undefined ? {} : {
+          signal: options.signal, validate: options.validate, scoreSuccess: options.scoreSuccess,
+        };
         const before: HookContextMap['llm.before'] = {
           role,
           model: client.name,
@@ -158,7 +168,7 @@ export class PluginHost {
         await this.emit('llm.before', before);
         const startedAt = Date.now();
         try {
-          const response = await client.chat(before.messages, before.options);
+          const response = await client.chat(before.messages, { ...before.options, ...identifiedRequestOptions, ...requestBoundary });
           const after: HookContextMap['llm.after'] = {
             role,
             model: client.name,
@@ -169,13 +179,23 @@ export class PluginHost {
           await this.emit('llm.after', after);
           return after.response;
         } catch (error) {
-          await this.emit('llm.error', {
-            role,
-            model: client.name,
-            messages: before.messages,
-            error,
-            durationMs: Date.now() - startedAt,
-          });
+          try {
+            await this.emit('llm.error', {
+              role,
+              model: client.name,
+              messages: before.messages,
+              error,
+              durationMs: Date.now() - startedAt,
+            });
+          } catch (hookError) {
+            if (error instanceof AuditPersistenceError) {
+              throw new AuditPersistenceError(error.failure, {
+                cause: new AggregateError([error, hookError], 'Evidence failure notification also failed'),
+                record: error.record,
+              });
+            }
+            throw hookError;
+          }
           throw error;
         }
       },

@@ -20,6 +20,10 @@ coverage/
 docs/audit/*
 docs/dev_audit_log.md
 
+# Local observations and their historical archives are not repository documentation.
+/docs/issues/
+/docs/archive/issues/
+
 # Debug Wiki 生成物：知识页面在 debug-wiki/wiki/ 下受版本控制，这三个是 load() 每次重建的产物。
 # index.json 还带有本机绝对路径，入库会把一台机器的布局带给所有人。
 debug-wiki/index.json

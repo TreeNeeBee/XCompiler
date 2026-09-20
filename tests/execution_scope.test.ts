@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DomainAttemptRunner, type AttemptInput, type ExecutionScope } from '../src/application/execution/attempt_runner.js';
+import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 
 /**
  * The scope decides which working copy an attempt touches. Resolving it per attempt is what lets a
@@ -75,7 +76,7 @@ function options(scope: ReturnType<typeof bindings>) {
   return {
     ...scope,
     router: {}, audit: {}, repository: {}, plugins: { size: 0 },
-    debugWikiPath: '/tmp/xcompiler-scope-wiki',
+    debugWiki: new FileDebugWiki('/tmp/xcompiler-scope-wiki'),
   } as never;
 }
 

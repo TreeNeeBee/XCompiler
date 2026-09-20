@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 const src = path.resolve(__dirname, '..', 'src');
 
@@ -19,10 +20,28 @@ async function importsOf(layer: string): Promise<Array<{ file: string; specifier
   const files = await sourceFiles(path.join(src, layer));
   const found: Array<{ file: string; specifier: string }> = [];
   for (const file of files) {
-    const text = await fs.readFile(file, 'utf8');
-    for (const match of text.matchAll(/from\s+'([^']+)'/gu)) {
-      found.push({ file: path.relative(src, file), specifier: match[1]! });
-    }
+    const source = ts.createSourceFile(file, await fs.readFile(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const record = (node: ts.Node | undefined): void => {
+      if (node && ts.isStringLiteralLike(node)) {
+        found.push({ file: path.relative(src, file), specifier: node.text });
+      }
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+        record(node.moduleSpecifier);
+      } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+        record(node.moduleReference.expression);
+      } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+        record(node.argument.literal);
+      } else if (ts.isCallExpression(node) && (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')
+      )) {
+        record(node.arguments[0]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
   }
   return found;
 }
@@ -36,6 +55,15 @@ function targetLayer(entry: { file: string; specifier: string }): string | undef
 }
 
 describe('architecture dependency direction', () => {
+  it('keeps the retired Core layer and its import paths out of production', async () => {
+    const entries = await fs.readdir(src);
+    expect(entries).not.toContain('core');
+    const violations = (await importsOf('.'))
+      .filter((entry) => targetLayer(entry) === 'core')
+      .map((entry) => `${entry.file} -> ${entry.specifier}`);
+    expect(violations).toEqual([]);
+  });
+
   // The refactor's central rule: dependencies point inward. These assertions exist so an outward
   // import cannot quietly return once the layering has been paid for.
   it('keeps Domain free of every outward dependency', async () => {
@@ -49,8 +77,21 @@ describe('architecture dependency direction', () => {
     expect(outward).toEqual([]);
   });
 
+  it('keeps filesystem and process adapters out of Domain', async () => {
+    const forbidden = new Set(['fs', 'child_process']);
+    const violations = (await importsOf('domain'))
+      .filter((entry) => {
+        const specifier = entry.specifier.startsWith('node:')
+          ? entry.specifier.slice('node:'.length)
+          : entry.specifier;
+        return forbidden.has(specifier.split('/')[0]!);
+      })
+      .map((entry) => `${entry.file} -> ${entry.specifier}`);
+    expect(violations).toEqual([]);
+  });
+
   it('keeps Application free of adapter and entry-point dependencies', async () => {
-    const forbidden = ['cli', 'acp', 'runtime', 'infrastructure'];
+    const forbidden = ['cli', 'acp', 'runtime', 'runtime.js', 'runtime.ts', 'infrastructure'];
     const violations = (await importsOf('application'))
       .filter((entry) => forbidden.includes(targetLayer(entry) ?? ''))
       .map((entry) => `${entry.file} -> ${entry.specifier}`);
@@ -58,7 +99,7 @@ describe('architecture dependency direction', () => {
   });
 
   it('keeps Infrastructure out of the adapters and entry points', async () => {
-    const forbidden = ['cli', 'acp', 'runtime'];
+    const forbidden = ['cli', 'acp', 'runtime', 'runtime.js', 'runtime.ts'];
     const violations = (await importsOf('infrastructure'))
       .filter((entry) => forbidden.includes(targetLayer(entry) ?? ''))
       .map((entry) => `${entry.file} -> ${entry.specifier}`);

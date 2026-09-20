@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildDebugBrief } from '../src/core/debug_brief.js';
-import { DebugWiki, bundledDebugWikiPath } from '../src/core/debug_wiki.js';
+import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
+import { FileDebugWiki, bundledDebugWikiPath } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 
 /**
  * These cases used to guard a static rule table in `calibration.ts` that turned a failure log into
@@ -68,7 +68,7 @@ describe('provider failures never become project API defects', () => {
  */
 describe('migrated repair knowledge is retrievable', () => {
   const retrieve = async (failureLog: string) => {
-    const wiki = new DebugWiki(bundledDebugWikiPath());
+    const wiki = new FileDebugWiki(bundledDebugWikiPath());
     const matches = await wiki.search(buildDebugBrief({ failureLog, phase: 'CODE' }), { limit: 3 });
     return matches.map((match) => match.entry.id);
   };

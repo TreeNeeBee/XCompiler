@@ -1,6 +1,7 @@
 import path from 'node:path';
-import { loadPlanTarget } from '../core/storage.js';
-import { topoSort } from '../core/lint.js';
+import { FilePlanStore } from '../infrastructure/planning/file_plan_store.js';
+import type { PlanStorePort } from '../domain/ports/plan_store.js';
+import { topoSort } from '../domain/planning/plan_lint.js';
 import { AuditLogger } from '../audit/audit.js';
 import { Workspace } from '../workspace/workspace.js';
 import { ProjectContainer } from '../workspace/project_container.js';
@@ -23,22 +24,26 @@ import { MergeIntegrationService } from '../application/workspace/merge_integrat
 import { prepareScopeEnvironment } from '../application/execution/scope_environment.js';
 import { runMergeGateChecks } from '../application/workspace/merge_gate_checks.js';
 import { containerOwnershipRecord, GitRepositoryService } from '../infrastructure/git/git_repository_service.js';
-import { acquireLock, LockError } from '../core/lock.js';
+import { acquireLock, LockError } from '../infrastructure/locking/file_lock.js';
 import { calibratePythonRequirements } from '../agents/calibration.js';
-import { getLanguageProfile } from '../core/language.js';
-import { runProjectAudit } from '../core/project_audit.js';
+import { getLanguageProfile } from '../application/execution/language_support.js';
+import {
+  FileDebugWiki,
+  defaultDebugWikiPath,
+} from '../infrastructure/knowledge/file_debug_wiki.js';
+import { runProjectAudit } from '../application/delivery/project_audit.js';
 import { judgeScenarioOutcome, isScenarioOutcomeJudgementError } from '../application/execution/scenario_outcome_judge.js';
 import {
   generateProjectDevelopmentReport,
-} from '../core/project_report.js';
-import { refreshProjectMemory } from '../core/project_memory.js';
-import { updateProjectFile } from '../core/project_file.js';
-import type { Language, PlanIntent } from '../core/plan.js';
+} from '../application/reporting/project_report.js';
+import { refreshProjectMemory } from '../application/context/project_memory.js';
+import { updateProjectFile } from '../infrastructure/project/project_manifest.js';
+import type { Language, PlanIntent } from '../domain/planning/execution_plan.js';
 import { setLocale, t } from '../i18n/index.js';
 import { PluginHost } from '../plugins/host.js';
 import type { XCompilerPlugin } from '../plugins/types.js';
 import { hasXcEnv } from '../config/env.js';
-import type { ProjectAuditResult } from '../core/project_audit.js';
+import type { ProjectAuditResult } from '../application/delivery/project_audit.js';
 import type { ToolExecutionEvent, ToolPermissionRequest } from '../tools/types.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
 import { DomainAuditTrail } from '../application/observability/domain_audit_trail.js';
@@ -59,7 +64,7 @@ import { resolvePhaseDeliveryGate } from '../domain/phases/phase.js';
 import { PhaseMaterializationService } from '../application/project_management/phase_materialization_service.js';
 import { PhaseProgressionService } from '../application/planning/phase_progression_service.js';
 import type { RecordReplayMode } from '../application/record_replay/types.js';
-import { isCancellationError } from '../core/cancellation.js';
+import { isCancellationError } from '../util/cancellation.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 
 export interface ExecuteOptions {
@@ -115,6 +120,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   // XCompiler's own registry, audit trail, or fixtures.
   const container = new ProjectContainer(path.resolve(opts.workspace));
   const ws = container.canonical().workspace;
+  const planStore = new FilePlanStore();
   const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // AuditLogger 会立即创建过程日志，因此必须先应用配置语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
@@ -146,7 +152,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   const capabilities = await buildRuntimeCapabilities(pluginHost);
 
-  let target = await loadPlanTarget(opts.planPath);
+  let target = await planStore.loadPlanTarget(opts.planPath);
   let planAbs = target.planPath;
   let publicPlanPath = target.phasePlanPath ?? target.planPath;
   let plan = target.plan;
@@ -294,6 +300,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     ws,
     container.state,
     container.control,
+    planStore,
     router,
     audit,
     io.terminalOutput === true,
@@ -321,7 +328,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       phaseId: domainProject.currentPhaseId,
       plan: recovery.nextPlan,
     });
-    target = await loadPlanTarget(target.phasePlanPath);
+    target = await planStore.loadPlanTarget(target.phasePlanPath);
     planAbs = target.planPath;
     publicPlanPath = target.phasePlanPath ?? target.planPath;
     plan = target.plan;
@@ -559,8 +566,10 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     maxDebugRoundsPerStep: cfg.agent.max_debug_rounds_per_step,
     maxEditLinesPerStep: cfg.agent.max_edit_lines_per_step,
     terminalOutput: opts.terminalOutput ?? io.terminalOutput ?? false,
-    debugWikiPath: opts.debugWikiPath ? path.resolve(opts.debugWikiPath) : undefined,
-    projectDebugWikiPath: container.state.abs('debug-wiki'),
+    debugWiki: new FileDebugWiki(
+      opts.debugWikiPath ? path.resolve(opts.debugWikiPath) : defaultDebugWikiPath(),
+      { projectPath: container.state.abs('debug-wiki') },
+    ),
     recordReplay,
     requestPermission,
     resolveScope,
@@ -781,7 +790,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
 
   try {
     const r = await engine.run(domainPhase.id);
-    await persistProjectMemory(ws, container.state, audit, planAbs, plan.language, plan.intent);
+    await persistProjectMemory(ws, container.state, planStore, audit, planAbs, plan.language, plan.intent);
     if (r.failedStepId) {
       await runtimeLog(io, 'error', t().execute.runInterrupted(r.failedStepId, r.executedSteps, r.totalSteps));
       if (r.failureReason) {
@@ -889,7 +898,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     if (stack && stack !== msg) {
       await runtimeLog(io, 'dim', stack);
     }
-    await persistProjectMemory(ws, container.state, audit, planAbs, plan.language, plan.intent);
+    await persistProjectMemory(ws, container.state, planStore, audit, planAbs, plan.language, plan.intent);
     await audit.end({ status: 'error', message: msg, stack });
     await updateProjectFile({
       workspace: ws.root,
@@ -913,13 +922,14 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
 async function persistProjectMemory(
   ws: Workspace,
   state: Workspace,
+  planStore: Pick<PlanStorePort, 'loadPlanTarget'>,
   audit: AuditLogger,
   planPath: string,
   language: Language,
   intent: PlanIntent,
 ): Promise<void> {
   try {
-    await refreshProjectMemory(ws, state, { planPath, language, intent });
+    await refreshProjectMemory(ws, state, { planStore, planPath, language, intent });
   } catch (err) {
     await audit.event('note', t().execute.projectMemoryRefreshFailed((err as Error).message), {
       messageId: 'execute.project_memory_refresh_failed',

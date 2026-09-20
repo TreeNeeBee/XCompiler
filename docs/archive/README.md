@@ -18,5 +18,5 @@ system is right. For how XCompiler works today, read [`../XCompiler_design.md`](
 | [domain-refactor-plan.md](domain-refactor-plan.md) | 0.2 | The earlier domain refactor, superseded by the 0.3 architecture plan above. |
 | [HANDOVER_0.3_validation.md](HANDOVER_0.3_validation.md) | 0.3.0 | A point-in-time handover of the 0.3 live-validation state. Its gate counts describe that moment and are not a current claim. |
 
-A plan that is still open belongs in `docs/`, not here. `docs/XCompiler_user_fixture_plan.md` is the
-one such document today: the design is settled, the implementation is not.
+Open plans belong in [docs/features/](../features/README.md), not here. That index distinguishes
+confirmed directions, deferred features, and design choices still awaiting approval.

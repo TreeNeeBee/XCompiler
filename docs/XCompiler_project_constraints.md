@@ -8,6 +8,18 @@ When this document conflicts with an archived plan, this document wins. Archived
 decision history but are not current specifications. A material conflict with current source,
 tests, or another active design document must be raised before implementation.
 
+## Terminology
+
+Confirmed by the user on 2026-09-07:
+
+- **Compiler / compiler project (编译器 / 编译器工程):** XCompiler itself, the repository being
+  developed here and its released software.
+- **Derived project (派生工程):** the user's project generated and developed through XCompiler
+  `build` and `run`. **Target project (目标工程)** and **user project (用户工程)** are synonyms.
+- Compiler-maintainer constraints and compiler release changes belong to XCompiler. A derived
+  project's business requirements, files and local debugging experience belong to that project.
+  Identify the owner explicitly when both appear in the same design or migration discussion.
+
 ## Runtime and layer boundaries
 
 - Runtime is the only business entry point. CLI, ACP, and future adapters may parse, translate,
@@ -115,6 +127,110 @@ only authority that changes Ticket state.
 - A failed scenario verdict must include a typed Ticket classification and owning Step. Missing or
   malformed judgement stops the gate as a runtime judgement failure; it is never treated as a pass
   or silently defaulted to a product Bug.
+
+### Rule extraction in 0.4
+
+Confirmed in the 2026-09-05 continuation: similarity may select an applicable instruction or
+judgement rubric, but cannot substitute a historical verdict for a current semantic judgement.
+Existing semantic owners evaluate current accepted context and current evidence; extracting their
+rubric does not create a second business-judgement stage. This supersedes the open direct-verdict
+reuse alternative in the 0.4 proposals. Deterministic gates, permissions, structural Bug identity,
+PM routing and Domain transitions retain their current authority. Remaining Rule schemas/bindings,
+selection scoring, version recovery and output-protocol correction policies require their own
+confirmed contracts.
+
+Q0 is separately confirmed: output-protocol correction requests use only a fixed versioned protocol
+template, without mandatory base Rules, business RuleLists or RuleChain selection. Mandatory base
+loading applies to business and Rule-selection requests. This supersedes the 0.4 proposal's literal
+every-prompt wording; it does not approve correction-model, budget or transformation defaults.
+
+The 2026-09-06 continuation confirms YAML rule authoring with generated/validated indexes. Only
+approved parsed instruction fields and required Rule metadata enter prompts; YAML author comments
+are excluded and literal instruction content is preserved. Protected base definitions behave like
+source-controlled constants: Runtime, models, Plugins and generated projects cannot modify or
+automatically upgrade them. Changes require manual engineering-source edits and a version update.
+
+Rule references retain their own slots and applicability. Missing/cyclic references and declared
+same-list contradictions are errors. Programmatic cross-list conflict resolution follows lower
+numeric slots, retaining override evidence. Prompt presentation follows ascending numeric slots,
+highest priority first, with owning slot labels and a priority declaration. Prompt wording/order
+supplements deterministic checks; it does not transfer their authority to an LLM. RuleSelector
+and RuleDecorator belong to Application selection/assembly and keep calibration outside RuleChain.
+
+The 2026-09-07 clarification confirms one slot per RuleList and lookup of individual Rules within
+it. RuleSelector selects related Rules; RuleDecorator aggregates their instruction material for
+framework-owned prompt generation. Rules distinguish general development/language constraints,
+compiler framework workflows, specific functional scenarios such as Bug/CR judgement, and
+generated-project business/special requirements. Category does not replace slot priority or
+project/language/role applicability. Extracting reusable business standards must not carry their
+project-specific assumptions into shared instructions or happen automatically through similarity.
+
+Rules define normal-operation standards; Debug Wiki retains advisory debugging experience with
+its existing verified-Bug publication lifecycle. Wiki entries are not RuleSelector results and
+cannot enter RuleDecorator as authoritative Rules, acquire slot priority, or replace current
+judgement. Existing mixed normative/experience entries require source review before extraction.
+
+The user then approved release-time integration: maintainers select verified Wiki experience,
+remove derived-project-specific assumptions, review and manually version the resulting Debug Rules
+in compiler source, and ship them with XCompiler releases. Raw Wiki entries remain experience;
+Runtime feedback does not rewrite published Rules. Keep the three shared Wiki categories and the
+derived-project-local storage boundary, with the current closed+verified-Bug publication contract.
+
+The requested Debug expansion is allocated at `0x0300-0x0FFF` inside the existing framework range:
+3,328 RuleList slots, each able to contain multiple Rules. `0x0207-0x02FF` remains for other framework
+lists; `0x1000` stays the business index. Debug creates no extra index block or fifth Rule category.
+Use catalogue/list lookup so collection growth does not load the entire segment into prompts.
+Any future address-space widening must explicitly preserve identity and review priority changes;
+no automatic overflow into business slots or silent renumbering is part of this allocation.
+
+Q4 now selects vector semantic retrieval plus low-score model review (option C). The selected
+direction requires an explicit embedding capability/configuration and versioned vector index;
+local lexical scoring is not the selected alternative or an implicit failure fallback. Keep
+applicability, base loading, slot priority and current business judgement independent of relevance.
+The 2026-09-10 continuation selects on-demand local versioned-index generation/rebuild and reuse,
+with explicitly configured embedding service/model. Encode dedicated Rule retrieval descriptions
+and current task/error summaries plus structured context, not entire projects, Wiki or raw audit.
+Use normalized cosine `(cosine + 1) / 2`, an initial inclusive `0.8` threshold and at most `20`
+optional candidates. These accepted initial parameters are not measured retrieval-quality claims.
+Required content stays outside the optional cap. When candidates exist but none reaches the
+threshold, use at most one logical selection review through the caller's configured role pool.
+Empty optional candidates or an explicit no-match result continue with required Rules only;
+service/index/review failures remain distinct errors. Transport retries and fallback do not reset
+the review allowance.
+
+The user then selected controlled automatic business-Rule maintenance (optimized B). XCompiler
+derives candidates with provenance from accepted project requirements/changes. Candidates apply
+only in their owning plan/change scope. Initial Rules become formal after accepted build-plan
+persistence and Project binding; CR Rules become formal after their required quality evidence and
+successful integration into the authoritative project tree. A created or closed CR alone does not
+prove integration. Failed or permission-pending integration retains the previous formal version
+and candidate recovery evidence. New formal versions apply to new logical requests; Q5-pinned
+requests retain their original materials. No per-Rule human gate or automatic shared promotion is
+introduced, and protected base/released Debug Rules remain manually versioned compiler content.
+
+Non-base bindings distinguish required content from optional retrieval; declaration level does
+not determine retrieval or slot priority. Applicability dimensions (project/language/role/scenario)
+combine with AND, allowed values within a dimension with ANY, and absent restrictions are open.
+Missing context cannot satisfy a restricted optional Rule; a required binding whose applicability
+cannot be established fails explicitly. Required bindings remain subject to Q3 conflict resolution:
+lower slots win resolvable cross-list conflicts with override evidence; unresolved conflicts fail.
+The vector input and selection-review chat prompt are separate interfaces whose input contract
+must be specified before dispatch. No model/provider default or automatic cross-model switch is
+approved by the strategy choice.
+
+Q5 A and Q6 A were accepted on 2026-09-08. Recovery is anchored to each logical request's actual
+Rule content/versions and retrieval evidence, including vector model/index identity. Preserve the
+complete request audit; do not silently replace its materials with newer definitions on recovery.
+Q6 uses the provider/model that actually produced the original response, with at most one logical
+protocol-correction attempt. Transport retry or provider fallback must not reset that allowance.
+Correction preserves represented values and cannot decide business semantics. Q6's allowance is
+separate from Q4 low-score selection review. Exact record fields are implementation details unless
+they change ownership, retention or recovery meaning; eligible representation transformations
+still need a concrete preservation contract.
+The user also selected expanded representation correction on 2026-09-10, including quotation and
+escape repairs only where each supported transformation has mechanically verifiable value
+preservation. This is not blanket approval of a repair library, missing-value completion or model
+claims of unchanged meaning. Concrete supported cases and their proofs still need implementation.
 
 ## Workspace and persistence
 

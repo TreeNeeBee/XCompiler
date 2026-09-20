@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Phase as DraftStepType, Plan as DraftPlan, Role as DraftRole } from '../src/core/plan.js';
+import type { Phase as DraftStepType, Plan as DraftPlan, Role as DraftRole } from '../src/domain/planning/execution_plan.js';
 import { isObjectId } from '../src/domain/identity/object_id.js';
 import {
   compileProjectExtension,
@@ -17,7 +17,7 @@ import { DomainObjectRepository } from '../src/infrastructure/repository/domain_
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { DomainAuditTrail } from '../src/application/observability/domain_audit_trail.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
-import { generateProjectDevelopmentReport } from '../src/core/project_report.js';
+import { generateProjectDevelopmentReport } from '../src/application/reporting/project_report.js';
 import { createObjectEnvelope, reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { PhaseSchema } from '../src/domain/phases/phase.js';
 import { StepSchema } from '../src/domain/steps/step.js';

@@ -1,3 +1,5 @@
+import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
+
 export type ChatRole = 'system' | 'user' | 'assistant';
 
 export interface ChatMessage {
@@ -11,6 +13,22 @@ export interface LLMProviderWindow {
 }
 
 export interface ChatOptions {
+  /** Stable identity supplied by the owning persisted request; retry/fallback retain it. */
+  logicalRequestId?: string;
+  /** Trusted final-send boundary, after Plugin changes and for each actual provider window. */
+  beforeProviderRequest?: (request: {
+    logicalRequestId: string;
+    providerAttemptId: string;
+    provider: string;
+    model: string;
+    messages: readonly Readonly<ChatMessage>[];
+    contextWindowTokens: number;
+    maxTokens: number;
+  }) => void | Promise<void>;
+  /** Transport evidence channel owned by Router; not a validation or permission hook. */
+  onProviderResponse?: (response: ProviderResponseEvidence) => void;
+  /** Final accepted provider candidate, after required evidence persistence. */
+  onResponse?: (response: RoutedResponseEvidence) => void;
   /** Cancels an in-flight provider request when the owning Runtime task is cancelled. */
   signal?: AbortSignal;
   temperature?: number;

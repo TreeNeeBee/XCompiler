@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ReadWriteLock } from '../src/core/rwlock.js';
+import { ReadWriteLock } from '../src/util/rwlock.js';
 import {
   applyFileTreeChange,
   isIgnoredTreePath,
@@ -20,7 +20,7 @@ import {
   upsertFileManifest,
 } from '../src/application/workspace/file_manifest.js';
 import type { PersistedDomainObject } from '../src/domain/objects/persisted.js';
-import { PLAN_VERSION } from '../src/core/plan.js';
+import { PLAN_VERSION } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 
 const entry = (over: Partial<FileTreeEntry> & { path: string }): FileTreeEntry => ({

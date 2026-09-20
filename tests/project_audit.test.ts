@@ -3,9 +3,9 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Workspace } from '../src/workspace/workspace.js';
-import { getLanguageProfile } from '../src/core/language.js';
-import { runIterationGate, runProjectAudit, shouldRunProjectAudit } from '../src/core/project_audit.js';
-import type { Plan } from '../src/core/plan.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
+import { runIterationGate, runProjectAudit, shouldRunProjectAudit } from '../src/application/delivery/project_audit.js';
+import type { Plan } from '../src/domain/planning/execution_plan.js';
 import type { ExecExtra, ExecResult, Sandbox } from '../src/sandbox/types.js';
 
 type SandboxHandler<TArgs extends unknown[]> = ExecResult | ((...args: TArgs) => ExecResult);

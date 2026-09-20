@@ -4,7 +4,7 @@ import {
   normalizeActions,
 } from '../src/agents/execution/tool_action_normalizer.js';
 import { applyPatchTool } from '../src/tools/patch.js';
-import type { Step } from '../src/core/plan.js';
+import type { Step } from '../src/domain/planning/execution_plan.js';
 import type { ToolContext } from '../src/tools/types.js';
 
 describe('tool action normalization', () => {

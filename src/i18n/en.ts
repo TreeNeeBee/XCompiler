@@ -1,4 +1,4 @@
-import type { LanguageProfile } from '../core/language.js';
+import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
 const PYTHON_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.

@@ -3,8 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { ROLES } from '../src/core/plan.js';
-import { runDoctor } from '../src/core/doctor.js';
+import { ROLES } from '../src/domain/planning/execution_plan.js';
+import { runDoctor } from '../src/application/diagnostics/doctor.js';
 import { setLocale } from '../src/i18n/index.js';
 
 setLocale('en');

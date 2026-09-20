@@ -245,7 +245,7 @@ LLM routing is configured under `config.yaml -> llm.*`.
 | [docs/versioning.md](docs/versioning.md) | Version sources, release script, tag policy |
 | [docs/self_bootstrap.md](docs/self_bootstrap.md) | Self-bootstrap and qualification gates |
 | [docs/deploy.md](docs/deploy.md) | Local, Docker, and native package deployment |
-| [docs/XCompiler_user_fixture_plan.md](docs/XCompiler_user_fixture_plan.md) | Open design: supplying a real user fixture to a run (`--fixture`); decided, not yet implemented |
+| [docs/features/](docs/features/) | Feature backlog: proposed designs, confirmed directions, and decisions required before implementation |
 | [docs/archive/](docs/archive/) | Delivered design and refactor plans, kept for the reasoning behind decisions the code no longer explains. Not current documentation |
 
 ---

@@ -5,7 +5,7 @@ import {
   silentRuntimeIO,
   type ToolPermissionRequest,
 } from '../src/runtime.js';
-import { isCancellationError } from '../src/core/cancellation.js';
+import { isCancellationError } from '../src/util/cancellation.js';
 
 const request: ToolPermissionRequest = {
   operationType: 'git_operation',

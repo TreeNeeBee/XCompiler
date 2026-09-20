@@ -1,4 +1,4 @@
-import type { Plan, Step as ExecutionStep } from '../../core/plan.js';
+import type { Plan, Step as ExecutionStep } from '../../domain/planning/execution_plan.js';
 import type { Phase } from '../../domain/phases/phase.js';
 import type { Step, StepType } from '../../domain/steps/step.js';
 

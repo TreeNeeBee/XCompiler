@@ -41,8 +41,9 @@ export class RecordReplayError extends Error {
     public readonly code: RecordReplayFailureCode,
     message: string,
     public readonly details: Record<string, unknown> = {},
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'RecordReplayError';
   }
 }

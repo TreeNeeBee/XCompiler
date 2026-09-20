@@ -129,8 +129,8 @@ function router(seen: string[], answer: string, roles: string[] = []) {
 // Covering the judgement without covering its call site leaves it able to pass while never running.
 describe('phase gate consumes the judgement', () => {
   it('rejects a declared scenario when no LLM outcome judge is wired', async () => {
-    const { runProjectAudit } = await import('../src/core/project_audit.js');
-    const { getLanguageProfile } = await import('../src/core/language.js');
+    const { runProjectAudit } = await import('../src/application/delivery/project_audit.js');
+    const { getLanguageProfile } = await import('../src/application/execution/language_support.js');
     await expect(runProjectAudit({
       ws: { abs: () => '/tmp', exists: async () => true, readFile: async () => 'x' } as never,
       sandbox: {
@@ -149,8 +149,8 @@ describe('phase gate consumes the judgement', () => {
   });
 
   it('turns a contradicted expectation into a routable product-defect finding', async () => {
-    const { runProjectAudit } = await import('../src/core/project_audit.js');
-    const { getLanguageProfile } = await import('../src/core/language.js');
+    const { runProjectAudit } = await import('../src/application/delivery/project_audit.js');
+    const { getLanguageProfile } = await import('../src/application/execution/language_support.js');
     const scenario = {
       name: 'primary-user-flow', description: 'd', operation: 'run once',
       environment: 'live' as const, expected: 'each record carries a distinct summary',

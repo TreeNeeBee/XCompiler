@@ -1,5 +1,5 @@
-import type { Step } from '../../core/plan.js';
-import { resolveQualityGate } from '../../core/quality_gate.js';
+import type { Step } from '../../domain/planning/execution_plan.js';
+import { resolveQualityGate } from '../../domain/quality/stage_quality.js';
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../../domain/tickets/ticket.js';
 import { t } from '../../i18n/index.js';
 import type { ExecutorRunInput } from '../executor.js';

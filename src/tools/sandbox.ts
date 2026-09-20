@@ -2,12 +2,12 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isPathPattern, type Tool, type ToolContext, type ToolFailureCode } from './types.js';
 import type { StepType } from '../domain/steps/step.js';
-import { detectNetworkApiFailureInExec } from '../core/network_api_gate.js';
+import { detectNetworkApiFailureInExec } from '../application/execution/network_failure.js';
 import { normalizeTypeScriptTestArgs } from '../sandbox/test_args.js';
 import { resolveTypeScriptProgramCommand } from '../sandbox/program_args.js';
 import { resolveWorkspacePath } from './path_guard.js';
-import { isExecutableTestPath } from '../core/test_assets.js';
-import { buildDebugBrief } from '../core/debug_brief.js';
+import { isExecutableTestPath } from '../domain/quality/test_assets.js';
+import { buildDebugBrief } from '../application/execution/debug_brief.js';
 
 /** 截取多行文本最后 N 行，用于在 ToolResult.summary 里给 LLM 直接看的失败上下文。
  * 仅在失败时调用——成功路径上 stdout 通常很长且无价值，没必要塞回 prompt。 */

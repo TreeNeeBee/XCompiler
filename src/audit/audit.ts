@@ -3,6 +3,7 @@ import path from 'node:path';
 import { t } from '../i18n/index.js';
 import { xcEnv } from '../config/env.js';
 import { rebuildAuditSummary } from './summary.js';
+import { AuditPersistenceError, type AuditPersistenceFailure } from './errors.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
@@ -13,7 +14,7 @@ import { rebuildAuditSummary } from './summary.js';
  *
  * 设计原则：
  *  - 追加写入，永不删除。
- *  - 失败时不影响主流程（写盘异常仅打印 warning）。
+ *  - 普通日志追加失败打印 warning；必需证据写入失败必须返回调用方。
  *  - 每条事件都带 ts / kind / payload。
  */
 export type AuditKind =
@@ -77,6 +78,11 @@ export interface AuditLoggerOptions {
 }
 
 export type AuditContentMode = 'full' | 'redacted';
+
+export interface AuditEventOptions {
+  /** Required evidence must be retained before the owning operation can continue. */
+  persistence?: 'best-effort' | 'required';
+}
 
 export class AuditLogger {
   private readonly mdAbs: string;
@@ -157,8 +163,12 @@ export class AuditLogger {
   }
 
   /** 通用事件，jsonl + 简短 markdown 一行。 */
-  async event(kind: AuditKind, message: string, data?: Record<string, unknown>): Promise<void> {
-    await this.ensureFiles();
+  async event(
+    kind: AuditKind,
+    message: string,
+    data?: Record<string, unknown>,
+    options: AuditEventOptions = {},
+  ): Promise<void> {
     const protectedMessage = protectAuditContent(message, this.contentMode);
     const ev: AuditEvent = {
       ts: new Date().toISOString(),
@@ -172,14 +182,21 @@ export class AuditLogger {
         ev.data = protectAuditContent(payload, this.contentMode) as Record<string, unknown>;
       }
     }
-    await this.appendJsonl(ev);
+    const required = options.persistence === 'required';
+    try {
+      await this.ensureFiles();
+    } catch (cause) {
+      if (required) throw this.persistenceError('initialize', this.jsonlAbs, ev, cause);
+      throw cause;
+    }
+    await this.appendJsonl(ev, required);
     await this.appendMd([
       `- \`${ev.ts}\` **${kind}** — ${escapeMd(ev.message)}`,
       ...(ev.data
         ? ['', '<details><summary>Event data</summary>', '', '```json', safeStringify(ev.data), '```', '', '</details>']
         : []),
       '',
-    ].join('\n'));
+    ].join('\n'), required ? ev : undefined);
   }
 
   /** 用户输入 / 决策。会把内容以引用块写入 markdown。 */
@@ -361,24 +378,26 @@ export class AuditLogger {
     }
   }
 
-  private async appendMd(text: string): Promise<void> {
-    // 通过 promise 队列串行化，避免并发 appendFile 交错；失败仅 warn。
+  private async appendMd(text: string, requiredEvent?: AuditEvent): Promise<void> {
+    // Queue ownership remains serial even after a required write rejects.
     this.mdQueue = this.mdQueue.then(
       () => fs.appendFile(this.mdAbs, text, 'utf8'),
       () => fs.appendFile(this.mdAbs, text, 'utf8'),
     ).catch((err) => {
+      if (requiredEvent) throw this.persistenceError('append-markdown', this.mdAbs, requiredEvent, err);
       console.warn(t().audit.markdownAppendFailed((err as Error).message));
     });
     return this.mdQueue;
   }
 
-  private async appendJsonl(ev: AuditEvent): Promise<void> {
+  private async appendJsonl(ev: AuditEvent, required = false): Promise<void> {
     // 同步追加：jsonl 是关键审计流，必须保证进程异常/退出时也已落盘。
     // 即使在事件循环被长 LLM 调用占用、或 await 链被 unhandled rejection 截断时，
     // 同步 IO 也能保证字节落到磁盘，杜绝 "S007 整段事件丢失" 类问题。
     try {
       appendFileSync(this.jsonlAbs, JSON.stringify(ev) + '\n', 'utf8');
     } catch (err) {
+      if (required) throw this.persistenceError('append-jsonl', this.jsonlAbs, ev, err);
       console.warn(t().audit.jsonlAppendFailed((err as Error).message));
     }
     // 可选 stderr 镜像（XC_AUDIT_TRACE=1）：如果文件被外部覆盖丢失，
@@ -390,6 +409,28 @@ export class AuditLogger {
         /* ignore */
       }
     }
+  }
+
+  private persistenceError(
+    operation: AuditPersistenceFailure['operation'],
+    target: string,
+    event: AuditEvent,
+    cause: unknown,
+  ): AuditPersistenceError {
+    const failedPath = cause && typeof cause === 'object' && 'path' in cause
+      && typeof cause.path === 'string' ? cause.path : target;
+    return new AuditPersistenceError({
+      operation,
+      target: failedPath,
+      eventKind: event.kind,
+      messageId: event.messageId,
+      logicalRequestId: typeof event.data?.logicalRequestId === 'string'
+        ? event.data.logicalRequestId : undefined,
+      providerAttemptId: typeof event.data?.providerAttemptId === 'string'
+        ? event.data.providerAttemptId : undefined,
+      systemCode: cause && typeof cause === 'object' && 'code' in cause
+        && typeof cause.code === 'string' ? cause.code : undefined,
+    }, { cause, record: event });
   }
 }
 

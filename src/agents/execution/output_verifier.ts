@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { Step } from '../../core/plan.js';
+import type { Step } from '../../domain/planning/execution_plan.js';
 import type { ToolContext } from '../../tools/types.js';
 import { isPathPattern, matchesPathPattern } from '../../tools/types.js';
 

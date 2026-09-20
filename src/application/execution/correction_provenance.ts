@@ -1,4 +1,4 @@
-import type { Plan, Step } from '../../core/plan.js';
+import type { Plan, Step } from '../../domain/planning/execution_plan.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import type { Ticket } from '../../domain/tickets/ticket.js';

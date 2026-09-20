@@ -8,21 +8,21 @@ import {
   type ProjectType,
   type Step,
   type StepSubtask,
-} from '../core/plan.js';
+} from '../domain/planning/execution_plan.js';
 import {
   DOC_NAMES,
   PHASE_DOC,
   deliveryDocsForIteration,
   phaseDocForIteration,
   testPlanDocForIteration,
-} from '../core/docs.js';
-import { architectureImplementationPaths, pathCoveredByOutputs } from '../core/architecture.js';
-import { getLanguageProfile } from '../core/language.js';
+} from '../domain/planning/document_contract.js';
+import { architectureImplementationPaths, pathCoveredByOutputs } from '../domain/planning/architecture_policy.js';
+import { getLanguageProfile } from '../application/execution/language_support.js';
 import {
   isExecutableTestPath,
   isRuntimeOwnedVerificationTestPath,
   verificationSupplementRoot,
-} from '../core/test_assets.js';
+} from '../domain/quality/test_assets.js';
 import {
   baselineDeliveryGate,
   type DevelopmentDeliveryGateStage,
@@ -1289,7 +1289,8 @@ function uniqueRunnableTestPath(
 // positive, and one of them held the exact diagnosis for a defect that later took a manual
 // investigation to find. They simply never reached a model.
 //
-// That knowledge belongs in the Debug Wiki (`src/core/debug_wiki.ts`, `debug-wiki/wiki/**`), which
+// That knowledge belongs in the Debug Wiki (`src/infrastructure/knowledge/file_debug_wiki.ts`,
+// `debug-wiki/wiki/**`), which
 // is retrieved for real and beats a static table on every axis that matters here: it matches on the
 // DebugBrief rather than on raw prose, it records use and confidence so a bad entry decays, and it
 // presents itself to the model as a hypothesis rather than as a command. The general rules were

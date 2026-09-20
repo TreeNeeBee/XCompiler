@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectNetworkApiFailure } from '../src/core/network_api_gate.js';
+import { detectNetworkApiFailure } from '../src/application/execution/network_failure.js';
 
 describe('detectNetworkApiFailure', () => {
   it('does not treat requests.get timeout parameters as network failures', () => {

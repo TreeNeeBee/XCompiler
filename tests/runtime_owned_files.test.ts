@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runtimeOwnedAllows, runtimeOwnedFile } from '../src/core/runtime_owned_files.js';
+import { runtimeOwnedAllows, runtimeOwnedFile } from '../src/domain/workspace/runtime_owned_file.js';
 
 /**
  * A refusal has to name the action that replaces it.

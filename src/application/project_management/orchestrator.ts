@@ -1,7 +1,7 @@
-import type { Plan } from '../../core/plan.js';
+import type { Plan } from '../../domain/planning/execution_plan.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import { renderFileManifest, upsertFileManifest } from '../workspace/file_manifest.js';
-import { DOC_NAMES } from '../../core/docs.js';
+import { DOC_NAMES } from '../../domain/planning/document_contract.js';
 import { createObjectId, type ObjectId } from '../../domain/identity/object_id.js';
 import type { Phase } from '../../domain/phases/phase.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
@@ -29,7 +29,7 @@ import {
 } from '../observability/outbox_dispatcher.js';
 import { AttemptResultProcessor } from './attempt_result_processor.js';
 import { ProjectProgressGuard } from './progress_guard.js';
-import { isCancellationError } from '../../core/cancellation.js';
+import { isCancellationError } from '../../util/cancellation.js';
 import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import type { TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import { QualityAssessmentService } from '../execution/quality_assessment_service.js';

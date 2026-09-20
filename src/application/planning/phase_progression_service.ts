@@ -1,13 +1,13 @@
 import path from 'node:path';
 import type { AuditLogger } from '../../audit/audit.js';
 import { Planner, buildPlan, type DraftPhasePlan } from '../../agents/planner.js';
-import { DOC_NAMES } from '../../core/docs.js';
-import { assertPlanValid } from '../../core/lint.js';
-import { advancePhasePlan, phasePlanFileName, type PhasePlan } from '../../core/phase_plan.js';
-import type { Plan } from '../../core/plan.js';
-import { refreshProjectMemory } from '../../core/project_memory.js';
-import { renderPlanMarkdown } from '../../core/render.js';
-import { savePhasePlan, savePlan } from '../../core/storage.js';
+import { DOC_NAMES } from '../../domain/planning/document_contract.js';
+import { assertPlanValid } from '../../domain/planning/plan_lint.js';
+import { advancePhasePlan, phasePlanFileName, type PhasePlan } from '../../domain/planning/phase_plan_checkpoint.js';
+import type { Plan } from '../../domain/planning/execution_plan.js';
+import type { PlanStorePort } from '../../domain/ports/plan_store.js';
+import { refreshProjectMemory } from '../context/project_memory.js';
+import { renderPlanMarkdown } from './plan_renderer.js';
 import { archiveIfExists } from '../../workspace/doc_archive.js';
 import type { LLMRouter } from '../../llm/router.js';
 import type { Workspace } from '../../workspace/workspace.js';
@@ -26,6 +26,7 @@ export class PhaseProgressionService {
     private readonly state: Workspace,
     /** Project-root control plane. Phase plans never belong to the generated product worktree. */
     private readonly control: Workspace,
+    private readonly planStore: PlanStorePort,
     private readonly router: LLMRouter,
     private readonly audit: AuditLogger,
     private readonly terminalOutput: boolean,
@@ -45,7 +46,7 @@ export class PhaseProgressionService {
     const transition = advancePhasePlan(input.phasePlan);
     const next = transition.nextPhase;
     if (!next) {
-      await savePhasePlan(input.phasePlanPath, transition.phasePlan);
+      await this.planStore.savePhasePlan(input.phasePlanPath, transition.phasePlan);
       await this.audit.event('plan.persist', `completed final implementation phase ${transition.completedPhaseId}`, {
         messageId: 'execute.phase_completed',
         phaseId: transition.completedPhaseId,
@@ -66,6 +67,7 @@ export class PhaseProgressionService {
     let baselineSummary = transition.phasePlan.baselineSummary;
     try {
       const memory = await refreshProjectMemory(this.workspace, this.state, {
+        planStore: this.planStore,
         planPath: input.currentPlanPath,
         language: transition.phasePlan.language,
         intent: transition.phasePlan.intent,
@@ -116,11 +118,12 @@ export class PhaseProgressionService {
     assertPlanValid(nextPlan);
 
     // Publish the concrete plan before phasePlan references it.
-    await savePlan(nextPlanPath, nextPlan);
-    await savePhasePlan(input.phasePlanPath, transition.phasePlan);
+    await this.planStore.savePlan(nextPlanPath, nextPlan);
+    await this.planStore.savePhasePlan(input.phasePlanPath, transition.phasePlan);
     await archiveIfExists(this.workspace, DOC_NAMES.plan, this.audit, this.state);
     await this.workspace.writeFile(DOC_NAMES.plan, renderPlanMarkdown(nextPlan));
     await refreshProjectMemory(this.workspace, this.state, {
+      planStore: this.planStore,
       planPath: nextPlanPath,
       language: nextPlan.language,
       intent: nextPlan.intent,

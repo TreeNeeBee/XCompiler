@@ -11,7 +11,7 @@ import { DomainObjectRepository } from '../../src/infrastructure/repository/doma
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
-import { PLAN_VERSION, type Plan } from '../../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../../src/domain/steps/step.js';
 import {
   TicketSchema,

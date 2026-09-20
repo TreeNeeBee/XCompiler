@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { acquireLock, LockError } from '../src/core/lock.js';
+import { acquireLock, LockError } from '../src/infrastructure/locking/file_lock.js';
 import { runExecute } from '../src/runtime/run.js';
 import { silentRuntimeIO } from '../src/runtime/io.js';
 

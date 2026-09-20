@@ -8,8 +8,8 @@ import {
   type PlanIntent,
   type ProjectType,
   type Step,
-} from '../../core/plan.js';
-import { analyzeArchitectureDemand } from '../../core/architecture.js';
+} from '../../domain/planning/execution_plan.js';
+import { analyzeArchitectureDemand } from '../../domain/planning/architecture_policy.js';
 import { phaseDeliveryGate } from '../../domain/quality/delivery_gate.js';
 
 export function parseComplexityAssessment(value: unknown): ComplexityAssessment | undefined {

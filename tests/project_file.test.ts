@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { Plan } from '../src/core/plan.js';
+import type { Plan } from '../src/domain/planning/execution_plan.js';
 import {
   XCOMPILER_PROJECT_MANIFEST_KIND,
   buildProjectProgress,
@@ -10,7 +10,7 @@ import {
   findProjectFile,
   loadXCompilerProject,
   updateProjectFile,
-} from '../src/core/project_file.js';
+} from '../src/infrastructure/project/project_manifest.js';
 import { compileProjectGraph } from '../src/domain/planning/compiler.js';
 import { StepSchema } from '../src/domain/steps/step.js';
 import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeArchitectureDemand, missingArchitectureDocumentTokens } from '../src/core/architecture.js';
-import { lintPlan } from '../src/core/lint.js';
-import { PLAN_VERSION, PlanSchema, type ArchitectureModule, type Plan, type Step } from '../src/core/plan.js';
-import { renderPlanMarkdown } from '../src/core/render.js';
+import { analyzeArchitectureDemand, missingArchitectureDocumentTokens } from '../src/domain/planning/architecture_policy.js';
+import { lintPlan } from '../src/domain/planning/plan_lint.js';
+import { PLAN_VERSION, PlanSchema, type ArchitectureModule, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
+import { renderPlanMarkdown } from '../src/application/planning/plan_renderer.js';
 
 const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'];
 

@@ -4,7 +4,7 @@ import {
   resolveCorrectionChainOrigin,
 } from '../src/application/execution/correction_provenance.js';
 import { resolveBaselineGateExecution } from '../src/application/execution/attempt_policy.js';
-import type { Plan, Step } from '../src/core/plan.js';
+import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
 import type { DomainObjectRepositoryPort } from '../src/domain/ports/repository.js';
 import type { Ticket } from '../src/domain/tickets/ticket.js';
 

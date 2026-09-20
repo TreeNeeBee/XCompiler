@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getLanguageProfile } from '../src/core/language.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { Workspace } from '../src/workspace/workspace.js';
 
 /**

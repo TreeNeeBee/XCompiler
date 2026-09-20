@@ -1,6 +1,6 @@
 /** 无 Commander 副作用的程序化运行入口，供宿主应用和插件加载器使用。 */
 export { XCOMPILER_VERSION, XCOMPILER_PLUGIN_API_VERSION } from './version.js';
-export { PLAN_INTENTS, type PlanIntent } from './core/plan.js';
+export { PLAN_INTENTS, type PlanIntent } from './domain/planning/execution_plan.js';
 export { runCompile, CompileExitError, type CompileOptions } from './runtime/build.js';
 export { runExecute, type ExecuteOptions, type ExecuteResult } from './runtime/run.js';
 export {

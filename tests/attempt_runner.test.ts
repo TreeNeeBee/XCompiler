@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { renderDebugBriefForPrompt } from '../src/core/debug_brief.js';
+import { AuditPersistenceError } from '../src/audit/errors.js';
+import { renderDebugBriefForPrompt } from '../src/application/execution/debug_brief.js';
 import {
   reconcileMeasuredQualityAssessment,
   reconcileDeferredSourceQualityAssessment,
@@ -27,11 +28,12 @@ import {
 } from '../src/application/execution/attempt_runner.js';
 import type { DomainLog } from '../src/domain/observability/records.js';
 import { classifyAttemptFailure, classifyFailure } from '../src/application/execution/failure_classification.js';
-import type { Plan, Step } from '../src/core/plan.js';
+import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
 import type { Ticket } from '../src/domain/tickets/ticket.js';
-import { getLanguageProfile } from '../src/core/language.js';
+import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { computeIncrementalAllowedWrites } from '../src/application/execution/execution_context.js';
 import { Workspace } from '../src/workspace/workspace.js';
+import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 
 describe('corrective write scope', () => {
   it('limits a focused Enhancement to its structured affected test artifact', () => {
@@ -291,6 +293,21 @@ describe('quality failure evidence', () => {
 });
 
 describe('attempt failure classification', () => {
+  it('classifies only the compiler storage producer error as an evidence interruption', () => {
+    const cause = new Error('arbitrary filesystem diagnostic');
+    const error = new AuditPersistenceError({
+      operation: 'append-jsonl', target: '/example/audit/audit.jsonl', eventKind: 'llm.error',
+    }, { cause });
+    error.message = 'independent presentation text';
+    expect(classifyFailure(error)).toMatchObject({
+      kind: 'infrastructure', category: 'internal', code: 'evidence_persistence_failed',
+      retryable: false, switchProvider: false,
+    });
+    expect(error.cause).toBe(cause);
+    expect(classifyFailure(new Error(error.message)).kind).toBe('execution');
+    expect(classifyFailure('evidence_persistence_failed').kind).toBe('execution');
+  });
+
   it('keeps sandbox preparation outside generated-project defect routing', () => {
     expect(sandboxPreparationFailure('P1-S004', 'npm install timed out')).toEqual({
       kind: 'infrastructure',
@@ -839,7 +856,7 @@ function contractRunner(workspace: Workspace): DomainAttemptRunner {
       }),
     },
     sandbox: {}, router: {}, repository: {}, audit: { event: async () => {} },
-    plugins: { size: 0 }, debugWikiPath: '/tmp/xcompiler-attempt-contract-wiki',
+    plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-attempt-contract-wiki'),
   } as never, 'typescript');
   (runner as unknown as { recordTicketRevision: () => Promise<void> }).recordTicketRevision = async () => {};
   (runner as unknown as {
@@ -993,15 +1010,15 @@ describe('debug lookup keys on the failure in hand', () => {
    */
   it('retrieves the entry that matches the current error', async () => {
     const { briefForAttemptFailure } = await import('../src/application/execution/attempt_policy.js');
-    const { DebugWiki, bundledDebugWikiPath } = await import('../src/core/debug_wiki.js');
-    const wiki = new DebugWiki(bundledDebugWikiPath());
+    const { FileDebugWiki, bundledDebugWikiPath } = await import('../src/infrastructure/knowledge/file_debug_wiki.js');
+    const wiki = new FileDebugWiki(bundledDebugWikiPath());
 
     const current = await wiki.search(briefForAttemptFailure(importFailure, 'CODE'), { limit: 3 });
     expect(current[0]?.entry.id).toBe('agent.calibration.python-imports');
 
     // What the Ticket carries once the loop has moved on: a description of the loop's shape, whose
     // own text says nothing about imports.
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     const opening = buildDebugBrief({
       reason: 'verification command repeated without a successful mutation',
       failureLog: 'run_tests:{"cwd":"."}; the duplicate command was not executed again',
@@ -1127,7 +1144,7 @@ describe('failure in hand', () => {
 
   const runnerFor = (logs: unknown[]): DomainAttemptRunner => new DomainAttemptRunner({
     workspace: {}, git: {}, router: {}, audit: {}, plugins: { size: 0 },
-    debugWikiPath: '/tmp/xcompiler-brief-wiki',
+    debugWiki: new FileDebugWiki('/tmp/xcompiler-brief-wiki'),
     repository: { read: async (id: string) => logs.find((log) => (log as { id: string }).id === id) },
   } as never, 'python');
 

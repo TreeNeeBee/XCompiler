@@ -1,5 +1,5 @@
 import type { ObjectId } from '../../domain/identity/object_id.js';
-import { stepContextFingerprint, xcompilerBuildId } from '../../core/build_identity.js';
+import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import type { Checkpoint } from '../../domain/evidence/evidence.js';
 import type { Phase } from '../../domain/phases/phase.js';
@@ -35,7 +35,7 @@ import { DomainAuditTrail } from '../observability/domain_audit_trail.js';
 import type { AttemptFailure } from '../execution/failure_classification.js';
 import type { TestOutcome } from '../execution/test_outcome.js';
 import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
-import { buildDebugBrief, buildFailureSignature } from '../../core/debug_brief.js';
+import { buildDebugBrief, buildFailureSignature } from '../execution/debug_brief.js';
 import { WorkScheduler, workModeFor, type ScheduledWork } from './work_scheduler.js';
 import { CorrectiveWorkflowService } from './corrective_workflow_service.js';
 import {
@@ -300,6 +300,14 @@ export class ProjectController {
       work,
       'permission',
       `Permission blocked without V-model routing: ${reason}`,
+    );
+  }
+
+  async deferEvidencePersistenceFailure(work: ScheduledWork, reason: string): Promise<void> {
+    await this.deferNonProjectAttempt(
+      work,
+      'interrupted',
+      `Required evidence storage failed without V-model routing: ${reason}`,
     );
   }
 

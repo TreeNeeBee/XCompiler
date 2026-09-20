@@ -1,6 +1,6 @@
 import type { AuditLogger } from '../../audit/audit.js';
 import type { WorkspaceKind } from '../../domain/workspace/change_set.js';
-import { stepContextFingerprint, xcompilerBuildId } from '../../core/build_identity.js';
+import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import {
   StepExecutor,
@@ -9,9 +9,13 @@ import {
   type ToolCallRecord,
 } from '../../agents/executor.js';
 import { ensureEssentialToolRefs } from '../../agents/calibration.js';
-import { buildDebugBrief, buildFailureSignature, type DebugBrief } from '../../core/debug_brief.js';
+import { buildDebugBrief, buildFailureSignature, type DebugBrief } from './debug_brief.js';
 import type { DomainLog } from '../../domain/observability/records.js';
-import { DebugWiki, defaultDebugWikiPath, type DebugWikiMatch } from '../../core/debug_wiki.js';
+import {
+  EmptyDebugWiki,
+  type DebugWikiMatch,
+  type DebugWikiPort,
+} from '../knowledge/debug_wiki.js';
 import {
   ContextAssembler,
   type AssembledContext,
@@ -29,13 +33,13 @@ import {
 import {
   inspectPairedSourceTests,
   mergePairedSourceTestQuality,
-} from '../../core/paired_test_contract.js';
+} from './paired_test_contract.js';
 import { normalizeGitPath } from './v_model_policy.js';
-import { TEST_FIXTURE_DIR } from '../../core/external_dependency_contract.js';
-import { getLanguageProfile, type LanguageProfile } from '../../core/language.js';
-import { inspectLanguageProjectContract } from '../../core/language_project_contract.js';
-import type { Plan, Step as ExecutionStep } from '../../core/plan.js';
-import type { StageQualityAssessment } from '../../core/quality_gate.js';
+import { TEST_FIXTURE_DIR } from '../../domain/quality/external_dependency.js';
+import { getLanguageProfile, type LanguageProfile } from './language_support.js';
+import { inspectLanguageProjectContract } from './language_project_contract.js';
+import type { Plan, Step as ExecutionStep } from '../../domain/planning/execution_plan.js';
+import type { StageQualityAssessment } from '../../domain/quality/stage_quality.js';
 import { STEP_TYPE_ORDER, type Step, type StepType } from '../../domain/steps/step.js';
 import {
   TicketSchema,
@@ -71,9 +75,11 @@ import {
 } from '../../tools/index.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { GitService } from '../../workspace/git.js';
-import { isCancellationError } from '../../core/cancellation.js';
+import { isCancellationError } from '../../util/cancellation.js';
+import { AuditPersistenceError } from '../../audit/errors.js';
 import {
   classifyFailure,
+  isEvidencePersistenceFailure,
   type AttemptFailure,
   type AttemptFailureKind,
 } from './failure_classification.js';
@@ -180,13 +186,7 @@ export interface AttemptRunnerOptions {
   requestPermission?: ToolPermissionRequester;
   onToolEvent?: ToolExecutionReporter;
   terminalOutput?: boolean;
-  debugWikiPath?: string;
-  /**
-   * Project-scoped Debug Wiki root, under container state. Without it findings would accumulate in
-   * the shared installation tier, where one project's build quirk becomes a retrieval candidate for
-   * every unrelated project.
-   */
-  projectDebugWikiPath?: string;
+  debugWiki?: DebugWikiPort;
   recordReplay?: RecordReplayController;
   abortSignal?: AbortSignal;
   /** Character budget for the assembled context block. Unset means no trimming. */
@@ -240,7 +240,7 @@ export class DomainAttemptRunner {
   private readonly registry: ToolRegistry;
   private readonly skills: SkillRegistry;
   private readonly quality: QualityAssessmentService;
-  private readonly wiki: DebugWiki;
+  private readonly wiki: DebugWikiPort;
   private readonly context: ContextAssembler;
   private readonly profile: LanguageProfile;
   private readonly traces: DomainAuditTrail;
@@ -251,11 +251,7 @@ export class DomainAttemptRunner {
     this.skills = options.skills ?? buildDefaultSkills();
     this.quality = new QualityAssessmentService(options.repository);
     this.traces = new DomainAuditTrail(options.repository);
-    this.wiki = new DebugWiki(
-      options.debugWikiPath ?? defaultDebugWikiPath(),
-      // Findings about this codebase go to the project tier; the installation tiers stay shared.
-      { projectPath: options.projectDebugWikiPath },
-    );
+    this.wiki = options.debugWiki ?? new EmptyDebugWiki();
     this.profile = getLanguageProfile(language);
     this.knowledge = new VerifiedBugKnowledgeService(options.repository, this.wiki, this.profile.id);
     this.context = new ContextAssembler(options.repository, {
@@ -674,13 +670,23 @@ export class DomainAttemptRunner {
       }
       // A thrown error on our own execution path carries a message this runtime authored.
       const failure = classifyFailure(error, { trustProviderText: true });
-      return this.failAttempt(scope, baseline, input, {
-        reason: error instanceof Error ? error.message : String(error),
-        failureLog: error instanceof Error ? error.stack ?? error.message : String(error),
-        failureKind: failure.kind,
-        failure,
-        wikiEntryIds: wikiMatches.map((match) => match.entry.id),
-      });
+      try {
+        return await this.failAttempt(scope, baseline, input, {
+          reason: error instanceof Error ? error.message : String(error),
+          failureLog: error instanceof Error ? error.stack ?? error.message : String(error),
+          failureKind: failure.kind,
+          failure,
+          wikiEntryIds: wikiMatches.map((match) => match.entry.id),
+        });
+      } catch (interruptionError) {
+        if (error instanceof AuditPersistenceError) {
+          throw new AuditPersistenceError(error.failure, {
+            cause: new AggregateError([error, interruptionError], 'Evidence failure interruption could not be persisted'),
+            record: error.record,
+          });
+        }
+        throw interruptionError;
+      }
     }
   }
 
@@ -1211,15 +1217,19 @@ export class DomainAttemptRunner {
       typedFailure: classified,
     });
     const failureSignature = buildFailureSignature(brief, classified.code);
-    await this.options.audit.event('note', `attempt failed for ${input.domainStep.name}: ${failure.reason}`, {
-      messageId: 'domain.attempt_failed',
-      projectId: input.domainStep.projectId,
-      phaseId: input.domainStep.phaseId,
-      stepId: input.domainStep.id,
-      stepName: input.domainStep.name,
-      ticketId: input.ticket.id,
-      reason: failure.reason,
-    });
+    // The canonical trace below records this interruption; do not retry a failed audit sink.
+    const auditUnavailable = isEvidencePersistenceFailure(classified);
+    if (!auditUnavailable) {
+      await this.options.audit.event('note', `attempt failed for ${input.domainStep.name}: ${failure.reason}`, {
+        messageId: 'domain.attempt_failed',
+        projectId: input.domainStep.projectId,
+        phaseId: input.domainStep.phaseId,
+        stepId: input.domainStep.id,
+        stepName: input.domainStep.name,
+        ticketId: input.ticket.id,
+        reason: failure.reason,
+      });
+    }
     await this.traces.recordLog({
       projectId: input.domainStep.projectId,
       subject: { id: input.ticket.id, objectType: 'ticket' },
@@ -1250,20 +1260,22 @@ export class DomainAttemptRunner {
       correlationId: input.ticket.source.correlationId,
       causationId: input.ticket.source.causationId,
     });
-    await this.options.audit.event('note', `structured failure classified for ${input.domainStep.name}`, {
-      messageId: 'domain.attempt_failure_classified',
-      stepId: input.domainStep.id,
-      ticketId: input.ticket.id,
-      failure: classified,
-      testOutcomes,
-      gateFindings: failure.gateFindings ?? failure.assessment?.findings ?? [],
-      workspaceDisposition: preserveCandidate && (!isCanonical || workspaceBinding)
-        ? 'candidate-preserved'
-        : 'rolled-back',
-      candidateRevision: commit,
-      workspaceBinding,
-      changedFiles,
-    });
+    if (!auditUnavailable) {
+      await this.options.audit.event('note', `structured failure classified for ${input.domainStep.name}`, {
+        messageId: 'domain.attempt_failure_classified',
+        stepId: input.domainStep.id,
+        ticketId: input.ticket.id,
+        failure: classified,
+        testOutcomes,
+        gateFindings: failure.gateFindings ?? failure.assessment?.findings ?? [],
+        workspaceDisposition: preserveCandidate && (!isCanonical || workspaceBinding)
+          ? 'candidate-preserved'
+          : 'rolled-back',
+        candidateRevision: commit,
+        workspaceBinding,
+        changedFiles,
+      });
+    }
     return {
       ok: false,
       changedFiles,

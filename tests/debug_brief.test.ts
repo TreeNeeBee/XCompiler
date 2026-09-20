@@ -4,7 +4,7 @@ import {
   buildFailureSignature,
   compactFailureEvidence,
   renderDebugBriefForPrompt,
-} from '../src/core/debug_brief.js';
+} from '../src/application/execution/debug_brief.js';
 import { evaluateAttemptExtension } from '../src/domain/tickets/retry_policy.js';
 
 describe('debug brief extraction', () => {
@@ -247,7 +247,7 @@ describe('debug brief extraction', () => {
  */
 describe('runner cannot find the test file', () => {
   const categoryOf = async (failureLog: string) => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     return buildDebugBrief({ failureLog, phase: 'CODE' }).category;
   };
 
@@ -263,7 +263,7 @@ describe('runner cannot find the test file', () => {
   });
 
   it('gives that failure the demand that names the action', async () => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     const brief = buildDebugBrief({
       failureLog: 'pytest exit=4\nERROR: file or directory not found: tests/test_main.py',
       phase: 'CODE',
@@ -283,7 +283,7 @@ describe('runner cannot find the test file', () => {
 // The explanatory line is often trimmed out of a truncated log, so the exit code must count alone.
 // Across three live runs, 39 failures carried `pytest exit=4` without the sentence that explains it.
 it('reads a bare pytest exit=4 as unwritten outputs even without the explanation', async () => {
-  const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+  const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
   expect(buildDebugBrief({
     failureLog: 'run_tests failed: pytest exit=4 args=tests/test_main.py',
   }).category).toBe('missing_output');
@@ -296,7 +296,7 @@ it('reads a bare pytest exit=4 as unwritten outputs even without the explanation
  */
 describe('provider outage is not a project API failure', () => {
   const categoryOf = async (failureLog: string) => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     return buildDebugBrief({ failureLog }).category;
   };
 
@@ -329,7 +329,7 @@ describe('provider outage is not a project API failure', () => {
  */
 describe('file extraction is format-agnostic', () => {
   const filesIn = async (failureLog: string) => {
-    const { buildDebugBrief } = await import('../src/core/debug_brief.js');
+    const { buildDebugBrief } = await import('../src/application/execution/debug_brief.js');
     return buildDebugBrief({ failureLog }).files;
   };
 

@@ -3,8 +3,8 @@ import {
   calibrateArchitectureModulePaths,
   calibrateArchitectureStepMappings,
 } from '../src/agents/calibration.js';
-import { validateArchitectureContract, type ArchitectureDemand } from '../src/core/architecture.js';
-import type { ArchitectureModule, Step } from '../src/core/plan.js';
+import { validateArchitectureContract, type ArchitectureDemand } from '../src/domain/planning/architecture_policy.js';
+import type { ArchitectureModule, Step } from '../src/domain/planning/execution_plan.js';
 
 function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
   return {

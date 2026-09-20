@@ -3,18 +3,22 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildPlan } from '../src/agents/planner.js';
-import type { Phase, Step } from '../src/core/plan.js';
+import type { Phase, Step } from '../src/domain/planning/execution_plan.js';
 import {
   advancePhasePlan,
   buildPhasePlanCheckpoint,
+  phasePlanFileName,
+} from '../src/domain/planning/phase_plan_checkpoint.js';
+import {
   buildPhasePlanFromCurrentPlan,
   defaultPhasePlanPath,
   defaultPhasePlanStepPath,
-  phasePlanFileName,
-} from '../src/core/phase_plan.js';
-import { loadPlanTarget, savePhasePlan, savePlan } from '../src/core/storage.js';
+} from '../src/application/planning/phase_plan_files.js';
+import { FilePlanStore } from '../src/infrastructure/planning/file_plan_store.js';
 
 describe('phase plan persistence', () => {
+  const planStore = new FilePlanStore();
+
   it('persists a source-bound checkpoint before the current phase is materialized', () => {
     const sourceDigest = 'a'.repeat(64);
     const checkpoint = buildPhasePlanCheckpoint({
@@ -177,9 +181,9 @@ describe('phase plan persistence', () => {
 
     const phasePlanPath = defaultPhasePlanPath(workspace);
     const currentPlanPath = defaultPhasePlanStepPath(workspace, plan.phaseId);
-    await savePlan(currentPlanPath, plan);
+    await planStore.savePlan(currentPlanPath, plan);
     const phasePlan = buildPhasePlanFromCurrentPlan({ plan, phasePlanPath, currentPlanPath });
-    await savePhasePlan(phasePlanPath, phasePlan);
+    await planStore.savePhasePlan(phasePlanPath, phasePlan);
 
     expect(path.basename(currentPlanPath)).toBe('plan.P1.json');
     expect(phasePlan.currentPhaseId).toBe('P1');
@@ -194,7 +198,7 @@ describe('phase plan persistence', () => {
     expect(advanced.phasePlan.phases.find((phase) => phase.id === 'P2')?.status).toBe('current');
     expect(phasePlan.phases.find((phase) => phase.id === 'P1')?.status).toBe('current');
 
-    const loaded = await loadPlanTarget(phasePlanPath);
+    const loaded = await planStore.loadPlanTarget(phasePlanPath);
     expect(loaded.phasePlanPath).toBe(phasePlanPath);
     expect(loaded.planPath).toBe(currentPlanPath);
     expect(loaded.plan.phaseId).toBe('P1');
@@ -239,9 +243,9 @@ describe('phase plan persistence', () => {
     hld.outputs = ['docs/02-high-level-design.md', 'docs/tests/integration-test-plan.md', 'package.json'];
     detailed.outputs = ['docs/03-detailed-design.md', 'docs/tests/module-test-plan.md'];
     const planPath = path.join(workspace, 'plan.P1.json');
-    await savePlan(planPath, plan);
+    await planStore.savePlan(planPath, plan);
 
-    await expect(loadPlanTarget(planPath)).rejects.toThrow(/must synchronously output paired/);
+    await expect(planStore.loadPlanTarget(planPath)).rejects.toThrow(/must synchronously output paired/);
   });
 
   it('accepts a materialized follow-up phase whose current status matches phaseId', async () => {
@@ -292,9 +296,9 @@ describe('phase plan persistence', () => {
       { language: 'typescript', intent: 'feature' },
     );
     const planPath = path.join(workspace, 'plan.P2.json');
-    await savePlan(planPath, plan);
+    await planStore.savePlan(planPath, plan);
 
-    const loaded = await loadPlanTarget(planPath);
+    const loaded = await planStore.loadPlanTarget(planPath);
     expect(loaded.plan.phaseId).toBe('P2');
     expect(new Set(loaded.plan.steps.map((step) => step.iterationId))).toEqual(new Set(['P2']));
   });

@@ -16,7 +16,7 @@ import {
 } from '../src/domain/context/context_record.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { ProjectContainer } from '../src/workspace/project_container.js';
-import { PLAN_VERSION, type Plan } from '../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 import { bindTicketWorkspace, type Ticket } from '../src/domain/tickets/ticket.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';

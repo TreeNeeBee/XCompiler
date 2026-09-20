@@ -14,14 +14,14 @@ import { TicketWorkflow } from '../../src/application/project_management/ticket_
 import { bugContracts } from '../helpers/ticket_fixtures.js';
 import { GitRepositoryService } from '../../src/infrastructure/git/git_repository_service.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
-import { DebugWiki } from '../../src/core/debug_wiki.js';
-import { buildDebugBrief } from '../../src/core/debug_brief.js';
+import { FileDebugWiki } from '../../src/infrastructure/knowledge/file_debug_wiki.js';
+import { buildDebugBrief } from '../../src/application/execution/debug_brief.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 import { createObjectId } from '../../src/domain/identity/object_id.js';
 import { TicketSchema, bindTicketWorkspace, type Ticket } from '../../src/domain/tickets/ticket.js';
 import type { GateCheckResult } from '../../src/domain/workspace/merge_request.js';
 import type { TicketChangeSet } from '../../src/domain/workspace/change_set.js';
-import { PLAN_VERSION, type Plan } from '../../src/core/plan.js';
+import { PLAN_VERSION, type Plan } from '../../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../../src/domain/steps/step.js';
 
 const FAILED_GATE: GateCheckResult[] = [
@@ -171,7 +171,7 @@ describe('ticket delivery loop', () => {
     expect(stepContext?.findings.some((finding) => finding.text.includes('Return the source field')))
       .toBe(true);
 
-    const freshWiki = new DebugWiki(world.installRoot, { projectPath: container.state.root });
+    const freshWiki = new FileDebugWiki(world.installRoot, { projectPath: container.state.root });
     await freshWiki.load();
     expect((await freshWiki.search(FAILURE_BRIEF, { language: 'typescript', limit: 3 })).length)
       .toBeGreaterThan(0);
@@ -343,7 +343,7 @@ async function fixture() {
   const story = graph.tickets.find(
     (ticket) => ticket.stepId === coding.id && ticket.type === 'story',
   )!;
-  const wiki = new DebugWiki(installRoot, { projectPath: container.state.root });
+  const wiki = new FileDebugWiki(installRoot, { projectPath: container.state.root });
   await wiki.load();
 
   return {
