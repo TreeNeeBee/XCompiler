@@ -13,6 +13,8 @@ import { LLMRouter } from '../../src/llm/router.js';
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from '../../src/llm/response_evidence.js';
 import { ScoreStore } from '../../src/llm/scores.js';
 import type { LLMClient } from '../../src/llm/types.js';
+import { PluginHost } from '../../src/plugins/host.js';
+import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../../src/version.js';
 
 let root: string;
 const servers: Server[] = [];
@@ -131,8 +133,10 @@ describe('Router response evidence through provider, persistence and replay', ()
     const audit = new AuditLogger({ root, command: 'response-evidence' });
     await audit.start();
     const responses: RoutedResponseEvidence[] = [];
+    const logicalRequestId = '2d8272b5-a2a0-4083-a17d-6e11805ae836';
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
     await expect(router.for('Coder').chat(messages, {
+      logicalRequestId,
       validate: (text) => { if (text !== 'accepted') throw new Error('accepted text required'); },
       onResponse: (response) => { responses.push(response); },
     })).resolves.toBe('accepted');
@@ -140,7 +144,8 @@ describe('Router response evidence through provider, persistence and replay', ()
     const events = (await auditEvents()).filter((event) =>
       event.messageId === 'llm.provider_validation_failed' || event.messageId === 'llm.provider_response');
     expect(events).toHaveLength(2);
-    expect(events[0]!.data!.logicalRequestId).toBe(events[1]!.data!.logicalRequestId);
+    expect(events[0]!.data!.logicalRequestId).toBe(logicalRequestId);
+    expect(events[1]!.data!.logicalRequestId).toBe(logicalRequestId);
     expect(events[0]!.data!.providerAttemptId).not.toBe(events[1]!.data!.providerAttemptId);
     for (const [index, event] of events.entries()) {
       expect(event.data!.responseEvidence).toMatchObject({
@@ -154,6 +159,69 @@ describe('Router response evidence through provider, persistence and replay', ()
     expect(responses).toHaveLength(1);
     expect(responses[0]).toEqual(events[1]!.data!.responseEvidence);
     expect(Object.isFrozen(responses[0]!.capture)).toBe(true);
+  });
+
+  it('retains the owning request boundary when a Plugin replaces its options', async () => {
+    const server = await endpoint(() => 'accepted');
+    const logicalRequestId = '2d8272b5-a2a0-4083-a17d-6e11805ae836';
+    const originalGuard = vi.fn();
+    const substitutedGuard = vi.fn();
+    const originalResponse = vi.fn();
+    const substitutedResponse = vi.fn();
+    const pluginValidator = vi.fn(() => { throw new Error('Plugin must not install another repair loop'); });
+    const plugins = new PluginHost({ plugins: [{
+      manifest: { id: 'replace-evidence-options', version: '1.0.0', apiVersion: XCOMPILER_PLUGIN_API_VERSION, minXCompilerVersion: XCOMPILER_VERSION },
+      setup(api) {
+        api.on('llm.before', (event) => {
+          event.options = { logicalRequestId: 'f60c322c-4aa8-4944-a4f7-dbec15aef3ef',
+            beforeProviderRequest: substitutedGuard, onResponse: substitutedResponse, validate: pluginValidator, scoreSuccess: true };
+        });
+      },
+    }] });
+    const scores = new ScoreStore(path.join(root, 'config.yaml'));
+    const boost = vi.spyOn(scores, 'boost').mockImplementation(() => undefined);
+    const audit = new AuditLogger({ root, command: 'request-boundary' });
+    await audit.start();
+    const router = new LLMRouter(config(server.url), audit, scores, undefined, plugins, probe);
+    await expect(router.for('Coder').chat(messages, {
+      logicalRequestId, beforeProviderRequest: originalGuard, onResponse: originalResponse, scoreSuccess: false,
+    })).resolves.toBe('accepted');
+    expect(server.calls()).toBe(1);
+    expect(originalGuard).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ logicalRequestId, messages }));
+    expect(originalResponse).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ logicalRequestId, output: 'accepted' }));
+    expect(substitutedGuard).not.toHaveBeenCalled();
+    expect(substitutedResponse).not.toHaveBeenCalled();
+    expect(pluginValidator).not.toHaveBeenCalled();
+    expect(boost).not.toHaveBeenCalled();
+    expect((await auditEvents()).find((event) => event.messageId === 'llm.provider_response')?.data?.logicalRequestId).toBe(logicalRequestId);
+  });
+
+  it('checks the final Plugin-mutated request before transport without retry or scoring a guard failure', async () => {
+    const server = await endpoint(() => 'must not be requested');
+    const failure = new Error('Required instructions changed');
+    const plugins = new PluginHost({ plugins: [{
+      manifest: { id: 'mutate-final-request', version: '1.0.0', apiVersion: XCOMPILER_PLUGIN_API_VERSION, minXCompilerVersion: XCOMPILER_VERSION },
+      setup(api) { api.on('llm.before', (event) => { event.messages = [{ role: 'user', content: 'changed by Plugin' }]; }); },
+    }] });
+    const cfg = config(server.url);
+    cfg.llm.providers.secondary = { ...cfg.llm.providers.primary! };
+    cfg.llm.fallbacks = ['secondary'];
+    const scores = new ScoreStore(path.join(root, 'config.yaml'));
+    const decay = vi.spyOn(scores, 'decay').mockImplementation(() => undefined);
+    const boost = vi.spyOn(scores, 'boost').mockImplementation(() => undefined);
+    const observed: unknown[] = [];
+    const router = new LLMRouter(cfg, undefined, scores, undefined, plugins, probe);
+    await expect(router.for('Coder').chat(messages, { beforeProviderRequest(request) {
+      observed.push(request);
+      expect(request.messages).toEqual([{ role: 'user', content: 'changed by Plugin' }]);
+      expect(Object.isFrozen(request.messages)).toBe(true);
+      expect(Object.isFrozen(request.messages[0])).toBe(true);
+      throw failure;
+    } })).rejects.toBe(failure);
+    expect(observed).toHaveLength(1);
+    expect(server.calls()).toBe(0);
+    expect(decay).not.toHaveBeenCalled();
+    expect(boost).not.toHaveBeenCalled();
   });
 
   it('replays the recorded completion facts without a live call', async () => {

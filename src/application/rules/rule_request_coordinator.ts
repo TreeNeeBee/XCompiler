@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
+import type { RuleReviewEvidenceVerifier } from './rule_review_evidence.js';
 import {
   finalizeRuleSelectionDraft, validateRuleRequestSnapshot, validateRuleSelectionDraft,
   type RuleRequestSnapshot, type RuleRequestSnapshotStore, type RuleSelectionDraft,
@@ -16,6 +17,7 @@ export const RuleReviewResultSchema = z.object({
   schemaVersion: z.literal(1), logicalRequestId: z.uuid(), draftDigest: RuleDigestSchema,
   claimId: z.uuid(), reviewRequestId: z.uuid(), providerAttemptId: z.uuid(),
   provider: z.string().min(1), model: z.string().min(1), selectedRuleIds: z.array(z.uuid()),
+  protocolVersion: z.string().min(1), requestDigest: RuleDigestSchema,
   completedAt: z.iso.datetime(),
 }).strict();
 export type RuleReviewResult = z.infer<typeof RuleReviewResultSchema>;
@@ -45,13 +47,17 @@ export interface RuleRequestStateStore extends RuleRequestSnapshotStore {
 export interface RuleSelectionReviewer {
   /** The current caller's role pool performs one logical review, with raw evidence recorded by Router. */
   review(input: { draft: RuleSelectionDraft; reviewRequestId: string; signal?: AbortSignal }): Promise<
-    RuleSelectionReviewReference & { provider: string; model: string }
+    RuleSelectionReviewReference
   >;
 }
 
 /** Pins selection before review and consumes its allowance before any model dispatch. */
 export class RuleRequestCoordinator {
-  constructor(private readonly store: RuleRequestStateStore, private readonly reviewer: RuleSelectionReviewer) {}
+  constructor(
+    private readonly store: RuleRequestStateStore,
+    private readonly reviewer: RuleSelectionReviewer,
+    private readonly evidence: RuleReviewEvidenceVerifier,
+  ) {}
 
   async prepare(input: {
     logicalRequestId: string;
@@ -69,6 +75,8 @@ export class RuleRequestCoordinator {
     if (snapshot) {
       const restored = validateRuleRequestSnapshot(snapshot, id);
       this.assertKind(restored.requestKind, input.requestKind, id);
+      if (restored.review) await this.evidence.verify(restored, input.signal);
+      input.signal?.throwIfAborted();
       return restored;
     }
     let draft = await this.store.readDraft(id);
@@ -85,12 +93,12 @@ export class RuleRequestCoordinator {
     }
     let result = await this.store.readReviewResult(id);
     let claim = await this.store.readReviewClaim(id);
-    if (result) return this.finish(draft, claim, result);
+    if (result) return this.finish(draft, claim, result, input.signal);
     if (claim) {
       this.validateClaim(claim, draft);
       // Another process may have published the result between the two reads.
       result = await this.store.readReviewResult(id);
-      if (result) return this.finish(draft, claim, result);
+      if (result) return this.finish(draft, claim, result, input.signal);
       throw new RuleRequestError('review_incomplete', { logicalRequestId: id, reviewRequestId: claim.reviewRequestId, claimId: claim.claimId });
     }
     input.signal?.throwIfAborted();
@@ -102,7 +110,7 @@ export class RuleRequestCoordinator {
     this.validateClaim(claim, draft);
     if (claim.claimId !== proposed.claimId) {
       result = await this.store.readReviewResult(id);
-      if (result) return this.finish(draft, claim, result);
+      if (result) return this.finish(draft, claim, result, input.signal);
       throw new RuleRequestError('review_incomplete', { logicalRequestId: id, reviewRequestId: claim.reviewRequestId, claimId: claim.claimId });
     }
     // Cancellation or a provider error keeps the claim: restarting cannot grant a second review.
@@ -112,21 +120,26 @@ export class RuleRequestCoordinator {
       schemaVersion: 1, logicalRequestId: id, draftDigest: draft.digest, claimId: claim.claimId,
       reviewRequestId: reviewed.logicalRequestId, providerAttemptId: reviewed.providerAttemptId,
       provider: reviewed.provider, model: reviewed.model, selectedRuleIds: reviewed.selectedRuleIds,
+      protocolVersion: reviewed.protocolVersion, requestDigest: reviewed.requestDigest,
       completedAt: new Date().toISOString(),
     });
     if (!parsed.success) throw new RuleRequestError('invalid', { logicalRequestId: id }, { cause: parsed.error });
     this.validateResult(parsed.data, claim, draft);
-    // Validate membership/conflicts before publishing a successful review outcome.
-    finalizeRuleSelectionDraft(draft, reviewReference(parsed.data));
+    // Validate membership/conflicts and raw evidence before publishing a successful review outcome.
+    await this.evidence.verify(finalizeRuleSelectionDraft(draft, reviewReference(parsed.data)), input.signal);
+    input.signal?.throwIfAborted();
     result = await this.store.completeReview(parsed.data);
-    return this.finish(draft, claim, result);
+    return this.finish(draft, claim, result, input.signal);
   }
 
-  private async finish(draft: RuleSelectionDraft, claim: RuleReviewClaim | undefined, result: RuleReviewResult): Promise<RuleRequestSnapshot> {
+  private async finish(draft: RuleSelectionDraft, claim: RuleReviewClaim | undefined, result: RuleReviewResult, signal?: AbortSignal): Promise<RuleRequestSnapshot> {
     if (!claim) throw new RuleRequestError('invalid', { logicalRequestId: draft.logicalRequestId, reason: 'review-result-without-claim' });
     this.validateClaim(claim, draft);
     this.validateResult(result, claim, draft);
-    return this.store.create(finalizeRuleSelectionDraft(draft, reviewReference(result)));
+    const snapshot = finalizeRuleSelectionDraft(draft, reviewReference(result));
+    await this.evidence.verify(snapshot, signal);
+    signal?.throwIfAborted();
+    return this.store.create(snapshot);
   }
 
   private validateClaim(raw: RuleReviewClaim, draft: RuleSelectionDraft): void {
@@ -152,5 +165,9 @@ export class RuleRequestCoordinator {
 }
 
 function reviewReference(result: RuleReviewResult): RuleSelectionReviewReference {
-  return { logicalRequestId: result.reviewRequestId, providerAttemptId: result.providerAttemptId, selectedRuleIds: result.selectedRuleIds };
+  return {
+    logicalRequestId: result.reviewRequestId, providerAttemptId: result.providerAttemptId,
+    provider: result.provider, model: result.model, selectedRuleIds: result.selectedRuleIds,
+    protocolVersion: result.protocolVersion, requestDigest: result.requestDigest,
+  };
 }

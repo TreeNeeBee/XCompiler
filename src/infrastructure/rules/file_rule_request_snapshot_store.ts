@@ -9,12 +9,12 @@ import { publishImmutableRuleJson, readImmutableRuleJson, ruleArtifactPath } fro
 
 /** Reads recovery material by request identity, without consulting the current Rule catalogue. */
 export class FileRuleRequestSnapshotStore implements RuleRequestSnapshotStore {
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly boundaryRoot?: string) {}
 
   async read(logicalRequestId: string): Promise<RuleRequestSnapshot | undefined> {
     const name = this.name(logicalRequestId);
     let raw: unknown;
-    try { raw = await readImmutableRuleJson(this.root, name); }
+    try { raw = await readImmutableRuleJson(this.root, name, this.boundaryRoot); }
     catch (cause) { throw new RuleSnapshotError('read_failed', { target: ruleArtifactPath(this.root, name), logicalRequestId }, { cause }); }
     return raw === undefined ? undefined : validateRuleRequestSnapshot(raw, logicalRequestId);
   }
@@ -23,7 +23,7 @@ export class FileRuleRequestSnapshotStore implements RuleRequestSnapshotStore {
     const name = this.name(snapshot.logicalRequestId);
     const validated = validateRuleRequestSnapshot(snapshot, snapshot.logicalRequestId);
     let stored: unknown;
-    try { stored = await publishImmutableRuleJson(this.root, name, validated); }
+    try { stored = await publishImmutableRuleJson(this.root, name, validated, this.boundaryRoot); }
     catch (cause) { throw new RuleSnapshotError('write_failed', {
       target: ruleArtifactPath(this.root, name), logicalRequestId: snapshot.logicalRequestId,
     }, { cause }); }

@@ -117,7 +117,11 @@ async function fixture(options: FixtureOptions = {}) {
 }
 
 function review(selectedRuleIds = [uuid(21)]): RuleSelectionReviewReference {
-  return { logicalRequestId: uuid(801), providerAttemptId: uuid(802), selectedRuleIds };
+  return {
+    logicalRequestId: uuid(801), providerAttemptId: uuid(802),
+    provider: 'offline-reviewer', model: 'deterministic-reviewer', selectedRuleIds,
+    protocolVersion: 'rule-selection-review/1', requestDigest: `sha256:${'1'.repeat(64)}`,
+  };
 }
 
 function changedSnapshot(
@@ -348,6 +352,10 @@ describe('Rule request capture and recovery through the real immutable file stor
     { name: 'missing reference', change: (snapshot) => { delete snapshot.review; } },
     { name: 'invalid logical request ID', change: (snapshot) => { snapshot.review!.logicalRequestId = 'not-a-uuid'; } },
     { name: 'invalid provider attempt ID', change: (snapshot) => { snapshot.review!.providerAttemptId = ''; } },
+    { name: 'missing provider', change: (snapshot) => { snapshot.review!.provider = ''; } },
+    { name: 'missing model', change: (snapshot) => { snapshot.review!.model = ''; } },
+    { name: 'empty protocol version', change: (snapshot) => { snapshot.review!.protocolVersion = ''; } },
+    { name: 'invalid request digest', change: (snapshot) => { snapshot.review!.requestDigest = 'not-a-digest'; } },
     { name: 'unknown selected Rule', change: (snapshot) => { snapshot.review!.selectedRuleIds = [uuid(999)]; } },
     { name: 'selected Rule outside the candidate cap', change: (snapshot) => { snapshot.review!.selectedRuleIds = [uuid(31)]; } },
     { name: 'required Rule presented as reviewed optional', change: (snapshot) => { snapshot.review!.selectedRuleIds = [uuid(11)]; } },

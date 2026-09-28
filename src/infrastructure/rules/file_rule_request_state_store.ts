@@ -11,7 +11,9 @@ import { publishImmutableRuleJson, readImmutableRuleJson, ruleArtifactPath } fro
 
 /** Runtime owns root; state is isolated from candidate worktrees and contains no model-chosen paths. */
 export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore implements RuleRequestStateStore {
-  constructor(private readonly stateRoot: string) { super(path.join(stateRoot, 'snapshots')); }
+  constructor(private readonly stateRoot: string, private readonly containerRoot?: string) {
+    super(path.join(stateRoot, 'snapshots'), containerRoot);
+  }
 
   async readDraft(id: string): Promise<RuleSelectionDraft | undefined> {
     const raw = await this.readState('drafts', id);
@@ -67,13 +69,13 @@ export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore impl
 
   private async readState(section: string, id: string): Promise<unknown | undefined> {
     const location = this.location(section, id);
-    try { return await readImmutableRuleJson(location.root, location.name); }
+    try { return await readImmutableRuleJson(location.root, location.name, this.containerRoot); }
     catch (cause) { throw new RuleRequestError('read_failed', { logicalRequestId: id, target: location.target }, { cause }); }
   }
 
   private async publishState(section: string, id: string, value: unknown): Promise<unknown> {
     const location = this.location(section, id);
-    try { return await publishImmutableRuleJson(location.root, location.name, value); }
+    try { return await publishImmutableRuleJson(location.root, location.name, value, this.containerRoot); }
     catch (cause) { throw new RuleRequestError('write_failed', { logicalRequestId: id, target: location.target }, { cause }); }
   }
 }

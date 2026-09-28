@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { getXCompilerPath, loadConfigWithPath } from '../src/config/config.js';
+import { getXCompilerPath, loadConfig, loadConfigWithPath } from '../src/config/config.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../src/llm/window.js';
 
 function allRoles(provider: string): Record<string, string[]> {
@@ -405,6 +405,111 @@ agent:
       if (oldLong === undefined) delete process.env.XCOMPILER_PATH;
       else process.env.XCOMPILER_PATH = oldLong;
     }
+  });
+});
+
+describe('Rule retrieval configuration', () => {
+  it.each([
+    ['omitted rules', {}],
+    ['empty rules', { rules: {} }],
+    ['empty retrieval', { rules: { retrieval: {} } }],
+  ])('loads the approved retrieval defaults through loadConfig for %s', async (_name, extra) => {
+    const config = await loadConfig(await writeConfig(baseConfig(extra)));
+    expect(config.rules).toEqual({ retrieval: { threshold: 0.8, maxCandidates: 20 } });
+  });
+
+  it.each([
+    [{ threshold: 0 }, { threshold: 0, maxCandidates: 20 }],
+    [{ threshold: 1 }, { threshold: 1, maxCandidates: 20 }],
+    [{ max_candidates: 5 }, { threshold: 0.8, maxCandidates: 5 }],
+  ])('normalizes a partial retrieval profile %j', async (retrieval, expected) => {
+    const config = await loadConfig(await writeConfig(baseConfig({ rules: { retrieval } })));
+    expect(config.rules.retrieval).toEqual(expected);
+    expect(config.rules.embedding).toBeUndefined();
+  });
+
+  it('requires a complete explicit embedding identity and normalizes retrieval field names', async () => {
+    const cfg = baseConfig({
+      rules: {
+        embedding: {
+          provider: 'ollama',
+          base_url: 'http://127.0.0.1:11434',
+          model: 'nomic-embed-text',
+          space_version: 'nomic-embed-text/1',
+          dimensions: 768,
+          request_timeout_ms: 45_000,
+        },
+        retrieval: { threshold: 0.9, max_candidates: 12 },
+      },
+    });
+    const { config } = await loadConfigWithPath(await writeConfig(cfg));
+    expect(config.rules).toEqual({
+      embedding: {
+        provider: 'ollama', api_key: '', base_url: 'http://127.0.0.1:11434',
+        model: 'nomic-embed-text', space_version: 'nomic-embed-text/1', dimensions: 768,
+        request_timeout_ms: 45_000,
+      },
+      retrieval: { threshold: 0.9, maxCandidates: 12 },
+    });
+  });
+
+  it('applies retrieval and timeout defaults when only the explicit embedding identity is supplied', async () => {
+    const embedding = {
+      provider: 'openai', base_url: 'https://embedding.example.test/v1',
+      model: 'embed', space_version: 'space/1', dimensions: 3,
+    };
+    const config = await loadConfig(await writeConfig(baseConfig({ rules: { embedding } })));
+    expect(config.rules).toEqual({
+      embedding: { ...embedding, api_key: '', request_timeout_ms: 120_000 },
+      retrieval: { threshold: 0.8, maxCandidates: 20 },
+    });
+  });
+
+  it.each([
+    ['missing dimensions', { provider: 'openai', base_url: 'https://embedding.example.test/v1', model: 'embed', space_version: 'space/1' }],
+    ['zero dimensions', { provider: 'openai', base_url: 'https://embedding.example.test/v1', model: 'embed', space_version: 'space/1', dimensions: 0 }],
+    ['unknown embedding option', { provider: 'openai', base_url: 'https://embedding.example.test/v1', model: 'embed', space_version: 'space/1', dimensions: 3, fallback: 'chat-provider' }],
+  ])('rejects %s at the configuration boundary', async (_name, embedding) => {
+    const cfg = baseConfig({ rules: { embedding } });
+    await expect(loadConfigWithPath(await writeConfig(cfg))).rejects.toThrow(/rules\.embedding/u);
+  });
+
+  it.each([
+    ['provider', undefined],
+    ['model', ''],
+    ['model', ' \t '],
+    ['model', 123],
+    ['space_version', ''],
+    ['space_version', ' \t '],
+    ['space_version', false],
+    ['base_url', 'file:///tmp/embedding'],
+    ['base_url', 'ftp://embedding.example.test'],
+    ['base_url', 'https://user:password@embedding.example.test/v1'],
+    ['base_url', 'https://embedding.example.test/v1?route=other'],
+    ['base_url', 'https://embedding.example.test/v1?'],
+    ['base_url', 'https://embedding.example.test/v1#other'],
+    ['base_url', 'https://embedding.example.test/v1#'],
+    ['base_url', 'https://embedding.example.test/v1 '],
+    ['request_timeout_ms', 0],
+  ] as const)('rejects invalid embedding %s = %j through loadConfig', async (field, value) => {
+    const embedding = {
+      provider: 'openai', base_url: 'https://embedding.example.test/v1',
+      model: 'embed', space_version: 'space/1', dimensions: 3,
+      [field]: value,
+    };
+    await expect(loadConfig(await writeConfig(baseConfig({ rules: { embedding } }))))
+      .rejects.toThrow(`rules.embedding.${field}`);
+  });
+
+  it.each([
+    { threshold: -0.01 },
+    { threshold: 1.01 },
+    { max_candidates: 0 },
+    { max_candidates: 1.5 },
+    { maxCandidates: 5 },
+  ])('rejects invalid retrieval profile %j', async (retrieval) => {
+    await expect(loadConfig(await writeConfig(baseConfig({ rules: { retrieval } }))))
+      .rejects.toThrow('rules.retrieval');
   });
 });
 

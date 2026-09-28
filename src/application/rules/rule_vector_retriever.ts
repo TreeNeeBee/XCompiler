@@ -103,17 +103,25 @@ export class RuleVectorRetriever {
       throw new RuleVectorError('embedding_failed', { identity: this.identity }, { cause });
     }
     signal?.throwIfAborted();
-    const parsed = z.object({ identity: RuleEmbeddingIdentitySchema, vectors: z.array(z.array(z.number().finite())) }).strict().safeParse(raw);
-    if (!parsed.success) throw new RuleVectorError('embedding_invalid', { identity: this.identity }, { cause: parsed.error });
-    if (canonicalJson(parsed.data.identity) !== canonicalJson(this.identity)) {
-      throw new RuleVectorError('embedding_space_mismatch', { expected: this.identity, actual: parsed.data.identity });
-    }
-    if (parsed.data.vectors.length !== texts.length || parsed.data.vectors.some((vector) =>
-      vector.length !== this.identity.dimensions || !vector.some((value) => value !== 0))) {
-      throw new RuleVectorError('embedding_invalid', { identity: this.identity, expectedCount: texts.length });
-    }
-    return parsed.data.vectors;
+    return validateRuleEmbeddingResponse(raw, this.identity, texts.length).vectors;
   }
+}
+
+/** The same encoding-space and vector contract applies to live responses and recorded responses. */
+export function validateRuleEmbeddingResponse(raw: unknown, identity: RuleEmbeddingIdentity, expectedCount: number): {
+  identity: RuleEmbeddingIdentity;
+  vectors: number[][];
+} {
+  const parsed = z.object({ identity: RuleEmbeddingIdentitySchema, vectors: z.array(z.array(z.number().finite())) }).strict().safeParse(raw);
+  if (!parsed.success) throw new RuleVectorError('embedding_invalid', { identity }, { cause: parsed.error });
+  if (canonicalJson(parsed.data.identity) !== canonicalJson(identity)) {
+    throw new RuleVectorError('embedding_space_mismatch', { expected: identity, actual: parsed.data.identity });
+  }
+  if (parsed.data.vectors.length !== expectedCount || parsed.data.vectors.some((vector) =>
+    vector.length !== identity.dimensions || !vector.some((value) => value !== 0))) {
+    throw new RuleVectorError('embedding_invalid', { identity, expectedCount });
+  }
+  return parsed.data;
 }
 
 export function vectorDocuments(entries: readonly RuleLookup[]): RuleVectorDocument[] {

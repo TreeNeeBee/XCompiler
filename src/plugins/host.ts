@@ -194,7 +194,20 @@ export class PluginHost {
                 record: error.record,
               });
             }
-            throw hookError;
+            // A notification hook is secondary. Preserve the producer's typed boundary and cause;
+            // callers must still be able to classify request-integrity, cancellation and Rule errors.
+            // Keep the notification failure as diagnostic metadata without changing the primary type.
+            if (error && typeof error === 'object') {
+              try {
+                Object.defineProperty(error, 'notificationError', {
+                  configurable: true, enumerable: false, value: hookError, writable: false,
+                });
+              } catch {
+                // Frozen foreign errors still retain their original identity; the secondary failure
+                // remains observable through the plugin/audit path that produced it.
+              }
+            }
+            throw error;
           }
           throw error;
         }

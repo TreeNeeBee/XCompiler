@@ -259,6 +259,85 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     },
   );
 
+  it('rejects a complete recording copied into another real request directory', async () => {
+    const { fixtures, store, fetch, original, target } = await seedProviderRecording();
+    const record = new RecordReplayController({ mode: 'record', store });
+    await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record)
+      .for('Coder').chat([{ role: 'user', content: 'A different request with its own valid recording.' }]);
+    const foreign = (await store.list()).find((entry) => entry.requestKey !== original.requestKey)!;
+    const foreignFile = (await fixtureFiles(fixtures)).find((file) => file !== target)!;
+    const contents = await fs.readFile(foreignFile, 'utf8');
+    await fs.copyFile(foreignFile, target);
+    fetch.mockClear();
+    // Its structure and hashes are intact; only the caller knows which interaction was requested.
+    await expect(store.find('llm', original.requestKey)).resolves.toEqual([foreign]);
+    const { scores, decay, boost } = scoring();
+    const replay = new RecordReplayController({ mode: 'replay', store });
+    const delivered = vi.fn();
+    const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
+
+    const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+
+    expect(failure).toBeInstanceOf(AuditPersistenceError);
+    expect((failure as AuditPersistenceError).failure).toMatchObject({
+      operation: 'validate-recording', target: `llm:${original.requestKey}`, systemCode: 'record_corrupt',
+    });
+    const contextual = (failure as AuditPersistenceError).cause as RecordReplayError;
+    expect(contextual).toBeInstanceOf(RecordReplayError);
+    expect(contextual.details).toMatchObject({
+      entryId: foreign.id, requestKey: original.requestKey, recordedRequestKey: foreign.requestKey,
+    });
+    expect(contextual.cause).toBeInstanceOf(RecordReplayError);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(delivered).not.toHaveBeenCalled();
+    expect(decay).not.toHaveBeenCalled();
+    expect(boost).not.toHaveBeenCalled();
+    expect(replay.evidence().usage.llm).toEqual({ replayed: 0, recorded: 0, live: 0 });
+    expect(await fs.readFile(target, 'utf8')).toBe(contents);
+    expect(await fs.readFile(foreignFile, 'utf8')).toBe(contents);
+  });
+
+  it.each(['channel', 'operation', 'requestKey'] as const)(
+    'rejects an intact adapter recording whose %s belongs to another interaction', async (field) => {
+      const { fetch, original, target } = await seedProviderRecording();
+      const changes: Partial<RecordReplayEntry> = field === 'channel' ? { channel: 'http' }
+        : field === 'operation' ? { operation: 'different-operation' }
+          : { requestKey: hashValue({ request: 'another interaction' }) };
+      const mismatch = revisedEntry(original, changes);
+      expect(verifyEntry(mismatch)).toBe(mismatch);
+      const find = vi.fn(async () => [mismatch]);
+      const append = vi.fn(async () => undefined);
+      const adapter: RecordReplayStore = { find, append, list: async () => [mismatch] };
+      const before = await fs.readFile(target, 'utf8');
+      const { scores, decay, boost } = scoring();
+      const replay = new RecordReplayController({ mode: 'replay', store: adapter });
+      const delivered = vi.fn();
+      const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
+
+      const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+
+      expect(failure).toBeInstanceOf(AuditPersistenceError);
+      expect((failure as AuditPersistenceError).failure).toMatchObject({
+        operation: 'validate-recording', target: `llm:${original.requestKey}`, systemCode: 'record_corrupt',
+      });
+      const contextual = (failure as AuditPersistenceError).cause as RecordReplayError;
+      expect(contextual).toBeInstanceOf(RecordReplayError);
+      expect(contextual.details).toMatchObject({
+        channel: 'llm', operation: 'chat', requestKey: original.requestKey,
+        recordedChannel: mismatch.channel, recordedOperation: mismatch.operation, recordedRequestKey: mismatch.requestKey,
+      });
+      expect(contextual.cause).toBeInstanceOf(RecordReplayError);
+      expect(find).toHaveBeenCalledTimes(1);
+      expect(append).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(delivered).not.toHaveBeenCalled();
+      expect(decay).not.toHaveBeenCalled();
+      expect(boost).not.toHaveBeenCalled();
+      expect(replay.evidence().usage.llm).toEqual({ replayed: 0, recorded: 0, live: 0 });
+      expect(await fs.readFile(target, 'utf8')).toBe(before);
+    },
+  );
+
   it.each(['bigint', 'cycle'] as const)('retains the original %s hashing failure inside record_corrupt', async (kind) => {
     const cyclic: { self?: unknown } = {};
     cyclic.self = cyclic;

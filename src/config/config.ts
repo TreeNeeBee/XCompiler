@@ -4,7 +4,9 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import 'dotenv/config';
 import { xcEnv } from './env.js';
+import { RuleEmbeddingBaseUrlSchema, RuleIdentityStringSchema } from './rule_embedding.js';
 import { ROLES } from '../domain/planning/execution_plan.js';
+import { RuleRetrievalProfileSchema } from '../domain/rules/selection.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../llm/window.js';
 import { DEFAULT_PROVIDER_RETRY } from '../llm/retry.js';
 
@@ -281,6 +283,37 @@ const LlmSchema = z.object({
   }
 });
 
+/**
+ * Rule retrieval is deliberately configured outside `llm.providers`: an embedding endpoint is a
+ * separate capability and must not inherit chat-role fallback or scoring behavior.  The endpoint,
+ * model and embedding space version are all explicit so a changed vector space cannot silently
+ * reuse an old index.
+ */
+const RuleEmbeddingSchema = z.object({
+  provider: ProviderAccessTypeSchema,
+  api_key: OptionalProviderStringSchema,
+  base_url: RuleEmbeddingBaseUrlSchema,
+  model: RuleIdentityStringSchema,
+  space_version: RuleIdentityStringSchema,
+  dimensions: z.number().int().positive(),
+  request_timeout_ms: z.number().int().positive().default(120_000),
+}).strict();
+
+const RuleRetrievalConfigSchema = z.object({
+  threshold: RuleRetrievalProfileSchema.shape.threshold,
+  max_candidates: RuleRetrievalProfileSchema.shape.maxCandidates,
+}).strict().transform(({ threshold, max_candidates }) => ({
+  threshold,
+  maxCandidates: max_candidates,
+}));
+
+const RulesSchema = z.object({
+  /** Required only when a new selection has applicable optional Rules to encode. */
+  embedding: RuleEmbeddingSchema.optional(),
+  /** Initial Q4 profile, normalized to the Application selector's camel-case fields. */
+  retrieval: RuleRetrievalConfigSchema.prefault({}),
+}).strict().prefault({});
+
 const AgentSchema = z.object({
     max_rounds_per_step: z.number().int().positive().default(6),
     max_debug_rounds_per_step: z.number().int().positive().optional(),
@@ -312,12 +345,14 @@ const ConfigSchema = z.object({
   /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
   locale: LocaleSchema.default('en'),
   llm: LlmSchema,
+  rules: RulesSchema,
   agent: AgentSchema,
   record_replay: RecordReplaySchema,
   permissions: PermissionsSchema,
 }).strict();
 
 export type XCompilerConfig = z.infer<typeof ConfigSchema>;
+export type XCompilerRuleConfig = XCompilerConfig['rules'];
 
 type NormalizedSandboxLimits = z.infer<typeof SandboxLimitsSchema>;
 type NormalizedLanguageSandbox = z.infer<typeof LanguageSandboxSchema>;

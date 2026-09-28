@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-09-20. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-09-28. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -24,6 +24,33 @@ and retains the resolved source location for evidence.
 The loader provides no write or activation operation. Protected base and released Debug content
 retain their manual compiler-source/version update contract. The accepted automatic business-Rule
 candidate lifecycle still needs build/CR integration.
+
+### Installed compiler sources
+
+Runtime obtains `<installation>/rules` from
+[`installedCompilerRulesRoot`](../../../src/config/installation_root.ts): source and normal bundles
+use the module's installation root; a pkg executable uses its executable directory. Neither cwd nor
+`XC_PATH`/`XCOMPILER_PATH` participates. Existing Wiki/role path semantics are unchanged.
+
+[`loadCompilerRuleCatalogue`](../../../src/infrastructure/rules/compiler_rule_catalogue.ts) is an
+internal adapter taking that Runtime-selected root, not a user-configurable path. Its compiled
+`COMPILER_RULE_MANIFEST` is the authority; placing a manifest or extra YAML in the resource directory
+does not authorize it. Every entry binds `relativePath`, list ID/version, slot and the canonical
+SHA-256 digest of the full Domain-normalized definition. Schema defaults and parsed instruction
+strings participate; source paths, YAML comments and equivalent formatting do not. Directory/leaf
+symlinks observed by its checks fail. Errors retain root/source context, actual/expected identities
+or the original filesystem/parser/schema cause.
+
+The initial resource is [`rules/genesis.yaml`](../../../rules/genesis.yaml): one RuleList, three
+`general`/`announce` Rules at `0x0000`. Its declarations grant no capability, do not override
+cancellation or host constraints and do not establish passing gates. Manual instruction changes
+require updating affected Rule/list versions, regenerating the normalized definition digest and
+reviewing the compiled manifest together. No Runtime/Plugin/model or derived-project update entry
+point is provided. The digest checks consistency with compiled source; it is not a signature.
+
+npm and standalone artifacts declare the `rules` resource. Missing genesis stops standalone
+packaging before build and before staging publication. All associated tests remain unrun; the
+child-process pkg resolver simulation does not substitute for the native package gate.
 
 [`RuleCatalogue`](../../../src/domain/rules/catalogue.ts) validates the following strict fields:
 
@@ -85,7 +112,8 @@ calibration on its fixed protocol template.
 ## Selector stages
 
 [`RuleSelector`](../../../src/application/rules/rule_selector.ts) exposes the following development
-interfaces. These calls are connected within Application; production Runtime composition is pending.
+interfaces. Internal Runtime preparation composes these Application calls; build/run do not yet
+invoke that preparation.
 
 | Method | Input and result | Important boundary |
 |---|---|---|
@@ -99,11 +127,44 @@ interfaces. These calls are connected within Application; production Runtime com
 optional set continues with required Rules. Invalid vectors or invalid review IDs are errors, not
 no-match results. The accepted initial retrieval settings are not measured retrieval-quality claims.
 
-The current low-score interface consumes a supplied result/reference. It does not implement the
-review model call, verify a referenced audit event, or persist the one-logical-review allowance.
-The future review caller uses the existing role pool and mandatory base content, selecting only
-candidate IDs without producing a new business verdict. It must keep this allowance separate from
-Q6 calibration and prevent transport retries/fallback from resetting either allowance.
+The Selector's low-score interface consumes a supplied result/reference. Runtime now composes the
+separate request coordinator and review adapter to persist the allowance and use the configured
+model pool for the role recorded in the pinned draft. The review includes mandatory base content
+and selects candidate IDs without producing a business verdict. This allowance remains separate
+from Q6 calibration and is not reset by transport retries/fallback. Authenticity of referenced audit
+records on recovery still needs production integration.
+
+## Runtime configuration and preparation
+
+[`config.ts`](../../../src/config/config.ts) accepts an optional `rules` section, illustrated in
+[`config.example.yaml`](../../../config.example.yaml). Nested `prefault` parsing applies and validates
+the retrieval defaults even when `rules` or `rules.retrieval` is omitted. YAML `max_candidates` becomes
+Application `maxCandidates`; the resulting initial profile is `{ threshold: 0.8, maxCandidates: 20 }`.
+Threshold must be finite and between zero and one; the candidate cap must be a positive integer.
+
+`rules.embedding`, when supplied, requires explicit `provider` (`openai` or `ollama`), `base_url`,
+`model`, `space_version` and positive integer `dimensions`. `api_key` is optional and can use the
+existing environment-secret interpolation; `request_timeout_ms` defaults to `120000`. The shared
+[`RuleEmbeddingBaseUrlSchema`](../../../src/config/rule_embedding.ts) requires HTTP(S) without URL
+credentials, query, fragment or surrounding whitespace. Model and embedding-space identities must
+be nonblank. This capability is separate from chat providers and never inherits their model pool.
+
+[`prepareRuntimeRuleRequest`](../../../src/runtime/rules.ts) is an internal composition entry point.
+It binds stores to the supplied `ProjectContainer`, asks the coordinator for an existing snapshot or
+draft first, and loads the installed compiler catalogue by default only for a fresh selection.
+The optional `loadCatalogue` callback is internal Runtime composition, not SDK/configuration input.
+Required-only
+selection needs neither embedding configuration nor an index. Fresh optional selection constructs
+the explicit embedding client and retriever, using the caller's Record/Replay controller. Low-score
+review uses `LLMRouter.for` with the draft's
+retained role, then the fixed review adapter and `RuleDecorator`. A fresh low-score selection with
+no role fails before publishing its draft or claiming review.
+
+Runtime fixes artifacts at `<container>/.xcompiler/rules/indexes` and
+`<container>/.xcompiler/rules/requests`; configuration does not expose alternative artifact roots.
+The infrastructure factory is internal and is not exported by the public Runtime SDK. Build/run
+still need the remaining source bindings, logical-request identity ownership and the business caller
+connection; configuring embedding alone does not activate Rule selection in those commands.
 
 ## Embedding identity and versioned vector index
 
@@ -111,8 +172,31 @@ Q6 calibration and prevent transport retries/fallback from resetting either allo
 `identity = { provider, model, spaceVersion, dimensions }`. The first three values are explicit,
 nonblank identifiers; `dimensions` is a positive integer. Each `embed(texts, { signal })` result must
 report that same identity and return one finite, nonzero vector of the declared size per input.
-There is no chat-role fallback, lexical fallback or implicit substitute embedding space. A network
-adapter and public Runtime configuration for this port have not been connected.
+There is no chat-role fallback, lexical fallback or implicit substitute embedding space.
+
+[`HttpRuleEmbeddingClient`](../../../src/infrastructure/rules/http_rule_embedding_client.ts) now supplies
+explicit OpenAI-compatible `/embeddings` and Ollama `/api/embed` adapters. Configuration declares the
+endpoint, provider, model, space version and dimensions; a response with a missing or different model,
+wrong dimensions, non-finite values or a zero vector fails with a typed error. OpenAI-compatible
+responses must cover every input index exactly once; missing, duplicate and out-of-range indexes are
+rejected, and reordered results are restored to input order. The adapter shares the Runtime endpoint
+schema and has no automatic provider fallback. Network cases are authored but have not been run.
+The adapter's `identity.provider` combines the API family and normalized base URL. Changing the
+service address therefore selects a separate index even when model, space version and size match.
+
+[`RecordReplayRuleEmbeddingClient`](../../../src/infrastructure/rules/record_replay_rule_embedding_client.ts)
+wraps that capability through the existing `http` channel with operation `rules.embedding`. The
+recording key includes the normalized service base URL, embedding identity and ordered input texts;
+it excludes credentials. Both live results before recording and replayed results are checked for
+the declared identity, input count, dimensions, finite values and nonzero vectors. Corrupt or missing
+recordings and storage failures preserve the existing typed errors, without a silent live fallback
+in managed `replay` mode.
+
+Runtime passes its existing controller rather than creating another mode policy. The configured
+channels and `off`/`record`/`replay`/`auto`/`refresh` behavior remain in force. In particular, disabling
+the `http` channel leaves embedding live even when the controller's mode is `replay`; `off` also
+uses live calls. Every call goes through the controller, retaining its HTTP `live`, `recorded` or
+`replayed` usage accounting. This is interaction accounting, not a completed model-token audit.
 
 `RuleVectorRetriever` encodes each optional Rule's dedicated `retrievalDescription`. Query input is
 canonical JSON containing `inputVersion: "rule-retrieval/1"`, `taskSummary`, optional `errorSummary`
@@ -160,7 +244,7 @@ Rule content for Q5, independently of later catalogue updates. Its JSON fields a
 | `overrides` | Conflict key, winning/overridden Rule and list IDs, slots and declared values |
 | `ranking` | Decision, actual profile and bounded candidate IDs/scores |
 | `retrieval`, when used | Input version, index ID, vector digest, embedding identity, exact query text and query vector |
-| `review`, only for low-score review | The review's logical request ID, provider-attempt ID and selected candidate IDs |
+| `review`, only for low-score review | Review request/attempt IDs, actual provider/model, selected candidate IDs, protocol version and protected final-request digest |
 
 `consideredRules` is not the entire catalogue or every optional Rule. It retains the required and
 top-candidate content needed to explain effective selection and overrides. The snapshot refers to
@@ -170,9 +254,10 @@ remains a separate audit record.
 Validation checks digest/identity, unique Rule/list/slot/version relationships, considered/effective
 content and provenance consistency, required-content coverage or valid override evidence, and
 agreement between the recorded decision, threshold and selected IDs. Validated snapshots are deeply
-frozen. This validates the supplied record's internal structure: it does not establish that review
-audit references exist, verify their producer outcome, load the index to recompute every score, or
-prove what finally survived Plugin mutation in an outbound prompt.
+frozen. This validates the supplied record's internal structure. The internal Runtime coordinator
+separately checks review references against raw audit as described below. Snapshot validation alone
+does not read audit or load the index to recompute every score, and it does not prove final integrity
+for a later business prompt.
 
 [`FileRuleRequestSnapshotStore`](../../../src/infrastructure/rules/file_rule_request_snapshot_store.ts)
 uses `<lowercase-logical-request-UUID>.json`. `read` validates and returns retained material without
@@ -181,29 +266,91 @@ same request ID raises `identity_conflict` and keeps the prior record. Creation 
 body, so a caller resuming a request must read/reuse the stored snapshot rather than reconstruct it
 with a new timestamp. Invalid records and read/write failure are distinct `RuleSnapshotError` reasons.
 
-Both file stores use [`immutable_json_artifact`](../../../src/infrastructure/rules/immutable_json_artifact.ts):
+All three file stores use [`immutable_json_artifact`](../../../src/infrastructure/rules/immutable_json_artifact.ts):
 write an exclusive temporary file, sync its contents, publish without replacement using a hard
 link, and remove only that invocation's temporary file. Final artifacts are read as regular files
 with `O_NOFOLLOW`. Temporary files are not selected as records; no historical cleanup policy is
 introduced. The helper restricts artifact names and protects the leaf file, while Runtime must
-choose and validate the root's project/state ownership. It does not itself establish that root's
-confinement or validate all ancestor symlinks, and this is not a complete crash-recovery protocol.
+choose the root's project/state ownership. Runtime supplies a container boundary to all three file
+stores: index, snapshot and request state. Each read/publication checks the existing ancestor
+directories below that boundary; symlinks and non-directories are rejected. Publication checks again
+after creating missing directories. The container anchor may resolve through an OS path alias.
+These checks describe the observed directory state, not immunity to concurrent path replacement,
+and do not constitute a complete crash-recovery protocol.
 
 ## Remaining integration and verification
 
-The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include the embedding
-network adapter and validated Runtime configuration; source/storage-root ownership and installed
-resources; the low-score review model, real audit-reference validation and persistent logical
-allowance; production request recovery; the C1 calibration coordinator and per-transformation
-preservation proofs; controlled business-Rule candidate activation; and final Plugin/compaction/
-provider-capacity integrity. No CLI flag, configuration key or default storage directory is supplied
-by this document.
+[`RuleRequestCoordinator`](../../../src/application/rules/rule_request_coordinator.ts) now adds an
+Application recovery state machine around these immutable artifacts. It reads a completed snapshot
+first; otherwise it reads or creates a pinned `RuleSelectionDraft`, then persists a `RuleReviewClaim`
+before calling the review model. A claim without a `RuleReviewResult` is an incomplete consumed
+review and cannot be retried automatically. The result records the draft digest, claim/review IDs,
+actual provider/model, selected candidate IDs, protocol version and final-request digest.
+`FileRuleRequestStateStore` stores drafts, claims
+and results under the Runtime-supplied state root with the same no-replace publication rules. It is
+called by internal Runtime preparation, but not yet by build/run.
+
+The coordinator requires an injected `RuleReviewEvidenceVerifier`. It verifies before publishing
+a fresh review result, before finalizing a retained result, and before returning a recovered reviewed
+snapshot. Required-only and direct selections do not require a review record. Failure leaves the
+claim and existing artifacts intact; no path reloads current Rules or grants another review attempt.
+
+[`LLMRuleReviewEvidenceVerifier`](../../../src/llm/rule_review_evidence.ts) uses
+[`FileRuleReviewAuditReader`](../../../src/infrastructure/rules/file_rule_review_audit_reader.ts)
+to find exactly one `llm.provider_response` event in the container's raw `audit/audit.jsonl` by review
+request/attempt ID. It validates role, producer/model, provider response facts, matching output copies
+and selected IDs. Missing, duplicate, malformed or mismatched events fail with typed errors. JSONL
+read/parse failures preserve target, reference and cause. The reader rejects existing directory links
+and uses `O_NOFOLLOW` on the regular ledger file; it scans raw evidence, not the audit summary.
+
+The trusted final-send callback returns a versioned `RuleSelectionAuditBinding` with the owning
+business request ID, pinned draft digest, protocol version and request digest. Router validates and
+copies it into raw audit after Plugin hooks; it never enters provider messages or Record/Replay keys.
+Replayed responses acquire the new request's actual binding in its own audit event. The request digest
+hashes `{ protocolVersion, messages }` after existing audit redaction, so full and redacted logs share
+one comparison representation. The verifier also derives the original draft envelope from the snapshot
+and compares its digest with the raw binding. Rehashed replacement Rule content cannot reuse that
+binding. Recovery never invokes today's template or Decorator. Future digest/redaction-format changes
+must preserve this stored comparison contract; no history rewrite is added. These checks establish
+consistency with retained evidence, not signatures against replacement of both audit and request state.
+
+[`LLMRuleSelectionReviewer`](../../../src/llm/rule_selection_reviewer.ts) is the current injected
+role-client adapter. It uses the fixed `rule-selection-review/1` protocol, a protected Rule base
+assembled by `RuleDecorator`, the captured task/error/context and candidate IDs/descriptions. Its
+final-send guard retains the stable review request identity, required messages and provider window;
+Plugin-added content is allowed, while replacing or reordering required content fails before
+transport. It accepts a unique candidate subset or explicit empty result and does not pass a
+business validator or start a second calibration attempt. Its client, role-pool composition and
+Runtime preparation are connected; business caller migration remains pending.
+
+[`assessResponseCompletion`](../../../src/llm/completion_eligibility.ts) is a pure F1 boundary for
+the provider facts used by later protocol correction. It accepts complete response/finish/done
+terminations, and keeps EOF, local-stop, missing and ambiguous evidence out of calibration. It does
+not itself invoke a corrector or classify business validity.
+
+The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
+caller-specific Rule resources and bindings; build/run caller migration, production request
+identity/recovery and full request accounting; the C1 calibration coordinator
+and per-transformation preservation proofs; controlled business-Rule candidate activation; and final
+Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
+configuration and state paths above are not evidence of an installed end-to-end feature.
 
 Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_selector.test.ts),
 [rule_catalogue.test.ts](../../../tests/integration/rule_catalogue.test.ts),
 [rule_vector_index.test.ts](../../../tests/integration/rule_vector_index.test.ts) and
-[rule_request_snapshot.test.ts](../../../tests/integration/rule_request_snapshot.test.ts).
+[rule_request_snapshot.test.ts](../../../tests/integration/rule_request_snapshot.test.ts),
+[rule_request_coordinator.test.ts](../../../tests/integration/rule_request_coordinator.test.ts),
+[rule_selection_reviewer.test.ts](../../../tests/integration/rule_selection_reviewer.test.ts),
+[http_rule_embedding_client.test.ts](../../../tests/integration/http_rule_embedding_client.test.ts),
+[rule_embedding_record_replay.test.ts](../../../tests/integration/rule_embedding_record_replay.test.ts),
+[runtime_rule_requests.test.ts](../../../tests/integration/runtime_rule_requests.test.ts),
+[runtime_rule_infrastructure.test.ts](../../../tests/integration/runtime_rule_infrastructure.test.ts),
+[compiler_rule_catalogue.test.ts](../../../tests/integration/compiler_rule_catalogue.test.ts),
+[installation_resources.test.ts](../../../tests/integration/installation_resources.test.ts),
+[completion_eligibility.test.ts](../../../tests/integration/completion_eligibility.test.ts), and the
+Router/Plugin evidence tests.
 None has been executed for this implementation. Tests, typecheck, lint, build, packaging and
 model/scenario validation remain deferred until all approved implementation is complete, as the
 user requested. A later verification pass must falsify the real Selector/retriever/store calls,
-not accept isolated schema/helper assertions as proof of Runtime wiring.
+the Runtime default source load and manifest comparison, not accept isolated schema/helper
+assertions as proof of Runtime wiring.

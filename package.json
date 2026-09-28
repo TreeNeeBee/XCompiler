@@ -42,6 +42,7 @@
     "dist/acp",
     "config.example.yaml",
     ".env.example",
+    "rules",
     "debug-wiki",
     "skills",
     "docs/assets",

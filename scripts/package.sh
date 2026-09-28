@@ -9,7 +9,7 @@
 #   - dist/pkg/xcompiler-win-x64/xcompiler.exe          (Windows x86_64)
 #
 # 每个目录另外携带：README.md / LICENSE / NOTICE / config.example.yaml /
-#                  .env.example / debug-wiki / skills，以便用户开箱即用。
+#                  .env.example / rules / debug-wiki / skills，以便用户开箱即用。
 # 最后将每个目录压缩成 tar.gz（linux/macos）或 zip（windows），放在 dist/pkg/。
 #
 # macOS 目标说明：
@@ -42,6 +42,12 @@ cd "$ROOT"
 msg() {
   node "$ROOT/scripts/script_i18n.mjs" "$@"
 }
+
+# Compiler rules are required release sources, never optional attachments.
+if [[ ! -f "$ROOT/rules/genesis.yaml" ]]; then
+  msg package.required_asset_missing "rules/genesis.yaml" >&2
+  exit 1
+fi
 
 VERSION="$(node -p "require('./package.json').version")"
 npm run version:check
@@ -222,7 +228,7 @@ msg package.cross_compile
 
 mkdir -p "$OUT_ROOT"
 # 共享附件
-ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example debug-wiki skills)
+ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example rules debug-wiki skills)
 DOC_ASSETS=(docs/agent_skills.md)
 
 build_one() {
@@ -258,6 +264,11 @@ build_one() {
     [[ -f "$f" ]] && cp "$f" "$staging_dir/"
     [[ -d "$f" ]] && cp -R "$f" "$staging_dir/"
   done
+  if [[ ! -f "$staging_dir/rules/genesis.yaml" ]]; then
+    msg package.required_asset_missing "rules/genesis.yaml" >&2
+    rm -rf "$staging_dir"
+    return 1
+  fi
   mkdir -p "$staging_dir/docs"
   for f in "${DOC_ASSETS[@]}"; do
     cp "$f" "$staging_dir/docs/"

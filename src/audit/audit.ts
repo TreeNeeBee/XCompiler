@@ -455,7 +455,8 @@ function resolveContentMode(value: string | undefined): AuditContentMode {
   return value === 'full' || value === 'redacted' ? value : 'redacted';
 }
 
-function protectAuditContent(value: unknown, mode: AuditContentMode): unknown {
+/** Also used when comparing retained request evidence with the logger's protected representation. */
+export function protectAuditContent(value: unknown, mode: AuditContentMode): unknown {
   if (mode === 'full') return value;
   return redactValue(value);
 }

@@ -15,6 +15,22 @@ record_replay:
   channels: [http, llm]
   redacted_fields: []
 
+# 0.4 Rule retrieval configuration. Build/run caller migration is still in progress; configuration
+# alone does not activate Rule injection. Fresh optional retrieval requires an explicit embedding
+# service; recovery and required-only selection need none. This endpoint has no chat fallback.
+# rules:
+#   embedding:
+#     provider: openai  # openai (OpenAI-compatible /embeddings) or ollama (/api/embed)
+#     api_key: ${RULE_EMBEDDING_API_KEY}
+#     base_url: https://example.invalid/v1
+#     model: your-embedding-model
+#     space_version: your-service-and-model-revision/1  # Change whenever the encoding space changes.
+#     dimensions: 1536  # Replace with the selected model's actual output dimensions.
+#     request_timeout_ms: 120000
+#   retrieval:
+#     threshold: 0.8
+#     max_candidates: 20
+
 llm:
   # 模型选择必须手动指定：每个角色都要在下方 roles 中显式列出 provider，
   # 不再支持 llm.default 隐式全局默认 provider。

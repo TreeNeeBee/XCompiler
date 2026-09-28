@@ -17,6 +17,9 @@ const Party = z.object({
 }).strict();
 const Review = z.object({
   logicalRequestId: z.uuid(), providerAttemptId: z.uuid(), selectedRuleIds: z.array(z.uuid()),
+  provider: z.string().refine((value) => value.trim().length > 0),
+  model: z.string().refine((value) => value.trim().length > 0),
+  protocolVersion: z.string().refine((value) => value.trim().length > 0), requestDigest: RuleDigestSchema,
 }).strict();
 const SnapshotBodySchema = z.object({
   schemaVersion: z.literal(1),
@@ -147,6 +150,13 @@ export function finalizeRuleSelectionDraft(raw: RuleSelectionDraft, review?: Rul
     review,
   };
   return validateRuleRequestSnapshot({ ...body, digest: ruleEvidenceDigest(body) }, draft.logicalRequestId);
+}
+
+/** Recover the original selection envelope without loading current definitions or templates. */
+export function ruleSelectionDraftFromSnapshot(raw: RuleRequestSnapshot): RuleSelectionDraft {
+  const snapshot = validateRuleRequestSnapshot(raw, raw.logicalRequestId);
+  const { rules: _rules, sources: _sources, overrides: _overrides, review: _review, digest: _digest, ...body } = snapshot;
+  return validateRuleSelectionDraft({ ...body, digest: ruleEvidenceDigest(body) }, snapshot.logicalRequestId);
 }
 
 /** Capture effective content, rather than relying on an ID that resolves against a newer catalogue. */
@@ -285,6 +295,13 @@ function validateRetrieval(
   if ([...effective.keys()].some((id) => !included.has(id))
     || [...included].some((id) => !effective.has(id) && !overridden.has(id))
     || [...overridden].some((id) => !included.has(id))) throw new Error('Effective Rules disagree with recorded selection');
+  const resolved = resolveRuleConflicts(snapshot.consideredRules
+    .filter((entry) => included.has(entry.rule.id.toLowerCase())).map(selectionEntry));
+  if (canonicalRuleJson(resolved.rules.map((entry) => entry.rule.id.toLowerCase()))
+    !== canonicalRuleJson(snapshot.rules.map((entry) => entry.ruleId.toLowerCase()))
+    || canonicalRuleJson(resolved.overrides) !== canonicalRuleJson(snapshot.overrides)) {
+    throw new Error('Effective Rules or override evidence disagree with deterministic conflict resolution');
+  }
 }
 
 function selectionEntry(entry: RuleSelectionDraft['consideredRules'][number]): RuleSelectionEntry {

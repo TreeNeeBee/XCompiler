@@ -1,6 +1,8 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-09-20. Baseline: `77ff6e2`, plus the unvalidated working-tree migration.
+Updated: 2026-09-28. This development checkpoint extends `ce638ec` (`update for 0.4.0`)
+on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
+The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
 [development plan](0.4.0-modularisation-and-layering.md). The
 [decision register](0.4.0-decisions.md) distinguishes approved contracts from proposals;
@@ -49,9 +51,10 @@ The user accepted the following approach after reviewing its costs and effects:
     3,328 ordinary RuleList slots. Each list can hold many individual Rules; catalogue/list lookup
     limits prompt growth. Keep three shared Wiki categories plus isolated derived-project storage.
 12. Q4 selects C: vector semantic retrieval plus low-score model review. Implement an embedding
-    capability, explicit configuration and a versioned vector index. This selects the strategy;
-    model/provider, score formula/normalization, thresholds, candidate limits and review budget
-    remain to be specified. Local lexical retrieval is not the selected strategy or an implicit
+    capability, explicit configuration and a versioned vector index. The subsequent accepted
+    profile is normalized cosine, inclusive `0.8`, top 20 optional candidates and one logical
+    low-score review through the current role pool. The embedding service/model remains explicit
+    deployment configuration. Local lexical retrieval is not the selected strategy or an implicit
     fallback when semantic retrieval fails.
 13. Q5 A was accepted on 2026-09-08: anchor recovery to each request's actual Rule content/versions
     and retrieval evidence, including vector model/index identity. Keep full request audit; do not
@@ -126,12 +129,31 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
+Progress reconciliation against source, 2026-09-28:
+
+| Batch | Implemented or authored | Remaining before completion |
+|---|---|---|
+| M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
+| D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; persisted request-ID, completion classifier and final-send guard channels | Runtime identity/evidence composition, protocol separation and full accounting |
+| R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime recovery/retrieval/Record-Replay; raw review audit verification; manifest-bound installed genesis and default loading | Additional definitions/bindings, durable production request identity, build/run migration, full request accounting and final business-prompt integrity |
+| C1 | Approved protocol-only direction and original-producer/one-correction contract | Coordinator, durable correction allowance and value-preservation proofs |
+| V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
+| P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
+| G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
+
+No batch is marked verified. A source component or persisted file alone does not establish that
+Runtime invokes it. `prepareRuntimeRuleRequest` now calls `RuleRequestCoordinator` internally, but
+build/run do not call that preparation function. Its draft and review claim/result storage does not
+close Q5 or C1. An existing
+claim without a recorded result remains an explicit incomplete review, never a renewed allowance.
+
 | Batch | Work and owner | Required output and acceptance evidence | Start condition |
 |---|---|---|---|
 | M0: module closure | Review former Core owners, public exports and installed roots; preserve incremental summary reads; finish PlanStore/DebugWiki wiring coverage | Domain purity and Core prohibition; real file persistence/order/failure tests; Wiki retrieval/publication through callers; source and built resource paths | Approved; persistence/Wiki/resource/incremental and Runtime entry tests authored, unvalidated |
 | D1: detailed contracts | Apply confirmed Q0-Q6 directions and all four detailed choices, including controlled automatic Rule maintenance; finalize schemas and source-disposition batches | YAML/index schemas, applicability/conflict fields, embedding/input/index identities, request identity, completion/correction contract, and explicit supersession records | Four choice groups settled; implement within accepted ownership/activation boundaries |
 | F1: request and evidence foundation | Runtime composition; Application selection evidence; LLM completion/protocol boundary; storage/audit adapters | Actual producer/completion metadata, logical request correlation, original/corrected raw records, typed failure separation and configured accounting | Relevant D1 contracts approved |
-| R1: catalogue and assembly | Domain pure schemas; Infrastructure YAML/vector-index adapters; embedding capability; Application RuleSelector and RuleDecorator | Manual-source-only protected definitions; versioned semantic retrieval and low-score review; numeric slots, versions, references and conflict evidence; ascending-slot rendering; final integrity after mutable Plugin hooks; capacity handling per actual provider | Catalogue/YAML, Selector/retriever/file-index and snapshot foundations authored; network adapter, review accounting and Runtime wiring incomplete |
+| R1: catalogue and assembly | Domain pure schemas; Infrastructure YAML/vector-index adapters; embedding capability; Application RuleSelector and RuleDecorator | Manual-source-only protected definitions; versioned semantic retrieval and low-score review; numeric slots, versions, references and conflict evidence; ascending-slot rendering; final integrity after mutable Plugin hooks; capacity handling per actual provider | Catalogue/YAML, Selector/retriever/file-index, snapshots, explicit network adapter and internal Runtime preparation authored; production caller wiring, request audit and final integrity incomplete |
 | C1: protocol coordinator | LLM protocol service outside business roles and Rule selection | Fixed versioned template, permitted representation changes, one budget owner, nonrecursive correction, unchanged/exhausted outcomes | Q0/Q5/Q6 approved; F1 completion/raw evidence available |
 | V1: scenario vertical slice | Existing PM scenario judge and Runtime Phase-delivery caller | J06 rubric extracted once, current-evidence verdict retained, same typed PM intake; malformed outputs and calibration routed distinctly | R1/C1/F1 ready for caller integration |
 | V2: remaining approved callers | Planner clarification/PhasePlan/decomposition, Executor, role/language/project instruction owners | One authoring source per instruction; producer/validator/gate agree; selected Rule identity survives compaction, hooks and fallback; remove only superseded paths | Per-source disposition approved; V1 integration complete in code |
@@ -418,12 +440,93 @@ evidence and low-score review references. Snapshot validation checks internal co
 existence/authenticity of referenced review audit or final outbound prompt integrity.
 
 Index and snapshot stores share atomic no-replace JSON publication and leaf `O_NOFOLLOW` reads.
-Runtime still owns source/storage-root selection and validation. Embedding network/configuration,
-low-score model calls and durable allowance, production recovery, C1, candidate activation and final
-Plugin/compaction/capacity integration remain open implementation work. The APIs and exact formats
-are documented in [rule-artifacts.md](rule-artifacts.md); no public CLI configuration is implied.
+At this artifact checkpoint, Runtime source/storage-root composition was still pending. The later
+continuation below supplies internal preparation and directory checks, while build/run migration,
+installed sources, replay/accounting, C1, candidate activation and final request integrity remain
+open. The current interfaces are documented in [rule-artifacts.md](rule-artifacts.md).
 Selector/vector-index/snapshot tests are authored and unrun, including real temporary-file paths.
 No checks or model calls ran in this continuation.
+
+F1/R1 continuation, 2026-09-22: `RuleRequestCoordinator` and the file state store now pin a
+`RuleSelectionDraft`, consume a no-replace low-score review claim before dispatch, and retain a
+provider/model-bound review result for recovery. `LLMRuleSelectionReviewer` uses the fixed
+rule-selection protocol and a protected final-send guard for required base/protocol/user messages,
+stable logical identity and the actual provider window. Plugin notification failures preserve the
+primary typed request error. These are Application/LLM components with authored integration cases;
+Runtime composition, embedding configuration, production caller migration, audit-reference
+existence checks and C1 protocol correction remain incomplete. The explicit HTTP embedding adapter
+now covers the OpenAI-compatible and Ollama request shapes, while Runtime configuration remains
+open. No checks or model calls ran.
+
+Runtime-configuration review and continuation, 2026-09-22: corrected two Zod default paths that
+skipped nested parsing/field normalization; the validated retrieval profile now shares Domain
+constraints. Config and the HTTP adapter share nonblank identity and HTTP(S) endpoint validation.
+OpenAI embedding results are associated by their unique input indexes, not response arrival order;
+non-JSON HTTP error pages retain transport-failure classification. Embedding identity includes the
+normalized service address, so another service exposing the same model name uses a separate index.
+
+`createRuntimeRuleInfrastructure` now accepts a Runtime `ProjectContainer`, supplies its container
+anchor to all index/request stores, and creates the embedding retriever only when needed. The shared
+file helper checks existing descendant directories for symlinks on each read/publication; this is
+not a proof against concurrent hostile filesystem mutation. Removed the raw factory from SDK exports.
+`prepareRuntimeRuleRequest` connects the coordinator's lazy recovery to catalogue selection and the
+pinned caller's Router role pool. Required-only selection and restored snapshots/drafts do not need
+embedding configuration. `rules.embedding` is required when a fresh optional selection needs vectors.
+
+Runtime wraps the HTTP adapter in `RecordReplayRuleEmbeddingClient`, using the existing controller's
+`http / rules.embedding` operation. Recording keys bind the normalized service address, complete
+embedding identity and copied input texts; credentials and cancellation signals are excluded.
+Live results are validated before recording, and replayed results receive the same identity/count/
+dimension/finite/nonzero checks. Existing modes and managed-channel policy remain unchanged:
+off or unmanaged HTTP calls execute live and count as live. HTTP usage remains separate from the
+low-score review's LLM usage; this does not yet establish per-business-request audit correlation.
+
+Build/run do not yet call this internal preparation boundary. Installed-source bindings, production
+logical-request identity, request-level audit correlation, referenced-audit validation and final business
+prompt assembly remain before V1, alongside C1. Authored tests now drive YAML configuration/loading,
+real files, loopback HTTP, Router review/audit, restart/no-repeat behavior and ancestor-link rejection.
+They also cover embedding/review record-to-replay flows, endpoint-bound index rebuilding, corrupt or
+invalid recordings, storage failure preservation, cancellation and mode/channel usage counts.
+No tests, typecheck, lint, build, package, network or model calls were executed; only static source and
+whitespace inspection ran. G1 must still execute and falsify the actual preparation, retrieval,
+review, recording-wrapper and filesystem-guard calls.
+
+Review-audit continuation, 2026-09-25: the coordinator now requires a verifier before publishing a
+fresh low-score result, recovering a stored result or returning a reviewed snapshot. Runtime supplies
+the confined raw JSONL reader and LLM evidence verifier. Router records a validated final-send binding
+to the original selection draft alongside its request/attempt and actual producer evidence; it does
+not enter provider input or replay keys. Snapshots/results retain protocol version, producer and
+protected actual-request digest. Recovery compares them with raw evidence without regenerating the
+current template. Missing/duplicate/invalid/mismatched evidence fails while retaining the consumed
+claim. Rehashed replacement Rule material must match the original draft binding. Read/parse failures
+preserve typed storage evidence and original causes.
+
+Tests are authored for all three coordinator paths, actual Router/file-ledger integration, full and
+redacted content, independent replay binding, damaged/missing/mismatched records, directory/leaf links,
+cancellation and read/close dual failures. No execution verification ran. G1 must falsify each
+coordinator verification call and Router's raw binding publication.
+
+Installed-source continuation, 2026-09-28: the Runtime-owned root resolver and explicit compiler
+manifest now load `rules/genesis.yaml`. The manifest binds list identity/version/slot and the entire
+Domain-normalized definition digest; comments and equivalent YAML formatting do not affect it.
+The YAML contains three `announce` declarations and their non-executable boundary. Additional files,
+cwd and environment roots gain no compiler authority. Observed rules-directory and leaf links fail.
+Internal Runtime preparation uses this source by default, lazily on a fresh request; existing pinned
+requests recover without reading current installed resources. The internal catalogue composition
+callback remains for future accepted project bindings and is not exposed as user configuration.
+
+npm files and standalone attachments include `rules`; missing genesis stops standalone packaging
+before building and before publishing staging output. Filesystem, Runtime, all bundle-layout probes,
+npm file-list and packaging-failure tests are authored. A child-process pkg marker/execPath simulation
+covers root choice only; a real native binary still needs the G1 package gate. No test, build, package,
+lint or typecheck ran. The manifest digest was generated as source authoring, not verified by running
+the product. G1 must falsify the Runtime default-load call and manifest comparison as well as execute
+the source, installed-layout and native-package gates.
+
+Next: finish the shared final business-prompt integrity boundary and production logical-request
+identity integration; develop C1 before the V1 caller migration. J06's YAML rubric and removal of its
+original prompt source belong in the same V1 batch after F1/R1/C1 integration is ready; its existing
+insufficient-evidence judgement policy remains unchanged. No new Q0-Q6 choice is needed.
 
 ## Acceptance and verification plan
 

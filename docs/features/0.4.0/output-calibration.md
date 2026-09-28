@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-09-13; source observations below retain the `77ff6e2` review baseline.
+Updated 2026-09-22; source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -54,8 +54,10 @@ missing-quote failure or a safety bypass.
   producer and completion facts before callers can distinguish a completed malformed response
   from truncation; ending in a brace is not a completion signal. The 2026-09-13 continuation adds
   provider and routed observation channels with exact-output checks, requested/reported model and
-  transport termination facts. Their capture is authored; eligibility interpretation and downstream
-  calibration integration remain incomplete.
+  transport termination facts. `src/llm/completion_eligibility.ts` now interprets those facts:
+  provider response/finish/done evidence is complete, while EOF and local-stop remain incomplete;
+  unavailable or ambiguous captures cannot enter calibration. This pure classifier is authored with
+  focused cases but is not yet wired into the production correction coordinator.
 - [`FallbackClient`](../../../src/llm/router.ts) uses provider-attempt state for transport retries
   and validation-repair feedback. Its local retry condition is not a logical-request calibration
   budget. The new owner must not inherit that counter or reset its budget on provider fallback.
@@ -235,5 +237,7 @@ explicit provenance and review; ordinary audit retains the initial evidence.
   producer/corrector attribution.
 
 The historical JSON issue remains open until production wiring and regression evidence prove the
-repair. No full test suite, Tool action, external model call or generated-project run was performed
-for this design update.
+repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
+separate persisted Rule-review allowance; C1 still needs production wiring for the completion
+classifier, the one-calibration coordinator and mechanical quote/escape preservation proofs. No full test suite, Tool action,
+external model call or generated-project run was performed for this design update.

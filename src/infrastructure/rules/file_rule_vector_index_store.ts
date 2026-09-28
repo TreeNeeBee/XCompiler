@@ -13,11 +13,11 @@ export class RuleIndexStorageError extends Error {
 /** Immutable derived versions. A concurrent builder reads the version that won publication. */
 export class FileRuleVectorIndexStore implements RuleVectorIndexStore {
   /** Runtime chooses this storage boundary; Rule/model input may supply only validated digests. */
-  constructor(private readonly root: string) {}
+  constructor(private readonly root: string, private readonly boundaryRoot?: string) {}
 
   async read(id: string): Promise<unknown | undefined> {
     const name = this.name(id);
-    try { return await readImmutableRuleJson(this.root, name); }
+    try { return await readImmutableRuleJson(this.root, name, this.boundaryRoot); }
     catch (cause) { throw new RuleIndexStorageError('read', ruleArtifactPath(this.root, name), { cause }); }
   }
 
@@ -25,7 +25,7 @@ export class FileRuleVectorIndexStore implements RuleVectorIndexStore {
     const name = this.name(index.id);
     const validated = validateIndex(index, index.id);
     try {
-      const stored = await publishImmutableRuleJson(this.root, name, validated);
+      const stored = await publishImmutableRuleJson(this.root, name, validated, this.boundaryRoot);
       return validateIndex(stored, index.id);
     } catch (cause) { throw new RuleIndexStorageError('create', ruleArtifactPath(this.root, name), { cause }); }
   }

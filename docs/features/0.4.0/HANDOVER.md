@@ -1,7 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-09-20  
-Source baseline: `77ff6e2` (`master`)  
+Updated: 2026-09-28
+Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
+`ce638ec` (`update for 0.4.0`), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -570,12 +571,122 @@ formats. This is an authored F1/R1 foundation, with production Runtime integrati
 - Vector-index and snapshot integration tests are authored against real temporary files and
   Application callers. No test, typecheck, lint, build, package, network or model operation ran.
 
-Still incomplete: embedding network adapter and validated Runtime configuration; installed Rule
+Still incomplete: validated Runtime embedding configuration and installed Rule
 sources and root composition; production recovery; real low-score review/audit association and
 persistent allowance; C1 and its preservation proofs; controlled business-Rule candidate activation;
 and final Plugin/compaction/provider-capacity integrity. The current APIs supply no CLI flags or
 configured storage locations. Request-recovery/accounting implementation continues separately from
 this source checkpoint.
+
+## Review coordination and final-send boundary: 2026-09-22
+
+`RuleRequestCoordinator` now reads a completed snapshot before preparing current material. If no
+snapshot exists it reuses a persisted draft, publishes a no-replace review claim before the role
+client is called, and refuses to automatically retry a claim whose result is missing. The result
+pins the draft digest and actual provider/model attempt. `FileRuleRequestStateStore` owns the draft,
+claim and result files under a Runtime-supplied root. This is not Runtime wiring and does not prove
+that the Router audit record referenced by a result exists.
+
+`LLMRuleSelectionReviewer` builds the fixed `rule-selection-review/1` protocol with protected base
+Rules, current task/error/context data and candidate IDs/descriptions. Its final-send callback checks
+required message identity/order and actual provider capacity after Plugin hooks, then the response
+callback requires one matching producer observation and byte-identical output. Plugin notification
+failure now preserves the primary typed request-integrity error. Coordinator/reviewer/Router boundary
+tests are authored and remain unrun.
+
+## Runtime preparation review and continuation: 2026-09-22
+
+The first Runtime factory/config draft was incomplete. Static review found Zod 4 defaults bypassing
+nested parsing/normalization, an arbitrary string state root, embedding required before recovery,
+an unnecessary raw-store SDK export and tests asserting only path strings. These are corrected:
+
+- `rules.retrieval` uses parsed defaults and Domain constraints; config/HTTP adapter share explicit
+  nonblank identities and endpoint validation. `rules.embedding` has no default service/model.
+- `createRuntimeRuleInfrastructure` is internal, takes Runtime's `ProjectContainer`, anchors stores
+  below its state tree and defers embedding construction. The common file helper checks ancestor
+  directories at reads and publications; it does not claim immunity to concurrent hostile mutation.
+- `prepareRuntimeRuleRequest` invokes coordinator recovery before consulting the current catalogue.
+  Fresh optional selection calls the configured embedding adapter; required-only selection skips it.
+  Low-score review uses the role pinned in the draft through Router, retaining claim/result recovery.
+- OpenAI embedding results now use complete unique input indexes; unordered responses cannot silently
+  bind vectors by arrival order. HTTP error pages remain transport errors. Encoding-space identity
+  includes the normalized endpoint, preventing index reuse across different services with the same
+  configured model and space version.
+- Runtime wraps embeddings in `RecordReplayRuleEmbeddingClient` through the existing controller's
+  `http / rules.embedding` operation. Request keys retain endpoint, identity and input texts without
+  credentials; live and replay results share vector-contract validation. Existing modes/channel
+  settings and HTTP counters are preserved, separately from the review's LLM counters.
+- Configuration and Runtime tests now include actual YAML/file adapters, loopback embeddings and chat,
+  Router audit correlation, restart/no-repeat behavior and index/request ancestor symlinks. Additional
+  authored cases cover embedding/review replay without live dispatch, endpoint changes, corrupt or
+  invalid recordings, typed persistence failures, cancellation and input snapshotting.
+
+These tests are authored, not executed. Only static inspection and whitespace checks ran. Build/run
+do not invoke the preparation function yet. Remaining work before V1 includes installed-source and
+required-Rule bindings, durable production logical IDs, request-level audit correlation, audit-reference
+verification, final business-prompt integrity and C1. The earlier text's missing Runtime composition
+is superseded only at this internal boundary; no batch is marked complete or verified.
+
+## Raw review evidence continuation: 2026-09-25
+
+- Coordinator requires evidence verification before fresh low-score result publication, stored
+  result recovery and reviewed-snapshot recovery. Direct selection needs no review evidence.
+- Runtime supplies `FileRuleReviewAuditReader` and `LLMRuleReviewEvidenceVerifier`. They require one
+  raw Router response matching review request/attempt, producer/model, role and selected IDs, and
+  validate provider facts/output copies and the retained final-message digest.
+- The final-send guard returns a validated `RuleSelectionAuditBinding` to Router for raw audit. It
+  binds the owning business request and original draft digest to the protected messages/protocol.
+  It is not provider input or replay-key material. Recovery uses the retained binding without loading
+  new Rules or rebuilding today's template. Rehashing altered Rules cannot reuse the old binding.
+- Snapshots/results retain provider/model, protocol version and request digest. Missing/duplicate/
+  malformed/mismatched evidence preserves state and the consumed claim, never granting another review.
+- JSONL failures retain path/reference/cause; observed ancestor/leaf symlinks are rejected. Read and
+  close dual failures retain both errors. These checks are consistency checks against raw evidence,
+  not signatures or a guarantee against concurrent hostile filesystem replacement.
+
+Coordinator, snapshot, reviewer and real Runtime/file/loopback cases are authored but unrun. Only
+static source/diff review occurred. G1 must remove each verification call and raw binding publication
+to falsify the wiring. The earlier audit-reference gap is addressed at the internal low-score-review
+boundary; build/run still do not call preparation.
+
+The installed-source batch described next supersedes the previous next-step note. Keep J06 extraction
+and old-rubric removal in V1 after production identity/final-message and C1 prerequisites are ready.
+
+## Installed compiler Rule continuation: 2026-09-28
+
+- `rules/genesis.yaml` contains the approved three `announce` declarations at `0x0000`, including
+  their non-executable permission/cancellation/gate boundary. No maintenance AGENTS text was added.
+- `compiler_rule_catalogue.ts` supplies a source-controlled manifest binding the source filename,
+  list identity/version/slot and the full normalized definition digest. Only listed files receive
+  compiler ownership. Identity/version/content changes fail; author comments and equivalent YAML
+  formatting are excluded. The digest is consistency evidence, not a signature. Engineering changes
+  must manually update affected Rule/list versions and the manifest; there is no Runtime updater.
+- Runtime resolves source/bundle resources from the installation module and real pkg attachments
+  beside the executable. It does not use cwd, `XC_PATH` or `XCOMPILER_PATH`. The internal loader
+  checks the rules directory under its installation anchor and rejects observed directory/leaf
+  symlinks. It provides no guarantee against concurrent hostile path replacement.
+- Fresh internal Runtime requests default to that loader; existing snapshots/drafts remain lazy
+  and do not consult current resources. The catalogue callback remains internal composition for
+  future source binding, not user configuration. Build/run still have no migrated caller.
+- npm and standalone resource declarations include `rules`. Standalone packaging checks genesis
+  before building and again before publishing staging output. Tests cover real temporary sources,
+  content changes, errors/links, Selector/Decorator, default Runtime preparation and pinned recovery,
+  all configured ESM/CJS bundle layouts, npm file lists and missing-resource packaging failures.
+  A child-process `process.pkg`/`execPath` simulation covers resolver choice, not a native binary.
+
+Only source authoring and static inspection occurred. Tests, typecheck, lint, build, package and
+model/scenario calls remain unrun. The manifest digest was generated during source authoring; the
+product parser has not verified it yet. G1 must execute source/layout/native-package cases and
+falsify both the default Runtime load and manifest-comparison calls.
+
+The user requested stage commits on `origin/feature/0.4.0`. The existing branch was fetched and
+the dirty tree was carried intact to its local tracking branch. This checkpoint also includes the
+preceding uncommitted embedding/Runtime/review-evidence work documented above. Future stage commits
+should stay on this branch; commits do not imply execution verification or a completed 0.4 release.
+
+Next: final business-prompt integrity and production logical-request identity integration, alongside
+C1 protocol correction and value-preservation proofs. Then migrate J06 in V1, preserving its semantic
+owner and insufficient-evidence policy. No Q0-Q6 choice needs reopening for this continuation.
 
 ## Work not started or not complete
 
@@ -628,17 +739,18 @@ production caller migration:
 
 1. Complete generated-index invariants and catalogue integration around the existing pure
    Rule/RuleList schemas; retain their declared source and ownership checks.
-2. Connect the existing Selector/retriever/Decorator stages to the configured embedding adapter,
-   low-score review and durable allowance, retaining current semantic-evaluation owners.
-3. Add packaged, read-only YAML definitions and index artifacts, composing the existing confined
-   YAML loader with configured embedding and versioned vector-index adapters.
+2. Use the internal Runtime preparation boundary, which now composes the Selector/retriever,
+   explicit embedding configuration, Record/Replay, low-score review and durable allowance. Finish
+   its production request identity/accounting connection, retaining current semantic-evaluation owners.
+3. Extend the authored manifest-bound genesis resources with approved caller-specific YAML
+   definitions and bindings; retain source/version ownership and versioned vector-index adapters.
 4. Assemble base, language, role, applicable framework, and accepted project Rules at one final
    request boundary after mutable Plugin hooks.
 5. Integrate the immutable snapshot store with actual logical-request recovery, context, audit and
-   replay identity for the first migrated caller and every later batch. Verify review audit references
-   and final outbound Rule material in addition to the snapshot's internal consistency checks.
+   replay identity for the first migrated caller and every later batch. Keep review-audit verification
+   on every recovery path and add final outbound business Rule integrity.
 6. Replace each approved prompt source once; leave deterministic F01-F20 enforcement in code.
-7. Package the Rule catalogue in npm and standalone artifacts.
+7. Execute the authored npm/standalone Rule-resource checks at G1 and include later migrated lists.
 
 ### 4. Implement output-protocol calibration
 
@@ -670,22 +782,29 @@ When all approved 0.4.0 work is complete, run the full matrix in the project con
 Falsify production wiring by removing each new call and confirming the relevant test fails. A helper
 test alone is not sufficient evidence.
 
-## Working-tree warning
+## Working-tree history and current checkpoint
 
-The tree was already dirty before this migration and has many user/Claude changes. Do not reset,
+The 2026-09-20 continuation found the prior implementation committed as `ce638ec`, with a clean
+working tree at that observation. This commit was already present; the agent did not create it.
+Later edits continue from it. The dirty-tree/staged-rename description below is historical, not
+the current Git status. Inspect fresh status before editing; never reconstruct or undo that old
+staging state.
+
+The tree was already dirty before this migration and had many user/Claude changes. Do not reset,
 discard, reformat, stage, or commit unrelated files.
 
-In particular, the index currently contains a staged rename from
+At that earlier checkpoint, the index contained a staged rename from
 `docs/XCompiler_user_fixture_plan.md` to `docs/features/user_fixture.md`, while the working tree has
 moved that destination again to `docs/features/0.5.0/user_fixture.md`. Git therefore reports the
 intermediate destination as deleted and the 0.5 directory as untracked. Preserve the content and
 do not run broad staging until the user explicitly asks to prepare a commit.
 
-`.claude/` is also untracked and unrelated to this refactor unless the user says otherwise.
+`.claude/` was also untracked and unrelated to this refactor unless the user says otherwise.
 
 ## Verification record for this handover
 
 Since implementation began, no test, typecheck, lint, build, package, external model call,
-generated-project run, or network call has been performed. Checks have been limited to read-only
-source, dependency, path, document consistency and Git-status inspection. Runtime verification
-remains intentionally deferred per the user's requested order.
+or generated-project run has been performed. Checks have been limited to static source, dependency,
+path, document consistency, whitespace and Git inspection. Git network access on 2026-09-28 is for
+the user's requested branch synchronization and stage publication, not a product/provider test.
+Runtime verification remains intentionally deferred per the user's requested order.

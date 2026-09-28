@@ -10,6 +10,7 @@ import type { LLMClient } from '../src/llm/types.js';
 import type { XCompilerPlugin, XCompilerPluginManifest } from '../src/plugins/types.js';
 import { XCOMPILER_PLUGIN_API_VERSION, XCOMPILER_VERSION } from '../src/version.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
+import { RuleSelectionReviewError } from '../src/llm/rule_selection_reviewer.js';
 
 const pluginManifest = (
   id: string,
@@ -23,6 +24,27 @@ const pluginManifest = (
 });
 
 describe('PluginHost', () => {
+  it('retains a typed request boundary error when its notification hook also fails', async () => {
+    const primary = new RuleSelectionReviewError('request_integrity', {
+      logicalRequestId: '2d8272b5-a2a0-4083-a17d-6e11805ae836',
+    }, { cause: new Error('required protocol message changed') });
+    const secondary = new Error('notification failed');
+    const host = new PluginHost({
+      strict: true,
+      plugins: [{
+        manifest: pluginManifest('typed-boundary-notification'),
+        setup(api) { api.on('llm.error', () => { throw secondary; }); },
+      }],
+    });
+    const result: unknown = await host.wrapLLM({
+      name: 'offline-reviewer', chat: async () => { throw primary; },
+    }, 'Coder').chat([]).then(() => undefined, (error: unknown) => error);
+    expect(result).toBe(primary);
+    expect(result).toBeInstanceOf(RuleSelectionReviewError);
+    expect((result as { notificationError?: unknown }).notificationError).toBe(secondary);
+    expect(primary.cause).toBeInstanceOf(Error);
+  });
+
   it('retains the storage interruption when its error hook also fails', async () => {
     const original = new AuditPersistenceError({
       operation: 'append-jsonl', target: '/example/audit.jsonl', eventKind: 'llm.error',

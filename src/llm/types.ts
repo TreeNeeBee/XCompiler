@@ -1,4 +1,5 @@
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
+import type { RuleSelectionAuditBinding } from '../application/rules/rule_review_evidence.js';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -15,7 +16,7 @@ export interface LLMProviderWindow {
 export interface ChatOptions {
   /** Stable identity supplied by the owning persisted request; retry/fallback retain it. */
   logicalRequestId?: string;
-  /** Trusted final-send boundary, after Plugin changes and for each actual provider window. */
+  /** Trusted final-send boundary; optional returned binding is audit-only and never sent to providers. */
   beforeProviderRequest?: (request: {
     logicalRequestId: string;
     providerAttemptId: string;
@@ -24,7 +25,7 @@ export interface ChatOptions {
     messages: readonly Readonly<ChatMessage>[];
     contextWindowTokens: number;
     maxTokens: number;
-  }) => void | Promise<void>;
+  }) => void | RuleSelectionAuditBinding | Promise<void | RuleSelectionAuditBinding>;
   /** Transport evidence channel owned by Router; not a validation or permission hook. */
   onProviderResponse?: (response: ProviderResponseEvidence) => void;
   /** Final accepted provider candidate, after required evidence persistence. */

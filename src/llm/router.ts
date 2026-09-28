@@ -27,6 +27,7 @@ import type { RecordReplayController } from '../application/record_replay/contro
 import { isCancellationError } from '../util/cancellation.js';
 import { z } from 'zod';
 import { RecordReplayError } from '../application/record_replay/types.js';
+import { RuleSelectionAuditBindingSchema, RuleReviewEvidenceError } from '../application/rules/rule_review_evidence.js';
 import {
   captureResponseEvidence,
   ProviderResponseEvidenceSchema,
@@ -397,10 +398,15 @@ class FallbackClient implements LLMClient {
         const attemptMessages = providerMessages.map((message) => Object.freeze({ ...message }));
         Object.freeze(attemptMessages);
         // Guard failures are request/evidence failures, outside all provider retry and score paths.
-        await options?.beforeProviderRequest?.({
+        const rawBinding = await options?.beforeProviderRequest?.({
           logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
           messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
         });
+        const binding = RuleSelectionAuditBindingSchema.optional().safeParse(rawBinding);
+        if (!binding.success) throw new RuleReviewEvidenceError('invalid', {
+          logicalRequestId, providerAttemptId, stage: 'final-send-binding',
+        }, { cause: binding.error });
+        const requestBinding = binding.data;
         try {
           out = await c.client.chat(attemptMessages, providerOptions);
         } catch (err) {
@@ -537,6 +543,7 @@ class FallbackClient implements LLMClient {
                 // remain available in the raw audit before the next provider attempt starts.
                 output: out,
                 responseEvidence,
+                ...(requestBinding ? { requestBinding } : {}),
                 requestMessages: attemptMessages,
                 output_preview: out.slice(0, 400),
                 output_tail: out.slice(-400),
@@ -591,6 +598,7 @@ class FallbackClient implements LLMClient {
           output: out,
           requestMessages: attemptMessages,
           responseEvidence,
+          ...(requestBinding ? { requestBinding } : {}),
         }, { persistence: 'required' });
         // This is outside the transport/validation catches: an evidence consumer failure cannot
         // request another response, reset an allowance, or count as provider quality.

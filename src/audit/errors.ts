@@ -3,7 +3,7 @@ export const EVIDENCE_PERSISTENCE_FAILURE = 'evidence_persistence_failed';
 export interface AuditPersistenceFailure {
   readonly operation:
     | 'initialize' | 'append-jsonl' | 'append-markdown'
-    | 'read-recording' | 'write-recording' | 'validate-recording';
+    | 'read-recording' | 'write-recording' | 'validate-recording' | 'read-jsonl' | 'validate-jsonl';
   readonly target: string;
   readonly eventKind: string;
   readonly messageId?: string;
