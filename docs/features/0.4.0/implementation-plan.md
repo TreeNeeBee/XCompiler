@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-04. This development checkpoint extends `0ac621a` (Runtime Rule selection and installed sources)
+Updated: 2026-10-04. This development checkpoint extends `7e3924f` (guarded Rule business sends)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -135,9 +135,9 @@ Progress reconciliation against source, 2026-10-04:
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard | Production request/input recovery, protocol separation, completion-fact classification correction and full accounting |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; finish-reason eligibility correction authored | Refusal/tool payload facts, production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Approved protocol-only direction and original-producer/one-correction contract; source audit identifies truncation and legacy-salvage gaps | Correct completion eligibility, coordinator, durable correction allowance and value-preservation proofs |
+| C1 | Completion-gated internal entries; explicit JSON protocol, typed diagnostics and full candidate proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs and completion facts, fixed-template coordinator, durable correction allowance, production integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -542,9 +542,25 @@ This closes only the internal send boundary. Production callers still own persis
 original business messages/protocol identity and response recovery; a new send is not proof that an
 old response was recovered. No J06, Planner or Executor caller was migrated in this batch.
 
-Next: correct completion eligibility (length finish reasons currently look complete), implement C1
-protocol checks and per-transformation value proofs, then its durable original-producer correction
-allowance and the V1 request/input recovery binding. J06's YAML rubric and removal of its original
+C1 continuation, 2026-10-04: the finish-reason correction and pure whole-input representation
+scanner/proof are now authored. Terminal markers alone no longer grant eligibility: truncation is incomplete, missing
+or ambiguous facts unavailable, and explicit refusal/tool/filter reasons ineligible. Internal response
+and correction-proof entries invoke this classifier before parsing. The completeness helper remains
+separate from calibration eligibility.
+
+The explicit JSON protocol declares full outer fences, structurally valid trailing commas and raw
+string CR/LF/tab escaping. Proofs retain ordered tokens, exact numeric lexemes and decoded UTF-16
+values; candidates must parse strictly with no repair and preserve all structure and values. Duplicate
+keys, fragment salvage, unknown escapes and guessed quotes remain unresolved. The combined Executor
+raw-newline/inner-quote sample remains unresolved, not claimed repaired. Tests for these invariants,
+entry gating and real provider-loopback facts are authored, unrun. See [the proof contract](output-calibration.md).
+G1 must falsify the actual completion/inspection/proof calls in addition to provider fact capture.
+
+Next: capture refusal/tool payload facts and retain them through replay; extend independently proven
+quote/escape classes; implement the fixed-template coordinator and durable original-producer
+correction allowance, then V1 request/input recovery. Corrector candidates need their own completion
+and identity checks; the current string-proof function only gates the original response.
+J06's YAML rubric and removal of its original
 prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy
 remains unchanged. No new Q0-Q6 choice is needed.
 

@@ -118,9 +118,14 @@ the text returned after Plugin hooks; the adapter performs no business validatio
 success scoring. Missing transport facts remain explicitly unavailable. Filesystem/Router/Plugin/
 replay tests are authored and unrun.
 Production request identity and original-business-input recovery still need caller integration.
-C1 must first correct the authored completion classifier's treatment of length-truncated responses,
-then implement protocol/value-preservation proofs and the durable correction allowance. J06 migration
-still depends on F1/R1/C1. These are development checkpoints, not a verified 0.4 release.
+C1 now interprets finish reasons and adds completion-gated internal JSON inspection/proof entries.
+Its first explicit transformations cover complete outer fences, trailing commas and exact raw
+CR/LF/tab escaping. Candidate proofs preserve full ordered structure, numeric lexemes and decoded
+string values. Ambiguous inner quotes and fragment salvage remain unresolved; the combined Executor
+sample is not repaired. Refusal/tool payload facts, further quote/escape proofs, the durable
+correction coordinator and production integration remain open. Completion, real provider-loopback
+and proof tests are authored, unrun. J06 migration still depends on F1/R1/C1 readiness.
+These are development checkpoints, not a verified 0.4 release.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

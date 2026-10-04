@@ -357,15 +357,17 @@ business validator or start a second calibration attempt. Its client, role-pool 
 Runtime preparation are connected; business caller migration remains pending.
 
 [`assessResponseCompletion`](../../../src/llm/completion_eligibility.ts) is a pure F1 boundary for
-the provider facts used by later protocol correction. Its current implementation checks terminal
-markers but omits finish-reason interpretation, so `length` truncation can incorrectly look complete.
-It is not production-connected and must be corrected before C1 integration. EOF, local-stop and
-missing evidence remain excluded; no corrector or business-validity judgement occurs here.
+the provider facts used by later protocol correction. The C1 continuation now checks finish reasons:
+`length`/`incomplete` remain truncated; missing/unknown/mixed facts remain unavailable. Explicit
+refusal/filter/tool-call reasons are complete but ineligible. Internal JSON inspection/proof entries
+call this boundary; production callers do not. Standard refusal/tool-call payload facts still need
+capture/replay integration before production calibration. No corrector or business judgement occurs
+here; the first representation proofs are described in [output-calibration.md](output-calibration.md).
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; the C1 calibration coordinator
-and per-transformation preservation proofs; controlled business-Rule candidate activation; and final
+and additional per-transformation preservation proofs; controlled business-Rule candidate activation; and final
 Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
 configuration and state paths above are not evidence of an installed end-to-end feature.
 
@@ -383,7 +385,9 @@ Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_select
 [runtime_rule_infrastructure.test.ts](../../../tests/integration/runtime_rule_infrastructure.test.ts),
 [compiler_rule_catalogue.test.ts](../../../tests/integration/compiler_rule_catalogue.test.ts),
 [installation_resources.test.ts](../../../tests/integration/installation_resources.test.ts),
-[completion_eligibility.test.ts](../../../tests/integration/completion_eligibility.test.ts), and the
+[completion_eligibility.test.ts](../../../tests/integration/completion_eligibility.test.ts),
+[provider_completion_eligibility.test.ts](../../../tests/integration/provider_completion_eligibility.test.ts),
+[protocol_json.test.ts](../../../tests/integration/protocol_json.test.ts), and the
 Router/Plugin evidence tests.
 None has been executed for this implementation. Tests, typecheck, lint, build, packaging and
 model/scenario validation remain deferred until all approved implementation is complete, as the

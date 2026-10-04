@@ -2,11 +2,17 @@ import type { RoutedResponseEvidence, ProviderResponseEvidence } from './respons
 
 export type CompletionDisposition = 'complete' | 'incomplete' | 'unavailable';
 
-export interface ResponseCompletionAssessment {
+interface ProviderCompletionAssessment {
   readonly disposition: CompletionDisposition;
   readonly eligibleForProtocolCalibration: boolean;
   readonly reason: 'provider-response' | 'finish-reason' | 'done-marker' | 'provider-done'
-    | 'local-stop' | 'eof' | 'missing-evidence' | 'ambiguous-evidence';
+    | 'local-stop' | 'eof' | 'missing-evidence' | 'ambiguous-evidence' | 'invalid-evidence' | 'output-mismatch'
+    | 'missing-producer' | 'ambiguous-producer' | 'missing-choice' | 'ambiguous-choice' | 'discarded-frames'
+    | 'missing-finish-reason' | 'ambiguous-finish-reason' | 'unknown-finish-reason'
+    | 'truncated' | 'content-filtered' | 'provider-refusal' | 'provider-tool-call';
+}
+
+export interface ResponseCompletionAssessment extends ProviderCompletionAssessment {
   readonly logicalRequestId: string;
   readonly providerAttemptId: string;
   readonly provider: string;
@@ -26,21 +32,60 @@ export function assessResponseCompletion(response: RoutedResponseEvidence): Resp
     model: response.model,
   };
   if (response.capture.status !== 'recorded') {
+    const reasons = {
+      missing: 'missing-evidence', multiple: 'ambiguous-evidence',
+      invalid: 'invalid-evidence', 'output-mismatch': 'output-mismatch',
+    } as const;
     return { ...base, disposition: 'unavailable', eligibleForProtocolCalibration: false,
-      reason: response.capture.observations.length > 1 ? 'ambiguous-evidence' : 'missing-evidence' };
+      reason: reasons[response.capture.reason] };
   }
-  const termination = response.capture.response.termination;
-  switch (termination) {
-    case 'response': return { ...base, disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-response' };
-    case 'finish-reason': return { ...base, disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'finish-reason' };
-    case 'done-marker': return { ...base, disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'done-marker' };
-    case 'provider-done': return { ...base, disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-done' };
-    case 'local-stop': return { ...base, disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: 'local-stop' };
-    case 'eof': return { ...base, disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: 'eof' };
-  }
+  return { ...base, ...assessProviderCompletion(response.capture.response) };
 }
 
+/** Completion alone is not a calibration gate: refusals and tool calls can be complete. */
 export function providerEvidenceIsComplete(evidence: ProviderResponseEvidence): boolean {
-  return evidence.termination === 'response' || evidence.termination === 'finish-reason'
-    || evidence.termination === 'done-marker' || evidence.termination === 'provider-done';
+  return assessProviderCompletion(evidence).disposition === 'complete';
+}
+
+function assessProviderCompletion(evidence: ProviderResponseEvidence): ProviderCompletionAssessment {
+  const unavailable = (reason: ProviderCompletionAssessment['reason']): ProviderCompletionAssessment => ({
+    disposition: 'unavailable', eligibleForProtocolCalibration: false, reason,
+  });
+  if (evidence.discardedFrames > 0) return unavailable('discarded-frames');
+  if (evidence.reportedModels.length !== 1) {
+    return unavailable(evidence.reportedModels.length ? 'ambiguous-producer' : 'missing-producer');
+  }
+  if (evidence.protocol === 'openai') {
+    if (evidence.choiceIndexes.length > 1 || evidence.maxChoicesPerFrame > 1) return unavailable('ambiguous-choice');
+    if (evidence.choiceIndexes.length !== 1 || evidence.maxChoicesPerFrame !== 1) return unavailable('missing-choice');
+  } else if (evidence.choiceIndexes.length || evidence.maxChoicesPerFrame) {
+    return unavailable('invalid-evidence');
+  }
+  const termination = evidence.termination;
+  if (termination === 'local-stop' || termination === 'eof') {
+    return { disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: termination };
+  }
+  if (evidence.finishReasons.length !== 1) {
+    return unavailable(evidence.finishReasons.length ? 'ambiguous-finish-reason' : 'missing-finish-reason');
+  }
+  const finishReason = evidence.finishReasons[0];
+  if (finishReason === 'length' || finishReason === 'incomplete') {
+    return { disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: 'truncated' };
+  }
+  if (finishReason === 'content_filter' || finishReason === 'refusal'
+    || finishReason === 'tool_calls' || finishReason === 'function_call') {
+    return {
+      disposition: 'complete', eligibleForProtocolCalibration: false,
+      reason: finishReason === 'content_filter' ? 'content-filtered'
+        : finishReason === 'refusal' ? 'provider-refusal' : 'provider-tool-call',
+    };
+  }
+  if (finishReason !== 'stop') return unavailable('unknown-finish-reason');
+  // The provider's explicit text stop is required in addition to a terminal transport marker.
+  switch (termination) {
+    case 'response': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-response' };
+    case 'finish-reason': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'finish-reason' };
+    case 'done-marker': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'done-marker' };
+    case 'provider-done': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-done' };
+  }
 }

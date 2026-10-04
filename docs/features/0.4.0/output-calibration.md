@@ -5,7 +5,8 @@ Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now sel
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
 item 4 B: extend repair to individually proven lossless quote/escape transformations. Its scope is
-approved; the concrete whitelist, preservation proofs and integration still need implementation.
+approved; the first explicit transformations and proof scanner are now authored, while additional
+quote/escape classes, correction coordination and production integration remain incomplete.
 This document update does not claim production calibration wiring is complete.
 Q0 is separately confirmed: correction requests use only a fixed versioned protocol template,
 without base content, business RuleLists or RuleChain selection. Q5 A also now selects per-request
@@ -13,12 +14,16 @@ retention of actual Rule content/versions and retrieval evidence; that business-
 does not become correction-prompt input. See the [implementation plan](implementation-plan.md)
 for the confirmed directions and remaining details.
 
-The 2026-10-04 source audit identifies a C1 prerequisite: the authored completion classifier ignores
-`finishReasons`. OpenAI `length` may accompany `response` or `finish-reason`, and Ollama exposes its
-reason separately from `provider-done`; terminal markers alone do not establish an untruncated
-candidate. Correct and cover this before attaching calibration. Unknown/multiple-choice/discarded
-evidence and ambiguous producer identity also need explicit eligibility treatment. No execution
-verification has established the classifier's correctness.
+The 2026-10-04 C1 continuation corrects the classifier's earlier omission of `finishReasons`.
+`length`/`incomplete` remain truncated even with terminal transport markers. A unique explicit `stop`
+and complete producer/choice facts are required for calibration eligibility. Missing/unknown/mixed
+reasons, ambiguous producer/choice facts and discarded frames remain unavailable; EOF/local-stop
+remain incomplete. Recorded filtering/refusal/tool-call reasons may describe a completed response
+but cannot enter correction. `providerEvidenceIsComplete` reports completeness only, not eligibility.
+Standard `message.refusal`/`delta.refusal` and tool-call payload fields are not yet captured; this
+classifier does not establish the absence of those signals when a reason says `stop`. Their capture
+and replay treatment remain prerequisites before production calibration. No execution verification
+has established the classifier's correctness.
 
 The existing Executor raw-newline/internal-quote fixture is a concrete starting case for expanded
 repair. Preserve CR, LF and tab values individually; the current parser's CR deletion and quote
@@ -69,10 +74,10 @@ missing-quote failure or a safety bypass.
   producer and completion facts before callers can distinguish a completed malformed response
   from truncation; ending in a brace is not a completion signal. The 2026-09-13 continuation adds
   provider and routed observation channels with exact-output checks, requested/reported model and
-  transport termination facts. `src/llm/completion_eligibility.ts` now interprets those facts:
-  provider response/finish/done evidence is complete, while EOF and local-stop remain incomplete;
-  unavailable or ambiguous captures cannot enter calibration. This pure classifier is authored with
-  focused cases but is not yet wired into the production correction coordinator.
+  transport termination facts. `src/llm/completion_eligibility.ts` now interprets those facts and
+  finish reasons as described above; terminal markers alone never grant calibration eligibility.
+  The internal C1 response/proof entries call it before inspecting JSON. Focused and provider-loopback
+  cases are authored, but it is not yet wired into a production correction coordinator.
 - [`FallbackClient`](../../../src/llm/router.ts) uses provider-attempt state for transport retries
   and validation-repair feedback. Its local retry condition is not a logical-request calibration
   budget. The new owner must not inherit that counter or reset its budget on provider fallback.
@@ -87,7 +92,7 @@ missing-quote failure or a safety bypass.
   The later accepted-response event also requires audit persistence before delivery when a logger
   is configured. New replay envelopes preserve observations as replay; old text fixtures remain
   metadata-unavailable. Fact capture, audit and replay tests are authored and unrun; completion
-  eligibility and correction integration remain incomplete.
+  eligibility coverage and correction integration remain incomplete.
   Full rejected/corrected evidence must be dependable independently of previews or optional
   Record/Replay before existing paths are removed; this audit addition alone is not that guarantee.
 
@@ -157,13 +162,60 @@ must not invent a path, command, dependency, requirement, assertion, Ticket verd
 The detailed transformation policy must specify how preservation of represented values is proven
 mechanically; model confidence alone cannot establish that proof. When preservation cannot be
 established, return unresolved so the caller can request a fresh response from the producing role.
-The concrete transformation whitelist and proof evidence remain implementation work under selected
+Further transformation classes and their proof evidence remain implementation work under selected
 B. Do not silently reduce the scope to wrapper/trailing-comma repair, accept ambiguous values to
 expand coverage, or label semantic regeneration as lossless correction.
 
 Original and corrected outputs remain separately attributable. A corrected action still passes the
 same argument, path, capability and permission checks. No partial/salvaged action is executed before
 the entire response has passed protocol and caller validation.
+
+### Authored representation proof foundation: 2026-10-04
+
+[`protocol_json.ts`](../../../src/llm/protocol_json.ts) defines an explicit JSON protocol ID/version,
+root kind and unique transformation allowlist. Invalid declarations fail as configuration errors.
+The pure inspector consumes the whole input and returns `valid`, `repairable`, or `unresolved`;
+it never returns partial values or executable actions. The current allowlist is:
+
+| Transformation | Recognition and preservation condition |
+|---|---|
+| `json-fence` | One complete outer triple-backtick fence, lowercase `json` or no label; opening LF/CRLF and a newline before the closing fence. Only JSON whitespace may surround it. Remove fence bytes only; no prose stripping or first-object extraction. |
+| `trailing-comma` | A comma outside a string after a complete member/element immediately before its matching closing container, ignoring JSON whitespace. Empty members/elements and repeated commas are not repairable. |
+| `raw-string-control` | Raw CR, LF or tab inside an otherwise unambiguously delimited double-quoted string becomes its matching JSON escape. Preserve each UTF-16 code unit, including both CR and LF; no newline or Unicode normalization. |
+
+The iterative grammar checker retains every ordered token and rejects duplicate decoded object
+keys. Numbers keep their exact source lexemes instead of being converted to JavaScript `Number`;
+large integers, overflowing exponents and negative zero cannot compare equal through rounding.
+String tokens retain exact decoded UTF-16 values, with only standard JSON escapes interpreted.
+Unknown escapes, other raw control characters, missing values, truncation and multiple roots remain
+unresolved. There is no missing-quote or raw-inner-quote inference in this first batch.
+
+`proveJsonProtocolCorrection` first establishes the original's full representation, then parses the
+entire candidate with all repair transformations disabled. Every ordered structural token, literal
+and numeric lexeme must match, and every decoded string must match exactly. Object/array reordering,
+added/removed values and parseable semantic changes are rejected. Once the original representation
+is established, identical input ends as `unchanged_candidate`. Proof version
+`json-representation-proof/1` retains source-to-normalized edits
+and original/candidate token correspondence; edits are not a diff of the candidate's whitespace or
+alternate string escapes. Offsets use zero-based UTF-16 units, end-exclusive; diagnostic line/column
+are one-based. Original/candidate text and protocol identity are retained unchanged.
+
+[`protocol_candidate.ts`](../../../src/llm/protocol_candidate.ts) gates both internal entries on the
+**original response's** completion eligibility before inspection/proof. Its correction function
+accepts a candidate string, not a verified corrector transport response. The future coordinator must
+separately establish that candidate's completion, original producer identity, durable allowance and
+audit provenance. These functions neither invoke a model nor establish business validity.
+
+The existing Executor sample combining raw newlines with unescaped internal quotes remains
+unresolved. In a multi-field response an apparent inner quote can also close a string, producing
+different full value structures; selecting the first parse, fewest edits or the model's proposed
+interpretation is not a proof. Further quote classes need their own uniqueness proof. This is a
+partial implementation of expanded B, not a reduction of its approved scope or a fix of the
+historical missing-quote incident.
+
+Focused proof/entry tests and real provider-loopback completion tests are authored, unrun. G1 must
+also remove the actual completion/inspection/proof calls to falsify their wiring. No production
+caller, legacy salvage path or retry policy has been migrated by this foundation.
 
 ## Proposed protocol records
 
@@ -253,6 +305,7 @@ explicit provenance and review; ordinary audit retains the initial evidence.
 
 The historical JSON issue remains open until production wiring and regression evidence prove the
 repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
-separate persisted Rule-review allowance; C1 still needs production wiring for the completion
-classifier, the one-calibration coordinator and mechanical quote/escape preservation proofs. No full test suite, Tool action,
-external model call or generated-project run was performed for this design update.
+separate persisted Rule-review allowance. C1 now has authored completion/inspection/proof entries;
+it still needs additional response facts, quote/escape proof classes, the durable one-calibration
+coordinator and production wiring. No tests, typecheck, lint, build, package, Tool action, external
+model call or generated-project run was performed for this implementation checkpoint.

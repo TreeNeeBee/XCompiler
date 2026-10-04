@@ -2,7 +2,7 @@
 
 Updated: 2026-10-04
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`0ac621a` (Runtime Rule selection and installed sources), with original baseline `77ff6e2`
+`7e3924f` (guarded Rule business sends), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -713,16 +713,50 @@ This is not production request recovery: caller-owned business inputs and protoc
 are still supplied to a new send; old business responses are not rehydrated/verified by this adapter.
 Those responsibilities stay with the forthcoming V1 caller integration, not a second lifecycle store.
 
-C1 source audit found that `completion_eligibility.ts` currently ignores `finishReasons`; OpenAI
-`length` can therefore look complete despite the truncation exclusion. Correct it before connecting
-calibration. Existing `tests/executor.test.ts` contains the raw-newline/internal-quote motivating
+C1 source audit found that `completion_eligibility.ts` ignored `finishReasons`; OpenAI
+`length` could therefore look complete despite the truncation exclusion. The following batch corrects
+that source defect, with execution still deferred. Existing `tests/executor.test.ts` contains the
+raw-newline/internal-quote motivating
 case; the parser's current CR removal and quote heuristic are not a value-preservation proof. Its
 malformed-action salvage expectation contradicts the approved no-partial-action contract and must
 change when that caller migrates. No historical missing-quote raw response was found in this audit.
 
-Next: C1 completion eligibility and mechanically proven protocol transformations, then a durable
-one-correction coordinator and V1 request/input recovery. Migrate J06 only after those prerequisites,
-preserving its semantic owner and insufficient-evidence policy. No Q0-Q6 choice needs reopening.
+## C1 completion and representation-proof foundation: 2026-10-04
+
+- Completion and calibration eligibility now share one fact interpreter. Explicit `length` or
+  `incomplete` cannot become complete through a terminal marker. Missing/unknown/mixed reasons,
+  missing/ambiguous producer or OpenAI choice facts, and discarded frames remain unavailable.
+  EOF/local-stop remain incomplete; explicit `stop` with complete facts permits protocol inspection.
+  Recorded refusal/filter/tool-call reasons are complete but ineligible. The legacy completeness
+  helper still reports completeness only, never calibration permission.
+- `protocol_json.ts` adds the whole-input JSON scanner/iterative grammar checker and
+  `json-representation-proof/1`. Explicit protocol declarations allow complete outer fences,
+  structurally valid trailing commas and raw string CR/LF/tab escaping independently. Proofs preserve
+  ordered structure, exact numeric lexemes and decoded UTF-16 strings, reject duplicate decoded keys,
+  and retain original text, diagnostics, source edits and full candidate token correspondence.
+- Candidates require their own strict full parse with no repairs. Changed values, reordered fields,
+  partial actions, unknown escapes and guessed delimiters remain unresolved. Unchanged output has a
+  distinct outcome. CRLF is preserved as two code units, never normalized to LF.
+- `protocol_candidate.ts` calls completion eligibility before inspecting or proving the original
+  response. Its supplied correction string has no transport evidence yet; the future coordinator
+  must validate the corrector's own completion and identity separately. No model, persistent
+  correction claim, production caller migration or legacy parser removal occurs in this batch.
+- Tests are authored for proof invariants, malformed whole responses, internal-entry gating and
+  actual OpenAI/Ollama stream/nonstream loopback-to-classifier paths. All are unrun. G1 must remove
+  the actual provider observation, completion-gate, inspection and proof calls and observe failures
+  before restoring them, then run the affected repository gates.
+
+Two known limits remain explicit. The standard refusal/tool-call payload fields are not captured
+by the current response-fact schema; a `stop` reason alone does not prove those signals absent.
+Capture/replay/schema integration must precede production calibration. Also, the motivating Executor
+sample's unescaped inner quotes can admit competing value boundaries, so the combined sample still
+returns unresolved. Further quote classes need a uniqueness proof; no historical missing-quote
+incident is claimed repaired. See [the concrete proof contract](output-calibration.md).
+
+Next: complete response-fact eligibility coverage and additional proven quote/escape classes, then
+the fixed-template, durable one-correction coordinator and V1 request/input recovery. Migrate J06
+only after those prerequisites, preserving its semantic owner and insufficient-evidence policy.
+No Q0-Q6 choice needs reopening. Static source/diff review is the only verification so far.
 
 ## Work not started or not complete
 
@@ -790,8 +824,8 @@ production caller migration:
 
 ### 4. Implement output-protocol calibration
 
-- Add typed protocol, diagnostic, request/result, and attempt records outside Domain business
-  objects and RuleChain.
+- Extend the authored JSON protocol/diagnostic/proof records with request/result and durable attempt
+  records outside Domain business objects and RuleChain; finish refusal/tool payload facts first.
 - Reconcile `isCompleteTurnJson` with `parseTurn`; remove unapproved partial-action salvage.
 - Separate protocol rejection from Planner/Executor/scenario business validation.
 - Use one correction-accounting owner and a fixed, versioned, nonrecursive correction template.
