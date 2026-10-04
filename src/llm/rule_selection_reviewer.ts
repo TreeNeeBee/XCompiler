@@ -11,7 +11,7 @@ import { resolveRuleConflicts, RuleContextSchema } from '../domain/rules/selecti
 import { isProtectedRuleSlot } from '../domain/rules/slots.js';
 import { RULE_VECTOR_INPUT_VERSION } from '../domain/rules/vector_index.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
-import { estimateTextTokens, resolveSkillOperationWindow } from './window.js';
+import { validateRuleProviderRequest } from './rule_request_guard.js';
 
 export const RULE_SELECTION_REVIEW_PROTOCOL_VERSION = 'rule-selection-review/1' as const;
 
@@ -36,11 +36,6 @@ const SelectionSchema = z.object({ selectedRuleIds: z.array(z.uuid()) }).strict(
 const ProducerSchema = z.object({
   logicalRequestId: z.uuid(), providerAttemptId: z.uuid(), provider: Text, model: Text, output: z.string(),
 });
-const RequestBoundarySchema = z.object({
-  logicalRequestId: z.uuid(), providerAttemptId: z.uuid(), provider: Text, model: Text,
-  messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() }).strict()),
-  contextWindowTokens: z.number().int().positive(), maxTokens: z.number().int().positive(),
-}).strict();
 type ProviderRequest = Parameters<NonNullable<ChatOptions['beforeProviderRequest']>>[0];
 
 export class RuleSelectionReviewError extends Error {
@@ -68,38 +63,12 @@ export class LLMRuleSelectionReviewer implements RuleSelectionReviewer {
     const responses: unknown[] = [];
     const beforeProviderRequest = (request: ProviderRequest): RuleSelectionAuditBinding => {
       input.signal?.throwIfAborted();
-      const parsed = RequestBoundarySchema.safeParse(request);
-      if (!parsed.success) throw new RuleSelectionReviewError('request_integrity', {
-        logicalRequestId: reviewRequestId, stage: 'final-send',
-      }, { cause: parsed.error });
-      const actual = parsed.data;
+      const actual = validateRuleProviderRequest(request, {
+        logicalRequestId: reviewRequestId, messages,
+        hasAttempt: (lowerId) => guardedAttempts.has(lowerId),
+        error: (reason, details, options) => new RuleSelectionReviewError(reason, details, options),
+      });
       const attemptKey = actual.providerAttemptId.toLowerCase();
-      if (actual.logicalRequestId.toLowerCase() !== reviewRequestId.toLowerCase() || guardedAttempts.has(attemptKey)) {
-        throw new RuleSelectionReviewError('request_integrity', {
-          logicalRequestId: reviewRequestId, providerAttemptId: actual.providerAttemptId, kind: 'request-identity',
-        });
-      }
-      // Plugins may add material, but cannot replace, re-role or reorder the necessary messages.
-      let cursor = 0;
-      for (const expected of messages) {
-        const found = actual.messages.findIndex((message, index) => index >= cursor
-          && message.role === expected.role && message.content === expected.content);
-        if (found < 0) throw new RuleSelectionReviewError('request_integrity', {
-          logicalRequestId: reviewRequestId, providerAttemptId: actual.providerAttemptId, kind: 'required-message',
-          role: expected.role,
-        });
-        cursor = found + 1;
-      }
-      const promptChars = actual.messages.reduce((sum, message) => sum + message.content.length, 0);
-      const promptTokens = estimateTextTokens(promptChars);
-      const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptChars });
-      if (promptTokens + safetyTokens + actual.maxTokens > actual.contextWindowTokens) {
-        throw new RuleSelectionReviewError('capacity_exceeded', {
-          logicalRequestId: reviewRequestId, providerAttemptId: actual.providerAttemptId,
-          provider: actual.provider, model: actual.model, contextWindowTokens: actual.contextWindowTokens,
-          promptTokens, safetyTokens, maxTokens: actual.maxTokens,
-        });
-      }
       const requestDigest = ruleReviewRequestDigest(RULE_SELECTION_REVIEW_PROTOCOL_VERSION, protectAuditContent(actual.messages, 'redacted'));
       guardedAttempts.set(attemptKey, { provider: actual.provider, model: actual.model, requestDigest });
       return {

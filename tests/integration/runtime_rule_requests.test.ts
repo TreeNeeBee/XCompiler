@@ -349,16 +349,16 @@ async function ledger(input: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('Runtime review evidence before publication and recovery', () => {
-  it('requires a raw Router record before publishing a review result and keeps the consumed allowance on failure', async () => {
+  it('requires Router audit before review transport and keeps the consumed allowance on failure', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url, audit: false });
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'missing' });
+    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ code: 'rule_request_binding_failed', reason: 'audit_unavailable' });
     const state = new FileRuleRequestStateStore(input.container.state.abs('rules/requests'));
     expect(await state.readReviewClaim(input.logicalRequestId)).toBeDefined();
     expect(await state.readReviewResult(input.logicalRequestId)).toBeUndefined();
     expect(await state.read(input.logicalRequestId)).toBeUndefined();
     await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ reason: 'review_incomplete' });
-    expect(server.calls).toHaveLength(3);
+    expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
   });
 
   it.each(['missing', 'duplicate'] as const)('rejects a %s raw record on snapshot recovery without repeating work', async (change) => {

@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-09-28
+Updated: 2026-10-04
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`ce638ec` (`update for 0.4.0`), with original baseline `77ff6e2`
+`0ac621a` (Runtime Rule selection and installed sources), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -684,9 +684,45 @@ the dirty tree was carried intact to its local tracking branch. This checkpoint 
 preceding uncommitted embedding/Runtime/review-evidence work documented above. Future stage commits
 should stay on this branch; commits do not imply execution verification or a completed 0.4 release.
 
-Next: final business-prompt integrity and production logical-request identity integration, alongside
-C1 protocol correction and value-preservation proofs. Then migrate J06 in V1, preserving its semantic
-owner and insufficient-evidence policy. No Q0-Q6 choice needs reopening for this continuation.
+## Internal business send continuation: 2026-10-04
+
+- Runtime now offers internal `sendRuntimeRuleRequest`: prepare/recover selection, select the
+  snapshot's retained role and send through `LLMRuleBusinessRequest`. Build/run do not call it yet.
+- The business adapter decorates pinned Rules and protects independent copies of the Rule and
+  framework messages. A shared guard checks final ID, unique attempt, exact required-message roles,
+  bytes and relative order, and estimated actual-provider capacity. Plugin context additions are
+  allowed; removal/replacement or a smaller fallback window fails without dropping Rule content.
+- The business binding records logical ID, snapshot digest, prompt version and the digest of the
+  redacted actual messages. Router records it with raw producer/output evidence, never in provider
+  input or replay keys. Replays get the current request's own binding. Both business and review
+  bindings now require an audit logger before transport; a missing logger does not send a chat.
+- The adapter rejects unsupported caller options, fixes evidence callbacks and `scoreSuccess:false`,
+  and does not forward `validate`. It compares the unique Router response with the final post-Plugin
+  text. No business judgement, protocol parsing, automatic repair or success scoring occurs here.
+  Missing provider facts remain `unavailable`, not assumed complete and not independently rejected.
+- Tests cover fake-client evidence failures and real Router/Plugin/files/loopback/replay paths:
+  message mutation, option bypass, post-response mutation, audit absence, smaller fallback capacity,
+  retained role/source, missing role and fresh replay identity. The reviewer now calls the same guard;
+  its missing-audit test expects rejection before chat while retaining the consumed review claim.
+
+All execution verification remains deferred. Static review found no additional contract choice;
+G1 must execute and falsify Runtime composition, Decorator, shared guard, audit publication and
+post-Plugin comparison, as well as the unchanged low-score-review behavior.
+
+This is not production request recovery: caller-owned business inputs and protocol/template identity
+are still supplied to a new send; old business responses are not rehydrated/verified by this adapter.
+Those responsibilities stay with the forthcoming V1 caller integration, not a second lifecycle store.
+
+C1 source audit found that `completion_eligibility.ts` currently ignores `finishReasons`; OpenAI
+`length` can therefore look complete despite the truncation exclusion. Correct it before connecting
+calibration. Existing `tests/executor.test.ts` contains the raw-newline/internal-quote motivating
+case; the parser's current CR removal and quote heuristic are not a value-preservation proof. Its
+malformed-action salvage expectation contradicts the approved no-partial-action contract and must
+change when that caller migrates. No historical missing-quote raw response was found in this audit.
+
+Next: C1 completion eligibility and mechanically proven protocol transformations, then a durable
+one-correction coordinator and V1 request/input recovery. Migrate J06 only after those prerequisites,
+preserving its semantic owner and insufficient-evidence policy. No Q0-Q6 choice needs reopening.
 
 ## Work not started or not complete
 

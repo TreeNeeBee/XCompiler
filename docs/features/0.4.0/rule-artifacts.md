@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-09-28. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-04. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -166,6 +166,38 @@ The infrastructure factory is internal and is not exported by the public Runtime
 still need the remaining source bindings, logical-request identity ownership and the business caller
 connection; configuring embedding alone does not activate Rule selection in those commands.
 
+### Internal business send
+
+[`sendRuntimeRuleRequest`](../../../src/runtime/rules.ts) calls preparation first, then selects the
+retained snapshot role and invokes [`LLMRuleBusinessRequest`](../../../src/llm/rule_business_request.ts).
+It does not invent a logical request ID. Missing business role fails before selecting a provider.
+The caller supplies framework messages; the adapter prepends RuleDecorator output from the pinned
+snapshot and protects independent copies of all initial messages. Before every transport attempt,
+including retry/fallback, the shared guard checks ID, attempt uniqueness, required-message roles,
+literal bytes, relative order and the actual provider's estimated capacity. Plugin additions may
+remain, but dropped/rewritten/reordered required content and insufficient capacity fail explicitly.
+
+Only transport and observation options are accepted. Caller-supplied validation, identity, evidence,
+scoring or cancellation overrides inside `options` fail as `invalid_input`; the owning request's
+separate `signal` remains authoritative. The adapter fixes `scoreSuccess: false`, protects capture
+callbacks through the existing Plugin host, and does not pass a business validator to Router.
+It returns `{ output, response, binding }` after checking exactly one matching producer/attempt and
+the final text after Plugin hooks. Malformed output is retained for the caller/C1, not parsed or
+repaired here. `response.capture: unavailable` is preserved without claiming completion.
+
+The business audit binding is `{ schemaVersion: 1, kind: "business", logicalRequestId,
+snapshotDigest, promptVersion, requestDigest }`. `promptVersion` is `rule-business-request/1`;
+`requestDigest` hashes `{ promptVersion, messages }` using the existing audit-redacted final
+messages. Router accepts business and selection bindings and requires an audit logger before
+either bound transport. Accepted/rejected raw response records retain the binding. It is absent
+from provider input and replay keys; replay creates a fresh current-request binding. Errors remain
+outside model retry and quality scoring, apart from genuine transport failures governed by Router.
+
+This is an internal send facility, not persisted business-response recovery. The production caller
+must still own its durable ID, original business messages, protocol/template identity and original
+response recovery. This adapter does not reload or validate a historical business response, and it
+does not migrate J06, Planner or Executor. New tests remain unrun.
+
 ## Embedding identity and versioned vector index
 
 [`RuleEmbeddingPort`](../../../src/application/rules/rule_vector_retriever.ts) declares
@@ -304,8 +336,9 @@ read/parse failures preserve target, reference and cause. The reader rejects exi
 and uses `O_NOFOLLOW` on the regular ledger file; it scans raw evidence, not the audit summary.
 
 The trusted final-send callback returns a versioned `RuleSelectionAuditBinding` with the owning
-business request ID, pinned draft digest, protocol version and request digest. Router validates and
-copies it into raw audit after Plugin hooks; it never enters provider messages or Record/Replay keys.
+business request ID, pinned draft digest, protocol version and request digest. Router validates it,
+requires an audit logger before sending, and copies it into raw audit after Plugin hooks; it never
+enters provider messages or Record/Replay keys.
 Replayed responses acquire the new request's actual binding in its own audit event. The request digest
 hashes `{ protocolVersion, messages }` after existing audit redaction, so full and redacted logs share
 one comparison representation. The verifier also derives the original draft envelope from the snapshot
@@ -324,9 +357,10 @@ business validator or start a second calibration attempt. Its client, role-pool 
 Runtime preparation are connected; business caller migration remains pending.
 
 [`assessResponseCompletion`](../../../src/llm/completion_eligibility.ts) is a pure F1 boundary for
-the provider facts used by later protocol correction. It accepts complete response/finish/done
-terminations, and keeps EOF, local-stop, missing and ambiguous evidence out of calibration. It does
-not itself invoke a corrector or classify business validity.
+the provider facts used by later protocol correction. Its current implementation checks terminal
+markers but omits finish-reason interpretation, so `length` truncation can incorrectly look complete.
+It is not production-connected and must be corrected before C1 integration. EOF, local-stop and
+missing evidence remain excluded; no corrector or business-validity judgement occurs here.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
@@ -344,6 +378,8 @@ Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_select
 [http_rule_embedding_client.test.ts](../../../tests/integration/http_rule_embedding_client.test.ts),
 [rule_embedding_record_replay.test.ts](../../../tests/integration/rule_embedding_record_replay.test.ts),
 [runtime_rule_requests.test.ts](../../../tests/integration/runtime_rule_requests.test.ts),
+[rule_business_request.test.ts](../../../tests/integration/rule_business_request.test.ts),
+[runtime_rule_business_request.test.ts](../../../tests/integration/runtime_rule_business_request.test.ts),
 [runtime_rule_infrastructure.test.ts](../../../tests/integration/runtime_rule_infrastructure.test.ts),
 [compiler_rule_catalogue.test.ts](../../../tests/integration/compiler_rule_catalogue.test.ts),
 [installation_resources.test.ts](../../../tests/integration/installation_resources.test.ts),

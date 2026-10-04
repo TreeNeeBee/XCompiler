@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-09-28. This development checkpoint extends `ce638ec` (`update for 0.4.0`)
+Updated: 2026-10-04. This development checkpoint extends `0ac621a` (Runtime Rule selection and installed sources)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,15 +129,15 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-09-28:
+Progress reconciliation against source, 2026-10-04:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; persisted request-ID, completion classifier and final-send guard channels | Runtime identity/evidence composition, protocol separation and full accounting |
-| R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime recovery/retrieval/Record-Replay; raw review audit verification; manifest-bound installed genesis and default loading | Additional definitions/bindings, durable production request identity, build/run migration, full request accounting and final business-prompt integrity |
-| C1 | Approved protocol-only direction and original-producer/one-correction contract | Coordinator, durable correction allowance and value-preservation proofs |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard | Production request/input recovery, protocol separation, completion-fact classification correction and full accounting |
+| R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
+| C1 | Approved protocol-only direction and original-producer/one-correction contract; source audit identifies truncation and legacy-salvage gaps | Correct completion eligibility, coordinator, durable correction allowance and value-preservation proofs |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -523,10 +523,30 @@ lint or typecheck ran. The manifest digest was generated as source authoring, no
 the product. G1 must falsify the Runtime default-load call and manifest comparison as well as execute
 the source, installed-layout and native-package gates.
 
-Next: finish the shared final business-prompt integrity boundary and production logical-request
-identity integration; develop C1 before the V1 caller migration. J06's YAML rubric and removal of its
-original prompt source belong in the same V1 batch after F1/R1/C1 integration is ready; its existing
-insufficient-evidence judgement policy remains unchanged. No new Q0-Q6 choice is needed.
+Business-send continuation, 2026-10-04: `sendRuntimeRuleRequest` now prepares/restores selection and
+chooses the snapshot's retained role. `LLMRuleBusinessRequest` decorates the pinned Rules, preserves
+independent Rule/framework messages and uses the shared guard for final identity, bytes/roles/order
+and actual-provider capacity. The new business audit binding retains the snapshot digest, prompt
+version and protected actual-message digest. Router accepts the business/review binding union and
+requires audit before either bound transport, outside provider retries/scoring. Review claims remain
+consumed on this failure; no review chat is sent when audit is absent.
+
+The send adapter accepts only transport/observation options and rejects unsupported caller options.
+It fixes identity, guard and response capture, disables success scoring, and never forwards `validate`
+into the legacy Router repair loop. A unique matching producer/output is required after Plugin hooks.
+Unavailable transport metadata remains unavailable for C1 to assess. Unit and real Router/file/Plugin/
+loopback/replay cases are authored; none has run. G1 must falsify Runtime send composition, Decorator,
+guard, audit-binding publication and post-Plugin response comparison, including the sibling review path.
+
+This closes only the internal send boundary. Production callers still own persisted logical IDs,
+original business messages/protocol identity and response recovery; a new send is not proof that an
+old response was recovered. No J06, Planner or Executor caller was migrated in this batch.
+
+Next: correct completion eligibility (length finish reasons currently look complete), implement C1
+protocol checks and per-transformation value proofs, then its durable original-producer correction
+allowance and the V1 request/input recovery binding. J06's YAML rubric and removal of its original
+prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy
+remains unchanged. No new Q0-Q6 choice is needed.
 
 ## Acceptance and verification plan
 

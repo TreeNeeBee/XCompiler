@@ -22,18 +22,36 @@ import { FileRuleReviewAuditReader } from '../infrastructure/rules/file_rule_rev
 import { LLMRuleReviewEvidenceVerifier } from '../llm/rule_review_evidence.js';
 import { installedCompilerRulesRoot } from '../config/installation_root.js';
 import { loadCompilerRuleCatalogue } from '../infrastructure/rules/compiler_rule_catalogue.js';
+import { LLMRuleBusinessRequest, type RuleBusinessChatOptions } from '../llm/rule_business_request.js';
+import type { ChatMessage } from '../llm/types.js';
 
 export class RuntimeRuleConfigurationError extends Error {
   readonly code = 'runtime_rule_configuration_failed';
 
   constructor(
-    readonly reason: 'embedding_not_configured' | 'invalid_state_root' | 'review_role_missing',
+    readonly reason: 'embedding_not_configured' | 'invalid_state_root' | 'review_role_missing' | 'business_role_missing',
     readonly details: Readonly<Record<string, unknown>> = {},
     options?: ErrorOptions,
   ) {
     super(`Runtime Rule configuration failed: ${reason}`, options);
     this.name = 'RuntimeRuleConfigurationError';
   }
+}
+
+/** Internal F1/R1 composition. Production callers still own persistent IDs and business inputs. */
+export async function sendRuntimeRuleRequest(input: Parameters<typeof prepareRuntimeRuleRequest>[0] & {
+  messages: readonly ChatMessage[];
+  options?: RuleBusinessChatOptions;
+}) {
+  const snapshot = await prepareRuntimeRuleRequest(input);
+  input.signal?.throwIfAborted();
+  const role = snapshot.context.role;
+  if (!role) throw new RuntimeRuleConfigurationError('business_role_missing', {
+    logicalRequestId: snapshot.logicalRequestId,
+  });
+  return new LLMRuleBusinessRequest(input.router.for(role), new RuleDecorator()).send({
+    snapshot, messages: input.messages, options: input.options, signal: input.signal,
+  });
 }
 
 /** Runtime alone chooses the state paths; embedding is needed only for a fresh optional selection. */

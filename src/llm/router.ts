@@ -27,7 +27,7 @@ import type { RecordReplayController } from '../application/record_replay/contro
 import { isCancellationError } from '../util/cancellation.js';
 import { z } from 'zod';
 import { RecordReplayError } from '../application/record_replay/types.js';
-import { RuleSelectionAuditBindingSchema, RuleReviewEvidenceError } from '../application/rules/rule_review_evidence.js';
+import { RuleRequestAuditBindingSchema, RuleRequestBindingError } from '../application/rules/rule_request_binding.js';
 import {
   captureResponseEvidence,
   ProviderResponseEvidenceSchema,
@@ -402,11 +402,15 @@ class FallbackClient implements LLMClient {
           logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
           messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
         });
-        const binding = RuleSelectionAuditBindingSchema.optional().safeParse(rawBinding);
-        if (!binding.success) throw new RuleReviewEvidenceError('invalid', {
+        const binding = RuleRequestAuditBindingSchema.optional().safeParse(rawBinding);
+        if (!binding.success) throw new RuleRequestBindingError('invalid', {
           logicalRequestId, providerAttemptId, stage: 'final-send-binding',
         }, { cause: binding.error });
         const requestBinding = binding.data;
+        if (requestBinding && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
+          logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+          requestKind: requestBinding.kind,
+        });
         try {
           out = await c.client.chat(attemptMessages, providerOptions);
         } catch (err) {

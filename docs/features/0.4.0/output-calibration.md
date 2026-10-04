@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-09-22; source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-04; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -12,6 +12,21 @@ without base content, business RuleLists or RuleChain selection. Q5 A also now s
 retention of actual Rule content/versions and retrieval evidence; that business-request evidence
 does not become correction-prompt input. See the [implementation plan](implementation-plan.md)
 for the confirmed directions and remaining details.
+
+The 2026-10-04 source audit identifies a C1 prerequisite: the authored completion classifier ignores
+`finishReasons`. OpenAI `length` may accompany `response` or `finish-reason`, and Ollama exposes its
+reason separately from `provider-done`; terminal markers alone do not establish an untruncated
+candidate. Correct and cover this before attaching calibration. Unknown/multiple-choice/discarded
+evidence and ambiguous producer identity also need explicit eligibility treatment. No execution
+verification has established the classifier's correctness.
+
+The existing Executor raw-newline/internal-quote fixture is a concrete starting case for expanded
+repair. Preserve CR, LF and tab values individually; the current parser's CR deletion and quote
+heuristic cannot be reused as a losslessness proof. Its malformed-action salvage expectation must
+change during migration because partial actions are already forbidden by the approved contract.
+The audit found no historical missing-quote raw response, so that historical problem is not claimed
+reproduced or repaired. The new internal Rule business-send adapter returns raw output/producer
+facts without using Router `validate`; it does not itself perform C1 or restore old business inputs.
 
 ## Boundary
 

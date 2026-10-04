@@ -1,7 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-09-28.
+2026-10-04.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.
@@ -110,8 +110,17 @@ cwd and environment overrides; pkg resolves attachments beside its executable. n
 resource inclusion and failure cases are authored, together with filesystem and Runtime tests.
 No execution checks have run, and the pkg resolver simulation is not a native binary test.
 Stage checkpoints now go to `feature/0.4.0`, tracking `origin/feature/0.4.0`, as requested.
-Next are final business-prompt integrity and production request identity, alongside C1; J06 migration
-still depends on F1/R1/C1. This is a development checkpoint, not a verified 0.4 release.
+The 2026-10-04 continuation adds an internal business send using the persisted snapshot's role and
+logical request ID. Rule and framework messages are protected after Plugin mutation and on every
+provider attempt, with actual-window checks and an audit-only snapshot/request binding. Rule-bound
+Router sends now require audit before transport. Responses retain producer evidence and must match
+the text returned after Plugin hooks; the adapter performs no business validation, calibration or
+success scoring. Missing transport facts remain explicitly unavailable. Filesystem/Router/Plugin/
+replay tests are authored and unrun.
+Production request identity and original-business-input recovery still need caller integration.
+C1 must first correct the authored completion classifier's treatment of length-truncated responses,
+then implement protocol/value-preservation proofs and the durable correction allowance. J06 migration
+still depends on F1/R1/C1. These are development checkpoints, not a verified 0.4 release.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to
