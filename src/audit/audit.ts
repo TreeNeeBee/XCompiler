@@ -471,13 +471,10 @@ function redactValue(value: unknown, seen = new WeakSet<object>()): unknown {
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
   if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
-  const output: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = isSensitiveKey(key)
-      ? '[REDACTED]'
-      : redactValue(item, seen);
-  }
-  return output;
+  // Provider payloads may contain own keys such as __proto__; keep them as data, not setters.
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+    key, isSensitiveKey(key) ? '[REDACTED]' : redactValue(item, seen),
+  ]));
 }
 
 const SENSITIVE_KEYS = new Set([

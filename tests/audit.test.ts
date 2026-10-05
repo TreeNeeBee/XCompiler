@@ -121,4 +121,19 @@ describe('AuditLogger jsonl flush', () => {
     expect(jsonl).toContain('status=401');
     expect(jsonl).toContain('upstream denied the request');
   });
+
+  it('retains own JSON prototype-named keys while redacting their nested credentials', async () => {
+    const audit = new AuditLogger({ root: tmp, command: 'xcompiler_test' });
+    await audit.start();
+    const data = JSON.parse('{"__proto__":{"detail":"keep","password":"test-only-secret"},"constructor":{"prototype":"keep too"}}') as Record<string, unknown>;
+    await audit.event('note', 'retained raw JSON keys', data, { persistence: 'required' });
+    const jsonl = readFileSync(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8');
+    const event = jsonl.trim().split('\n').map((line) => JSON.parse(line))
+      .find((value) => value.message === 'retained raw JSON keys');
+    expect(Object.hasOwn(event.data, '__proto__')).toBe(true);
+    expect(event.data.__proto__).toEqual({ detail: 'keep', password: '[REDACTED]' });
+    expect(event.data.constructor).toEqual({ prototype: 'keep too' });
+    expect(jsonl).not.toContain('test-only-secret');
+    expect(readFileSync(path.join(tmp, 'audit', 'process_log.md'), 'utf8')).toContain('__proto__');
+  });
 });

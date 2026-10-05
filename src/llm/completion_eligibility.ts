@@ -9,6 +9,8 @@ interface ProviderCompletionAssessment {
     | 'local-stop' | 'eof' | 'missing-evidence' | 'ambiguous-evidence' | 'invalid-evidence' | 'output-mismatch'
     | 'missing-producer' | 'ambiguous-producer' | 'missing-choice' | 'ambiguous-choice' | 'discarded-frames'
     | 'missing-finish-reason' | 'ambiguous-finish-reason' | 'unknown-finish-reason'
+    | 'missing-payload-evidence' | 'invalid-payload-evidence'
+    | 'missing-completion-marker'
     | 'truncated' | 'content-filtered' | 'provider-refusal' | 'provider-tool-call';
 }
 
@@ -72,6 +74,9 @@ function assessProviderCompletion(evidence: ProviderResponseEvidence): ProviderC
   if (finishReason === 'length' || finishReason === 'incomplete') {
     return { disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: 'truncated' };
   }
+  // Ollama uses provider-done only after done=true. Its non-stream response fallback does not
+  // establish completion, even if a contradictory/partial envelope supplies done_reason=stop.
+  if (evidence.protocol === 'ollama' && termination === 'response') return unavailable('missing-completion-marker');
   if (finishReason === 'content_filter' || finishReason === 'refusal'
     || finishReason === 'tool_calls' || finishReason === 'function_call') {
     return {
@@ -81,6 +86,12 @@ function assessProviderCompletion(evidence: ProviderResponseEvidence): ProviderC
     };
   }
   if (finishReason !== 'stop') return unavailable('unknown-finish-reason');
+  const payload = assessPayload(evidence);
+  if (payload === 'missing' || payload === 'invalid') return unavailable(`${payload}-payload-evidence`);
+  if (payload === 'refusal' || payload === 'tool-call') return {
+    disposition: 'complete', eligibleForProtocolCalibration: false,
+    reason: payload === 'refusal' ? 'provider-refusal' : 'provider-tool-call',
+  };
   // The provider's explicit text stop is required in addition to a terminal transport marker.
   switch (termination) {
     case 'response': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-response' };
@@ -88,4 +99,38 @@ function assessProviderCompletion(evidence: ProviderResponseEvidence): ProviderC
     case 'done-marker': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'done-marker' };
     case 'provider-done': return { disposition: 'complete', eligibleForProtocolCalibration: true, reason: 'provider-done' };
   }
+}
+
+/** Interpret only producer-owned fields, never keywords in ordinary generated content. */
+function assessPayload(evidence: ProviderResponseEvidence): 'clear' | 'refusal' | 'tool-call' | 'missing' | 'invalid' {
+  const payload = evidence.payloadEvidence;
+  if (!payload || !payload.observations.length) return 'missing';
+  let refusal = false;
+  let toolCall = false;
+  for (const observation of payload.observations) {
+    if (evidence.protocol === 'openai') {
+      if (observation.choicePosition === undefined || observation.choicePosition >= evidence.maxChoicesPerFrame) return 'invalid';
+    } else if (observation.location !== 'message' || observation.choicePosition !== undefined) return 'invalid';
+    const message = observation.value;
+    if (!isObject(message)) return 'invalid';
+    if (message.content != null && typeof message.content !== 'string') return 'invalid';
+    if (message.refusal != null) {
+      if (typeof message.refusal !== 'string') return 'invalid';
+      refusal ||= message.refusal.length > 0;
+    }
+    if (message.tool_calls != null) {
+      if (!Array.isArray(message.tool_calls) || !message.tool_calls.every(isObject)) return 'invalid';
+      toolCall ||= message.tool_calls.length > 0;
+    }
+    if (message.function_call != null) {
+      if (!isObject(message.function_call)) return 'invalid';
+      // Even an empty object is an explicit call fragment, not proof of a text-only response.
+      toolCall = true;
+    }
+  }
+  return refusal ? 'refusal' : toolCall ? 'tool-call' : 'clear';
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

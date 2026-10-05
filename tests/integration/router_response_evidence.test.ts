@@ -9,6 +9,7 @@ import { AuditPersistenceError } from '../../src/audit/errors.js';
 import { RecordReplayController } from '../../src/application/record_replay/controller.js';
 import type { XCompilerConfig } from '../../src/config/config.js';
 import { FileRecordReplayStore } from '../../src/infrastructure/record_replay/file_store.js';
+import { assessResponseCompletion } from '../../src/llm/completion_eligibility.js';
 import { LLMRouter } from '../../src/llm/router.js';
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from '../../src/llm/response_evidence.js';
 import { ScoreStore } from '../../src/llm/scores.js';
@@ -40,15 +41,16 @@ async function auditEvents(): Promise<AuditEvent[]> {
   return (await fs.readFile(path.join(root, 'audit', 'audit.jsonl'), 'utf8')).trim().split('\n')
     .map((line) => JSON.parse(line) as AuditEvent);
 }
-async function endpoint(response: (call: number) => string): Promise<{ url: string; calls: () => number }> {
+async function endpoint(response: (call: number) => string | Record<string, unknown>): Promise<{ url: string; calls: () => number }> {
   let calls = 0;
   const server = createServer((req, res) => {
     req.resume();
     req.on('end', () => {
       calls++;
+      const body = response(calls);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ model: 'reported-revision', choices: [{
-        index: 0, message: { content: response(calls) }, finish_reason: 'stop',
+        index: 0, message: typeof body === 'string' ? { content: body } : body, finish_reason: 'stop',
       }] }));
     });
   });
@@ -243,6 +245,202 @@ describe('Router response evidence through provider, persistence and replay', ()
       source: 'replay', reportedModels: ['reported-revision'], finishReasons: ['stop'], output: 'accepted',
     } });
     expect((await store.list())[0]!.response).toMatchObject({ format: 'xcompiler.llm-response/1' });
+  });
+
+  it.each([
+    { name: 'refusal', payload: { refusal: 'The provider declined this request.' }, reason: 'provider-refusal' },
+    { name: 'tool calls', payload: { tool_calls: [{
+      id: 'fixture-call', type: 'function', function: { name: 'inspect', arguments: '{"target":"example"}' },
+    }] }, reason: 'provider-tool-call' },
+    { name: 'legacy function call', payload: { function_call: { name: 'inspect', arguments: '{"target":"example"}' } }, reason: 'provider-tool-call' },
+  ])('retains stop plus $name through transport, audit and replay without permitting calibration', async ({ payload, reason }) => {
+    const message = { role: 'assistant', content: '{"ok":true}', ...payload };
+    const server = await endpoint(() => message);
+    const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
+    const audit = new AuditLogger({ root, command: 'payload-response-evidence' });
+    await audit.start();
+    const observed: RoutedResponseEvidence[] = [];
+    for (const mode of ['record', 'replay'] as const) {
+      const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
+        new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
+      await expect(router.for('Coder').chat(messages, {
+        onResponse: (response) => { observed.push(response); },
+      })).resolves.toBe(message.content);
+    }
+    expect(server.calls()).toBe(1);
+    const payloadEvidence = { schemaVersion: 1, observations: [{
+      frameIndex: 0, location: 'message', choicePosition: 0, value: message,
+    }] };
+    for (const [index, response] of observed.entries()) {
+      expect(response.capture).toMatchObject({ status: 'recorded', response: {
+        source: index === 0 ? 'live' : 'replay', finishReasons: ['stop'], payloadEvidence,
+      } });
+      expect(assessResponseCompletion(response)).toMatchObject({
+        disposition: 'complete', eligibleForProtocolCalibration: false, reason,
+      });
+    }
+    const events = (await auditEvents()).filter((event) => event.messageId === 'llm.provider_response');
+    expect(events).toHaveLength(2);
+    for (const [index, event] of events.entries()) expect(event.data!.responseEvidence).toEqual(observed[index]);
+    expect((await store.list())[0]!.response).toMatchObject({
+      format: 'xcompiler.llm-response/1', observations: [{ payloadEvidence }],
+    });
+  });
+
+  it('protects the nested provider payload retained by a routed response from later mutation', async () => {
+    const message = { content: 'accepted', tool_calls: [{
+      id: 'fixture-call', type: 'function', function: { name: 'inspect', arguments: '{}' },
+    }] };
+    const server = await endpoint(() => message);
+    const router = new LLMRouter(config(server.url), undefined, undefined, undefined, undefined, probe);
+    let observed: RoutedResponseEvidence | undefined;
+    await router.for('Coder').chat(messages, { onResponse: (response) => { observed = response; } });
+    if (observed?.capture.status !== 'recorded') throw new Error('Expected recorded provider evidence');
+    const payload = observed.capture.response.payloadEvidence!;
+    const entry = payload.observations[0]!;
+    const value = entry.value as typeof message;
+    expect(Reflect.set(payload, 'schemaVersion', 2)).toBe(false);
+    expect(Reflect.set(payload.observations, '0', {})).toBe(false);
+    expect(Reflect.set(entry, 'location', 'delta')).toBe(false);
+    expect(Reflect.set(value, 'content', 'changed')).toBe(false);
+    expect(Reflect.set(value.tool_calls, '0', {})).toBe(false);
+    expect(Reflect.set(value.tool_calls[0]!, 'id', 'changed')).toBe(false);
+    expect(Reflect.set(value.tool_calls[0]!.function, 'name', 'changed')).toBe(false);
+    expect(entry.value).toEqual(message);
+    expect(assessResponseCompletion(observed)).toMatchObject({
+      disposition: 'complete', eligibleForProtocolCalibration: false, reason: 'provider-tool-call',
+    });
+  });
+
+  it('redacts captured payload credentials in the audit and recording while preserving refusal eligibility on replay', async () => {
+    const credential = 'test-only-credential-123456';
+    const password = 'test-only-password';
+    const message = {
+      content: 'accepted', refusal: `Declined with Bearer ${credential}`,
+      metadata: { password },
+    };
+    const server = await endpoint(() => message);
+    const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
+    const audit = new AuditLogger({ root, command: 'payload-redaction' });
+    await audit.start();
+    const observed: RoutedResponseEvidence[] = [];
+    for (const mode of ['record', 'replay'] as const) {
+      const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
+        new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
+      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+    }
+    expect(server.calls()).toBe(1);
+    const protectedMessage = {
+      ...message, refusal: 'Declined with Bearer [REDACTED]',
+      metadata: { password: '[REDACTED]' },
+    };
+    expect(observed[0]!.capture).toMatchObject({ response: { payloadEvidence: {
+      observations: [{ value: message }],
+    } } });
+    expect(observed[1]!.capture).toMatchObject({ response: { payloadEvidence: {
+      observations: [{ value: protectedMessage }],
+    } } });
+    for (const response of observed) expect(assessResponseCompletion(response)).toMatchObject({
+      disposition: 'complete', eligibleForProtocolCalibration: false, reason: 'provider-refusal',
+    });
+    const events = (await auditEvents()).filter((event) => event.messageId === 'llm.provider_response');
+    expect(events).toHaveLength(2);
+    for (const event of events) expect(event.data!.responseEvidence).toMatchObject({ capture: { response: {
+      payloadEvidence: { observations: [{ value: protectedMessage }] },
+    } } });
+    const recordings = await store.list();
+    expect(recordings[0]!.response).toMatchObject({ observations: [{
+      payloadEvidence: { observations: [{ value: protectedMessage }] },
+    }] });
+    for (const persisted of [JSON.stringify(recordings), await fs.readFile(path.join(root, 'audit', 'audit.jsonl'), 'utf8')]) {
+      expect(persisted).not.toContain(credential);
+      expect(persisted).not.toContain(password);
+    }
+  });
+
+  it('keeps historical fact envelopes readable without treating uncollected payloads as absent', async () => {
+    const server = await endpoint(() => 'accepted');
+    const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
+    const cfg = config(server.url);
+    const record = new RecordReplayController({ mode: 'record', store });
+    await new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record).for('Coder').chat(messages);
+    const original = (await store.list())[0]!;
+    const historical = structuredClone(original.response) as {
+      format: 'xcompiler.llm-response/1'; output: string; observations: ProviderResponseEvidence[];
+    };
+    expect(historical.observations[0]!.payloadEvidence).toBeDefined();
+    for (const observation of historical.observations) delete observation.payloadEvidence;
+    await new RecordReplayController({ mode: 'refresh', store }).execute({
+      channel: 'llm', operation: 'chat', request: original.request,
+    }, async () => historical);
+    let observed: RoutedResponseEvidence | undefined;
+    const replay = new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe,
+      new RecordReplayController({ mode: 'replay', store }));
+    await expect(replay.for('Coder').chat(messages, { onResponse: (response) => { observed = response; } }))
+      .resolves.toBe('accepted');
+    expect(observed!.capture).toMatchObject({ status: 'recorded', response: { source: 'replay', finishReasons: ['stop'] } });
+    if (observed!.capture.status !== 'recorded') throw new Error('Expected historical provider evidence');
+    expect(observed!.capture.response.payloadEvidence).toBeUndefined();
+    expect(assessResponseCompletion(observed!)).toMatchObject({
+      disposition: 'unavailable', eligibleForProtocolCalibration: false, reason: 'missing-payload-evidence',
+    });
+    expect(await store.list()).toHaveLength(2);
+    expect(server.calls()).toBe(1);
+  });
+
+  it('keeps a custom-redacted tool payload unavailable on replay rather than treating it as absent', async () => {
+    const server = await endpoint(() => ({ content: 'accepted', tool_calls: [{ function: { name: 'inspect' } }] }));
+    const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
+    const observed: RoutedResponseEvidence[] = [];
+    for (const mode of ['record', 'replay'] as const) {
+      const router = new LLMRouter(config(server.url), undefined, undefined, undefined, undefined, probe,
+        new RecordReplayController({ mode, store, enabledChannels: ['llm'], redactedFields: ['tool_calls'] }));
+      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+    }
+    expect(assessResponseCompletion(observed[0]!)).toMatchObject({
+      disposition: 'complete', eligibleForProtocolCalibration: false, reason: 'provider-tool-call',
+    });
+    expect(observed[1]!.capture).toMatchObject({ status: 'recorded', response: { payloadEvidence: {
+      observations: [{ value: { tool_calls: '[REDACTED]' } }],
+    } } });
+    expect(assessResponseCompletion(observed[1]!)).toMatchObject({
+      disposition: 'unavailable', eligibleForProtocolCalibration: false, reason: 'invalid-payload-evidence',
+    });
+    expect(server.calls()).toBe(1);
+  });
+
+  it('retains prototype-named payload keys through transport, evidence validation, audit and replay', async () => {
+    const message = JSON.parse('{"content":"accepted","metadata":{"__proto__":{"kept":true,"password":"fixture-secret"},"constructor":{"prototype":"retained"}}}') as Record<string, unknown>;
+    const expected = JSON.parse('{"content":"accepted","metadata":{"__proto__":{"kept":true,"password":"[REDACTED]"},"constructor":{"prototype":"retained"}}}') as Record<string, unknown>;
+    const server = await endpoint(() => message);
+    const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
+    const audit = new AuditLogger({ root, command: 'payload-own-keys' });
+    await audit.start();
+    const observed: RoutedResponseEvidence[] = [];
+    for (const mode of ['record', 'replay'] as const) {
+      const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
+        new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
+      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+    }
+    for (const [index, response] of observed.entries()) {
+      if (response.capture.status !== 'recorded') throw new Error('Expected retained provider evidence');
+      const value = response.capture.response.payloadEvidence!.observations[0]!.value as Record<string, unknown>;
+      expect(value).toEqual(index === 0 ? message : expected);
+      expect(Object.hasOwn(value.metadata as object, '__proto__')).toBe(true);
+      expect(assessResponseCompletion(response).eligibleForProtocolCalibration).toBe(true);
+    }
+    for (const event of (await auditEvents()).filter((entry) => entry.messageId === 'llm.provider_response')) {
+      expect(event.data!.responseEvidence).toMatchObject({ capture: { response: {
+        payloadEvidence: { observations: [{ value: expected }] },
+      } } });
+    }
+    const recordings = await store.list();
+    expect(recordings[0]!.response).toMatchObject({ observations: [{ payloadEvidence: {
+      observations: [{ value: expected }],
+    } }] });
+    expect(JSON.stringify(recordings)).not.toContain('fixture-secret');
+    expect(Object.hasOwn(Object.prototype, 'kept')).toBe(false);
+    expect(server.calls()).toBe(1);
   });
 
   it('preserves text-only fixture history without inventing completion metadata', async () => {

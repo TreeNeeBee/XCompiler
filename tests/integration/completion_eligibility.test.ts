@@ -9,7 +9,12 @@ function evidence(
   const response: ProviderResponseEvidence = {
     schemaVersion: 1, source: 'live', output: '{}', protocol: 'openai', requestedModel: 'requested-model',
     reportedModels: ['served-model'], transport: 'stream', termination, finishReasons: ['stop'], choiceIndexes: [0],
-    maxChoicesPerFrame: 1, discardedFrames: 0, ...facts,
+    maxChoicesPerFrame: 1, discardedFrames: 0,
+    payloadEvidence: { schemaVersion: 1, observations: [{
+      frameIndex: 0, location: 'message',
+      ...(facts.protocol === 'ollama' ? {} : { choicePosition: 0 }),
+      value: { content: facts.output ?? '{}' },
+    }] }, ...facts,
   };
   return {
     logicalRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -86,6 +91,8 @@ describe('provider completion evidence', () => {
     { facts: { discardedFrames: 1 }, reason: 'discarded-frames' },
     { facts: { finishReasons: ['stop', 'length'] }, reason: 'ambiguous-finish-reason' },
     { facts: { finishReasons: ['vendor-specific'] }, reason: 'unknown-finish-reason' },
+    { facts: { payloadEvidence: undefined }, reason: 'missing-payload-evidence' },
+    { facts: { payloadEvidence: { schemaVersion: 1, observations: [] } }, reason: 'missing-payload-evidence' },
   ] as const)('keeps insufficient or mixed evidence unavailable: $reason', ({ facts, reason }) => {
     assertAssessment(evidence('finish-reason', structuredClone(facts) as Partial<ProviderResponseEvidence>), {
       disposition: 'unavailable', eligibleForProtocolCalibration: false, reason,
@@ -111,6 +118,24 @@ describe('provider completion evidence', () => {
     });
     assertAssessment(evidence('response', { source: 'replay', finishReasons: ['length'] }), {
       disposition: 'incomplete', eligibleForProtocolCalibration: false, reason: 'truncated',
+    });
+  });
+
+  it.each([
+    { value: { refusal: 'declined' }, reason: 'provider-refusal', disposition: 'complete' },
+    { value: { tool_calls: [{ function: { name: 'example', arguments: '{}' } }] }, reason: 'provider-tool-call', disposition: 'complete' },
+    { value: { function_call: {} }, reason: 'provider-tool-call', disposition: 'complete' },
+    { value: { refusal: false }, reason: 'invalid-payload-evidence', disposition: 'unavailable' },
+    { value: { tool_calls: [null] }, reason: 'invalid-payload-evidence', disposition: 'unavailable' },
+    { value: { content: [{ type: 'unknown' }] }, reason: 'invalid-payload-evidence', disposition: 'unavailable' },
+    { value: null, reason: 'invalid-payload-evidence', disposition: 'unavailable' },
+  ] as const)('retains the stop but excludes payload $reason', ({ value, reason, disposition }) => {
+    const payloadEvidence: NonNullable<ProviderResponseEvidence['payloadEvidence']> = { schemaVersion: 1, observations: [{
+      frameIndex: 0, location: 'message', choicePosition: 0,
+      value: structuredClone(value) as NonNullable<ProviderResponseEvidence['payloadEvidence']>['observations'][number]['value'],
+    }] };
+    assertAssessment(evidence('response', { payloadEvidence }), {
+      disposition, eligibleForProtocolCalibration: false, reason,
     });
   });
 

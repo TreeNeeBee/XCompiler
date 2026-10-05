@@ -122,10 +122,17 @@ C1 now interprets finish reasons and adds completion-gated internal JSON inspect
 Its first explicit transformations cover complete outer fences, trailing commas and exact raw
 CR/LF/tab escaping. Candidate proofs preserve full ordered structure, numeric lexemes and decoded
 string values. Ambiguous inner quotes and fragment salvage remain unresolved; the combined Executor
-sample is not repaired. Refusal/tool payload facts, further quote/escape proofs, the durable
+sample is not repaired. Further quote/escape proofs, the durable
 correction coordinator and production integration remain open. Completion, real provider-loopback
 and proof tests are authored, unrun. J06 migration still depends on F1/R1/C1 readiness.
 These are development checkpoints, not a verified 0.4 release.
+
+The 2026-10-05 continuation captures message/delta refusal and native-tool payloads, retaining their
+decoded values and positions through audit and replay. Such signals cannot enter calibration merely
+because the finish reason says `stop`. Old uninspected records remain readable but unavailable;
+malformed fields are explicit failures of evidence. Deep freezing and own JSON-key retention are
+covered by authored tests, together with Ollama's required completion marker. These checks are unrun;
+the fixed-template coordinator and production caller migration remain pending.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

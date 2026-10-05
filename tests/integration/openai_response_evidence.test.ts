@@ -78,6 +78,10 @@ describe('OpenAI response evidence from the actual transport', () => {
         choiceIndexes: [4, 7],
         maxChoicesPerFrame: 2,
         discardedFrames: 0,
+        payloadEvidence: { schemaVersion: 1, observations: [
+          { frameIndex: 0, choicePosition: 0, location: 'message', value: { content: output } },
+          { frameIndex: 0, choicePosition: 1, location: 'message', value: { content: 'unselected alternative' } },
+        ] },
         output,
       }]);
     },
@@ -113,6 +117,9 @@ describe('OpenAI response evidence from the actual transport', () => {
         choiceIndexes: [0],
         maxChoicesPerFrame: 1,
         discardedFrames: 0,
+        payloadEvidence: { schemaVersion: 1, observations: [
+          { frameIndex: 0, choicePosition: 0, location: 'delta', value: { content: output } },
+        ] },
         output,
       }]);
     },
@@ -146,6 +153,9 @@ describe('OpenAI response evidence from the actual transport', () => {
       choiceIndexes: [],
       maxChoicesPerFrame: 1,
       discardedFrames: 0,
+      payloadEvidence: { schemaVersion: 1, observations: [
+        { frameIndex: 0, choicePosition: 0, location: 'delta', value: { content: output } },
+      ] },
       output,
     }]);
   });
@@ -219,8 +229,57 @@ describe('OpenAI response evidence from the actual transport', () => {
       choiceIndexes: [0, 1],
       maxChoicesPerFrame: 3,
       discardedFrames: 6,
+      payloadEvidence: { schemaVersion: 1, observations: [
+        { frameIndex: 5, choicePosition: 0, location: 'delta', value: { content: 'first ' } },
+        { frameIndex: 5, choicePosition: 2, location: 'delta', value: { content: 'alternative ' } },
+        { frameIndex: 6, choicePosition: 0, location: 'delta', value: { content: 'ending' } },
+      ] },
       output,
     }]);
+  });
+
+  it.each([false, true])('retains both channels and every choice without flattening payload fields (stream=%s)', async (stream) => {
+    const message = { role: 'assistant', content: 'visible', refusal: null, tool_calls: [], provider_metadata: { kept: true } };
+    const delta = { content: 'visible', refusal: 'declined', function_call: { name: 'operate', arguments: '{' } };
+    const alternative = { content: null, tool_calls: [{ index: 0, function: { arguments: '"next"' } }] };
+    const envelope = { model: 'served-model', choices: [
+      { index: 4, message, delta, finish_reason: 'stop' },
+      { index: 7, message: alternative, delta: false, finish_reason: 'stop' },
+    ] };
+    const fixture = await responseFixture(stream ? sse(JSON.stringify(envelope)) : JSON.stringify(envelope), stream);
+    const observed: ProviderResponseEvidence[] = [];
+    await expect(fixture.client.chat([{ role: 'user', content: 'Produce text.' }], {
+      ...(stream ? { onToken: () => {} } : {}),
+      onProviderResponse: (response) => { observed.push(response); },
+    })).resolves.toBe('visible');
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.payloadEvidence).toEqual({ schemaVersion: 1, observations: [
+      { frameIndex: 0, choicePosition: 0, location: 'message', value: message },
+      { frameIndex: 0, choicePosition: 0, location: 'delta', value: delta },
+      { frameIndex: 0, choicePosition: 1, location: 'message', value: alternative },
+      { frameIndex: 0, choicePosition: 1, location: 'delta', value: false },
+    ] });
+  });
+
+  it('preserves earlier refusal and tool fragments when later payloads contain empty placeholders', async () => {
+    const initial = { content: 'text', refusal: 'cannot ', tool_calls: [{ index: 0, function: { name: 'operate', arguments: '{' } }] };
+    const next = { refusal: 'comply', tool_calls: [{ index: 0, function: { arguments: '}' } }] };
+    const final = { content: '', refusal: null, tool_calls: [], function_call: null };
+    const fixture = await responseFixture(sse(
+      JSON.stringify({ model: 'served-model', choices: [{ index: 0, delta: initial }] }),
+      JSON.stringify({ model: 'served-model', choices: [{ index: 0, delta: next }] }),
+      JSON.stringify({ model: 'served-model', choices: [{ index: 0, delta: final, finish_reason: 'stop' }] }),
+    ), true);
+    const observed: ProviderResponseEvidence[] = [];
+    await expect(fixture.client.chat([{ role: 'user', content: 'Produce text.' }], {
+      onToken: () => {}, onProviderResponse: (response) => { observed.push(response); },
+    })).resolves.toBe('text');
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.payloadEvidence).toEqual({ schemaVersion: 1, observations: [
+      { frameIndex: 0, choicePosition: 0, location: 'delta', value: initial },
+      { frameIndex: 1, choicePosition: 0, location: 'delta', value: next },
+      { frameIndex: 2, choicePosition: 0, location: 'delta', value: final },
+    ] });
   });
 
   it.each([false, true])('propagates observation failures unchanged after transport cleanup (stream=%s)', async (stream) => {

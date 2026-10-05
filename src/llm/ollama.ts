@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import * as https from 'node:https';
 import { URL } from 'node:url';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
-import type { ProviderResponseEvidence } from './response_evidence.js';
+import { recordProviderPayload, type ProviderPayloadEvidence, type ProviderResponseEvidence } from './response_evidence.js';
 import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 
 export const DEFAULT_OLLAMA_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
@@ -34,6 +34,7 @@ interface OllamaStreamCompletion {
   reportedModels: string[];
   finishReasons: string[];
   discardedFrames: number;
+  payloadEvidence: ProviderPayloadEvidence;
 }
 
 export class OllamaClient implements LLMClient {
@@ -107,11 +108,14 @@ export class OllamaClient implements LLMClient {
     }
     if (json.error) throw new Error(`Ollama error: ${json.error}`);
     const output = json.message?.content ?? '';
+    const payloadEvidence: ProviderPayloadEvidence = { schemaVersion: 1, observations: [] };
+    if (Object.hasOwn(json, 'message')) recordProviderPayload(payloadEvidence, 0, 'message', json.message);
     options?.onProviderResponse?.(this.responseEvidence(output, 'non-stream', {
       termination: json.done === true ? 'provider-done' : 'response',
       reportedModels: typeof json.model === 'string' && json.model.length > 0 ? [json.model] : [],
       finishReasons: typeof json.done_reason === 'string' && json.done_reason.length > 0 ? [json.done_reason] : [],
       discardedFrames: 0,
+      payloadEvidence,
     }));
     return output;
   }
@@ -228,6 +232,8 @@ export function streamPostNdjson(
         const reportedModels = new Set<string>();
         const finishReasons = new Set<string>();
         let discardedFrames = 0;
+        let responseFrameIndex = 0;
+        const payloadEvidence: ProviderPayloadEvidence = { schemaVersion: 1, observations: [] };
         const finishResponse = (termination: OllamaStreamCompletion['termination']) => {
           finish(aggregate, {
             termination,
@@ -235,6 +241,7 @@ export function streamPostNdjson(
             finishReasons: [...finishReasons],
             // Preserve the existing parser's output: unconsumed lines/tails are evidence of loss.
             discardedFrames: discardedFrames + buf.split('\n').filter((line) => line.trim()).length,
+            payloadEvidence,
           });
         };
         const repeatDetector = new RepeatTokenDetector();
@@ -254,12 +261,14 @@ export function streamPostNdjson(
             const line = buf.slice(0, idx).trim();
             buf = buf.slice(idx + 1);
             if (!line) continue;
+            const frameIndex = responseFrameIndex++;
             let obj: OllamaChatResponse | null = null;
             try {
               obj = JSON.parse(line) as OllamaChatResponse;
               if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
                 throw new TypeError('Ollama NDJSON frame must be an object');
               }
+              if (Object.hasOwn(obj, 'message')) recordProviderPayload(payloadEvidence, frameIndex, 'message', obj.message);
               if (typeof obj.model === 'string' && obj.model.length > 0) reportedModels.add(obj.model);
               if (typeof obj.done_reason === 'string' && obj.done_reason.length > 0) finishReasons.add(obj.done_reason);
               const piece = obj.message?.content;

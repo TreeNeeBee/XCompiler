@@ -1,6 +1,6 @@
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 import type { StreamProgress } from './errors.js';
-import type { ProviderResponseEvidence } from './response_evidence.js';
+import { recordProviderPayload, type ProviderResponseEvidence } from './response_evidence.js';
 import { Agent } from 'undici';
 import { detectCyclicTokenLoop, detectRepeatedTextLoop, RepeatTokenDetector } from './stream_watchdog.js';
 import {
@@ -226,7 +226,7 @@ export class OpenAIClient implements LLMClient {
         throw buildHttpError(this.cfg, res.status, res.statusText, text);
       }
       const raw: unknown = await res.json();
-      recordResponseFrame(responseEvidence, raw);
+      recordResponseFrame(responseEvidence, raw, 0);
       const json = raw as OpenAIChatResponse;
       if (json.error) throw new Error(`OpenAI error: ${json.error.message}`);
       const content = json.choices?.[0]?.message?.content;
@@ -389,7 +389,9 @@ export class OpenAIClient implements LLMClient {
           return false;
         }
       };
+      let responseFrameIndex = 0;
       const onData = (data: string) => {
+        const frameIndex = responseFrameIndex++;
         if (data === '[DONE]') {
           if (!done) responseEvidence.termination = 'done-marker';
           done = true;
@@ -402,7 +404,7 @@ export class OpenAIClient implements LLMClient {
           responseEvidence.discardedFrames++;
           return;
         }
-        if (!recordResponseFrame(responseEvidence, parsed)) return;
+        if (!recordResponseFrame(responseEvidence, parsed, frameIndex)) return;
         const chunk = parsed as OpenAIStreamChunk;
         if (chunk.error) throw new Error(`OpenAI error: ${chunk.error.message ?? JSON.stringify(chunk.error)}`);
         if (chunk.done === true) {
@@ -538,6 +540,7 @@ function newResponseEvidence(
     choiceIndexes: [],
     maxChoicesPerFrame: 0,
     discardedFrames: 0,
+    payloadEvidence: { schemaVersion: 1, observations: [] },
     output: '',
   };
 }
@@ -547,7 +550,7 @@ function isResponseObject(value: unknown): value is Record<string, unknown> {
 }
 
 /** Records the whole frame, including choices the existing content path may not consume. */
-function recordResponseFrame(evidence: ProviderResponseEvidence, value: unknown): boolean {
+function recordResponseFrame(evidence: ProviderResponseEvidence, value: unknown, frameIndex: number): boolean {
   if (!isResponseObject(value)) {
     evidence.discardedFrames++;
     return false;
@@ -562,10 +565,15 @@ function recordResponseFrame(evidence: ProviderResponseEvidence, value: unknown)
   }
   evidence.maxChoicesPerFrame = Math.max(evidence.maxChoicesPerFrame, value.choices.length);
   let discardedChoice = false;
-  for (const choice of value.choices) {
+  for (const [choicePosition, choice] of value.choices.entries()) {
     if (!isResponseObject(choice)) {
       discardedChoice = true;
       continue;
+    }
+    for (const location of ['message', 'delta'] as const) {
+      if (Object.hasOwn(choice, location)) {
+        recordProviderPayload(evidence.payloadEvidence!, frameIndex, location, choice[location], choicePosition);
+      }
     }
     if (
       typeof choice.index === 'number' && Number.isInteger(choice.index) && choice.index >= 0 &&

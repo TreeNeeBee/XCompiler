@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-04. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-05. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -360,8 +360,9 @@ Runtime preparation are connected; business caller migration remains pending.
 the provider facts used by later protocol correction. The C1 continuation now checks finish reasons:
 `length`/`incomplete` remain truncated; missing/unknown/mixed facts remain unavailable. Explicit
 refusal/filter/tool-call reasons are complete but ineligible. Internal JSON inspection/proof entries
-call this boundary; production callers do not. Standard refusal/tool-call payload facts still need
-capture/replay integration before production calibration. No corrector or business judgement occurs
+call this boundary; production callers do not. Message/delta payloads now retain refusal/tool fields
+through capture, audit and replay. `stop` plus a native signal remains ineligible; old records without
+payload inspection and malformed payloads remain unavailable. No corrector or business judgement occurs
 here; the first representation proofs are described in [output-calibration.md](output-calibration.md).
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
@@ -387,6 +388,7 @@ Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_select
 [installation_resources.test.ts](../../../tests/integration/installation_resources.test.ts),
 [completion_eligibility.test.ts](../../../tests/integration/completion_eligibility.test.ts),
 [provider_completion_eligibility.test.ts](../../../tests/integration/provider_completion_eligibility.test.ts),
+[response_payload.test.ts](../../../tests/integration/response_payload.test.ts),
 [protocol_json.test.ts](../../../tests/integration/protocol_json.test.ts), and the
 Router/Plugin evidence tests.
 None has been executed for this implementation. Tests, typecheck, lint, build, packaging and

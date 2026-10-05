@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-04; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-05; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -20,10 +20,11 @@ and complete producer/choice facts are required for calibration eligibility. Mis
 reasons, ambiguous producer/choice facts and discarded frames remain unavailable; EOF/local-stop
 remain incomplete. Recorded filtering/refusal/tool-call reasons may describe a completed response
 but cannot enter correction. `providerEvidenceIsComplete` reports completeness only, not eligibility.
-Standard `message.refusal`/`delta.refusal` and tool-call payload fields are not yet captured; this
-classifier does not establish the absence of those signals when a reason says `stop`. Their capture
-and replay treatment remain prerequisites before production calibration. No execution verification
-has established the classifier's correctness.
+The 2026-10-05 continuation adds message/delta payload capture and interpretation, including
+`refusal`, `tool_calls` and `function_call`; a `stop` reason with such payloads cannot enter correction.
+Old facts lacking this collection remain readable but unavailable for calibration. Ollama non-stream
+completion additionally requires its explicit `done=true` marker. These changes are authored,
+not executed or connected to a production correction coordinator.
 
 The existing Executor raw-newline/internal-quote fixture is a concrete starting case for expanded
 repair. Preserve CR, LF and tab values individually; the current parser's CR deletion and quote
@@ -170,6 +171,41 @@ Original and corrected outputs remain separately attributable. A corrected actio
 same argument, path, capability and permission checks. No partial/salvaged action is executed before
 the entire response has passed protocol and caller validation.
 
+### Provider payload evidence: 2026-10-05
+
+Provider facts retain an optional, versioned `payloadEvidence` object. New OpenAI responses record
+every present `message` and `delta` for every choice, including channels unused by text assembly;
+Ollama records each present `message`. Each observation retains its decoded JSON value, channel,
+zero-based frame ordinal and, for OpenAI, the choice's position in that frame. Streaming observations
+are ordered fragments, not a reconstructed call. Frame ordinals count consumed SSE data values or
+nonempty NDJSON lines, including malformed frames; a non-stream response has ordinal zero.
+Raw text, requested/reported models and finish reasons keep their existing fields.
+
+Both captures and replay envelopes validate payloads without rebuilding their JSON objects or
+dropping special own keys such as `__proto__`. Captured values are copied and deeply frozen. The
+audit object constructor likewise preserves these keys while applying existing credential redaction;
+Record/Replay retains its existing safe object construction and redaction. This is retention of
+decoded JSON channels, not a byte-for-byte HTTP archive or a new numeric-lexeme proof. Non-JSON
+runtime objects cannot become valid observations; existing explicit clone failures for non-cloneable
+objects remain errors, without a fabricated replacement record.
+
+After the original truncation/transport checks, a text `stop` requires at least one inspected channel.
+Missing collection (including old records) or zero observations yields `missing-payload-evidence`.
+Malformed channel containers, unsupported content shapes, wrong field types or inconsistent channel
+positions yield `invalid-payload-evidence`. Nonempty refusal strings, nonempty tool-call arrays of
+objects, and object-valued function-call fragments exclude calibration while retaining completeness.
+Null fields, empty refusal strings and empty tool-call arrays are placeholders; an empty
+`function_call` object is still a call fragment. Earlier signals cannot be cleared by later empty
+frames. Control never searches ordinary generated text for these words. No tool call is assembled
+or executed here, and unsupported vendor fields acquire no inferred meaning.
+
+`schemaVersion: 1` and `xcompiler.llm-response/1` records remain readable without backfilling new
+facts. Missing facts are unknown, not an implicit clean payload. Corrupt envelopes retain the typed
+recording error path. Existing review-evidence and business-response readers share this schema;
+their business judgement and recovery responsibilities do not change. Authored tests cover actual
+provider capture, Router audit/record/replay, nested immutability, credential redaction, historical
+envelopes, special JSON keys and the internal C1 completion gate. All execution remains deferred.
+
 ### Authored representation proof foundation: 2026-10-04
 
 [`protocol_json.ts`](../../../src/llm/protocol_json.ts) defines an explicit JSON protocol ID/version,
@@ -306,6 +342,6 @@ explicit provenance and review; ordinary audit retains the initial evidence.
 The historical JSON issue remains open until production wiring and regression evidence prove the
 repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
 separate persisted Rule-review allowance. C1 now has authored completion/inspection/proof entries;
-it still needs additional response facts, quote/escape proof classes, the durable one-calibration
+it still needs additional quote/escape proof classes, the durable one-calibration
 coordinator and production wiring. No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

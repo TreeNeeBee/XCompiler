@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-04. This development checkpoint extends `7e3924f` (guarded Rule business sends)
+Updated: 2026-10-05. This development checkpoint extends `56fde1f` (C1 completion and JSON proof foundation)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,15 +129,15 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-04:
+Progress reconciliation against source, 2026-10-05:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; finish-reason eligibility correction authored | Refusal/tool payload facts, production request/input recovery, protocol separation and full accounting |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Completion-gated internal entries; explicit JSON protocol, typed diagnostics and full candidate proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs and completion facts, fixed-template coordinator, durable correction allowance, production integration and legacy-salvage removal |
+| C1 | Completion/payload-gated internal entries; explicit JSON protocol, typed diagnostics and full candidate proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs, fixed-template coordinator, durable correction allowance, production integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -556,9 +556,21 @@ raw-newline/inner-quote sample remains unresolved, not claimed repaired. Tests f
 entry gating and real provider-loopback facts are authored, unrun. See [the proof contract](output-calibration.md).
 G1 must falsify the actual completion/inspection/proof calls in addition to provider fact capture.
 
-Next: capture refusal/tool payload facts and retain them through replay; extend independently proven
-quote/escape classes; implement the fixed-template coordinator and durable original-producer
-correction allowance, then V1 request/input recovery. Corrector candidates need their own completion
+C1 payload continuation, 2026-10-05: OpenAI now retains each choice's message/delta and Ollama each
+message as ordered decoded JSON observations, with frame/channel/choice position. The shared schema
+keeps historical records readable without inventing missing facts; capture deeply freezes nested
+values. A `stop` with refusal/native-tool fields is ineligible, wrong shapes unavailable, and earlier
+fragments cannot be erased by empty terminal fields. Ollama's non-stream fallback without `done=true`
+is unavailable even with a `stop` reason. Ordinary generated text is not searched for signal words.
+
+The raw-value validator and audit object construction preserve own prototype-named JSON keys;
+existing credential redaction stays in place. Provider/Router/audit/replay/C1-entry regression cases
+are authored, including historical envelopes, immutability and malformed fields. None has run.
+G1 must falsify actual provider payload collection, schema retention, audit protection and C1 gate
+calls, then execute focused cases and affected gates. See [the exact payload contract](output-calibration.md).
+
+Next: extend independently proven quote/escape classes; implement the fixed-template coordinator and
+durable original-producer correction allowance, then V1 request/input recovery. Corrector candidates need their own completion
 and identity checks; the current string-proof function only gates the original response.
 J06's YAML rubric and removal of its original
 prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy

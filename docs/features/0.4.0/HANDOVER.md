@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-04
+Updated: 2026-10-05
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`7e3924f` (guarded Rule business sends), with original baseline `77ff6e2`
+`56fde1f` (C1 completion and JSON proof foundation), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -746,16 +746,36 @@ change when that caller migrates. No historical missing-quote raw response was f
   the actual provider observation, completion-gate, inspection and proof calls and observe failures
   before restoring them, then run the affected repository gates.
 
-Two known limits remain explicit. The standard refusal/tool-call payload fields are not captured
-by the current response-fact schema; a `stop` reason alone does not prove those signals absent.
-Capture/replay/schema integration must precede production calibration. Also, the motivating Executor
-sample's unescaped inner quotes can admit competing value boundaries, so the combined sample still
+At this checkpoint refusal/tool-call payload capture was still missing; the following batch fills
+that gap. A remaining limit is that the motivating Executor sample's unescaped inner quotes can
+admit competing value boundaries, so the combined sample still
 returns unresolved. Further quote classes need a uniqueness proof; no historical missing-quote
 incident is claimed repaired. See [the concrete proof contract](output-calibration.md).
 
-Next: complete response-fact eligibility coverage and additional proven quote/escape classes, then
-the fixed-template, durable one-correction coordinator and V1 request/input recovery. Migrate J06
-only after those prerequisites, preserving its semantic owner and insufficient-evidence policy.
+## C1 refusal/tool payload evidence: 2026-10-05
+
+- New provider facts include versioned `payloadEvidence` observations. OpenAI records all present
+  message/delta channels for every choice; Ollama records each present message. Each decoded value
+  retains frame ordinal, channel and OpenAI choice position. Stream fragments remain in observation
+  order and are not assembled into executable native calls.
+- The shared schema and Router audit/record/replay preserve these facts. Old schema/envelope records
+  remain readable with no fabricated payload inspection. Missing/empty collection is unavailable;
+  malformed fields/content/channel shapes cannot establish clean text. Nonempty refusal, tool-call
+  arrays or function-call object fragments block calibration even with `stop`. Existing EOF/local-stop
+  and truncation checks retain priority; Ollama non-stream also requires `done=true`.
+- Capture copies and deeply freezes the new nested data. Static review identified loss of own
+  `__proto__` keys in generic JSON validation and audit object construction. A non-transforming JSON
+  validator and safe audit construction preserve these keys, with existing credential redaction.
+  The new value records contain decoded JSON, not exact HTTP bytes. Non-JSON runtime objects remain
+  invalid; non-cloneable values retain the existing explicit error rather than a fabricated record.
+- Regression sources cover real stream/nonstream providers, Router/audit/record/replay, historical
+  envelopes, empty and malformed payloads, all choices/channels, nested freezing, special keys and
+  C1 entry gating. No executable verification ran. G1 must remove the actual collection, retention,
+  audit and eligibility calls to falsify wiring, restore them and run the affected gates.
+
+Next: additional proven quote/escape classes, the fixed-template, durable one-correction coordinator
+and V1 request/input recovery. Migrate J06 only after those prerequisites, preserving its semantic
+owner and insufficient-evidence policy.
 No Q0-Q6 choice needs reopening. Static source/diff review is the only verification so far.
 
 ## Work not started or not complete
@@ -825,7 +845,7 @@ production caller migration:
 ### 4. Implement output-protocol calibration
 
 - Extend the authored JSON protocol/diagnostic/proof records with request/result and durable attempt
-  records outside Domain business objects and RuleChain; finish refusal/tool payload facts first.
+  records outside Domain business objects and RuleChain; retain the authored payload eligibility gate.
 - Reconcile `isCompleteTurnJson` with `parseTurn`; remove unapproved partial-action salvage.
 - Separate protocol rejection from Planner/Executor/scenario business validation.
 - Use one correction-accounting owner and a fixed, versioned, nonrecursive correction template.

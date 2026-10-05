@@ -69,6 +69,9 @@ describe('Ollama response completion evidence', () => {
         choiceIndexes: [],
         maxChoicesPerFrame: 0,
         discardedFrames: 0,
+        payloadEvidence: { schemaVersion: 1, observations: [
+          { frameIndex: 0, location: 'message', value: { role: 'assistant', content: output } },
+        ] },
       }]);
     });
   });
@@ -184,6 +187,51 @@ describe('Ollama response completion evidence', () => {
       expect(observed[0]).toMatchObject({
         output: 'remaining text', termination: 'provider-done', finishReasons: ['stop'], discardedFrames: 1,
       });
+      expect(observed[0]?.payloadEvidence).toEqual({ schemaVersion: 1, observations: [
+        { frameIndex: 1, location: 'message', value: { role: 'assistant', content: 'remaining text' } },
+      ] });
+    });
+  });
+
+  it.each([false, true])('retains the full message, including malformed payload fields (stream=%s)', async (stream) => {
+    const message = { role: 'assistant', content: 'visible', refusal: false, tool_calls: { unexpected: true },
+      function_call: 3, provider_metadata: { kept: ['raw', null] } };
+    await withOllama((response) => {
+      const value = { model: 'served-model', message, done: true, done_reason: 'stop' };
+      response.writeHead(200, { 'content-type': stream ? 'application/x-ndjson' : 'application/json' });
+      response.end(stream ? frame(value) : JSON.stringify(value));
+    }, async (client) => {
+      const observed: ProviderResponseEvidence[] = [];
+      await expect(client.chat(messages, {
+        ...(stream ? { onToken: () => {} } : {}),
+        onProviderResponse: (evidence) => { observed.push(evidence); },
+      })).resolves.toBe('visible');
+      expect(observed).toHaveLength(1);
+      expect(observed[0]?.payloadEvidence).toEqual({ schemaVersion: 1, observations: [
+        { frameIndex: 0, location: 'message', value: message },
+      ] });
+    });
+  });
+
+  it('keeps stream payload fragments separately when the final message clears their fields', async () => {
+    const initial = { role: 'assistant', content: 'visible', refusal: 'declined',
+      tool_calls: [{ function: { name: 'operate', arguments: { kept: true } } }] };
+    const final = { role: 'assistant', content: '', refusal: null, tool_calls: [], function_call: null };
+    await withOllama((response) => {
+      response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+      response.end('\n' + frame({ model: 'served-model', message: initial }) + '\n' + frame({
+        model: 'served-model', message: final, done: true, done_reason: 'stop',
+      }));
+    }, async (client) => {
+      const observed: ProviderResponseEvidence[] = [];
+      await expect(client.chat(messages, {
+        onToken: () => {}, onProviderResponse: (evidence) => { observed.push(evidence); },
+      })).resolves.toBe('visible');
+      expect(observed).toHaveLength(1);
+      expect(observed[0]?.payloadEvidence).toEqual({ schemaVersion: 1, observations: [
+        { frameIndex: 0, location: 'message', value: initial },
+        { frameIndex: 1, location: 'message', value: final },
+      ] });
     });
   });
 

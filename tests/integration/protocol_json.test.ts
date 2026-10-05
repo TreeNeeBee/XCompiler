@@ -27,6 +27,9 @@ function response(output: string, facts: Partial<ProviderResponseEvidence> = {})
       schemaVersion: 1, source: 'live', output, protocol: 'openai', requestedModel: 'model-a',
       reportedModels: ['model-a'], transport: 'stream', termination: 'finish-reason',
       finishReasons: ['stop'], choiceIndexes: [0], maxChoicesPerFrame: 1, discardedFrames: 0,
+      payloadEvidence: { schemaVersion: 1, observations: [{
+        frameIndex: 0, location: 'message', choicePosition: 0, value: { content: output },
+      }] },
       ...facts,
     } },
   };
@@ -295,6 +298,13 @@ describe('C1 completion boundary before JSON inspection', () => {
     ['missing reason', { finishReasons: [] }],
     ['EOF', { termination: 'eof' }],
     ['local predicate stop', { termination: 'local-stop' }],
+    ['historical uninspected payload', { payloadEvidence: undefined }],
+    ['provider refusal payload', { payloadEvidence: { schemaVersion: 1, observations: [{
+      frameIndex: 0, location: 'message', choicePosition: 0, value: { refusal: 'declined' },
+    }] } }],
+    ['provider tool-call payload', { payloadEvidence: { schemaVersion: 1, observations: [{
+      frameIndex: 0, location: 'delta', choicePosition: 0, value: { tool_calls: [{ index: 0 }] },
+    }] } }],
   ] satisfies [string, Partial<ProviderResponseEvidence>][])('does not infer completion from valid-looking JSON after %s', (_name, facts) => {
     const evidence = response('{"done":true}', facts);
     const result = assessJsonProtocolResponse(evidence, protocol);
