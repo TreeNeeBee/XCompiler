@@ -39,6 +39,15 @@ function assertAssessment(
 }
 
 describe('provider completion evidence', () => {
+  it('does not transfer completion evidence to different routed output', () => {
+    const captured = evidence('response');
+    expect(assessResponseCompletion({ ...captured, output: '{"different":true}' })).toMatchObject({
+      disposition: 'unavailable', eligibleForProtocolCalibration: false, reason: 'output-mismatch',
+    });
+    if (captured.capture.status !== 'recorded') throw new Error('Expected recorded fixture');
+    expect(providerEvidenceIsComplete(captured.capture.response)).toBe(true);
+  });
+
   it.each(['response', 'finish-reason', 'done-marker', 'provider-done'] as const)(
     'allows an explicit stop with terminal transport evidence %s', (termination) => {
       assertAssessment(evidence(termination), {

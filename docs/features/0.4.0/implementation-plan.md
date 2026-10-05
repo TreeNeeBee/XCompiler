@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-05. This development checkpoint extends `56fde1f` (C1 completion and JSON proof foundation)
+Updated: 2026-10-06. This development checkpoint extends `84ef337` (C1 refusal/tool payload evidence)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-05:
+Progress reconciliation against source, 2026-10-06:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -137,7 +137,7 @@ Progress reconciliation against source, 2026-10-05:
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Completion/payload-gated internal entries; explicit JSON protocol, typed diagnostics and full candidate proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs, fixed-template coordinator, durable correction allowance, production integration and legacy-salvage removal |
+| C1 | Independent original/candidate evidence gates and producer/request binding; fixed protocol-only prompt and exact message guard; whole-input proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs, actual-producer dispatch, durable correction allowance with audit/recovery, production integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -569,9 +569,22 @@ are authored, including historical envelopes, immutability and malformed fields.
 G1 must falsify actual provider payload collection, schema retention, audit protection and C1 gate
 calls, then execute focused cases and affected gates. See [the exact payload contract](output-calibration.md).
 
-Next: extend independently proven quote/escape classes; implement the fixed-template coordinator and
-durable original-producer correction allowance, then V1 request/input recovery. Corrector candidates need their own completion
-and identity checks; the current string-proof function only gates the original response.
+C1 evidence/prompt continuation, 2026-10-06: the correction entry now receives both routed responses
+and an independently expected correction request ID. Both must satisfy strict schema, output identity
+and completion/payload eligibility before whole-input proof. Request/attempt reuse and mismatched
+provider/protocol are rejected. Candidate requested and reported models must equal the original actual
+reported model; configured aliases and Router labels do not substitute for that identity.
+
+The fixed versioned prompt is authored as two immutable messages with validated protocol and exact
+original text in a JSON data envelope. Its guard requires the whole final message array to match,
+not merely retain a required subsequence. No Rule material is accepted. It is not connected to transport
+yet and grants no correction allowance. Candidate/prompt regression tests and shared schema reuse are
+authored, unrun; G1 must falsify the actual evidence/proof calls and eventual final-send guard.
+
+Next: implement durable original-request correction accounting, fixed actual-producer dispatch and
+audit/recovery verification, then V1 request/input recovery. Additional quote/escape classes need
+independent proofs. Known supported repairs already normalize deterministically; unprovable input is
+still unresolved, and this boundary introduces no model call or production workflow change.
 J06's YAML rubric and removal of its original
 prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy
 remains unchanged. No new Q0-Q6 choice is needed.

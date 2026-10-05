@@ -11,6 +11,21 @@ function observation(value: unknown) {
 }
 
 describe('retained decoded provider payloads', () => {
+  it('retains blank producer identities as invalid raw evidence without normalizing names', () => {
+    for (const blank of ['', ' \r\n\t']) {
+      for (const fields of [{ requestedModel: blank }, { reportedModels: [blank] }]) {
+        const source = { ...observation({ content: '{}' }), ...fields };
+        expect(captureResponseEvidence([source], '{}')).toMatchObject({
+          status: 'unavailable', reason: 'invalid', observations: [source],
+        });
+      }
+    }
+    const source = { ...observation({ content: '{}' }), requestedModel: ' Alias ', reportedModels: [' Served '] };
+    expect(captureResponseEvidence([source], '{}')).toMatchObject({
+      status: 'recorded', response: { requestedModel: ' Alias ', reportedModels: [' Served '] },
+    });
+  });
+
   it('copies and freezes all own JSON keys without changing prototype-named properties', () => {
     const value = JSON.parse('{"content":"{}","__proto__":{"kept":true},"constructor":{"prototype":["original"]}}') as Record<string, unknown>;
     const original = structuredClone(value);

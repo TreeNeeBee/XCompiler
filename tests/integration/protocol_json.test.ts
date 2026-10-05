@@ -11,6 +11,7 @@ const protocol: JsonOutputProtocol = {
   id: 'test-json', version: '1', root: 'object',
   transformations: ['json-fence', 'trailing-comma', 'raw-string-control'],
 };
+const correctionRequestId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
 
 function inspected(source: string, contract: JsonOutputProtocol = protocol) {
   const result = inspectJsonProtocol(source, contract);
@@ -32,6 +33,13 @@ function response(output: string, facts: Partial<ProviderResponseEvidence> = {})
       }] },
       ...facts,
     } },
+  };
+}
+
+function correctionResponse(output: string): RoutedResponseEvidence {
+  return {
+    ...response(output), logicalRequestId: correctionRequestId,
+    providerAttemptId: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdce',
   };
 }
 
@@ -287,7 +295,7 @@ describe('C1 completion boundary before JSON inspection', () => {
     expect(assessJsonProtocolResponse(response(original), protocol)).toMatchObject({
       status: 'assessed', completion: { eligibleForProtocolCalibration: true }, result: { status: 'repairable' },
     });
-    expect(assessJsonProtocolCorrection(response(original), candidate, protocol)).toMatchObject({
+    expect(assessJsonProtocolCorrection(response(original), correctionResponse(candidate), protocol, correctionRequestId)).toMatchObject({
       status: 'assessed', result: { status: 'preserved' },
     });
   });
@@ -310,7 +318,7 @@ describe('C1 completion boundary before JSON inspection', () => {
     const result = assessJsonProtocolResponse(evidence, protocol);
     expect(result).toMatchObject({ status: 'ineligible', completion: { eligibleForProtocolCalibration: false } });
     expect(result).not.toHaveProperty('result');
-    const correction = assessJsonProtocolCorrection(evidence, '{ "done": true }', protocol);
+    const correction = assessJsonProtocolCorrection(evidence, correctionResponse('{ "done": true }'), protocol, correctionRequestId);
     expect(correction).toMatchObject({ status: 'ineligible', completion: { eligibleForProtocolCalibration: false } });
     expect(correction).not.toHaveProperty('result');
   });
@@ -320,6 +328,7 @@ describe('C1 completion boundary before JSON inspection', () => {
       ...response('{"x":1,}'), capture: { status: 'unavailable', reason: 'missing', observations: [] },
     };
     expect(assessJsonProtocolResponse(evidence, protocol)).toMatchObject({ status: 'ineligible' });
-    expect(assessJsonProtocolCorrection(evidence, '{"x":1}', protocol)).toMatchObject({ status: 'ineligible' });
+    expect(assessJsonProtocolCorrection(evidence, correctionResponse('{"x":1}'), protocol, correctionRequestId))
+      .toMatchObject({ status: 'ineligible' });
   });
 });

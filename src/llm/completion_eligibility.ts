@@ -41,6 +41,9 @@ export function assessResponseCompletion(response: RoutedResponseEvidence): Resp
     return { ...base, disposition: 'unavailable', eligibleForProtocolCalibration: false,
       reason: reasons[response.capture.reason] };
   }
+  if (response.capture.response.output !== response.output) return {
+    ...base, disposition: 'unavailable', eligibleForProtocolCalibration: false, reason: 'output-mismatch',
+  };
   return { ...base, ...assessProviderCompletion(response.capture.response) };
 }
 

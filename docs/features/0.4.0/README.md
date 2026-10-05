@@ -1,7 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-04.
+2026-10-06.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.
@@ -133,6 +133,13 @@ because the finish reason says `stop`. Old uninspected records remain readable b
 malformed fields are explicit failures of evidence. Deep freezing and own JSON-key retention are
 covered by authored tests, together with Ollama's required completion marker. These checks are unrun;
 the fixed-template coordinator and production caller migration remain pending.
+
+The 2026-10-06 continuation requires independent original/candidate completion and payload evidence,
+request/attempt identity and actual-producer consistency before correction proof. It also authors the
+fixed protocol-only template and exact final-message guard. These pure components introduce no model
+send and do not establish durable calibration accounting or raw audit authenticity. Their tests are
+authored and unrun. Actual-producer dispatch, the persistent one-correction coordinator and production
+caller migration remain open; see [the current contract](output-calibration.md).
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

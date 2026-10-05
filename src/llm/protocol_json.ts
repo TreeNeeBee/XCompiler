@@ -54,7 +54,7 @@ class InvalidRepresentation extends Error {
 
 /** A proof scanner, not a business parser. No partial value or guessed structure is returned. */
 export function inspectJsonProtocol(original: string, input: JsonOutputProtocol): JsonProtocolInspection {
-  const protocol = freezeProtocol(input);
+  const protocol = validateJsonOutputProtocol(input);
   try {
     const edits: JsonRepresentationEdit[] = [];
     const range = envelope(original, protocol, edits);
@@ -108,7 +108,7 @@ export function proveJsonProtocolCorrection(original: string, candidate: string,
     }))) });
 }
 
-function freezeProtocol(input: JsonOutputProtocol): JsonOutputProtocol {
+export function validateJsonOutputProtocol(input: JsonOutputProtocol): JsonOutputProtocol {
   const protocol = Protocol.parse(input);
   Object.freeze(protocol.transformations);
   return Object.freeze(protocol);

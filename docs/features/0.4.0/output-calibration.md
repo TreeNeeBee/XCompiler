@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-05; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-06; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -236,11 +236,21 @@ and original/candidate token correspondence; edits are not a diff of the candida
 alternate string escapes. Offsets use zero-based UTF-16 units, end-exclusive; diagnostic line/column
 are one-based. Original/candidate text and protocol identity are retained unchanged.
 
-[`protocol_candidate.ts`](../../../src/llm/protocol_candidate.ts) gates both internal entries on the
-**original response's** completion eligibility before inspection/proof. Its correction function
-accepts a candidate string, not a verified corrector transport response. The future coordinator must
-separately establish that candidate's completion, original producer identity, durable allowance and
-audit provenance. These functions neither invoke a model nor establish business validity.
+[`protocol_candidate.ts`](../../../src/llm/protocol_candidate.ts) validates the original routed response
+before inspection. Since 2026-10-06 its correction entry requires a routed candidate response as well
+as an independently supplied expected correction request ID; the string-only path is removed. Both
+responses must pass the shared strict schema, output/capture identity and completion/payload eligibility
+before proof. Failures distinguish the original, candidate and request/producer binding stages.
+
+The candidate logical ID must equal the expected correction ID, which must differ from the original
+logical ID; provider attempts cannot be reused. UUID comparisons ignore case. Provider and transport
+protocol must match exactly. The candidate requested model and unique reported model must both equal
+the original unique reported model. An original requested alias may differ; outer `model` fields are
+Router client labels, not actual model identities. Blank names are invalid and nonblank names are
+never trimmed or case-folded. Stream/non-stream and live/replay differences do not change producer
+identity. These checks establish consistency of supplied facts, not audit authenticity or permission
+to dispatch. Durable allowance and raw evidence verification remain coordinator responsibilities.
+These functions neither invoke a model nor establish business validity.
 
 The existing Executor sample combining raw newlines with unescaped internal quotes remains
 unresolved. In a multi-field response an apparent inner quote can also close a string, producing
@@ -252,6 +262,33 @@ historical missing-quote incident.
 Focused proof/entry tests and real provider-loopback completion tests are authored, unrun. G1 must
 also remove the actual completion/inspection/proof calls to falsify their wiring. No production
 caller, legacy salvage path or retry policy has been migrated by this foundation.
+
+## Authored fixed prompt boundary: 2026-10-06
+
+[`protocol_correction_prompt.ts`](../../../src/llm/protocol_correction_prompt.ts) defines
+`json-protocol-correction/1`: one constant system message and one user JSON data envelope containing
+only the validated protocol declaration and exact original text. Protocol IDs and original output
+are data, not instruction sources. JSON encoding preserves the original string on decoding, including
+CR/LF, literal backslashes and lone UTF-16 surrogates. It does not parse or round large numeric text.
+
+The template describes only the declared representation transformations and forbids guessed values,
+business judgements and Tool execution. Its output is the whole JSON candidate, or unchanged original
+when repair cannot be established; independent proof remains authoritative. No Rules, Wiki, role
+instructions or business request messages are accepted as separate prompt inputs.
+
+`assertJsonProtocolCorrectionMessages` regenerates the fixed material from original/protocol inputs,
+strictly validates message fields and compares the entire message array. Added, removed, reordered,
+re-roled or modified messages fail with a typed error without echoing raw content. This differs from
+the business Rule guard, which allows additional Plugin material around required messages.
+
+This is a pure builder and guard, not a sender. The durable coordinator must wire it after mutable
+hooks on every actual send, bind template/protocol/producer/raw audit evidence, and consume the one
+logical allowance before dispatch. Rendering a prompt grants no allowance or eligibility. Existing
+supported source repairs already have deterministic normalization; unprovable source values do not
+become provable because a model returned a plausible candidate. No model call is introduced here.
+
+Prompt round-trip, mutation and candidate-evidence regression tests are authored and unrun. G1 must
+falsify the actual completion, producer/request and proof gates, then the final-send call once wired.
 
 ## Proposed protocol records
 
@@ -341,7 +378,8 @@ explicit provenance and review; ordinary audit retains the initial evidence.
 
 The historical JSON issue remains open until production wiring and regression evidence prove the
 repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
-separate persisted Rule-review allowance. C1 now has authored completion/inspection/proof entries;
+separate persisted Rule-review allowance. C1 now has authored dual-response evidence/proof entries
+and a fixed protocol-only prompt with an exact message guard;
 it still needs additional quote/escape proof classes, the durable one-calibration
 coordinator and production wiring. No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

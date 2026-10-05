@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-05
+Updated: 2026-10-06
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`56fde1f` (C1 completion and JSON proof foundation), with original baseline `77ff6e2`
+`84ef337` (C1 refusal/tool payload evidence), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -773,9 +773,32 @@ incident is claimed repaired. See [the concrete proof contract](output-calibrati
   C1 entry gating. No executable verification ran. G1 must remove the actual collection, retention,
   audit and eligibility calls to falsify wiring, restore them and run the affected gates.
 
-Next: additional proven quote/escape classes, the fixed-template, durable one-correction coordinator
-and V1 request/input recovery. Migrate J06 only after those prerequisites, preserving its semantic
-owner and insufficient-evidence policy.
+## C1 correction evidence and fixed prompt boundary: 2026-10-06
+
+- `assessJsonProtocolCorrection` now requires a separate routed candidate response and an independently
+  supplied expected correction request ID; the former string-only entry is removed. Both responses
+  pass the shared strict evidence schema and their own completion/payload gate. Captured output must
+  match routed output; a completion record for another string cannot establish eligibility.
+- Correction request IDs must match the expected ID and differ from the original logical request;
+  attempts cannot reuse the original attempt ID. UUID case does not create a distinct identity.
+  Provider and protocol must match. Candidate requested/reported models must both equal the original
+  unique reported model. Original configured aliases and Router display labels are not actual model
+  identities. Blank identities fail; nonblank names are compared exactly without normalization.
+- The fixed `json-protocol-correction/1` template contains one constant system message and one JSON
+  data envelope with the validated protocol and exact original output. Its message guard reconstructs
+  this material and requires exact count/order/roles/content, rejecting added Rules or Plugin text.
+  This is a pure material/guard component, not yet a final-send hook or model dispatcher.
+- Shared schema reuse leaves the business sender's existing attempt/output checks in place. New
+  candidate and prompt tests are authored; no test, typecheck, lint, build or other execution ran.
+  G1 must falsify the completion, identity and proof calls, plus the final-send guard once connected,
+  and run the affected integration, core, typecheck, lint and build gates.
+
+These boundaries prove supplied evidence consistency, not raw audit authenticity or durable budget
+consumption. Current accepted repairs already have deterministic normalization; an unprovable source
+still returns unresolved even with a completed candidate. No new LLM call is introduced.
+Next: durable original-request correction accounting, fixed actual-producer dispatch and audit/recovery
+verification; additional quote/escape classes still need independent preservation proofs. Then finish
+V1 request/input recovery and migrate J06, preserving its semantic owner and insufficient-evidence policy.
 No Q0-Q6 choice needs reopening. Static source/diff review is the only verification so far.
 
 ## Work not started or not complete

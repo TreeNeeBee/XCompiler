@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-05. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-06. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -364,6 +364,14 @@ call this boundary; production callers do not. Message/delta payloads now retain
 through capture, audit and replay. `stop` plus a native signal remains ineligible; old records without
 payload inspection and malformed payloads remain unavailable. No corrector or business judgement occurs
 here; the first representation proofs are described in [output-calibration.md](output-calibration.md).
+
+The 2026-10-06 C1 entry validates both original and candidate routed evidence using the schema shared
+with the business sender. Completion cannot apply to different routed output. Candidate request and
+attempt identity are distinct from the original, and its requested/reported model must match the
+original actual producer. The fixed protocol-only template and exact message guard are authored;
+unlike Rule guards, they reject additional prompt material. They remain pure components without a
+sender, durable claim or raw-audit verification. No Rule selection or decoration is introduced into
+calibration, and no production caller is migrated by these changes. Tests remain unrun.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request

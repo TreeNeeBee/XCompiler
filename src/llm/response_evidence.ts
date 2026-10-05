@@ -4,6 +4,7 @@ type PayloadJsonValue = null | boolean | number | string | PayloadJsonValue[] | 
 
 // z.json() rebuilds objects and drops own __proto__ keys. Evidence must retain every decoded key.
 const PayloadValue = z.custom<PayloadJsonValue>(isPayloadJsonValue);
+const ProducerLabel = z.string().refine((value) => value.trim().length > 0);
 
 function isPayloadJsonValue(input: unknown): input is PayloadJsonValue {
   const active = new WeakSet<object>();
@@ -62,8 +63,8 @@ export const ProviderResponseEvidenceSchema = z.object({
   source: z.enum(['live', 'replay']),
   output: z.string(),
   protocol: z.enum(['openai', 'ollama']),
-  requestedModel: z.string().min(1),
-  reportedModels: z.array(z.string().min(1)),
+  requestedModel: ProducerLabel,
+  reportedModels: z.array(ProducerLabel),
   transport: z.enum(['non-stream', 'stream']),
   termination: z.enum(['response', 'finish-reason', 'done-marker', 'provider-done', 'eof', 'local-stop']),
   finishReasons: z.array(z.string().min(1)),
@@ -105,6 +106,16 @@ export interface RoutedResponseEvidence {
   readonly output: string;
   readonly capture: ResponseEvidenceCapture;
 }
+
+/** Shared structural boundary; completion and output identity remain explicit assessments. */
+export const RoutedResponseEvidenceSchema = z.object({
+  logicalRequestId: z.uuid(), providerAttemptId: z.uuid(), provider: ProducerLabel, model: ProducerLabel,
+  output: z.string(), capture: z.discriminatedUnion('status', [
+    z.object({ status: z.literal('recorded'), response: ProviderResponseEvidenceSchema }).strict(),
+    z.object({ status: z.literal('unavailable'), reason: z.enum(['missing', 'multiple', 'invalid', 'output-mismatch']),
+      observations: z.array(z.unknown()) }).strict(),
+  ]),
+}).strict();
 
 /** Missing metadata is explicit; it must never be upgraded to a completed response. */
 export function captureResponseEvidence(observations: readonly unknown[], output: string): ResponseEvidenceCapture {

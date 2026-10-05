@@ -7,7 +7,7 @@ import {
 import {
   validateRuleRequestSnapshot, type RuleRequestSnapshot,
 } from '../application/rules/rule_request_snapshot.js';
-import { ProviderResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
+import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
 import { validateRuleProviderRequest } from './rule_request_guard.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 
@@ -26,15 +26,6 @@ const SEND_OPTIONS = new Set([
 const Messages = z.array(z.object({
   role: z.enum(['system', 'user', 'assistant']), content: z.string(),
 }).strict()).min(1);
-const Text = z.string().refine((value) => value.trim().length > 0);
-const Response = z.object({
-  logicalRequestId: z.uuid(), providerAttemptId: z.uuid(), provider: Text, model: Text,
-  output: z.string(), capture: z.discriminatedUnion('status', [
-    z.object({ status: z.literal('recorded'), response: ProviderResponseEvidenceSchema }).strict(),
-    z.object({ status: z.literal('unavailable'), reason: z.enum(['missing', 'multiple', 'invalid', 'output-mismatch']),
-      observations: z.array(z.unknown()) }).strict(),
-  ]),
-}).strict();
 
 export class RuleBusinessRequestError extends Error {
   readonly code = 'rule_business_request_failed';
@@ -114,7 +105,7 @@ export class LLMRuleBusinessRequest {
     if (responses.length !== 1) throw new RuleBusinessRequestError('response_evidence_invalid', {
       logicalRequestId, kind: responses.length ? 'multiple' : 'missing', observations: responses.length,
     });
-    const parsed = Response.safeParse(responses[0]);
+    const parsed = RoutedResponseEvidenceSchema.safeParse(responses[0]);
     if (!parsed.success) throw new RuleBusinessRequestError('response_evidence_invalid', {
       logicalRequestId, kind: 'invalid-producer',
     }, { cause: parsed.error });
