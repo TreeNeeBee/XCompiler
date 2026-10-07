@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-06. This development checkpoint extends `84ef337` (C1 refusal/tool payload evidence)
+Updated: 2026-10-08. This development checkpoint extends `b3c25d5` (C1 correction evidence and fixed prompts)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-06:
+Progress reconciliation against source, 2026-10-08:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -137,7 +137,7 @@ Progress reconciliation against source, 2026-10-06:
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Independent original/candidate evidence gates and producer/request binding; fixed protocol-only prompt and exact message guard; whole-input proof for fences, trailing commas and CR/LF/tab escaping | Additional quote/escape proofs, actual-producer dispatch, durable correction allowance with audit/recovery, production integration and legacy-salvage removal |
+| C1 | Independent response/proof gates; fixed prompt/guard; single-attempt ledger, immutable file claim/result state and mandatory evidence ports | Additional quote/escape proofs, actual-producer dispatch, concrete raw-audit verifier/recovery adapter, Runtime/production integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -581,8 +581,22 @@ not merely retain a required subsequence. No Rule material is accepted. It is no
 yet and grants no correction allowance. Candidate/prompt regression tests and shared schema reuse are
 authored, unrun; G1 must falsify the actual evidence/proof calls and eventual final-send guard.
 
-Next: implement durable original-request correction accounting, fixed actual-producer dispatch and
-audit/recovery verification, then V1 request/input recovery. Additional quote/escape classes need
+The 2026-10-08 continuation authors `ProtocolCorrectionLedger` and container-confined immutable file
+claim/result state. An explicitly requested attempt can acquire only one claim per original logical
+request. Existing unfinished claims never become a fresh allowance. Completion and recovery require
+the evidence port, repeat producer/completion/value proof and compare immutable hashes. Raw content
+stays in audit ownership; the state stores metadata and digests only. Repeated identical completion
+keeps the first timestamp, while changed originals, results or unsupported pinned versions fail.
+
+The common immutable JSON publisher moves from Rules to Infrastructure persistence with no legacy
+alias. File and directory synchronization now precede successful publication for both Rule and C1
+stores. Post-publication failure retains the consumed claim and preserves primary/cleanup errors.
+Filesystem support for directory synchronization is required; no host power-loss test has run.
+Real-file and ledger tests are authored, unrun. The ledger's evidence port is faked in its tests;
+this is not an implemented audit adapter, model sender or production correction pipeline.
+
+Next: implement fixed actual-producer dispatch and the concrete audit/recovery verifier, compose
+them with the ledger, then finish V1 request/input recovery. Additional quote/escape classes need
 independent proofs. Known supported repairs already normalize deterministically; unprovable input is
 still unresolved, and this boundary introduces no model call or production workflow change.
 J06's YAML rubric and removal of its original

@@ -5,7 +5,7 @@ import {
   type RuleRequestSnapshot,
   type RuleRequestSnapshotStore,
 } from '../../application/rules/rule_request_snapshot.js';
-import { publishImmutableRuleJson, readImmutableRuleJson, ruleArtifactPath } from './immutable_json_artifact.js';
+import { publishImmutableJson, readImmutableJson, artifactPath } from '../persistence/immutable_json_artifact.js';
 
 /** Reads recovery material by request identity, without consulting the current Rule catalogue. */
 export class FileRuleRequestSnapshotStore implements RuleRequestSnapshotStore {
@@ -14,8 +14,8 @@ export class FileRuleRequestSnapshotStore implements RuleRequestSnapshotStore {
   async read(logicalRequestId: string): Promise<RuleRequestSnapshot | undefined> {
     const name = this.name(logicalRequestId);
     let raw: unknown;
-    try { raw = await readImmutableRuleJson(this.root, name, this.boundaryRoot); }
-    catch (cause) { throw new RuleSnapshotError('read_failed', { target: ruleArtifactPath(this.root, name), logicalRequestId }, { cause }); }
+    try { raw = await readImmutableJson(this.root, name, this.boundaryRoot); }
+    catch (cause) { throw new RuleSnapshotError('read_failed', { target: artifactPath(this.root, name), logicalRequestId }, { cause }); }
     return raw === undefined ? undefined : validateRuleRequestSnapshot(raw, logicalRequestId);
   }
 
@@ -23,9 +23,9 @@ export class FileRuleRequestSnapshotStore implements RuleRequestSnapshotStore {
     const name = this.name(snapshot.logicalRequestId);
     const validated = validateRuleRequestSnapshot(snapshot, snapshot.logicalRequestId);
     let stored: unknown;
-    try { stored = await publishImmutableRuleJson(this.root, name, validated, this.boundaryRoot); }
+    try { stored = await publishImmutableJson(this.root, name, validated, this.boundaryRoot); }
     catch (cause) { throw new RuleSnapshotError('write_failed', {
-      target: ruleArtifactPath(this.root, name), logicalRequestId: snapshot.logicalRequestId,
+      target: artifactPath(this.root, name), logicalRequestId: snapshot.logicalRequestId,
     }, { cause }); }
     const existing = validateRuleRequestSnapshot(stored, snapshot.logicalRequestId);
     if (existing.digest !== validated.digest) throw new RuleSnapshotError('identity_conflict', {

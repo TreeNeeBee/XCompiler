@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ruleEvidenceDigest } from '../../application/rules/rule_evidence_encoding.js';
 import type { RuleCatalogue } from '../../domain/rules/catalogue.js';
-import { assertRuleArtifactRoot } from './immutable_json_artifact.js';
+import { assertArtifactRoot } from '../persistence/immutable_json_artifact.js';
 import { loadYamlRuleCatalogue } from './yaml_rule_catalogue.js';
 
 /** Manual release manifest. Digest covers the normalized definition, not YAML comments or layout. */
@@ -38,7 +38,7 @@ export async function loadCompilerRuleCatalogue(root: string): Promise<RuleCatal
   let catalogue: RuleCatalogue;
   try {
     // Do not treat a redirected rules directory as a new trust anchor.
-    await assertRuleArtifactRoot(root, installationRoot);
+    await assertArtifactRoot(root, installationRoot);
     const realRoot = await fs.realpath(root);
     for (const entry of COMPILER_RULE_MANIFEST) {
       const target = path.join(realRoot, entry.relativePath);

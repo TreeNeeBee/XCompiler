@@ -2,7 +2,7 @@ import { constants, promises as fs } from 'node:fs';
 import { AuditPersistenceError } from '../../audit/errors.js';
 import type { RuleReviewAuditReader } from '../../application/rules/rule_review_evidence.js';
 import type { RuleSelectionReviewReference } from '../../application/rules/rule_request_snapshot.js';
-import { assertRuleArtifactRoot, ruleArtifactPath } from './immutable_json_artifact.js';
+import { assertArtifactRoot, artifactPath } from '../persistence/immutable_json_artifact.js';
 
 /** Reads the container's raw ledger, never a summary or a model-provided file path. */
 export class FileRuleReviewAuditReader implements RuleReviewAuditReader {
@@ -10,7 +10,7 @@ export class FileRuleReviewAuditReader implements RuleReviewAuditReader {
 
   async read(reference: RuleSelectionReviewReference, signal?: AbortSignal): Promise<readonly unknown[]> {
     signal?.throwIfAborted();
-    const target = ruleArtifactPath(this.root, 'audit.jsonl');
+    const target = artifactPath(this.root, 'audit.jsonl');
     const failure = (operation: 'read-jsonl' | 'validate-jsonl', cause: unknown, line?: number) => new AuditPersistenceError({
       operation, target, eventKind: 'llm.response', messageId: 'llm.provider_response',
       logicalRequestId: reference.logicalRequestId, providerAttemptId: reference.providerAttemptId,
@@ -18,7 +18,7 @@ export class FileRuleReviewAuditReader implements RuleReviewAuditReader {
     }, { cause, record: { reference, line } });
     let text: string;
     try {
-      await assertRuleArtifactRoot(this.root, this.containerRoot);
+      await assertArtifactRoot(this.root, this.containerRoot);
       const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
       let readError: unknown;
       try {

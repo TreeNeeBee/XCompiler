@@ -7,7 +7,7 @@ import {
 import { canonicalRuleJson } from '../../application/rules/rule_evidence_encoding.js';
 import { validateRuleSelectionDraft, type RuleSelectionDraft } from '../../application/rules/rule_request_snapshot.js';
 import { FileRuleRequestSnapshotStore } from './file_rule_request_snapshot_store.js';
-import { publishImmutableRuleJson, readImmutableRuleJson, ruleArtifactPath } from './immutable_json_artifact.js';
+import { publishImmutableJson, readImmutableJson, artifactPath } from '../persistence/immutable_json_artifact.js';
 
 /** Runtime owns root; state is isolated from candidate worktrees and contains no model-chosen paths. */
 export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore implements RuleRequestStateStore {
@@ -64,18 +64,18 @@ export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore impl
     if (!parsed.success) throw new RuleRequestError('invalid', { logicalRequestId: id }, { cause: parsed.error });
     const root = path.join(this.stateRoot, section);
     const name = `${parsed.data.toLowerCase()}.json`;
-    return { root, name, target: ruleArtifactPath(root, name) };
+    return { root, name, target: artifactPath(root, name) };
   }
 
   private async readState(section: string, id: string): Promise<unknown | undefined> {
     const location = this.location(section, id);
-    try { return await readImmutableRuleJson(location.root, location.name, this.containerRoot); }
+    try { return await readImmutableJson(location.root, location.name, this.containerRoot); }
     catch (cause) { throw new RuleRequestError('read_failed', { logicalRequestId: id, target: location.target }, { cause }); }
   }
 
   private async publishState(section: string, id: string, value: unknown): Promise<unknown> {
     const location = this.location(section, id);
-    try { return await publishImmutableRuleJson(location.root, location.name, value, this.containerRoot); }
+    try { return await publishImmutableJson(location.root, location.name, value, this.containerRoot); }
     catch (cause) { throw new RuleRequestError('write_failed', { logicalRequestId: id, target: location.target }, { cause }); }
   }
 }

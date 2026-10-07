@@ -1,7 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-06.
+2026-10-08.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.
@@ -140,6 +140,14 @@ fixed protocol-only template and exact final-message guard. These pure component
 send and do not establish durable calibration accounting or raw audit authenticity. Their tests are
 authored and unrun. Actual-producer dispatch, the persistent one-correction coordinator and production
 caller migration remain open; see [the current contract](output-calibration.md).
+
+The 2026-10-08 continuation authors a single-attempt ledger and immutable file claim/result store.
+Recovery cannot grant a second allowance; completion and recovery require evidence callbacks and
+repeat the full proof against retained digests. The shared publisher now synchronizes directories
+as well as file contents, retaining consumed claims on publication failure. Real-file and ledger
+tests are authored, unrun. The ledger is not a sender; its concrete raw-audit adapter, fixed-producer
+transport and Runtime integration remain the next work. Current deterministic repairs do not trigger
+a new model call.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

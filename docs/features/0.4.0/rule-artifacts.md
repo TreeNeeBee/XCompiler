@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-06. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-08. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -298,7 +298,7 @@ same request ID raises `identity_conflict` and keeps the prior record. Creation 
 body, so a caller resuming a request must read/reuse the stored snapshot rather than reconstruct it
 with a new timestamp. Invalid records and read/write failure are distinct `RuleSnapshotError` reasons.
 
-All three file stores use [`immutable_json_artifact`](../../../src/infrastructure/rules/immutable_json_artifact.ts):
+All three file stores use [`immutable_json_artifact`](../../../src/infrastructure/persistence/immutable_json_artifact.ts):
 write an exclusive temporary file, sync its contents, publish without replacement using a hard
 link, and remove only that invocation's temporary file. Final artifacts are read as regular files
 with `O_NOFOLLOW`. Temporary files are not selected as records; no historical cleanup policy is
@@ -307,6 +307,11 @@ choose the root's project/state ownership. Runtime supplies a container boundary
 stores: index, snapshot and request state. Each read/publication checks the existing ancestor
 directories below that boundary; symlinks and non-directories are rejected. Publication checks again
 after creating missing directories. The container anchor may resolve through an OS path alias.
+Since 2026-10-08 this is shared Infrastructure persistence rather than a Rule-owned utility. Publication
+also synchronizes the directory chain through the supplied existing container anchor and the target
+directory after linking, including when another writer won. Unsupported/failed synchronization errors
+are propagated; a published claim is retained. Read/write/sync errors and close/cleanup errors remain
+available together. The existing anchor must already be durable; no power-loss test has run.
 These checks describe the observed directory state, not immunity to concurrent path replacement,
 and do not constitute a complete crash-recovery protocol.
 
@@ -372,6 +377,11 @@ original actual producer. The fixed protocol-only template and exact message gua
 unlike Rule guards, they reject additional prompt material. They remain pure components without a
 sender, durable claim or raw-audit verification. No Rule selection or decoration is introduced into
 calibration, and no production caller is migrated by these changes. Tests remain unrun.
+
+The 2026-10-08 protocol allowance ledger and file state use this common publisher without loading
+Rules. They pin the original logical request, metadata and hashes; required evidence ports and fresh
+proof checks guard completion/recovery. Concrete audit verification/recovery, actual-producer sends
+and Runtime composition remain open. This does not share or replenish the separate Rule-review budget.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request

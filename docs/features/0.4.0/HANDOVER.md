@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-06
+Updated: 2026-10-08
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`84ef337` (C1 refusal/tool payload evidence), with original baseline `77ff6e2`
+`b3c25d5` (C1 correction evidence and fixed prompts), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -796,9 +796,35 @@ incident is claimed repaired. See [the concrete proof contract](output-calibrati
 These boundaries prove supplied evidence consistency, not raw audit authenticity or durable budget
 consumption. Current accepted repairs already have deterministic normalization; an unprovable source
 still returns unresolved even with a completed candidate. No new LLM call is introduced.
-Next: durable original-request correction accounting, fixed actual-producer dispatch and audit/recovery
-verification; additional quote/escape classes still need independent preservation proofs. Then finish
-V1 request/input recovery and migrate J06, preserving its semantic owner and insufficient-evidence policy.
+
+## C1 allowance ledger and immutable state: 2026-10-08
+
+- `ProtocolCorrectionLedger` accounts for an explicitly requested attempt. Only the caller winning
+  the durable no-replace claim receives `acquired`; other callers and recovery with no result receive
+  `incomplete`. Claim identity is the original logical request, never the model attempt or version.
+  Cancellation after publication cannot restore the allowance. Valid, incomplete and unprovable
+  originals do not acquire a claim. This ledger makes no automatic model-dispatch decision.
+- The claim pins producer, original attempt, protocol/template/proof versions and original/prompt
+  digests. Raw prompts/outputs stay with audit. Completion and recovery repeat the completion,
+  identity and full-value proof after mandatory evidence callbacks, and compare result digests.
+  Unknown pinned versions fail; templates cannot silently upgrade. Duplicate identical completion
+  retains its first timestamp. Changed or missing evidence never authorizes another attempt.
+- The new file store requires the container boundary and maintains original-request UUID files in
+  `claims` and `results`. Result linkage, path confinement, no-follow reads and immutable publication
+  are enforced. Runtime path composition and the real audit adapter remain pending.
+- Immutable JSON publication is now a shared Infrastructure helper. Existing Rule stores use it
+  too; file contents, newly relevant directory ancestry and the linked target directory are synced
+  before returning. Sync failure is explicit, never a best-effort success; a published claim is not
+  removed on failure. Close/cleanup failures retain the earlier error through aggregation.
+- File competition, reconstruction, path and sync failures plus ledger cancellation, identity,
+  evidence/proof and recovery tests are authored. None has executed. Fake audit ports in ledger
+  tests establish orchestration expectations only. Directory sync needs filesystem support and a
+  previously durable container anchor; no power-loss experiment or ancestor-race protection is claimed.
+
+Next: fixed actual-producer dispatch and concrete raw audit verification/recovery, then their Runtime
+composition with the ledger. Additional quote/escape classes still need independent proofs. Current
+known repairs normalize deterministically; do not force a model send to exercise this ledger. Finish
+V1 request/input recovery before migrating J06, preserving its semantic owner and evidence policy.
 No Q0-Q6 choice needs reopening. Static source/diff review is the only verification so far.
 
 ## Work not started or not complete

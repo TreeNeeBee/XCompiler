@@ -3,12 +3,12 @@ import { z } from 'zod';
 export const JSON_PROOF_VERSION = 'json-representation-proof/1' as const;
 const Transform = z.enum(['json-fence', 'trailing-comma', 'raw-string-control']);
 const Text = z.string().refine((value) => value.trim().length > 0);
-const Protocol = z.object({
+export const JsonOutputProtocolSchema = z.object({
   id: Text, version: Text,
   root: z.enum(['any', 'object', 'array']), transformations: z.array(Transform),
 }).strict().refine((value) => new Set(value.transformations).size === value.transformations.length,
   'A protocol transformation may be declared only once');
-export type JsonOutputProtocol = z.infer<typeof Protocol>;
+export type JsonOutputProtocol = z.infer<typeof JsonOutputProtocolSchema>;
 export type JsonTransformation = z.infer<typeof Transform>;
 
 /** All offsets are zero-based UTF-16 code-unit offsets; end is exclusive. */
@@ -109,7 +109,7 @@ export function proveJsonProtocolCorrection(original: string, candidate: string,
 }
 
 export function validateJsonOutputProtocol(input: JsonOutputProtocol): JsonOutputProtocol {
-  const protocol = Protocol.parse(input);
+  const protocol = JsonOutputProtocolSchema.parse(input);
   Object.freeze(protocol.transformations);
   return Object.freeze(protocol);
 }

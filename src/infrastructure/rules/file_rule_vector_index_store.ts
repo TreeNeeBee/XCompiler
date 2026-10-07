@@ -1,6 +1,6 @@
 import { RuleDigestSchema, type RuleVectorIndex } from '../../domain/rules/vector_index.js';
 import { validateIndex, type RuleVectorIndexStore } from '../../application/rules/rule_vector_retriever.js';
-import { publishImmutableRuleJson, readImmutableRuleJson, ruleArtifactPath } from './immutable_json_artifact.js';
+import { publishImmutableJson, readImmutableJson, artifactPath } from '../persistence/immutable_json_artifact.js';
 
 export class RuleIndexStorageError extends Error {
   readonly code = 'rule_index_storage_failed';
@@ -17,17 +17,17 @@ export class FileRuleVectorIndexStore implements RuleVectorIndexStore {
 
   async read(id: string): Promise<unknown | undefined> {
     const name = this.name(id);
-    try { return await readImmutableRuleJson(this.root, name, this.boundaryRoot); }
-    catch (cause) { throw new RuleIndexStorageError('read', ruleArtifactPath(this.root, name), { cause }); }
+    try { return await readImmutableJson(this.root, name, this.boundaryRoot); }
+    catch (cause) { throw new RuleIndexStorageError('read', artifactPath(this.root, name), { cause }); }
   }
 
   async create(index: RuleVectorIndex): Promise<unknown> {
     const name = this.name(index.id);
     const validated = validateIndex(index, index.id);
     try {
-      const stored = await publishImmutableRuleJson(this.root, name, validated, this.boundaryRoot);
+      const stored = await publishImmutableJson(this.root, name, validated, this.boundaryRoot);
       return validateIndex(stored, index.id);
-    } catch (cause) { throw new RuleIndexStorageError('create', ruleArtifactPath(this.root, name), { cause }); }
+    } catch (cause) { throw new RuleIndexStorageError('create', artifactPath(this.root, name), { cause }); }
   }
 
   private name(id: string): string {

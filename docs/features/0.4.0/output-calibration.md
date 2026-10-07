@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-06; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-08; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -290,7 +290,62 @@ become provable because a model returned a plausible candidate. No model call is
 Prompt round-trip, mutation and candidate-evidence regression tests are authored and unrun. G1 must
 falsify the actual completion, producer/request and proof gates, then the final-send call once wired.
 
-## Proposed protocol records
+## Authored allowance ledger and file state: 2026-10-08
+
+[`ProtocolCorrectionLedger`](../../../src/llm/protocol_correction_state.ts) owns the accounting of an
+explicitly requested logical correction attempt. It is not a model sender or the automatic choice
+between deterministic normalization and model correction. Current supported repairs already have a
+deterministic normalization; no production path calls this ledger to force an otherwise unnecessary
+model request.
+
+`begin` returns `not-eligible` for valid, incomplete or unprovable original responses without consuming
+an allowance. For an eligible explicit attempt it validates raw original evidence through a required
+port, then publishes a no-replace claim keyed only by the original logical request ID. Only the winner
+receives `acquired`; competitors and recovery with a claim but no result receive `incomplete`.
+Cancellation after publication keeps the claim. Changing the original attempt, provider/model,
+protocol or response cannot create another allowance under that logical ID. Inputs are copied before
+awaiting storage, and UUIDs are normalized to lowercase without normalizing model or protocol text.
+
+The immutable claim retains original attempt/producer identity, output protocol, proof/template
+versions, exact original and prompt digests, claim ID, correction request ID and creation time.
+It does not duplicate raw output or prompts outside their audit owner. Version recovery uses the
+supported pinned template/proof version only; an unsupported version fails explicitly rather than
+being replaced by the newest implementation. The pinned prompt digest is checked as well.
+
+`complete` requires the stored winning claim and raw original/candidate audit verification. It
+repeats independent completion, identity and full-value proof, then records a `preserved`, `unresolved`
+or `ineligible` outcome with candidate/assessment digests and attempt identity. Missing transport
+evidence, unrelated response identity or audit failure cannot publish a result. Repeating the same
+completion retains the first timestamp; a different result cannot overwrite it. A previously consumed
+claim remains consumed on all failures.
+
+Recovery never grants a new allowance. The required evidence port must recover the exact raw candidate
+and verify the actual final-send messages/binding, including claim, protocol, template and producer.
+The ledger repeats the proof and compares all recorded hashes/outcome. Redacted placeholders are not
+substitutes for lost raw content. This mandatory port is authored, but its concrete audit adapter and
+actual-producer sender are still pending; no production audit recovery is claimed yet.
+
+[`FileProtocolCorrectionStateStore`](../../../src/infrastructure/llm/file_protocol_correction_state_store.ts)
+requires an explicit container boundary and stores `claims/<original-request-uuid>.json` and
+`results/<original-request-uuid>.json` under its caller-supplied state root. Results must link to the
+existing claim and cannot reuse the original provider attempt. Runtime root composition is still open.
+
+The shared [immutable JSON publisher](../../../src/infrastructure/persistence/immutable_json_artifact.ts)
+now serves both Rule and correction state. It synchronizes file contents, publishes using a no-replace
+hardlink, and synchronizes the target directory before returning. With a container boundary, it also
+synchronizes the directory chain through that existing anchor, including ancestors left by earlier
+failed attempts. A synchronization failure propagates and a published claim is retained. Original,
+close and cleanup errors remain available together. The Runtime anchor must already be durable;
+concurrent ancestor replacement and power-loss simulation are not covered. Filesystems lacking
+directory synchronization fail explicitly; no fallback weakens the guarantee.
+
+Real-file competition, re-instantiation, path boundaries and injected synchronization failures, plus
+ledger cancellation/evidence/recovery regressions, are authored and unrun. The ledger tests use a fake
+evidence port to isolate orchestration; they are not evidence of real audit integration. G1 must remove
+the actual claim publication, evidence/proof calls and synchronization calls and observe the appropriate
+test failures, restore them, then execute affected Rule and correction gates.
+
+## Overall protocol records
 
 | Record | Required information |
 |---|---|
@@ -379,7 +434,7 @@ explicit provenance and review; ordinary audit retains the initial evidence.
 The historical JSON issue remains open until production wiring and regression evidence prove the
 repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
 separate persisted Rule-review allowance. C1 now has authored dual-response evidence/proof entries
-and a fixed protocol-only prompt with an exact message guard;
-it still needs additional quote/escape proof classes, the durable one-calibration
-coordinator and production wiring. No tests, typecheck, lint, build, package, Tool action, external
+and a fixed protocol-only prompt, exact message guard, allowance ledger and immutable file state;
+it still needs additional quote/escape proof classes, actual-producer dispatch, the concrete
+raw-audit verifier/recovery adapter, Runtime composition and production wiring. No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.
