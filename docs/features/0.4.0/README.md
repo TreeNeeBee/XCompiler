@@ -145,9 +145,15 @@ The 2026-10-08 continuation authors a single-attempt ledger and immutable file c
 Recovery cannot grant a second allowance; completion and recovery require evidence callbacks and
 repeat the full proof against retained digests. The shared publisher now synchronizes directories
 as well as file contents, retaining consumed claims on publication failure. Real-file and ledger
-tests are authored, unrun. The ledger is not a sender; its concrete raw-audit adapter, fixed-producer
-transport and Runtime integration remain the next work. Current deterministic repairs do not trigger
-a new model call.
+tests are authored, unrun.
+
+The subsequent 2026-10-08 batch connects the ledger to an internal correction coordinator, fixed
+actual-producer Router and concrete raw-audit verification/recovery. Only the winning durable claim
+can send; final messages contain exactly the fixed protocol template, and complete audit binding,
+producer identity and mechanical proof are required. Missing, mutated or irreversibly redacted
+evidence fails explicitly. Restart cannot re-grant a consumed allowance. Real HTTP/audit/file-state,
+replay and Plugin mutation tests are authored, unrun. Runtime composition and production callers
+remain to be implemented; current deterministic repairs do not trigger this optional model call.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

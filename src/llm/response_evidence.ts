@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 type PayloadJsonValue = null | boolean | number | string | PayloadJsonValue[] | { [key: string]: PayloadJsonValue };
@@ -116,6 +117,21 @@ export const RoutedResponseEvidenceSchema = z.object({
       observations: z.array(z.unknown()) }).strict(),
   ]),
 }).strict();
+
+/** Canonical snapshot shared by raw-audit fingerprints and durable correction accounting. */
+export function normalizeRoutedResponseEvidence(raw: unknown): RoutedResponseEvidence {
+  const snapshot = structuredClone(RoutedResponseEvidenceSchema.parse(raw));
+  snapshot.logicalRequestId = snapshot.logicalRequestId.toLowerCase();
+  snapshot.providerAttemptId = snapshot.providerAttemptId.toLowerCase();
+  return freezeSnapshot(snapshot);
+}
+
+/** Compute before audit protection. Unavailable observations need not be JSON-serializable. */
+export function recordedResponseEvidenceDigest(raw: RoutedResponseEvidence): string | undefined {
+  const snapshot = normalizeRoutedResponseEvidence(raw);
+  if (snapshot.capture.status !== 'recorded') return undefined;
+  return `sha256:${createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')}`;
+}
 
 /** Missing metadata is explicit; it must never be upgraded to a completed response. */
 export function captureResponseEvidence(observations: readonly unknown[], output: string): ResponseEvidenceCapture {

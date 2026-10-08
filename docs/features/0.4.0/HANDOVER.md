@@ -2,7 +2,7 @@
 
 Updated: 2026-10-08
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`b3c25d5` (C1 correction evidence and fixed prompts), with original baseline `77ff6e2`
+`0d8172c` (C1 durable allowance and recovery state), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -821,11 +821,42 @@ still returns unresolved even with a completed candidate. No new LLM call is int
   tests establish orchestration expectations only. Directory sync needs filesystem support and a
   previously durable container anchor; no power-loss experiment or ancestor-race protection is claimed.
 
-Next: fixed actual-producer dispatch and concrete raw audit verification/recovery, then their Runtime
-composition with the ledger. Additional quote/escape classes still need independent proofs. Current
-known repairs normalize deterministically; do not force a model send to exercise this ledger. Finish
-V1 request/input recovery before migrating J06, preserving its semantic owner and evidence policy.
-No Q0-Q6 choice needs reopening. Static source/diff review is the only verification so far.
+## C1 fixed producer, audit authority and internal coordinator: 2026-10-08
+
+- `LLMRouter.forProtocolCorrection` creates a local client for the original provider and its one
+  recorded actual model. It preserves the business alias and existing audit/replay transport, bypasses
+  role ranking/fallback and uses no ScoreStore. Only typed transport failures may retry on this same
+  producer; a retry retains the logical correction ID and obtains a fresh provider attempt ID.
+- `LLMProtocolCorrection.correctOnce` owns the Ledger connection. Only `acquired` can construct a
+  client and send. The actual final request must match the complete fixed template, identity, producer
+  and capacity constraints after Plugin hooks. Its required audit binding links the winning claim,
+  original request/attempt and protocol/template/proof/request digests. The delivered response must
+  match the recorded attempt and returned text before Ledger completion and mechanical proof.
+- `LLMProtocolCorrectionEvidence` reads actual `llm.provider_response` JSONL records through the
+  container-confined `FileLLMResponseAuditReader`. It checks exact normalized response hashes,
+  outer/captured outputs, producer identities and the Router's pre-redaction response digest.
+  Candidate verification also checks actual messages and every binding field. Missing, duplicate,
+  malformed or changed evidence fails explicitly.
+  The existing Rule reader delegates file reading to the shared reader, retaining its error reference.
+- Irreversibly redacted raw values cannot prove preservation or recovery. These requests fail exact
+  comparison even if a caller resubmits the redacted audit object as the original. Missing pre-redaction
+  digests cannot establish C1 evidence. No separate unredacted store or placeholder-based proof is
+  introduced. A real response that refuses, truncates or reports a different model remains audit
+  evidence and yields `ineligible`.
+- Restart returns the verified existing outcome, or `incomplete` for a consumed claim without a
+  result. Cancellation, transport/audit failures and Plugin changes cannot grant another allowance.
+  This explicit internal attempt API is not called by current deterministic normalization or production
+  workflows; Runtime path composition and caller migration remain open.
+
+Real HTTP/audit/file-state composition, fixed-model record/replay, tampering, redaction, recovery,
+cancelled dispatch and candidate failure tests are authored, unrun. Static source/diff review is the
+only verification. At G1, falsify the actual claim-gated dispatch, final message guard, audit verification,
+completion/proof and recovery calls, plus the Router's producer selection and binding publication.
+
+Next: Runtime composition and durable V1 request/input recovery before migrating J06, preserving its
+semantic owner and evidence policy. Additional quote/escape classes still need independent proofs.
+Known repairs normalize deterministically; do not force an unnecessary model send. No Q0-Q6 choice
+needs reopening.
 
 ## Work not started or not complete
 

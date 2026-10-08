@@ -322,8 +322,8 @@ claim remains consumed on all failures.
 Recovery never grants a new allowance. The required evidence port must recover the exact raw candidate
 and verify the actual final-send messages/binding, including claim, protocol, template and producer.
 The ledger repeats the proof and compares all recorded hashes/outcome. Redacted placeholders are not
-substitutes for lost raw content. This mandatory port is authored, but its concrete audit adapter and
-actual-producer sender are still pending; no production audit recovery is claimed yet.
+substitutes for lost raw content. The subsequent batch below supplies the concrete adapter and sender;
+production Runtime composition and caller recovery are still open.
 
 [`FileProtocolCorrectionStateStore`](../../../src/infrastructure/llm/file_protocol_correction_state_store.ts)
 requires an explicit container boundary and stores `claims/<original-request-uuid>.json` and
@@ -344,6 +344,64 @@ ledger cancellation/evidence/recovery regressions, are authored and unrun. The l
 evidence port to isolate orchestration; they are not evidence of real audit integration. G1 must remove
 the actual claim publication, evidence/proof calls and synchronization calls and observe the appropriate
 test failures, restore them, then execute affected Rule and correction gates.
+
+## Authored fixed dispatch and raw-audit composition: 2026-10-08
+
+[`LLMProtocolCorrection.correctOnce`](../../../src/llm/protocol_correction_request.ts) is an internal,
+explicit optional model attempt. It snapshots validated original/protocol/transport options before
+awaiting the Ledger. `not-eligible`, `incomplete` and `recovered` return without creating a client or
+sending. Only `acquired` permits one client call. All later failures leave the durable allowance
+consumed. Current deterministic normalization and production workflows do not invoke this API.
+
+`LLMRouter.forProtocolCorrection` targets the original configured provider and unique actual reported
+model. It creates a local client without changing the normal business alias, consulting a role pool,
+ranking or falling back to another provider. It retains existing provider transport, required response
+audit and Record/Replay. Typed retryable transport failures may retry that same producer under the
+same correction request with fresh attempt IDs. No ScoreStore is supplied and no business success
+boost is applied. Business validation and early stream completion callbacks are prohibited.
+
+After mutable Plugin hooks, the coordinator's final-send guard requires the exact two-message template,
+distinct correction request/attempt identity, fixed provider/client label and a sufficient context
+window. It rejects additions as well as replacement or reordered messages. The required strict
+`protocol-correction` audit binding contains original request/attempt, correction request and winning
+claim IDs; claim/original digests; protocol ID/version; template/proof versions; and the exact final
+message digest. It is not provider input. Binding identities are checked before transport; every
+transport retry invokes the guard again. The delivered response must be the sole recorded candidate,
+belong to a registered attempt and equal the text returned after Plugin hooks before completion.
+
+[`LLMProtocolCorrectionEvidence`](../../../src/llm/protocol_correction_evidence.ts) verifies the actual
+raw `llm.provider_response` event, requiring exactly one matching record with consistent outer and
+captured request/attempt/provider/model/output facts. It compares the canonical strict-schema
+response hash, preserving raw string values while normalizing only UUID spelling. Router records the
+same canonical `responseEvidenceDigest` before audit protection on both accepted and validation-rejected
+raw response events when captured transport facts are available. Missing digests do not establish C1
+evidence; unavailable captures keep their existing unavailable status without inventing a digest.
+Candidate audit verification also checks exact fixed messages and all binding fields against the
+pinned claim.
+The actual requested model must be the original producer; a returned refusal, truncation or different
+reported model can be authentic evidence of an ineligible result rather than a forged audit record.
+The Ledger remains responsible for independently assessing completion and full value preservation.
+
+[`FileLLMResponseAuditReader`](../../../src/infrastructure/llm/file_llm_response_audit_reader.ts) reads
+the fixed `audit.jsonl` under supplied container/audit roots, requires a regular no-follow file, and
+checks all JSONL lines even after finding a match. The existing Rule reader delegates only file access
+to this shared adapter, preserving its own Rule evidence policy and full error reference. Missing,
+duplicate, malformed or changed evidence fails explicitly with original error context retained.
+
+The pre-redaction hash cannot restore secret-redacted strings. If required redaction changed response
+or fixed-request content, exact matching fails, including when a caller resubmits the protected audit
+object itself as the original response before any claim exists. Neither a second unredacted payload
+store nor a proof using redacted placeholders is introduced. Literal placeholder
+text that was itself the original value is still allowed when exact comparisons agree. Result recovery
+uses the retained raw candidate, compares the result digest, re-verifies messages/binding and repeats
+the mechanical proof; it never creates a replacement allowance.
+
+Real HTTP/Router/audit/file-state composition, fixed-model replay, recovery, altered messages/outputs,
+redaction, cancellation and unsuccessful candidate cases are authored. None has executed. G1 must
+remove the actual claim-gated dispatch, fixed model assignment, final-send guard, required binding
+publication, audit checks and completion/recovery proof calls to falsify their wiring, then restore
+them and run focused and affected gates. Runtime path composition, production request/input recovery,
+caller migrations, additional proven quote/escape classes and legacy-salvage removal remain open.
 
 ## Overall protocol records
 
@@ -434,7 +492,7 @@ explicit provenance and review; ordinary audit retains the initial evidence.
 The historical JSON issue remains open until production wiring and regression evidence prove the
 repair. F1/R1 now supply stable logical request IDs, provider facts, a final-send guard and a
 separate persisted Rule-review allowance. C1 now has authored dual-response evidence/proof entries
-and a fixed protocol-only prompt, exact message guard, allowance ledger and immutable file state;
-it still needs additional quote/escape proof classes, actual-producer dispatch, the concrete
-raw-audit verifier/recovery adapter, Runtime composition and production wiring. No tests, typecheck, lint, build, package, Tool action, external
+and a fixed protocol-only prompt, exact message guard, allowance ledger, immutable file state,
+actual-producer Router, concrete raw-audit authority and internal coordinator. It still needs
+additional quote/escape proof classes, Runtime composition and production wiring. No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

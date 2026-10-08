@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { assessJsonProtocolCorrection, assessJsonProtocolResponse } from './protocol_candidate.js';
 import { createJsonProtocolCorrectionPrompt, JSON_CORRECTION_PROMPT_VERSION } from './protocol_correction_prompt.js';
 import { JSON_PROOF_VERSION, JsonOutputProtocolSchema, type JsonOutputProtocol } from './protocol_json.js';
-import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
+import { normalizeRoutedResponseEvidence, type RoutedResponseEvidence } from './response_evidence.js';
 
 const Text = z.string().refine((value) => value.trim().length > 0);
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -85,6 +85,12 @@ export function validateProtocolCorrectionResult(raw: unknown, logicalRequestId:
   return freeze(parsed.data);
 }
 
+/** Shared canonical representation for allowance hashes and the raw-audit authority. */
+export function validateProtocolCorrectionResponse(raw: unknown): RoutedResponseEvidence {
+  try { return normalizeRoutedResponseEvidence(raw); }
+  catch (cause) { throw new ProtocolCorrectionStateError('invalid', { record: 'response' }, { cause }); }
+}
+
 /**
  * Single-attempt accounting, not an automatic repair policy or a sender. Call begin only when an
  * LLM attempt is requested; current deterministic normalization does not call this ledger.
@@ -95,7 +101,7 @@ export class ProtocolCorrectionLedger {
 
   async begin(input: { original: RoutedResponseEvidence; protocol: JsonOutputProtocol; signal?: AbortSignal }) {
     input.signal?.throwIfAborted();
-    const original = this.response(input.original);
+    const original = validateProtocolCorrectionResponse(input.original);
     const protocol = freeze(JsonOutputProtocolSchema.parse(input.protocol));
     const id = original.logicalRequestId;
     // Read existing accounting before classification: a changed response cannot bypass an old claim.
@@ -153,9 +159,9 @@ export class ProtocolCorrectionLedger {
   async complete(input: { claim: ProtocolCorrectionClaim; original: RoutedResponseEvidence;
     candidate: RoutedResponseEvidence; signal?: AbortSignal }) {
     input.signal?.throwIfAborted();
-    const original = this.response(input.original);
+    const original = validateProtocolCorrectionResponse(input.original);
     const supplied = validateProtocolCorrectionClaim(input.claim, original.logicalRequestId);
-    const candidate = this.response(input.candidate);
+    const candidate = validateProtocolCorrectionResponse(input.candidate);
     if (candidate.capture.status !== 'recorded') {
       throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: original.logicalRequestId, record: 'missing-candidate-evidence' });
     }
@@ -196,7 +202,7 @@ export class ProtocolCorrectionLedger {
     const result = validateProtocolCorrectionResult(raw, claim.logicalRequestId);
     this.assertResultIdentity(claim, result);
     signal?.throwIfAborted();
-    const candidate = this.response(await this.evidence.recoverCandidate(claim, result, signal));
+    const candidate = validateProtocolCorrectionResponse(await this.evidence.recoverCandidate(claim, result, signal));
     if (candidate.capture.status !== 'recorded') {
       throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: claim.logicalRequestId, record: 'missing-candidate-evidence' });
     }
@@ -259,14 +265,6 @@ export class ProtocolCorrectionLedger {
       || result.assessmentDigest !== protocolCorrectionDigest(assessment) || result.outcome !== outcome(assessment)) {
       throw new ProtocolCorrectionStateError('identity_conflict', { logicalRequestId: claim.logicalRequestId, record: 'result-evidence' });
     }
-  }
-
-  private response(raw: RoutedResponseEvidence): RoutedResponseEvidence {
-    const parsed = RoutedResponseEvidenceSchema.safeParse(raw);
-    if (!parsed.success) throw new ProtocolCorrectionStateError('invalid', { record: 'response' }, { cause: parsed.error });
-    // UUID spelling is not identity; the remaining captured representation is pinned exactly.
-    return freeze(structuredClone({ ...parsed.data, logicalRequestId: parsed.data.logicalRequestId.toLowerCase(),
-      providerAttemptId: parsed.data.providerAttemptId.toLowerCase() }));
   }
 }
 

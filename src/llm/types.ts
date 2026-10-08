@@ -1,5 +1,5 @@
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
-import type { RuleRequestAuditBinding } from '../application/rules/rule_request_binding.js';
+import type { LLMRequestAuditBinding } from './request_binding.js';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -25,7 +25,7 @@ export interface ChatOptions {
     messages: readonly Readonly<ChatMessage>[];
     contextWindowTokens: number;
     maxTokens: number;
-  }) => void | RuleRequestAuditBinding | Promise<void | RuleRequestAuditBinding>;
+  }) => void | LLMRequestAuditBinding | Promise<void | LLMRequestAuditBinding>;
   /** Transport evidence channel owned by Router; not a validation or permission hook. */
   onProviderResponse?: (response: ProviderResponseEvidence) => void;
   /** Final accepted provider candidate, after required evidence persistence. */

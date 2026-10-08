@@ -29,8 +29,15 @@ import { z } from 'zod';
 import { RecordReplayError } from '../application/record_replay/types.js';
 import { RuleRequestAuditBindingSchema, RuleRequestBindingError } from '../application/rules/rule_request_binding.js';
 import {
+  ProtocolCorrectionAuditBindingSchema, ProtocolCorrectionBindingError,
+  type LLMRequestAuditBinding,
+} from './request_binding.js';
+import { assessResponseCompletion } from './completion_eligibility.js';
+import {
   captureResponseEvidence,
+  recordedResponseEvidenceDigest,
   ProviderResponseEvidenceSchema,
+  RoutedResponseEvidenceSchema,
   type ProviderResponseEvidence,
   type RoutedResponseEvidence,
 } from './response_evidence.js';
@@ -191,6 +198,63 @@ export class LLMRouter {
       : observable;
   }
 
+  /** Internal C1 transport. The owning coordinator must persist its allowance before calling it. */
+  forProtocolCorrection(original: RoutedResponseEvidence): LLMClient {
+    const parsed = RoutedResponseEvidenceSchema.safeParse(original);
+    if (!parsed.success) throw new LLMRequestError('Protocol correction requires valid original response evidence', {
+      code: 'invalid_response', mode: 'router', retryable: false, switchProvider: false,
+      details: { stage: 'protocol-correction-producer' },
+    }, { cause: parsed.error });
+    const source = parsed.data;
+    const completion = assessResponseCompletion(source);
+    if (!completion.eligibleForProtocolCalibration || source.capture.status !== 'recorded') {
+      throw new LLMRequestError('Original response is not eligible for protocol correction', {
+        code: 'invalid_response', mode: 'router', retryable: false, switchProvider: false,
+        provider: source.provider, model: source.model, details: { completion },
+      });
+    }
+    const configured = this.cfg.llm.providers[source.provider];
+    if (!configured) throw new LLMRequestError('Original protocol-correction provider is not configured', {
+      code: 'provider_not_configured', mode: 'router', retryable: false, switchProvider: false,
+      provider: source.provider,
+    });
+    const protocol = source.capture.response.protocol;
+    if ((protocol === 'openai' && !isOpenAICompatibleProvider(configured))
+      || (protocol === 'ollama' && !isOllamaProvider(configured))) {
+      throw new LLMRequestError('Original provider protocol no longer matches its configuration', {
+        code: 'invalid_response', mode: 'router', retryable: false, switchProvider: false,
+        provider: source.provider, details: { recordedProtocol: protocol, configuredProtocol: configured.type },
+      });
+    }
+    if (!this.audit) throw new ProtocolCorrectionBindingError('audit_unavailable', {
+      logicalRequestId: source.logicalRequestId, provider: source.provider,
+    });
+    // The reported producer may be a revision behind the configured alias. Never replace the
+    // business client's alias, rank by score, or substitute another configured provider here.
+    const actualModel = source.capture.response.reportedModels[0]!;
+    const rawClient = createClient(source.provider, { ...configured, model: actualModel }, this.cfg.llm.stall_diagnosis_after_ms)!;
+    const client = this.recordReplay?.enabled('llm')
+      ? recordReplayClient(source.provider, rawClient, this.recordReplay) : rawClient;
+    const fixed = new FallbackClient([{
+      name: source.provider, client,
+      contextWindowTokens: normalizeContextWindowTokens(configured.context_window),
+      retry: configured.retry ?? DEFAULT_PROVIDER_RETRY,
+    }], this.audit, 'protocol-correction', undefined, undefined,
+    (info) => this.diagnoseStall(info), {
+      logicalRequestId: source.logicalRequestId, providerAttemptId: source.providerAttemptId,
+    });
+    const observable = wrapWithAudit(fixed, 'protocol-correction', this.audit);
+    const wrapped = this.plugins && this.plugins.size > 0
+      ? this.plugins.wrapLLM(observable, 'protocol-correction') : observable;
+    return {
+      name: wrapped.name,
+      chat: async (messages, options) => {
+        validateProtocolCorrectionOptions(options);
+        return wrapped.chat(messages, { ...options, scoreSuccess: false });
+      },
+    };
+  }
+
   /** 返回某角色按当前评分/可用性解析后的首选 provider 与模型，供启动诊断使用。 */
   primarySelection(role: Role): { provider: string; model: string } | undefined {
     const ranked = this.rankByScore(this.resolveChain(role));
@@ -292,6 +356,7 @@ class FallbackClient implements LLMClient {
     private readonly availability?: (name: string, maxAgeMs?: number) => Promise<LLMProbeResult | undefined>,
     /** Explains total provider silence. Supplied by the router, which may import the checks. */
     private readonly diagnoseStall?: (info: { silentForMs: number; provider?: string; model?: string }) => Promise<string | undefined>,
+    private readonly protocolCorrection?: Pick<RoutedResponseEvidence, 'logicalRequestId' | 'providerAttemptId'>,
   ) {
     this.name = chain.length === 1
       ? chain[0]!.client.name
@@ -308,6 +373,10 @@ class FallbackClient implements LLMClient {
    *     先探测确认端点在线再重试一次（流式错误降级为非流式）；端点不可达 → 立即切换。
    */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+    if (this.protocolCorrection) {
+      validateProtocolCorrectionOptions(options);
+      options = { ...options, scoreSuccess: false };
+    }
     const logicalRequestId = options?.logicalRequestId === undefined ? randomUUID() : z.uuid().parse(options.logicalRequestId);
     let lastErr: unknown;
     const failures: string[] = [];
@@ -402,15 +471,35 @@ class FallbackClient implements LLMClient {
           logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
           messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
         });
-        const binding = RuleRequestAuditBindingSchema.optional().safeParse(rawBinding);
-        if (!binding.success) throw new RuleRequestBindingError('invalid', {
-          logicalRequestId, providerAttemptId, stage: 'final-send-binding',
-        }, { cause: binding.error });
-        const requestBinding = binding.data;
-        if (requestBinding && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
-          logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
-          requestKind: requestBinding.kind,
-        });
+        let requestBinding: LLMRequestAuditBinding | undefined;
+        if (this.protocolCorrection) {
+          const binding = ProtocolCorrectionAuditBindingSchema.safeParse(rawBinding);
+          if (!binding.success) throw new ProtocolCorrectionBindingError('invalid', {
+            logicalRequestId, providerAttemptId, stage: 'final-send-binding',
+          }, { cause: binding.error });
+          if (binding.data.logicalRequestId.toLowerCase() !== this.protocolCorrection.logicalRequestId.toLowerCase()
+            || binding.data.originalProviderAttemptId.toLowerCase() !== this.protocolCorrection.providerAttemptId.toLowerCase()
+            || binding.data.correctionRequestId.toLowerCase() !== logicalRequestId.toLowerCase()
+            || binding.data.logicalRequestId.toLowerCase() === logicalRequestId.toLowerCase()) {
+            throw new ProtocolCorrectionBindingError('invalid', {
+              logicalRequestId, providerAttemptId, stage: 'final-send-identity',
+            });
+          }
+          requestBinding = binding.data;
+          if (!this.audit) throw new ProtocolCorrectionBindingError('audit_unavailable', {
+            logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+          });
+        } else {
+          const binding = RuleRequestAuditBindingSchema.optional().safeParse(rawBinding);
+          if (!binding.success) throw new RuleRequestBindingError('invalid', {
+            logicalRequestId, providerAttemptId, stage: 'final-send-binding',
+          }, { cause: binding.error });
+          requestBinding = binding.data;
+          if (requestBinding && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
+            logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+            requestKind: requestBinding.kind,
+          });
+        }
         try {
           out = await c.client.chat(attemptMessages, providerOptions);
         } catch (err) {
@@ -433,18 +522,25 @@ class FallbackClient implements LLMClient {
             throw err;
           }
           lastErr = err;
-          const rateLimited = isRateLimitedLLMError(err);
+          const fixedFailure = this.protocolCorrection && isLLMRequestError(err) ? err.failure : undefined;
+          const rateLimited = this.protocolCorrection
+            ? fixedFailure?.code === 'rate_limited' && fixedFailure.retryable
+            : isRateLimitedLLMError(err);
           const attemptCap = rateLimited
             ? 1 + c.retry.max_retries
             : FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS;
           const retryDelayMs = rateLimited
-            ? computeRetryDelayMs(providerAttempt, c.retry, providerRetryAfterMs(err))
-            : retryDelayForLLMError(err);
+            ? computeRetryDelayMs(providerAttempt, c.retry, this.protocolCorrection ? undefined : providerRetryAfterMs(err))
+            : this.protocolCorrection ? 0 : retryDelayForLLMError(err);
           if (
             providerAttempt < attemptCap &&
-            (rateLimited || isRetryableLLMError(err))
+            (rateLimited || (this.protocolCorrection
+              ? fixedFailure?.retryable === true && fixedFailure.streamProgress !== 'no-bytes'
+              : isRetryableLLMError(err)))
           ) {
-            const retryWithoutStreaming = shouldRetryWithoutStreaming(err, attemptOptions);
+            const retryWithoutStreaming = this.protocolCorrection
+              ? !!attemptOptions?.onToken && fixedFailure?.streamProgress !== undefined && fixedFailure.streamProgress !== 'no-bytes'
+              : shouldRetryWithoutStreaming(err, attemptOptions);
             if (retryWithoutStreaming) {
               attemptOptions = withoutStreamingOptions(attemptOptions);
             }
@@ -478,7 +574,7 @@ class FallbackClient implements LLMClient {
           // 用可用性检查门控一次重试：端点确认在线才重试（流式降级为非流式），
           // 端点不可达则立即故障转移。
           if (
-            providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS &&
+            !this.protocolCorrection && providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS &&
             isTransientConnectivityLLMError(err)
           ) {
             const gate = await this.availability?.(c.name, FallbackClient.RETRY_GATE_PROBE_MAX_AGE_MS);
@@ -524,6 +620,7 @@ class FallbackClient implements LLMClient {
           output: out,
           capture: captureResponseEvidence(observations, out),
         });
+        const responseEvidenceDigest = recordedResponseEvidenceDigest(responseEvidence);
         if (options?.validate) {
           try {
             options.validate(out);
@@ -547,6 +644,7 @@ class FallbackClient implements LLMClient {
                 // remain available in the raw audit before the next provider attempt starts.
                 output: out,
                 responseEvidence,
+                ...(responseEvidenceDigest ? { responseEvidenceDigest } : {}),
                 ...(requestBinding ? { requestBinding } : {}),
                 requestMessages: attemptMessages,
                 output_preview: out.slice(0, 400),
@@ -602,6 +700,7 @@ class FallbackClient implements LLMClient {
           output: out,
           requestMessages: attemptMessages,
           responseEvidence,
+          ...(responseEvidenceDigest ? { responseEvidenceDigest } : {}),
           ...(requestBinding ? { requestBinding } : {}),
         }, { persistence: 'required' });
         // This is outside the transport/validation catches: an evidence consumer failure cannot
@@ -613,6 +712,12 @@ class FallbackClient implements LLMClient {
         try { options?.onProvider?.(c.name); } catch { /* observability must not fail the call */ }
         return out;
       }
+    }
+    if (this.protocolCorrection && lastErr !== undefined) {
+      throw new LLMRequestError(errorMessage(lastErr), isLLMRequestError(lastErr)
+        ? { ...lastErr.failure, switchProvider: false }
+        : { code: 'request_failed', mode: 'router', retryable: false, switchProvider: false,
+          provider: this.chain[0]!.name, model: this.chain[0]!.client.name }, { cause: lastErr });
     }
     if (failures.length > 0) {
       throw new LLMRequestError(
@@ -632,6 +737,15 @@ class FallbackClient implements LLMClient {
       );
     }
     throw lastErr instanceof Error ? lastErr : new Error('all LLM providers failed');
+  }
+}
+
+function validateProtocolCorrectionOptions(options?: ChatOptions): void {
+  const unsupported = ['validate', 'streamStopWhen'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
+  if (unsupported.length || typeof options?.beforeProviderRequest !== 'function') {
+    throw new ProtocolCorrectionBindingError('invalid', {
+      stage: 'correction-options', unsupported, missingFinalSendGuard: typeof options?.beforeProviderRequest !== 'function',
+    });
   }
 }
 

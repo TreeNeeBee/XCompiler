@@ -137,7 +137,7 @@ Progress reconciliation against source, 2026-10-08:
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Independent response/proof gates; fixed prompt/guard; single-attempt ledger, immutable file claim/result state and mandatory evidence ports | Additional quote/escape proofs, actual-producer dispatch, concrete raw-audit verifier/recovery adapter, Runtime/production integration and legacy-salvage removal |
+| C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit verification/recovery and internal claim-gated coordinator | Additional quote/escape proofs, Runtime/production integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -595,10 +595,27 @@ Filesystem support for directory synchronization is required; no host power-loss
 Real-file and ledger tests are authored, unrun. The ledger's evidence port is faked in its tests;
 this is not an implemented audit adapter, model sender or production correction pipeline.
 
-Next: implement fixed actual-producer dispatch and the concrete audit/recovery verifier, compose
-them with the ledger, then finish V1 request/input recovery. Additional quote/escape classes need
+The next 2026-10-08 batch extends `0d8172c` with a fixed actual-producer Router entry and the
+internal `LLMProtocolCorrection` coordinator. It sends only after winning the durable claim; strict
+final messages, attempt/producer/capacity checks and audit-only binding precede transport. The final
+callback must match the returned text and a registered attempt before the Ledger completes. Existing
+role clients keep their aliases; correction has no role ranking, provider fallback or model scoring.
+Typed transport retry remains under the same consumed logical correction allowance.
+
+The concrete raw-audit authority checks the Router's pre-redaction response digest, exact response
+hashes, complete output/producer correspondence,
+fixed candidate messages and the claim/protocol/template/proof binding. Its confined JSONL reader is
+shared with the Rule adapter. Recovery re-reads raw candidate evidence and repeats the proof; missing,
+ambiguous, changed or irreversibly redacted evidence fails instead of authorizing another send.
+Missing pre-redaction digests cannot authorize correction; submitting a protected audit object as
+the original does not bypass this check.
+Candidate refusals/truncation/model mismatch are retained as real ineligible outcomes. Real HTTP,
+audit/filesystem, replay, recovery and Plugin mutation tests are authored, unrun. G1 must falsify these
+actual wiring calls, not just their schema helpers.
+
+Next: Runtime composition and V1 request/input recovery. Additional quote/escape classes need
 independent proofs. Known supported repairs already normalize deterministically; unprovable input is
-still unresolved, and this boundary introduces no model call or production workflow change.
+still unresolved. This explicit internal attempt API introduces no automatic production model call.
 J06's YAML rubric and removal of its original
 prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy
 remains unchanged. No new Q0-Q6 choice is needed.

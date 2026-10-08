@@ -380,12 +380,16 @@ calibration, and no production caller is migrated by these changes. Tests remain
 
 The 2026-10-08 protocol allowance ledger and file state use this common publisher without loading
 Rules. They pin the original logical request, metadata and hashes; required evidence ports and fresh
-proof checks guard completion/recovery. Concrete audit verification/recovery, actual-producer sends
-and Runtime composition remain open. This does not share or replenish the separate Rule-review budget.
+proof checks guard completion/recovery. The subsequent batch connects concrete audit verification/
+recovery and actual-producer sends through an internal claim-gated coordinator. The Rule reader now
+delegates confined JSONL reading to `FileLLMResponseAuditReader` while keeping Rule-specific evidence
+validation and error references. Correction requires exact raw values and the fixed complete template;
+Rule prompt protection and message-subsequence semantics do not substitute for these checks. Runtime
+composition remains open. This does not share or replenish the separate Rule-review budget.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
-identity/recovery and full request accounting; the C1 calibration coordinator
+identity/recovery and full request accounting; production composition of the C1 calibration coordinator
 and additional per-transformation preservation proofs; controlled business-Rule candidate activation; and final
 Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
 configuration and state paths above are not evidence of an installed end-to-end feature.
