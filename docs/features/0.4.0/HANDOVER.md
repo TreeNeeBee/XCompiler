@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-08
+Updated: 2026-10-10
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`0d8172c` (C1 durable allowance and recovery state), with original baseline `77ff6e2`
+`2e8532b` (C1 fixed dispatch and raw audit recovery), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -853,10 +853,36 @@ cancelled dispatch and candidate failure tests are authored, unrun. Static sourc
 only verification. At G1, falsify the actual claim-gated dispatch, final message guard, audit verification,
 completion/proof and recovery calls, plus the Router's producer selection and binding publication.
 
-Next: Runtime composition and durable V1 request/input recovery before migrating J06, preserving its
-semantic owner and evidence policy. Additional quote/escape classes still need independent proofs.
-Known repairs normalize deterministically; do not force an unnecessary model send. No Q0-Q6 choice
-needs reopening.
+## C1 Runtime composition and request-ID recovery: 2026-10-09–10
+
+- `createRuntimeProtocolCorrection` composes the existing Router, raw-audit authority and immutable
+  store. Runtime fixes correction state at `.xcompiler/llm/protocol-corrections` and raw evidence at
+  `.xcompiler/audit/audit.jsonl`, anchored to the project container rather than a candidate worktree.
+  It uses the existing Router's configuration/audit/replay; no new role or model default is introduced.
+- `LLMProtocolCorrection.resume` delegates to a read-only Ledger path using only the original logical
+  request ID. The evidence authority restores the exact original response using the claim's pinned
+  attempt and pre-redaction digest. The Ledger verifies it and recovers the candidate/result through
+  the existing completion, identity and value-preservation proof. It never calls `begin`, publishes
+  a new claim or constructs a provider client. Missing or changed raw evidence remains an error.
+- No claim/result returns `not-started`, which reports state only and grants no dispatch allowance.
+  A claim without a result remains `incomplete`; a verified result returns `recovered`. Orphan results,
+  unknown pinned versions and cancellation retain their explicit outcomes. Recovery neither reloads
+  Rules nor needs the caller to supply original text or a current protocol definition.
+- Runtime container/real HTTP/audit/state/restart/path-failure tests and Ledger/evidence recovery
+  tests are authored, unrun. G1 must falsify Runtime composition, resume delegation, original-audit
+  recovery and repeated proof calls. Tests, typecheck, lint and build remain deferred.
+
+Next: durable V1 business request/input identity and recovery before migrating J06, preserving its
+semantic owner and evidence policy. Build/run do not yet call the new internal C1 factory. Additional
+quote/escape classes still need independent proofs; known repairs normalize deterministically and do
+not require a model send. No Q0-Q6 choice needs reopening.
+
+V1 investigation found that J06 still generates its request identity inside Router, while each new
+Phase gate runs the scenario again. Keep that behavior when adding caller-owned request/input records;
+only an explicitly identified old request may recover its pinned evidence. Existing pre-Plugin,
+best-effort request logging and redacted Rule bindings cannot replace required original-input audit.
+The next batch must preserve uncertain-dispatch versus recovered-response states without adding C1's
+one-attempt restriction to business calls or reusing historical verdicts for new executions.
 
 ## Work not started or not complete
 

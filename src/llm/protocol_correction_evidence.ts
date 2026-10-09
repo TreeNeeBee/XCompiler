@@ -48,6 +48,17 @@ const Messages = z.array(z.object({ role: z.enum(['system', 'user', 'assistant']
 export class LLMProtocolCorrectionEvidence implements ProtocolCorrectionEvidence {
   constructor(private readonly reader: LLMResponseAuditReader) {}
 
+  async recoverOriginal(rawClaim: ProtocolCorrectionClaim, signal?: AbortSignal): Promise<RoutedResponseEvidence> {
+    signal?.throwIfAborted();
+    const claim = this.claim(rawClaim);
+    const { response } = await this.read({
+      logicalRequestId: claim.logicalRequestId, providerAttemptId: claim.originalProviderAttemptId,
+    }, signal);
+    const { original } = this.original(claim, response);
+    signal?.throwIfAborted();
+    return original;
+  }
+
   async verifyOriginal(rawClaim: ProtocolCorrectionClaim, rawOriginal: RoutedResponseEvidence, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     const { claim, original } = this.original(rawClaim, rawOriginal);

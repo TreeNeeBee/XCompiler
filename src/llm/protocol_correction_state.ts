@@ -47,6 +47,8 @@ export interface ProtocolCorrectionStateStore {
 
 /** Required raw audit authority. Neither state hashes nor redacted placeholders prove raw values. */
 export interface ProtocolCorrectionEvidence {
+  /** Restore the pinned original from raw audit without accepting caller-supplied replacement text. */
+  recoverOriginal(claim: ProtocolCorrectionClaim, signal?: AbortSignal): Promise<RoutedResponseEvidence>;
   /** Check the original raw response, actual producer and request/attempt identity against audit. */
   verifyOriginal(claim: ProtocolCorrectionClaim, original: RoutedResponseEvidence, signal?: AbortSignal): Promise<void>;
   /** Check raw candidate AND actual final-send messages/binding, including this claim's pinned
@@ -98,6 +100,40 @@ export function validateProtocolCorrectionResponse(raw: unknown): RoutedResponse
  */
 export class ProtocolCorrectionLedger {
   constructor(private readonly store: ProtocolCorrectionStateStore, private readonly evidence: ProtocolCorrectionEvidence) {}
+
+  /** Read-only recovery by original request identity. This never creates a dispatch allowance. */
+  async resume(input: { logicalRequestId: string; signal?: AbortSignal }) {
+    const signal = input.signal;
+    signal?.throwIfAborted();
+    const parsedId = Identity.safeParse(input.logicalRequestId);
+    if (!parsedId.success) throw new ProtocolCorrectionStateError('invalid', { record: 'logical-request-id' }, { cause: parsedId.error });
+    const id = parsedId.data;
+    let existing = await this.store.readClaim(id);
+    signal?.throwIfAborted();
+    const result = await this.store.readResult(id);
+    signal?.throwIfAborted();
+    // A concurrent publisher may have created both records after the first claim read.
+    if (!existing && result) {
+      existing = await this.store.readClaim(id);
+      signal?.throwIfAborted();
+    }
+    if (!existing) {
+      if (result) throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: id, record: 'result-without-claim' });
+      return freeze({ status: 'not-started' as const });
+    }
+    const claim = validateProtocolCorrectionClaim(existing, id);
+    const original = validateProtocolCorrectionResponse(await this.evidence.recoverOriginal(claim, signal));
+    signal?.throwIfAborted();
+    this.assertOriginal(claim, original, claim.outputProtocol);
+    await this.evidence.verifyOriginal(claim, original, signal);
+    signal?.throwIfAborted();
+    if (result) return this.recover(claim, result, original, signal);
+    // Completion may have arrived while the original audit was being restored and checked.
+    const completed = await this.store.readResult(id);
+    signal?.throwIfAborted();
+    if (completed) return this.recover(claim, completed, original, signal);
+    return freeze({ status: 'incomplete' as const, claim });
+  }
 
   async begin(input: { original: RoutedResponseEvidence; protocol: JsonOutputProtocol; signal?: AbortSignal }) {
     input.signal?.throwIfAborted();
@@ -221,6 +257,7 @@ export class ProtocolCorrectionLedger {
     }
     const validatedProtocol = JsonOutputProtocolSchema.parse(protocol);
     if (original.capture.status !== 'recorded'
+      || claim.logicalRequestId !== original.logicalRequestId
       || claim.originalDigest !== protocolCorrectionDigest(original)
       || claim.originalProviderAttemptId.toLowerCase() !== original.providerAttemptId.toLowerCase()
       || claim.provider !== original.provider

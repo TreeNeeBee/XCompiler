@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-08. This development checkpoint extends `b3c25d5` (C1 correction evidence and fixed prompts)
+Updated: 2026-10-10. This development checkpoint extends `2e8532b` (C1 fixed dispatch and raw audit recovery)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-08:
+Progress reconciliation against source, 2026-10-10:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -137,7 +137,7 @@ Progress reconciliation against source, 2026-10-08:
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
-| C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit verification/recovery and internal claim-gated coordinator | Additional quote/escape proofs, Runtime/production integration and legacy-salvage removal |
+| C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
 | V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
@@ -613,12 +613,31 @@ Candidate refusals/truncation/model mismatch are retained as real ineligible out
 audit/filesystem, replay, recovery and Plugin mutation tests are authored, unrun. G1 must falsify these
 actual wiring calls, not just their schema helpers.
 
-Next: Runtime composition and V1 request/input recovery. Additional quote/escape classes need
+The 2026-10-09 batch extends `2e8532b` with `createRuntimeProtocolCorrection`, using the caller's existing
+Router and container-owned `.xcompiler/llm/protocol-corrections` plus `.xcompiler/audit` paths. The new
+read-only `resume` restores the original response from the pinned claim/audit before repeating existing
+candidate/result proof. It accepts only the original request ID and cancellation; it cannot invoke
+fresh allowance acquisition or dispatch. Empty state returns `not-started`, consumed state remains
+`incomplete` or `recovered`, and missing/changed evidence fails. This does not recover business inputs
+or migrate a production caller. Runtime, real audit/state/HTTP and recovery tests are authored, unrun.
+
+Next: V1 business request/input identity and recovery. Additional quote/escape classes need
 independent proofs. Known supported repairs already normalize deterministically; unprovable input is
 still unresolved. This explicit internal attempt API introduces no automatic production model call.
 J06's YAML rubric and removal of its original
 prompt source belong in the same V1 batch after F1/R1/C1 is ready; its insufficient-evidence policy
 remains unchanged. No new Q0-Q6 choice is needed.
+
+V1 source reconciliation, 2026-10-09: the current Phase gate re-executes scenarios on the next run;
+J06 has no persisted business request ID/input/result. Preserve that execution meaning. The next
+input/recovery batch must bind an explicitly owned logical request to its actual scenario execution,
+Project/Phase references, immutable Rule snapshot, protocol/template versions and required raw input
+and response audit references. A Rule snapshot or a protected prompt digest alone cannot recover the
+original business input. Persist a pre-redaction input digest, and fail exact recovery when required
+redaction removed values. Distinguish prepared input, uncertain dispatch, retained response and
+uncommitted caller verdict. Do not apply C1's one-attempt budget to ordinary business sends, claim that
+resending is recovery, reuse a verdict by scenario name, or skip a fresh scenario execution. Automatic
+reuse of old scenes/verdicts in place of the current gate is outside this approved migration.
 
 ## Acceptance and verification plan
 

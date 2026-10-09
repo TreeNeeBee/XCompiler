@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-08. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-10. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -384,8 +384,10 @@ proof checks guard completion/recovery. The subsequent batch connects concrete a
 recovery and actual-producer sends through an internal claim-gated coordinator. The Rule reader now
 delegates confined JSONL reading to `FileLLMResponseAuditReader` while keeping Rule-specific evidence
 validation and error references. Correction requires exact raw values and the fixed complete template;
-Rule prompt protection and message-subsequence semantics do not substitute for these checks. Runtime
-composition remains open. This does not share or replenish the separate Rule-review budget.
+Rule prompt protection and message-subsequence semantics do not substitute for these checks. The
+2026-10-09 internal Runtime factory supplies container-owned correction state/audit roots and a
+read-only resume path that restores the original raw response by request ID. It neither selects
+Rules nor replenishes the separate Rule-review budget. Production caller integration remains open.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request

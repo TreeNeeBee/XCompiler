@@ -47,6 +47,11 @@ export class LLMProtocolCorrection {
     this.ledger = new ProtocolCorrectionLedger(store, evidence);
   }
 
+  /** Recovery cannot create an allowance or construct a transport, even when no state exists. */
+  resume(input: { logicalRequestId: string; signal?: AbortSignal }) {
+    return this.ledger.resume(input);
+  }
+
   async correctOnce(input: {
     original: RoutedResponseEvidence; protocol: JsonOutputProtocol;
     options?: ProtocolCorrectionChatOptions; signal?: AbortSignal;

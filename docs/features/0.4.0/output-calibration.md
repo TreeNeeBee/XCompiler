@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-08; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-10; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -401,7 +401,36 @@ redaction, cancellation and unsuccessful candidate cases are authored. None has 
 remove the actual claim-gated dispatch, fixed model assignment, final-send guard, required binding
 publication, audit checks and completion/recovery proof calls to falsify their wiring, then restore
 them and run focused and affected gates. Runtime path composition, production request/input recovery,
-caller migrations, additional proven quote/escape classes and legacy-salvage removal remain open.
+caller migrations, additional proven quote/escape classes and legacy-salvage removal remain open at
+that checkpoint.
+
+## Authored Runtime composition and resume: 2026-10-09–10
+
+[`createRuntimeProtocolCorrection`](../../../src/runtime/protocol_correction.ts) accepts a Runtime
+`ProjectContainer` and the existing Router. It fixes the state root at
+`.xcompiler/llm/protocol-corrections` and the raw audit root at `.xcompiler/audit`; both adapters use the
+container root as their confinement anchor. It follows the established Runtime container checks and
+retains storage-time no-follow/path validation. No worktree-local state, Rule catalogue, embedding
+client, new model configuration or new audit/replay instance participates in this composition.
+
+`LLMProtocolCorrection.resume({ logicalRequestId, signal })` uses a separate read-only Ledger entry.
+It cannot call the fresh-attempt `begin` path or construct a Router client. With an existing claim,
+the evidence authority's required `recoverOriginal` method reads the pinned original attempt, checks
+the producer's pre-redaction digest and exact claim digest, and verifies protocol/template/producer
+eligibility. The Ledger independently rechecks the original and invokes the established candidate
+recovery, audit and proof path. The caller provides no replacement original text or current protocol.
+
+No claim and no result yields `not-started`; this reports absence and grants no allowance. An existing
+claim without a result stays `incomplete`; a verified result yields `recovered`. An orphan result,
+missing/ambiguous/changed/redacted evidence or unsupported version fails explicitly. Cancellation
+never writes state or restores an allowance. A concurrently completed result can be observed through
+the existing reread pattern without permitting a new send.
+
+Runtime real-container/HTTP/audit/state reconstruction, unchanged network count, no model-factory
+consultation, empty/consumed state, raw evidence failures and storage-boundary tests are authored,
+unrun. At G1, falsify the Runtime composition and resume delegation plus original recovery and the
+repeated audit/proof calls. The factory remains internal and is not yet called by build/run. Durable
+business request/input recovery, production migrations and the remaining proof classes stay open.
 
 ## Overall protocol records
 
@@ -494,5 +523,6 @@ repair. F1/R1 now supply stable logical request IDs, provider facts, a final-sen
 separate persisted Rule-review allowance. C1 now has authored dual-response evidence/proof entries
 and a fixed protocol-only prompt, exact message guard, allowance ledger, immutable file state,
 actual-producer Router, concrete raw-audit authority and internal coordinator. It still needs
-additional quote/escape proof classes, Runtime composition and production wiring. No tests, typecheck, lint, build, package, Tool action, external
+additional quote/escape proof classes and production wiring. Internal Runtime composition and
+request-ID-only correction recovery are now authored. No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

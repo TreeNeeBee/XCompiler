@@ -24,6 +24,7 @@ beforeEach(async () => {
   container = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-correction-ledger-')));
   stateRoot = path.join(container, '.xcompiler', 'protocol-corrections');
 });
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await fs.rm(container, { recursive: true, force: true });
@@ -56,6 +57,9 @@ function candidate(claim: ProtocolCorrectionClaim, output = '{"x":1}',
 // these cases do not claim to demonstrate a real raw-audit implementation or a provider send.
 function evidence() {
   return {
+    recoverOriginal: vi.fn<ProtocolCorrectionEvidence['recoverOriginal']>(async () => {
+      throw new Error('Original raw audit recovery was not provided by the test');
+    }),
     verifyOriginal: vi.fn<ProtocolCorrectionEvidence['verifyOriginal']>(async () => {}),
     verifyCandidate: vi.fn<ProtocolCorrectionEvidence['verifyCandidate']>(async () => {}),
     recoverCandidate: vi.fn<ProtocolCorrectionEvidence['recoverCandidate']>(async () => {
@@ -384,4 +388,178 @@ describe('persistent single logical protocol correction allowance', () => {
       .rejects.toMatchObject(failure('identity_conflict'));
     expect(await store().readClaim(requestId)).toEqual(claim);
   });
+});
+
+describe('read-only correction recovery by original logical request identity', () => {
+  it('returns not-started without creating state, recovering evidence or entering begin', async () => {
+    const disk = store();
+    const audit = evidence();
+    const ledger = new ProtocolCorrectionLedger(disk, audit);
+    const create = vi.spyOn(disk, 'claim');
+    const complete = vi.spyOn(disk, 'complete');
+    const begin = vi.spyOn(ledger, 'begin');
+    const result = await ledger.resume({ logicalRequestId: requestId.toUpperCase() });
+    expect(result).toEqual({ status: 'not-started' });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(begin).not.toHaveBeenCalled();
+    expect(audit.recoverOriginal).not.toHaveBeenCalled();
+    expect(await fs.readdir(container)).toEqual([]);
+  });
+
+  it('rejects an invalid identity before reading any state', async () => {
+    const disk = store();
+    const readClaim = vi.spyOn(disk, 'readClaim');
+    const readResult = vi.spyOn(disk, 'readResult');
+    await expect(new ProtocolCorrectionLedger(disk, evidence()).resume({ logicalRequestId: '../another-request' }))
+      .rejects.toMatchObject(failure('invalid'));
+    expect(readClaim).not.toHaveBeenCalled();
+    expect(readResult).not.toHaveBeenCalled();
+  });
+
+  it('restores an incomplete attempt using only its retained original and never grants another allowance', async () => {
+    const original = response('{"x":"retained\\r\\nvalue",}');
+    const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()), original);
+    const audit = evidence();
+    audit.recoverOriginal.mockResolvedValue(original);
+    const disk = store();
+    const create = vi.spyOn(disk, 'claim');
+    const complete = vi.spyOn(disk, 'complete');
+    const resumed = await new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId.toUpperCase() });
+    expect(resumed).toEqual({ status: 'incomplete', claim });
+    expect(audit.recoverOriginal).toHaveBeenCalledExactlyOnceWith(claim, undefined);
+    expect(audit.verifyOriginal).toHaveBeenCalledExactlyOnceWith(claim, original, undefined);
+    expect(audit.recoverCandidate).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(await store().readClaim(requestId)).toEqual(claim);
+  });
+
+  it('restores a completed result and reassesses both retained responses without caller-provided text', async () => {
+    const initial = new ProtocolCorrectionLedger(store(), evidence());
+    const claim = await acquire(initial);
+    const corrected = candidate(claim);
+    const completed = await initial.complete({ claim, original: response(), candidate: corrected });
+    const audit = evidence();
+    audit.recoverOriginal.mockResolvedValue(response());
+    audit.recoverCandidate.mockResolvedValue(corrected);
+    const disk = store();
+    const create = vi.spyOn(disk, 'claim');
+    const publish = vi.spyOn(disk, 'complete');
+    expect(await new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId }))
+      .toEqual({ ...completed, status: 'recovered' });
+    expect(audit.recoverOriginal).toHaveBeenCalledExactlyOnceWith(claim, undefined);
+    expect(audit.verifyOriginal).toHaveBeenCalledExactlyOnceWith(claim, response(), undefined);
+    expect(audit.recoverCandidate).toHaveBeenCalledExactlyOnceWith(claim, completed.result, undefined);
+    expect(audit.verifyCandidate).toHaveBeenCalledExactlyOnceWith(claim, response(), corrected, undefined);
+    expect(create).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the claim when completion becomes visible after the first claim read', async () => {
+    const initial = new ProtocolCorrectionLedger(store(), evidence());
+    const claim = await acquire(initial);
+    const corrected = candidate(claim);
+    const completed = await initial.complete({ claim, original: response(), candidate: corrected });
+    const audit = evidence();
+    audit.recoverOriginal.mockResolvedValue(response());
+    audit.recoverCandidate.mockResolvedValue(corrected);
+    const disk = store();
+    vi.spyOn(disk, 'readClaim').mockResolvedValueOnce(undefined);
+    expect(await new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId }))
+      .toEqual({ ...completed, status: 'recovered' });
+  });
+
+  it('rechecks completion after the original is restored', async () => {
+    const initial = new ProtocolCorrectionLedger(store(), evidence());
+    const claim = await acquire(initial);
+    const corrected = candidate(claim);
+    const audit = evidence();
+    audit.recoverOriginal.mockImplementationOnce(async () => {
+      await initial.complete({ claim, original: response(), candidate: corrected });
+      return response();
+    });
+    audit.recoverCandidate.mockResolvedValue(corrected);
+    expect(await new ProtocolCorrectionLedger(store(), audit).resume({ logicalRequestId: requestId }))
+      .toMatchObject({ status: 'recovered', result: { outcome: 'preserved' } });
+  });
+
+  it('rejects an orphan result even from a store port that does not check claim linkage', async () => {
+    const initial = new ProtocolCorrectionLedger(store(), evidence());
+    const claim = await acquire(initial);
+    const completed = await initial.complete({ claim, original: response(), candidate: candidate(claim) });
+    const disk = store();
+    vi.spyOn(disk, 'readClaim').mockResolvedValue(undefined);
+    vi.spyOn(disk, 'readResult').mockResolvedValue(completed.result);
+    const audit = evidence();
+    await expect(new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId }))
+      .rejects.toMatchObject({ ...failure('invalid'), details: { record: 'result-without-claim' } });
+    expect(audit.recoverOriginal).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'different', 'wrong-request', 'verification-rejected'] as const)
+    ('does not resume when retained original evidence is %s', async kind => {
+      const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()));
+      const audit = evidence();
+      const unavailable = new Error('Original raw evidence is unavailable');
+      audit.recoverOriginal.mockResolvedValue(kind === 'different' ? response('{"x":2,}')
+        : kind === 'wrong-request' ? response(undefined, { logicalRequestId: unrelatedId }) : response());
+      if (kind === 'missing') audit.recoverOriginal.mockRejectedValue(unavailable);
+      if (kind === 'verification-rejected') audit.verifyOriginal.mockRejectedValue(unavailable);
+      const disk = store();
+      const create = vi.spyOn(disk, 'claim');
+      const resumed = new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId });
+      if (kind === 'different' || kind === 'wrong-request') await expect(resumed).rejects.toMatchObject(failure('identity_conflict'));
+      else await expect(resumed).rejects.toBe(unavailable);
+      expect(create).not.toHaveBeenCalled();
+      expect(await store().readClaim(requestId)).toEqual(claim);
+      expect(await store().readResult(requestId)).toBeUndefined();
+    });
+
+  it.each(['proofVersion', 'templateVersion'] as const)('rechecks %s on the resumed claim', async field => {
+    await acquire(new ProtocolCorrectionLedger(store(), evidence()));
+    await tamper('claims', { [field]: 'future/99' });
+    const audit = evidence();
+    audit.recoverOriginal.mockResolvedValue(response());
+    await expect(new ProtocolCorrectionLedger(store(), audit).resume({ logicalRequestId: requestId }))
+      .rejects.toMatchObject(failure('unsupported_version'));
+    expect(await store().readResult(requestId)).toBeUndefined();
+  });
+
+  it.each(['state-read', 'original-recovery', 'original-verification', 'last-result-read'] as const)
+    ('preserves cancellation during %s and leaves the allowance consumed', async stage => {
+      const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()));
+      const disk = store();
+      const audit = evidence();
+      audit.recoverOriginal.mockResolvedValue(response());
+      const controller = new AbortController();
+      const cancelled = new Error('Read-only recovery cancelled');
+      if (stage === 'state-read') {
+        const read = disk.readClaim.bind(disk);
+        vi.spyOn(disk, 'readClaim').mockImplementationOnce(async id => {
+          const stored = await read(id);
+          controller.abort(cancelled);
+          return stored;
+        });
+      }
+      if (stage === 'original-recovery') audit.recoverOriginal.mockImplementationOnce(async () => {
+        controller.abort(cancelled);
+        return response();
+      });
+      if (stage === 'original-verification') audit.verifyOriginal.mockImplementationOnce(async () => { controller.abort(cancelled); });
+      if (stage === 'last-result-read') {
+        const read = disk.readResult.bind(disk);
+        let reads = 0;
+        vi.spyOn(disk, 'readResult').mockImplementation(async id => {
+          const stored = await read(id);
+          if (++reads === 2) controller.abort(cancelled);
+          return stored;
+        });
+      }
+      await expect(new ProtocolCorrectionLedger(disk, audit).resume({ logicalRequestId: requestId, signal: controller.signal }))
+        .rejects.toBe(cancelled);
+      expect(await store().readClaim(requestId)).toEqual(claim);
+      expect(await store().readResult(requestId)).toBeUndefined();
+    });
 });

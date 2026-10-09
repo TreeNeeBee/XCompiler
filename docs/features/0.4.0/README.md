@@ -1,7 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-08.
+2026-10-10.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.
@@ -153,7 +153,14 @@ can send; final messages contain exactly the fixed protocol template, and comple
 producer identity and mechanical proof are required. Missing, mutated or irreversibly redacted
 evidence fails explicitly. Restart cannot re-grant a consumed allowance. Real HTTP/audit/file-state,
 replay and Plugin mutation tests are authored, unrun. Runtime composition and production callers
-remain to be implemented; current deterministic repairs do not trigger this optional model call.
+remain to be implemented at this checkpoint; current deterministic repairs do not trigger this optional model call.
+
+The 2026-10-09 continuation supplies the internal Runtime composition and recovery using only the
+original logical request ID. State and audit roots stay in the project container's `.xcompiler`.
+Recovery restores original/candidate evidence from raw audit, repeats verification and never sends
+or grants another allowance. Empty state is `not-started`; consumed state remains `incomplete` or
+`recovered`. Runtime/file/HTTP and recovery tests are authored, unrun. Production business request
+identity/input recovery and J06 migration remain next.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to
