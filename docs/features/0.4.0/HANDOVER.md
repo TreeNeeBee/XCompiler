@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-10
+Updated: 2026-10-11
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`2e8532b` (C1 fixed dispatch and raw audit recovery), with original baseline `77ff6e2`
+`60e54ac` (C1 Runtime composition and read-only recovery), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -883,6 +883,48 @@ only an explicitly identified old request may recover its pinned evidence. Exist
 best-effort request logging and redacted Rule bindings cannot replace required original-input audit.
 The next batch must preserve uncertain-dispatch versus recovered-response states without adding C1's
 one-attempt restriction to business calls or reusing historical verdicts for new executions.
+
+## V1 original business input retention: 2026-10-10–11
+
+- `BusinessRequestInputs` now captures caller-owned request identity, scenario-execution correlation,
+  Project/Phase UUIDv7 references, framework messages, protocol/template versions and the persisted
+  business Rule snapshot digest. It copies and freezes caller material before awaiting collaborators.
+  The current owner is scenario judgement through ProjectManager; this record does not establish
+  Domain object existence or replace canonical lifecycle state.
+- Required `llm.business_request_input` audit owns message bodies and a pre-redaction input digest.
+  Immutable metadata at `.xcompiler/llm/business-inputs/requests/<request-id>.json` contains no messages.
+  Each concurrent capture first writes audit under a unique record ID, then publishes metadata with
+  no replacement. Identical inputs reuse the winning record; changed input/owner/versions fail.
+  Audit from a losing capture is not authoritative and does not become a second input record.
+- `createRuntimeBusinessRequestInputs` supplies container-owned input, Rule snapshot and raw-audit
+  roots. Capture and resume both validate the existing snapshot and its low-score review evidence.
+  The shared complete JSONL reader preserves Rule/C1 error references and rejects malformed later
+  lines as well as linked paths, retaining only matching parsed events. Recovery never selects Rules,
+  reloads definitions or invokes a model.
+- Input audit passes an explicit container/audit location into `AuditLogger.event`. The logger checks
+  its actual JSONL and Markdown targets before either write, then uses regular-file/no-follow handles
+  for scoped required evidence. This closes the static finding where checking only JSONL still allowed
+  a linked Markdown target or an injected logger for another project to receive the input. Confined
+  custom Markdown paths remain supported. Initial header creation and each event append preserve
+  synchronous writes; write/close failures retain their causes. Existing unscoped logging is not a
+  claim of container confinement. Concurrent ancestor replacement remains outside this path contract.
+- Fresh input can be checked against its exact or properly protected audit representation. Request-ID
+  recovery requires the original values to match the pre-redaction digest; removed secret values
+  cannot be reconstructed. Missing, ambiguous, changed or irreversibly redacted evidence fails.
+- This is an **input-only V1 sub-batch**. `captured`, `recovered` and `not-found` describe input records,
+  never dispatch state, remaining sends or a business verdict. Existing business sender and J06 are
+  unchanged. No ordinary-business one-send budget, automatic resend or historical verdict reuse was
+  introduced. The new internal factory is not yet called by build/run.
+- Store/audit/Runtime integration and adverse-path cases are authored, unrun. At G1, falsify the
+  actual audit-write/verify/recover, immutable-publication, snapshot-review and Runtime composition
+  calls and the location argument/target checks at the actual audit write; also run existing Rule/C1
+  reader and ordinary required-audit cases after the shared changes. Only static
+  source/diff review has been performed.
+
+Next: bind actual dispatch and retained/selected responses to this pinned input, preserving uncertain
+dispatch separately from recovery and without copying C1's send budget. Then migrate the J06 caller
+and YAML rubric together, retaining fresh scenario execution, current-evidence judgement and typed PM
+intake. Additional correction proof classes, other callers and consolidated G1 verification remain.
 
 ## Work not started or not complete
 

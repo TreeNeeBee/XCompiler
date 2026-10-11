@@ -4,6 +4,7 @@ import { t } from '../i18n/index.js';
 import { xcEnv } from '../config/env.js';
 import { rebuildAuditSummary } from './summary.js';
 import { AuditPersistenceError, type AuditPersistenceFailure } from './errors.js';
+import { appendScopedAudit, initializeScopedAudit, type AuditWriteLocation } from './scoped_persistence.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
@@ -82,6 +83,8 @@ export type AuditContentMode = 'full' | 'redacted';
 export interface AuditEventOptions {
   /** Required evidence must be retained before the owning operation can continue. */
   persistence?: 'best-effort' | 'required';
+  /** Bind required evidence to Runtime's container and verify the logger's actual write targets. */
+  location?: AuditWriteLocation;
 }
 
 export class AuditLogger {
@@ -169,6 +172,7 @@ export class AuditLogger {
     data?: Record<string, unknown>,
     options: AuditEventOptions = {},
   ): Promise<void> {
+    const location = options.location ? Object.freeze({ ...options.location }) : undefined;
     const protectedMessage = protectAuditContent(message, this.contentMode);
     const ev: AuditEvent = {
       ts: new Date().toISOString(),
@@ -184,19 +188,25 @@ export class AuditLogger {
     }
     const required = options.persistence === 'required';
     try {
-      await this.ensureFiles();
+      if (location) {
+        if (!required) throw new Error('Scoped audit evidence requires required persistence');
+        await initializeScopedAudit({ jsonl: this.jsonlAbs, markdown: this.mdAbs }, location,
+          `${t().audit.processLogTitle}\n\n${t().audit.processLogPreamble}\n`);
+      } else {
+        await this.ensureFiles();
+      }
     } catch (cause) {
       if (required) throw this.persistenceError('initialize', this.jsonlAbs, ev, cause);
       throw cause;
     }
-    await this.appendJsonl(ev, required);
+    await this.appendJsonl(ev, required, location);
     await this.appendMd([
       `- \`${ev.ts}\` **${kind}** — ${escapeMd(ev.message)}`,
       ...(ev.data
         ? ['', '<details><summary>Event data</summary>', '', '```json', safeStringify(ev.data), '```', '', '</details>']
         : []),
       '',
-    ].join('\n'), required ? ev : undefined);
+    ].join('\n'), required ? ev : undefined, location);
   }
 
   /** 用户输入 / 决策。会把内容以引用块写入 markdown。 */
@@ -378,11 +388,13 @@ export class AuditLogger {
     }
   }
 
-  private async appendMd(text: string, requiredEvent?: AuditEvent): Promise<void> {
+  private async appendMd(text: string, requiredEvent?: AuditEvent, location?: AuditWriteLocation): Promise<void> {
     // Queue ownership remains serial even after a required write rejects.
+    const append = () => location
+      ? appendScopedAudit(this.mdAbs, text, location)
+      : fs.appendFile(this.mdAbs, text, 'utf8');
     this.mdQueue = this.mdQueue.then(
-      () => fs.appendFile(this.mdAbs, text, 'utf8'),
-      () => fs.appendFile(this.mdAbs, text, 'utf8'),
+      append, append,
     ).catch((err) => {
       if (requiredEvent) throw this.persistenceError('append-markdown', this.mdAbs, requiredEvent, err);
       console.warn(t().audit.markdownAppendFailed((err as Error).message));
@@ -390,12 +402,13 @@ export class AuditLogger {
     return this.mdQueue;
   }
 
-  private async appendJsonl(ev: AuditEvent, required = false): Promise<void> {
+  private async appendJsonl(ev: AuditEvent, required = false, location?: AuditWriteLocation): Promise<void> {
     // 同步追加：jsonl 是关键审计流，必须保证进程异常/退出时也已落盘。
     // 即使在事件循环被长 LLM 调用占用、或 await 链被 unhandled rejection 截断时，
     // 同步 IO 也能保证字节落到磁盘，杜绝 "S007 整段事件丢失" 类问题。
     try {
-      appendFileSync(this.jsonlAbs, JSON.stringify(ev) + '\n', 'utf8');
+      if (location) await appendScopedAudit(this.jsonlAbs, JSON.stringify(ev) + '\n', location);
+      else appendFileSync(this.jsonlAbs, JSON.stringify(ev) + '\n', 'utf8');
     } catch (err) {
       if (required) throw this.persistenceError('append-jsonl', this.jsonlAbs, ev, err);
       console.warn(t().audit.jsonlAppendFailed((err as Error).message));

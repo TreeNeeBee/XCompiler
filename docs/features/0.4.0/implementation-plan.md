@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-10. This development checkpoint extends `2e8532b` (C1 fixed dispatch and raw audit recovery)
+Updated: 2026-10-11. This development checkpoint extends `60e54ac` (C1 Runtime composition and recovery)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-10:
+Progress reconciliation against source, 2026-10-11:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -138,7 +138,7 @@ Progress reconciliation against source, 2026-10-10:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
-| V1 / V2 | Existing semantic owners and migration targets identified | Scenario vertical slice, then remaining approved production callers |
+| V1 / V2 | Existing owners identified; immutable business-input records, required raw-input audit and internal Runtime exact recovery authored | Dispatch/response binding, scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -638,6 +638,23 @@ redaction removed values. Distinguish prepared input, uncertain dispatch, retain
 uncommitted caller verdict. Do not apply C1's one-attempt budget to ordinary business sends, claim that
 resending is recovery, reuse a verdict by scenario name, or skip a fresh scenario execution. Automatic
 reuse of old scenes/verdicts in place of the current gate is outside this approved migration.
+
+V1 input sub-batch, 2026-10-10–11: Application now pins original framework messages, caller-owned
+request/execution identity, Project/Phase references, protocol/template versions and a verified
+persisted Rule snapshot. Required audit retains the protected input and pre-redaction digest;
+immutable metadata retains the digest and unique audit-record reference without message bodies.
+Audit precedes publication; concurrent identical captures adopt the immutable winner, while changed
+material fails. Live capture accepts the exact input or its protected audit representation; read-only
+resume requires exact values and revalidates the snapshot/review evidence without current selection.
+The Runtime factory fixes all paths beneath the container. This does not persist dispatch or a
+selected response and cannot infer whether a business send occurred. Build/run/J06 are not yet
+migrated. Filesystem, audit and Runtime tests are authored, not run; G1 must falsify actual audit,
+store, snapshot-review and factory calls and execute sibling Rule/C1 reader coverage. A scoped required
+audit option now validates the injected logger's actual JSONL/Markdown targets before writing; both
+use no-follow regular-file handles. It addresses the static Markdown-link/wrong-project-logger
+finding, with Runtime call-site cases authored and existing unscoped logging left outside that claim.
+G1 must also falsify the location argument and execute sibling required-audit cases. Next implement
+dispatch/response linkage before J06 extraction; the ordinary-business send policy remains unchanged.
 
 ## Acceptance and verification plan
 

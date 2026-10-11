@@ -1,7 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-10.
+2026-10-11.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.
@@ -161,6 +161,14 @@ Recovery restores original/candidate evidence from raw audit, repeats verificati
 or grants another allowance. Empty state is `not-started`; consumed state remains `incomplete` or
 `recovered`. Runtime/file/HTTP and recovery tests are authored, unrun. Production business request
 identity/input recovery and J06 migration remain next.
+
+The 2026-10-10–11 V1 input sub-batch now pins caller-owned request/scenario-execution identity,
+Project/Phase references, framework messages, protocol/template versions and a verified Rule snapshot.
+Required audit holds protected messages plus the pre-redaction digest; immutable metadata contains
+no message bodies. Concurrent identical captures reuse the winning record. Internal Runtime recovery
+revalidates exact audit values and Rule review evidence, without selecting Rules or sending a request.
+Redaction that removed original values prevents exact recovery. These are input records only; dispatch,
+retained/selected responses and J06 production migration remain next. Tests are authored, unrun.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

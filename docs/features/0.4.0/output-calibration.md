@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-10; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-11; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -524,5 +524,9 @@ separate persisted Rule-review allowance. C1 now has authored dual-response evid
 and a fixed protocol-only prompt, exact message guard, allowance ledger, immutable file state,
 actual-producer Router, concrete raw-audit authority and internal coordinator. It still needs
 additional quote/escape proof classes and production wiring. Internal Runtime composition and
-request-ID-only correction recovery are now authored. No tests, typecheck, lint, build, package, Tool action, external
+request-ID-only correction recovery are now authored. The following V1 input-only batch retains
+original business messages and Rule snapshot references separately. Its immutable capture/recovery
+does not grant correction allowance, impose a business send budget or put those messages/Rules into
+the calibration prompt. Business dispatch/response binding and caller migration are still pending.
+No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-10. This describes the authored F1/R1 source components, not an installed CLI or
+Updated 2026-10-11. This describes the authored F1/R1 source components, not an installed CLI or
 completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
@@ -389,6 +389,29 @@ Rule prompt protection and message-subsequence semantics do not substitute for t
 read-only resume path that restores the original raw response by request ID. It neither selects
 Rules nor replenishes the separate Rule-review budget. Production caller integration remains open.
 
+The 2026-10-10–11 V1 input foundation references this already-persisted business Rule snapshot by its
+digest. `BusinessRequestInputs.capture` verifies that it belongs to the same logical request and
+ProjectManager/project context, including raw low-score review evidence. It never accepts a caller's
+arbitrary snapshot digest or starts a new selection. The framework messages, caller-owned scenario
+execution identity, Project/Phase references, protocol and template versions form a canonical input
+digest before audit protection. Message bodies stay only in required `llm.business_request_input`
+audit; immutable metadata lives at `.xcompiler/llm/business-inputs/requests/<request-id>.json` and
+links one unique audit record. Independent audit events precede immutable publication so concurrent
+identical captures reuse the first metadata record without ambiguous evidence.
+The required event carries an explicit container/audit location to the actual logger. It validates
+its JSONL and Markdown destinations before writing, rejects another project's logger or linked
+targets, and uses no-follow regular-file handles. A check of the JSONL path alone cannot establish
+the Markdown destination. This scoped path does not change ordinary unscoped logging's contract.
+
+`createRuntimeBusinessRequestInputs` composes the input store/audit with existing Rule snapshot and
+review verification. `resume` restores exact input values and repeats snapshot/review verification;
+it does not load today's Rule sources, require embedding or replenish review allowance. Irreversible
+redaction makes exact resume fail, although fresh capture may verify the protected representation
+against live input. These input records do not prove dispatch, retain a response or impose a business
+send budget. Production J06/build/run adoption and dispatch/response binding remain pending. New
+store/audit/Runtime cases are authored, unrun; the shared JSONL reader also requires existing Rule/C1
+regression execution and actual-call falsification at G1.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator
@@ -407,6 +430,10 @@ Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_select
 [runtime_rule_requests.test.ts](../../../tests/integration/runtime_rule_requests.test.ts),
 [rule_business_request.test.ts](../../../tests/integration/rule_business_request.test.ts),
 [runtime_rule_business_request.test.ts](../../../tests/integration/runtime_rule_business_request.test.ts),
+[runtime_business_request_inputs.test.ts](../../../tests/integration/runtime_business_request_inputs.test.ts),
+[business_request_input_store.test.ts](../../../tests/integration/business_request_input_store.test.ts),
+[business_request_input_audit.test.ts](../../../tests/integration/business_request_input_audit.test.ts),
+[audit_scoped_persistence.test.ts](../../../tests/integration/audit_scoped_persistence.test.ts),
 [runtime_rule_infrastructure.test.ts](../../../tests/integration/runtime_rule_infrastructure.test.ts),
 [compiler_rule_catalogue.test.ts](../../../tests/integration/compiler_rule_catalogue.test.ts),
 [installation_resources.test.ts](../../../tests/integration/installation_resources.test.ts),
