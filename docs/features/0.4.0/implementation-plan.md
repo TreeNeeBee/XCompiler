@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-13. This development stage extends `5385bee` (V1 final requests and explicit-attempt recovery)
+Updated: 2026-10-14. This development stage extends `2d2dbc5` (V1 J06 production integration)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-13:
+Progress reconciliation against source, 2026-10-14:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -137,8 +137,8 @@ Progress reconciliation against source, 2026-10-13:
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
 | F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard and J06 input/response/protocol evidence authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
-| C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; deterministic protocol-result audit/metadata; J06 rubric/consumer/Phase-delivery caller and explicit original-evidence recovery authored | Remaining approved caller migrations and business-Rule activation; all executed verification |
+| C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
+| V1 / V2 | Inputs, final attempts and adopted response authority; J06 rubric/consumer/Phase-delivery caller and original-evidence recovery; Executor parsing/no-fragment execution authored | Remaining request/Rule/eligibility caller migrations and business-Rule activation; all executed verification |
 | P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -716,6 +716,25 @@ or reuse a historical verdict for a newly executed scene. Source/staging package
 YAML resources. Unit, real-filesystem/loopback and real run-callback cases are authored, unrun; the
 independently precomputed manifest digest and all wiring falsification remain at G1. Next reconcile
 and migrate the remaining approved V2 callers, then complete proof/activation/release work before G1.
+
+V2 Executor parsing slice, 2026-10-14: `parseTurn` and the explicit-root `done/actions` stream-shape
+predicate now share whole-response inspection plus independent value-preserving normalization.
+Legacy object extraction, malformed-action salvage, CR deletion and guessed quotes are removed,
+including the unused `jsonrepair` dependency. A typed protocol failure blocks the main Executor
+before all automatic actions and permissions, retains full raw audit and diagnostic, and consumes
+the existing business-round budget. A malformed permission-adaptation turn remains terminal through
+the shared permission-blocked result path. Full native JSON-text projection, disposition aliases
+and valid-JSON action-item policy stay with their existing validators. Unit, real-file/HTTP and
+automatic-TEST/permission sibling cases are authored, unrun; G1 must falsify actual main rejection,
+proof and adaptation-terminal calls. This does not add C1 sends or producer eligibility: local
+stream stops are still incomplete, and both providers also stop when current `validate` succeeds.
+
+Planner source reconciliation identifies the next integration contract: clarify retains PM;
+PhasePlan/decomposition retain Planner; pre-graph planning needs an operation identity rather than
+invented Project/Phase IDs. Preserve i18n sources and existing deterministic heuristics. Preserve
+Router candidate validation and outer semantic feedback as separate owners while introducing
+retained role-aware request ports; Phase progression must receive them from Runtime. Remaining
+caller migrations, proof classes, activation and release work still precede G1.
 
 ## Acceptance and verification plan
 

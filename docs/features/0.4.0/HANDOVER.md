@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-13
+Updated: 2026-10-14
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`1f3fb54` (V1 adopted response and protocol recovery), with original baseline `77ff6e2`
+`2d2dbc5` (V1 J06 production integration), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1064,6 +1064,47 @@ Next: reconcile the remaining approved V2 caller dispositions and protocol-consu
 implementation, then migrate their owning boundaries. Additional quote/escape proofs, controlled
 business-Rule activation, release preparation and all G1 execution remain incomplete. No new
 policy choice is pending in this J06 batch.
+
+## V2 Executor whole-response parsing: 2026-10-14
+
+- `parseTurn` and `isCompleteTurnJson` share the existing complete-input JSON scanner and
+  versioned `execution-turn/1` protocol. Full outer fences, structurally valid trailing commas
+  and raw string CR/LF/tab escaping are the allowed transformations; normalization repeats the
+  independent preservation proof. Duplicate keys, prose/extra objects, multiple documents, guessed
+  quotes and outer truncation reject the reply. Object extraction, malformed-action salvage and
+  CR deletion are removed, along with the unused direct `jsonrepair` dependency and lock entry.
+- `ExecutionTurnProtocolError` preserves original output and typed offset/line/column diagnostic.
+  The main Executor catches it before action normalization, automatic development/test gates and
+  permission requests. It audits the original reply and diagnostic, consumes this round and requests
+  a complete new business reply within the existing allowance. It grants no C1 attempt or extra
+  round. A malformed reply in the one permitted permission-adaptation turn terminates through the
+  same permission-blocked result owner; early protocol rejection must not grant a third model turn.
+- Caller validation propagating the same typed parser error follows its existing content-rejection
+  and bounded grace path. Its full error output is retained even when a custom client emits no
+  tokens; control flow uses the typed error. Validation rejection after the one permission-adaptation
+  turn uses the same terminal permission result rather than renewing grace.
+- Complete JSON-text native tool projection, disposition aliases and valid-JSON action-item
+  handling retain their existing business owners. The stream predicate requires explicit root
+  `done`/`actions`; its syntactic result is not evidence of provider completion.
+- Unit cases, actual Executor file/no-permission/no-automatic-test regressions and real
+  Router/HTTP/file cases are authored, unrun. G1 must falsify the main rejection path, the scanner,
+  independent proof and permission-adaptation termination. CODE mutation alone does not cover the
+  automatic `run_tests` sibling. Raw CRLF evidence must demonstrate exact preserved file bytes.
+
+This is a parsing slice, not full V2 caller migration. Executor retains its existing stream-stop
+and Router validation paths; transport `local-stop` remains incomplete for C1. Removing only
+`streamStopWhen` will not remove validator-driven local stopping in both providers. Actual producer
+eligibility, request/Rule retention, correction accounting and post-transport caller validation
+must be connected together without upgrading syntax to provider facts.
+
+Planner reconciliation found that clarification intentionally uses PM, while PhasePlan and
+decomposition use Planner. New build planning precedes canonical Project/Phase persistence, so
+scenario-only retained input/attempt interfaces cannot be reused with invented Domain IDs or a
+fixed PM role. Preserve current i18n sources, J01-J05 heuristics, Router validation and outer semantic
+retry owners while implementing a planning-operation identity and pinned-role request port.
+Application Phase progression needs Runtime-injected request capability, not a reverse import.
+Remaining proof classes, caller/resource migration, controlled business-Rule activation and G1 are
+still incomplete. No executable verification or provider call ran during this batch.
 
 ## Work not started or not complete
 

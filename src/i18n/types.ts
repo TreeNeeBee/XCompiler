@@ -403,6 +403,7 @@ export interface Messages {
     executorSkillBlock: (hints: string[]) => string;
     executorUserPromptOutro: string;
     executorFeedbackHeader: string;
+    executorFeedbackProtocolRejected: (diagnostic: string) => string;
     executorFeedbackVerifyOk: string;
     executorFeedbackVerifyMissing: (paths: string) => string;
     executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) => string;

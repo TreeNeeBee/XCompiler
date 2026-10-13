@@ -854,6 +854,10 @@ Return strict JSON StepPlan for the current phase only.`,
       `\n\n## Active Agent Skills\n${hints.join('\n\n')}`,
     executorUserPromptOutro: 'Now return the first round of JSON per the protocol.',
     executorFeedbackHeader: 'Tool results this round:',
+    executorFeedbackProtocolRejected: (diagnostic) =>
+      'Your previous reply failed full-response JSON validation. No action, permission request or automatic verification from that reply was executed. ' +
+      'Generate one complete JSON turn for the current task; do not return fragments or multiple JSON documents. ' +
+      `Protocol diagnostic: ${diagnostic}`,
     executorFeedbackVerifyOk:
       'outputs verified. If you are done, set done=true and actions=[].',
     executorFeedbackVerifyMissing: (paths: string) =>

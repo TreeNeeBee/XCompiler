@@ -49,6 +49,7 @@ import {
   type BugResolutionDisposition,
   type LLMAction,
   type LLMTurn,
+  ExecutionTurnProtocolError,
 } from './execution/turn_parser.js';
 import {
   compactExecutionMessages,
@@ -359,6 +360,16 @@ export class StepExecutor {
     let permissionAdaptationRound: number | undefined;
     let permissionBlockedReason: string | undefined;
     const deniedCapabilities = new Set<string>();
+    const permissionFailure = async (round: number, currentMissing: number, reason: string): Promise<ExecutorRunResult> => {
+      const metrics = computeMetrics({ rounds: actualRounds, parseFailures, repeatedTurns, calls,
+        initialMissing, currentMissing, providers: [...providers] });
+      await inp.ctx.audit?.event('note', reason, {
+        messageId: 'audit.executor_permission_blocked', stepId: inp.step.id, round,
+        deniedCapabilities: [...deniedCapabilities], adaptationRound: permissionAdaptationRound,
+      });
+      return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan,
+        error: reason, metrics };
+    };
     let repairEvidence = false;
     const ownedChangeRequestArtifacts = currentStepAffectedArtifacts(inp);
     const changeRequestMutationRequired = ownedChangeRequestArtifacts.length > 0;
@@ -521,9 +532,17 @@ export class StepExecutor {
           thoughts: t().audit.llmChatFailedThought(errMsg),
           actions: [],
           done: false,
-          raw: rawAggregate,
+          raw: err instanceof ExecutionTurnProtocolError ? err.output : rawAggregate,
           provider,
         });
+        if (err instanceof ExecutionTurnProtocolError) {
+          parseFailures++;
+          await inp.ctx.audit?.event('llm.error', 'Executor reply rejected by the full JSON protocol', {
+            messageId: 'audit.executor_turn_protocol_rejected', stepId: inp.step.id, role, round, provider,
+            client: this.opts.llm.name,
+            code: err.code, protocol: err.protocol, diagnostic: err.diagnostic, stage: 'caller-validation',
+          });
+        }
         await inp.ctx.audit?.event(
           'llm.error',
           t().audit.llmChatAborted(inp.step.id, round, rawAggregate.length, errMsg),
@@ -542,9 +561,14 @@ export class StepExecutor {
         // the only test, and it silently stopped matching: the contract says "low-quality Executor
         // response" and the pattern allows only "low-quality response" or "low-quality debugger
         // response", so this recovery never ran and the run aborted instead.
-        if (isContentRejectionExhausted(err) || isLowQualityLLMResponseError(errMsg)) {
+        if (isContentRejectionExhausted(err) || err instanceof ExecutionTurnProtocolError || isLowQualityLLMResponseError(errMsg)) {
           repeatedTurns++;
           consecutiveLowQualityRejections++;
+          if (permissionAdaptationRound !== undefined && round > permissionAdaptationRound) {
+            permissionBlockedReason ??=
+              `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
+            return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
+          }
           const verify = await verifyOutputs(inp);
           if (
             consecutiveLowQualityRejections < 2 &&
@@ -563,8 +587,9 @@ export class StepExecutor {
             });
             messages.push({
               role: 'user',
-              content:
-                `The previous provider output was rejected: ${truncate(errMsg, 1600)}\n` +
+              content: err instanceof ExecutionTurnProtocolError
+                ? t().prompts.executorFeedbackProtocolRejected(JSON.stringify(err.diagnostic))
+                : `The previous provider output was rejected: ${truncate(errMsg, 1600)}\n` +
                 'Keep the concrete file/tool evidence already present in this conversation. ' +
                 'Do not reread those files. The next response must apply a focused patch/write, ' +
                 'run the required post-repair verification, or state a concrete blocker.',
@@ -606,7 +631,33 @@ export class StepExecutor {
       }
       rep.done();
       consecutiveLowQualityRejections = 0;
-      const turn = parseTurn(text);
+      let turn: LLMTurn;
+      try {
+        turn = parseTurn(text);
+      } catch (error) {
+        if (!(error instanceof ExecutionTurnProtocolError)) throw error;
+        actualRounds = round;
+        parseFailures++;
+        // Reject the whole reply before automatic gate actions or permission requests can run.
+        await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
+          actions: [], done: false, raw: text, provider,
+        });
+        await inp.ctx.audit?.event('llm.error', 'Executor reply rejected by the full JSON protocol', {
+          messageId: 'audit.executor_turn_protocol_rejected', stepId: inp.step.id, role, round, provider,
+          client: this.opts.llm.name,
+          code: error.code, protocol: error.protocol, diagnostic: error.diagnostic,
+          stage: 'post-chat',
+        });
+        if (permissionAdaptationRound !== undefined && round > permissionAdaptationRound) {
+          permissionBlockedReason ??=
+            `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
+          return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
+        }
+        // This is a fresh business round within the existing allowance, not C1 correction.
+        messages.push({ role: 'user',
+          content: t().prompts.executorFeedbackProtocolRejected(JSON.stringify(error.diagnostic)) });
+        continue;
+      }
       finalThought = turn.thoughts;
       bugResolutionPlan = extractBugResolutionPlan(turn) ?? bugResolutionPlan;
       bugResolutionDisposition =
@@ -1527,31 +1578,7 @@ export class StepExecutor {
           `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
       }
       if (permissionBlockedReason) {
-        const metrics = computeMetrics({
-          rounds: actualRounds,
-          parseFailures,
-          repeatedTurns,
-          calls,
-          initialMissing,
-          currentMissing: verify.missing.length,
-          providers: [...providers],
-        });
-        await inp.ctx.audit?.event('note', permissionBlockedReason, {
-          messageId: 'audit.executor_permission_blocked',
-          stepId: inp.step.id,
-          round,
-          deniedCapabilities: [...deniedCapabilities],
-          adaptationRound: permissionAdaptationRound,
-        });
-        return {
-          success: false,
-          rounds: round,
-          toolCalls: calls,
-          finalThought,
-          bugResolutionPlan,
-          error: permissionBlockedReason,
-          metrics,
-        };
+        return permissionFailure(round, verify.missing.length, permissionBlockedReason);
       }
       if (consecutiveMissingCrMutationRounds >= 2) {
         const error =

@@ -849,6 +849,10 @@ ${opts.phasePlan}
       `\n\n## 已激活 Agent Skills\n${hints.join('\n\n')}`,
     executorUserPromptOutro: '现在按协议返回第一轮 JSON。',
     executorFeedbackHeader: '本轮工具结果：',
+    executorFeedbackProtocolRejected: (diagnostic) =>
+      '上一条回复未通过完整 JSON 校验；该回复中的动作、权限请求和自动验证均未执行。' +
+      '请针对当前任务重新生成一条完整 JSON turn，不要返回片段或多个 JSON 文档。' +
+      `协议诊断：${diagnostic}`,
     executorFeedbackVerifyOk: 'outputs 校验通过。如已完成，请把 done 设为 true 且 actions=[]。',
     executorFeedbackVerifyMissing: (paths: string) => `outputs 仍缺失：${paths}。请继续。`,
     executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) =>

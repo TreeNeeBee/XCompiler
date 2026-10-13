@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-11; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-14; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -59,7 +59,7 @@ business, evidence, permission and execution check.
 | `agents/calibration.ts` | Still normalizes plan dependencies, shape, IDs, paths, ownership and test assets | It was not moved wholesale to Wiki and is not the target output-protocol abstraction |
 | End of `calibration.ts` | Records removal of two debug-advice helpers into Wiki knowledge | Diagnostic advice, plan calibration and output-protocol repair are three responsibilities |
 | `agents/planning/json.ts` | Parses JSON and bounded object/array candidates; otherwise reports generic non-JSON output | It loses the specific protocol diagnostic needed for correction |
-| `agents/execution/turn_parser.ts` | `parseTurn` uses `jsonrepair`, normalization and action salvage; `isCompleteTurnJson` is stricter | Repairable parsing and completion acceptance can disagree |
+| `agents/execution/turn_parser.ts` | Now shares full-response inspection/proof with the stream-shape predicate; legacy salvage removed | Syntax acceptance does not establish provider completion or C1 eligibility |
 | `agents/planner.ts` | Has structured-validation retry feedback | It currently mixes protocol/shape failures with caller-owned plan validation |
 | `llm/router.ts` | Any validation-callback rejection can be sent back to the same provider | The callback needs typed failure boundaries; business rejection must not enter generic calibration |
 | `scenario_outcome_judge.ts` | Parses a judgement after the LLM call; malformed output throws | It can consume protocol calibration but keeps ownership of Bug/CR semantics |
@@ -553,5 +553,21 @@ Explicit request-ID recovery reads original Rule/input/response evidence, rechec
 and business validator, and sends nothing. It does not advance a gate or reuse a verdict for a new
 scene execution. Additional proof classes and remaining production consumers are still pending;
 all authored verification remains deferred to G1.
+
+The following Executor parsing slice now consumes only complete JSON representation under
+`execution-turn/1`, sharing inspection and independent proof with its explicit `done/actions`
+predicate. It removes arbitrary first/last-object selection, multiple-document salvage, `jsonrepair`,
+CR deletion and guessed quotes. Unresolved input raises a typed diagnostic; the main caller audits
+the whole reply and exits the round before automatic gates or permissions. Regeneration remains
+the original business operation within its existing round budget, with no C1 send. A malformed
+permission-adaptation reply cannot renew that budget or reach another model turn. Native JSON-text
+tool projection and valid-JSON action-item validation remain separate business policy.
+
+This is not the complete Executor production correction boundary. Its current `streamStopWhen` and
+provider-side successful-validation stopping can still produce `local-stop`, which the completion
+classifier deliberately treats as incomplete. No JSON syntax result overrides that fact. Producer
+evidence, stable role/request/Rule retention and post-transport caller validation must still be
+integrated before claiming C1 coverage. Unit and real-file/HTTP cases are authored, unrun; G1 must
+remove actual parsing/rejection/proof and permission-adaptation calls and confirm regression failures.
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

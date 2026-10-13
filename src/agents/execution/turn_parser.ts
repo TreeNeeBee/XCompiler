@@ -1,4 +1,23 @@
-import { jsonrepair } from 'jsonrepair';
+import {
+  inspectJsonProtocol, proveJsonProtocolCorrection,
+  type JsonOutputProtocol, type JsonProtocolDiagnostic,
+} from '../../llm/protocol_json.js';
+
+const EXECUTION_TURN_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
+Object.freeze(EXECUTION_TURN_TRANSFORMATIONS);
+export const EXECUTION_TURN_PROTOCOL: JsonOutputProtocol = Object.freeze({
+  id: 'execution-turn', version: '1', root: 'object', transformations: EXECUTION_TURN_TRANSFORMATIONS,
+});
+
+export class ExecutionTurnProtocolError extends Error {
+  readonly code = 'execution_turn_protocol_invalid';
+  readonly protocol = EXECUTION_TURN_PROTOCOL;
+
+  constructor(readonly output: string, readonly diagnostic: JsonProtocolDiagnostic, options?: ErrorOptions) {
+    super(`Executor JSON protocol rejected: ${diagnostic.code} at ${diagnostic.line}:${diagnostic.column}`, options);
+    this.name = 'ExecutionTurnProtocolError';
+  }
+}
 
 export interface LLMAction {
   tool: string;
@@ -97,35 +116,33 @@ const PROVIDER_ENVELOPE_ROOT_KEYS = new Set([
 ]);
 
 export function parseTurn(text: string): LLMTurn {
-  const cleaned = stripFence(text).trim();
-  const direct = tryParseTurnCandidate(cleaned);
-  if (direct) return direct;
-  const first = extractJsonObjectAt(cleaned, cleaned.indexOf('{'));
-  if (first) {
-    const parsed = tryParseTurnCandidate(first);
-    if (parsed) {
-      const firstEnd = cleaned.indexOf(first) + first.length;
-      const hasTrailingDone = /"done"\s*:/u.test(cleaned.slice(firstEnd));
-      if (typeof parsed.done === 'boolean' || !hasTrailingDone) return parsed;
-    }
-  }
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    const parsed = tryParseTurnCandidate(cleaned.slice(start, end + 1));
-    if (parsed) return parsed;
-  }
-  return salvageMalformedTurn(cleaned) ?? {};
+  // Representation inspection covers the entire response; native text tool shapes are decoded
+  // only after that boundary and remain an existing caller-owned business projection.
+  return isTurnObject(readExecutionTurnObject(text))!;
 }
 
+/** Syntax and explicit turn fields only; this predicate does not establish provider completion. */
 export function isCompleteTurnJson(text: string): boolean {
-  const cleaned = stripFence(text).trim();
-  if (!/"done"\s*:/u.test(cleaned) || !['}', ']'].includes(cleaned.at(-1) ?? '')) return false;
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start < 0 || end <= start) return false;
-  const turn = isTurnObject(tryParseJson(cleaned.slice(start, end + 1)));
-  return !!turn && typeof turn.done === 'boolean' && Array.isArray(turn.actions);
+  const tail = text.trimEnd();
+  if (!tail.endsWith('}') && !tail.endsWith('```')) return false;
+  try {
+    const value = readExecutionTurnObject(text);
+    return typeof value.done === 'boolean' && Array.isArray(value.actions);
+  } catch (error) {
+    if (error instanceof ExecutionTurnProtocolError) return false;
+    throw error;
+  }
+}
+
+function readExecutionTurnObject(text: string): Record<string, unknown> {
+  const inspection = inspectJsonProtocol(text, EXECUTION_TURN_PROTOCOL);
+  if (inspection.status === 'unresolved') throw new ExecutionTurnProtocolError(text, inspection.diagnostic);
+  if (inspection.status === 'repairable') {
+    const proof = proveJsonProtocolCorrection(text, inspection.normalized, EXECUTION_TURN_PROTOCOL);
+    if (proof.status !== 'preserved') throw new ExecutionTurnProtocolError(text, proof.diagnostic);
+  }
+  // The full-response inspector has established an object root and valid JSON representation.
+  return JSON.parse(inspection.normalized) as Record<string, unknown>;
 }
 
 /**
@@ -212,36 +229,6 @@ export function extractChangeRequestDisposition(
   };
 }
 
-function salvageMalformedTurn(text: string): LLMTurn | null {
-  const actions: unknown[] = [];
-  const expression = /\{\s*"tool"\s*:/gu;
-  let match: RegExpExecArray | null;
-  while ((match = expression.exec(text))) {
-    const candidate = extractJsonObjectAt(text, match.index);
-    if (!candidate) continue;
-    const parsed = tryParseJson(repairJsonCandidate(candidate));
-    if (isPlainRecord(parsed) && typeof parsed.tool === 'string') actions.push(parsed);
-    expression.lastIndex = match.index + Math.max(1, candidate.length);
-  }
-  if (actions.length === 0) return null;
-  const thoughtMatch = text.match(/"thoughts"\s*:\s*"((?:\\.|[^"\\])*)"/u);
-  const doneMatch = [...text.matchAll(/"done"\s*:\s*(true|false)/gu)].at(-1);
-  return {
-    thoughts: thoughtMatch ? parseJsonStringLiteral(thoughtMatch[1] ?? '') : undefined,
-    actions,
-    done: doneMatch ? doneMatch[1] === 'true' : false,
-  };
-}
-
-function tryParseTurnCandidate(candidate: string): LLMTurn | null {
-  const exact = isTurnObject(tryParseJson(candidate));
-  if (exact) return exact;
-  const trimmed = candidate.trim();
-  if (extractJsonObjectAt(trimmed, trimmed.indexOf('{')) !== trimmed) return null;
-  const repaired = repairJsonCandidate(candidate);
-  return repaired === candidate ? null : isTurnObject(tryParseJson(repaired));
-}
-
 function isTurnObject(value: unknown): LLMTurn | null {
   if (!isPlainRecord(value)) return null;
   const nativeTool = normalizeNativeToolUse(value);
@@ -280,71 +267,6 @@ function stringArray(value: unknown): string[] {
     .map((item) => item.trim());
 }
 
-function extractJsonObjectAt(text: string, start: number): string | null {
-  if (start < 0 || text[start] !== '{') return null;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index++) {
-    const character = text[index]!;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === '\\') escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') inString = true;
-    else if (character === '{') depth += 1;
-    else if (character === '}' && --depth === 0) return text.slice(start, index + 1);
-  }
-  return null;
-}
-
-function repairJsonCandidate(text: string): string {
-  const normalized = normalizeJsonLikeStrings(text).trim();
-  try {
-    return jsonrepair(normalized).trim();
-  } catch {
-    return normalized;
-  }
-}
-
-function normalizeJsonLikeStrings(text: string): string {
-  let output = '';
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < text.length; index++) {
-    const character = text[index]!;
-    if (!inString) {
-      output += character;
-      if (character === '"') inString = true;
-      continue;
-    }
-    if (escaped) {
-      output += character;
-      escaped = false;
-    } else if (character === '\\') {
-      output += character;
-      escaped = true;
-    } else if (character === '\r') {
-      continue;
-    } else if (character === '\n') {
-      output += '\\n';
-    } else if (character === '"') {
-      const next = nextNonWhitespaceChar(text, index + 1);
-      if ([':', ',', '}', ']', ''].includes(next)) {
-        output += character;
-        inString = false;
-      } else {
-        output += '\\"';
-      }
-    } else {
-      output += character;
-    }
-  }
-  return output;
-}
-
 function parseJsonStringLiteral(value: string): string | undefined {
   try {
     return JSON.parse(`"${value}"`) as string;
@@ -368,14 +290,6 @@ function firstBoundedText(values: readonly unknown[]): string | undefined {
 
 function stripFence(value: string): string {
   return value.replace(/^```(?:json)?\s*\n?/iu, '').replace(/\n?```\s*$/iu, '');
-}
-
-function nextNonWhitespaceChar(text: string, start: number): string {
-  for (let index = start; index < text.length; index++) {
-    const character = text[index]!;
-    if (!/\s/u.test(character)) return character;
-  }
-  return '';
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

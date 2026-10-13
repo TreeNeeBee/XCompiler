@@ -1,9 +1,16 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-13.
+2026-10-14.
 
-Latest checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
+Latest checkpoint: Executor whole-response parsing and its stream-shape predicate now share the
+proven JSON scanner. Invalid whole replies cannot supply salvaged actions, automatic test gates
+or permission requests; original output/diagnostics are audited and regeneration uses the existing
+business-round allowance. Permission denial still permits only its one adaptation turn. Tests are
+authored, unrun. This parsing slice does not complete producer eligibility, C1 or Executor Rule/input
+retention. Planner identity/role and validation-owner integration are the next caller boundaries.
+
+Previous checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
 response retention and deterministic protocol handling from the Phase-delivery gate. Its semantic
 rubric is authored once in `rules/scenario-outcome.yaml`; PM ownership and typed Bug/CR routing are
 preserved. Explicit request-ID recovery reads the original evidence without a model send. Each new

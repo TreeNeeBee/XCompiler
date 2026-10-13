@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
 import { isCompleteTurnJson, StepExecutor, verifyOutputs } from '../src/agents/executor.js';
-import { rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
+import { ExecutionTurnProtocolError, rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import { LLMRequestError } from '../src/llm/errors.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
@@ -2507,7 +2507,7 @@ describe('StepExecutor system prompt assembly', () => {
     ]);
   });
 
-  it('parses LLM output that contains multiple back-to-back ```json blocks (uses first)', async () => {
+  it('rejects multiple back-to-back JSON blocks without executing the first block', async () => {
     class MultiBlockLLM implements LLMClient {
       readonly name = 'multi';
       async chat(): Promise<string> {
@@ -2528,13 +2528,9 @@ describe('StepExecutor system prompt assembly', () => {
     }
     const exec = new StepExecutor({ llm: new MultiBlockLLM(), maxRounds: 1 });
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
-    // 第一轮就应该执行到 write_file，并产出 src/x.py。
-    // 由于 done=false，executor 会到 maxRounds 才停；但 toolCalls 必须包含 write_file，
-    // 文件也必须真的写出来——这正是修复前 actions=[] 时不会发生的事。
     expect(r.success).toBe(false);
-    expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
-    const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
-    expect(written).toBe('x = 1\n');
+    expect(r.toolCalls).toHaveLength(0);
+    await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('normalizes a provider-native tool_use object into an executor action', async () => {
@@ -3133,7 +3129,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(written).toBe('x = 1\n');
   });
 
-  it('salvages valid tool calls from a malformed actions list', async () => {
+  it('rejects a malformed whole actions document without executing recoverable fragments', async () => {
     class MalformedActionsListLLM implements LLMClient {
       readonly name = 'malformed-actions-list';
       async chat(): Promise<string> {
@@ -3153,13 +3149,13 @@ describe('StepExecutor system prompt assembly', () => {
       ctx,
     });
 
-    expect(r.success).toBe(true);
-    expect(r.toolCalls.filter((c) => c.tool === 'write_file' && c.ok)).toHaveLength(2);
-    expect(await fs.readFile(path.join(tmp, 'src/a.py'), 'utf8')).toBe('a = 1\n');
-    expect(await fs.readFile(path.join(tmp, 'src/b.py'), 'utf8')).toBe('b = 1\n');
+    expect(r.success).toBe(false);
+    expect(r.toolCalls).toHaveLength(0);
+    await expect(fs.stat(path.join(tmp, 'src/a.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(path.join(tmp, 'src/b.py'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('repairs malformed code-string JSON with raw newlines and unescaped inner quotes', async () => {
+  it('rejects unproven code-string inner quotes even when raw newline repair alone is supported', async () => {
     class BrokenCodeJsonLLM implements LLMClient {
       readonly name = 'broken-code-json';
       async chat(): Promise<string> {
@@ -3177,10 +3173,169 @@ describe('StepExecutor system prompt assembly', () => {
     }
     const exec = new StepExecutor({ llm: new BrokenCodeJsonLLM(), maxRounds: 1 });
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
-    expect(r.success).toBe(true);
-    expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
-    const written = await fs.readFile(path.join(tmp, 'src/x.py'), 'utf8');
-    expect(written).toBe('def run():\n    print("x")\n    return None\n');
+    expect(r.success).toBe(false);
+    expect(r.toolCalls).toHaveLength(0);
+    await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves each raw CR, LF and tab value when normalizing an otherwise complete code string', async () => {
+    const content = 'first\r\nsecond\tlast\r';
+    const output = '{"thoughts":"write literal controls","actions":[{"tool":"write_file",' +
+      '"args":{"path":"src/x.py","content":"' + content + '"}}],"done":true}';
+    const exec = new StepExecutor({ llm: { name: 'raw-string-controls', chat: async () => output }, maxRounds: 1 });
+    const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(result.success).toBe(true);
+    expect(result.toolCalls.filter(call => call.tool === 'write_file' && call.ok)).toHaveLength(1);
+    expect(await fs.readFile(path.join(tmp, 'src/x.py'))).toEqual(Buffer.from(content));
+    expect(isCompleteTurnJson(output)).toBe(true);
+  });
+
+  it.each([
+    { name: 'complete action in a truncated outer object', output: '{"thoughts":"write","actions":[{"tool":"write_file",' +
+      '"args":{"path":"src/x.py","content":"altered"}}],"done":true' },
+    { name: 'duplicate decoded action argument keys', output: '{"thoughts":"write","actions":[{"tool":"write_file",' +
+      '"args":{"path":"src/other.py","\\u0070ath":"src/x.py","content":"altered"}}],"done":true}' },
+    { name: 'surrounding prose', output: 'Explanation: ' + JSON.stringify({ thoughts: 'write',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'altered' } }], done: true }) },
+  ])('rejects $name before any permission or filesystem mutation', async ({ output }) => {
+    await ws.writeFile('src/x.py', 'original\r\n');
+    const permission = vi.fn(async () => ({ approved: true }));
+    const exec = new StepExecutor({ llm: { name: 'invalid-whole-document', chat: async () => output }, maxRounds: 1 });
+    const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission } });
+    expect(result.success).toBe(false);
+    expect(result.toolCalls).toHaveLength(0);
+    expect(permission).not.toHaveBeenCalled();
+    expect(await ws.readFile('src/x.py')).toBe('original\r\n');
+    await expect(fs.stat(path.join(tmp, 'src/other.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(isCompleteTurnJson(output)).toBe(false);
+  });
+
+  it.each(['UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'] as const)(
+    'does not append or execute the automatic %s test gate for an invalid whole response', async phase => {
+      const permission = vi.fn(async () => ({ approved: true }));
+      const run = vi.fn(async () => ({ ok: true, summary: 'This automatic gate must remain uncalled' }));
+      const tool: Tool = { name: 'run_tests', description: 'Controlled automatic test gate', argsSchema: {}, run };
+      const chat = vi.fn(async () => '{"thoughts":"invalid test response","actions":[],"done":false');
+      const result = await new StepExecutor({ llm: { name: 'invalid-test-turn', chat }, maxRounds: 1 }).run({
+        step: { ...baseStep, phase, role: 'Tester', tools: ['run_tests'], outputs: [] }, tools: [tool],
+        ctx: { ...ctx, requestPermission: permission },
+      });
+      expect(result.success).toBe(false);
+      expect(result.toolCalls).toHaveLength(0);
+      expect(run).not.toHaveBeenCalled();
+      expect(permission).not.toHaveBeenCalled();
+      expect(chat).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('regenerates an invalid turn within the existing caller budget and executes only the subsequent whole response', async () => {
+    const invalid = '{"thoughts":"invalid first reply","actions":[{"tool":"write_file",' +
+      '"args":{"path":"src/rejected.py","content":"must never exist"}}],"done":true';
+    const valid = JSON.stringify({ thoughts: 'complete replacement response',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'accepted\r\n' } }], done: true });
+    const prompts: ChatMessage[][] = [];
+    const chat = vi.fn(async (messages: ChatMessage[]) => {
+      prompts.push(structuredClone(messages));
+      return prompts.length === 1 ? invalid : valid;
+    });
+    const permission = vi.fn(async () => ({ approved: true }));
+    const result = await new StepExecutor({ llm: { name: 'same-caller-regeneration', chat }, maxRounds: 2 }).run({
+      step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission },
+    });
+    expect(result.success).toBe(true);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.rounds).toBe(2);
+    expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'write_file', ok: true })]);
+    expect(permission).toHaveBeenCalledTimes(1);
+    expect(prompts[1]!.at(-1)!.content).toContain('unexpected_end');
+    expect(await ws.readFile('src/x.py')).toBe('accepted\r\n');
+    await expect(fs.stat(path.join(tmp, 'src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('retains a typed whole-response rejection from a custom validation client and recovers through the existing Debugger grace', async () => {
+    const { AuditLogger } = await import('../src/audit/audit.js');
+    const audit = new AuditLogger({ root: tmp, command: 'debugger-protocol-validation', contentMode: 'full' });
+    await audit.start();
+    const malformed = '{"thoughts":"malformed validation reply","actions":[{"tool":"write_file",' +
+      '"args":{"path":"src/rejected.py","content":"must not execute"}}],"done":true';
+    const valid = JSON.stringify({ thoughts: 'Repair through a complete response',
+      bugResolutionPlan: 'Write src/x.py with the accepted value and verify the declared implementation output.',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'validated repair\r\n' } }], done: true });
+    const prompts: ChatMessage[][] = [];
+    const chat = vi.fn(async (messages: ChatMessage[], options?: ChatOptions) => {
+      prompts.push(structuredClone(messages));
+      expect(options?.validate).toBeTypeOf('function');
+      const answer = prompts.length === 1 ? malformed : valid;
+      options!.validate!(answer);
+      return answer;
+    });
+    const permission = vi.fn(async () => ({ approved: true }));
+    const result = await new StepExecutor({ llm: { name: 'custom-debugger-validation', chat }, maxRounds: 1 }).run({
+      step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
+      ctx: { ...ctx, audit, requestPermission: permission },
+      debugContext: { bugTicketId: 'BUG-PROTOCOL', reason: 'Current implementation output is missing.',
+        failureLog: 'src/x.py has not been delivered.', repairRequired: true },
+    });
+    expect(result.success).toBe(true);
+    expect(result.rounds).toBe(2);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(result.metrics.parseFailures).toBe(1);
+    expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'write_file', ok: true })]);
+    expect(permission).toHaveBeenCalledTimes(1);
+    expect(prompts[1]!.at(-1)!.content).toContain('unexpected_end');
+    expect(await ws.readFile('src/x.py')).toBe('validated repair\r\n');
+    await expect(fs.stat(path.join(tmp, 'src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const events = (await fs.readFile(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8')).split('\n')
+      .filter(line => line.trim()).map(line => JSON.parse(line) as { kind: string; messageId?: string; data?: Record<string, unknown> });
+    expect(events.find(event => event.messageId === 'audit.executor_turn_protocol_rejected')?.data).toMatchObject({
+      code: 'execution_turn_protocol_invalid', stage: 'caller-validation', round: 1, diagnostic: { code: 'unexpected_end' },
+    });
+    expect(events.find(event => event.kind === 'executor.turn' && event.data?.raw === malformed)?.data)
+      .toMatchObject({ raw: malformed, actions: [], done: false });
+    expect(events.some(event => event.messageId === 'audit.executor_low_quality_context_retained')).toBe(true);
+  });
+
+  it('stops when the single permission-adaptation reply fails the custom Debugger validation path', async () => {
+    const { AuditLogger } = await import('../src/audit/audit.js');
+    const audit = new AuditLogger({ root: tmp, command: 'debugger-denied-validation', contentMode: 'full' });
+    await audit.start();
+    const requested = JSON.stringify({ thoughts: 'Request the scoped repair capability',
+      bugResolutionPlan: 'Write src/x.py with the accepted value and verify this implementation output.',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'must remain denied' } }], done: false });
+    const malformed = '{"thoughts":"malformed permission adaptation","actions":[],"done":false';
+    const third = JSON.stringify({ thoughts: 'This third reply must never be requested',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'must never execute' } }], done: true });
+    let calls = 0;
+    const chat = vi.fn(async (_messages: ChatMessage[], options?: ChatOptions) => {
+      calls++;
+      expect(options?.validate).toBeTypeOf('function');
+      const answer = calls === 1 ? requested : calls === 2 ? malformed : third;
+      options!.validate!(answer);
+      return answer;
+    });
+    const permission = vi.fn(async () => ({ approved: false, outcome: 'denied' as const, reason: 'Controlled user denial' }));
+    const result = await new StepExecutor({ llm: { name: 'custom-denied-validation', chat }, maxRounds: 6 }).run({
+      step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
+      ctx: { ...ctx, audit, requestPermission: permission },
+      debugContext: { bugTicketId: 'BUG-DENIED-PROTOCOL', reason: 'Current implementation output is missing.',
+        failureLog: 'src/x.py has not been delivered.', repairRequired: true },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('permission_blocked');
+    expect(result.rounds).toBe(2);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(permission).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'write_file', ok: false,
+      error: expect.stringContaining('permission denied') })]);
+    await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+    const events = (await fs.readFile(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8')).split('\n')
+      .filter(line => line.trim()).map(line => JSON.parse(line) as { kind: string; messageId?: string; data?: Record<string, unknown> });
+    expect(events.find(event => event.messageId === 'audit.executor_turn_protocol_rejected')?.data).toMatchObject({
+      code: 'execution_turn_protocol_invalid', stage: 'caller-validation', round: 2, diagnostic: { code: 'unexpected_end' },
+    });
+    expect(events.find(event => event.kind === 'executor.turn' && event.data?.raw === malformed)?.data)
+      .toMatchObject({ raw: malformed, actions: [], done: false });
+    expect(events.some(event => event.messageId === 'audit.executor_permission_blocked')).toBe(true);
   });
 
   it('ignores malformed action entries without crashing history compaction', async () => {
@@ -4539,8 +4694,14 @@ describe('StepExecutor system prompt assembly', () => {
           return readOnly;
         }
         expect(options?.validate).toBeTypeOf('function');
-        expect(() => options!.validate!('{')).toThrow(/empty or unparseable JSON/u);
-        expect(() => options!.validate!('{ "thoughts": "')).toThrow(/empty or unparseable JSON/u);
+        for (const incomplete of ['{', '{ "thoughts": "']) {
+          let failure: unknown;
+          try { options!.validate!(incomplete); } catch (error) { failure = error; }
+          expect(failure).toBeInstanceOf(ExecutionTurnProtocolError);
+          expect(failure).toMatchObject({ code: 'execution_turn_protocol_invalid', output: incomplete,
+            diagnostic: { code: 'unexpected_end' } });
+        }
+        expect(() => options!.validate!('{}')).toThrow(/empty or unparseable JSON/u);
         expect(() =>
           options!.validate!(
             JSON.stringify({
