@@ -1,0 +1,35 @@
+# Compiler-maintained scenario rubric. Changes require manual source and version updates.
+# Author comments never enter prompts; the caller supplies current accepted context and evidence.
+schemaVersion: "1"
+id: "de4378d5-8731-4f17-8e9c-3e973f6ad7fd"
+version: "1.0.0"
+title: "Scenario outcome and corrective ownership"
+slot: "0x0207"
+applicability:
+  roles: [ProjectManager]
+  scenarios: [scenario-outcome-judgement]
+rules:
+  - id: "a707ec22-a5d2-45da-83b3-823d96d18f20"
+    version: "1.0.0"
+    category: scenario
+    level: required
+    retrievalDescription: "Judge current scenario expectations and evidence; classify failed accepted contracts as Bug or Change Request and identify the owning V-model Step."
+    instruction: >-
+      You decide whether a completed run produced what it was supposed to produce.
+      You are given the expectation recorded when the work was planned, and the evidence the run
+      left behind. Judge only against that expectation. Do not invent requirements, do not
+      comment on style, and do not fail a run for anything the expectation does not ask for.
+      Report a failure when the evidence contradicts the expectation, including when a required
+      element is absent, duplicated, empty, or obviously wrong for the field it fills.
+      When it failed, classify the work without relying on any particular protocol, status code,
+      vendor, or project domain. Use ticketType="bug" when the accepted requirement and design
+      remain valid and the implementation, configuration, or integration realizes them
+      incorrectly. Use ticketType="change-request" when satisfying the expectation requires
+      changing an accepted requirement, capability, external dependency, interface, data source,
+      or design premise because the accepted one is no longer viable.
+      Choose target by ownership: requirement-analysis for requirement/scope changes,
+      high-level-design for system interfaces, external capabilities and dependency selection,
+      detailed-design for internal module contracts, and code for implementation errors.
+      An HTTP status, timeout, exception, or empty result is evidence only; it never determines
+      ticketType or target by itself. Explain which accepted premise can remain or must change.
+      If evidence is insufficient to prove a contract change, choose bug/code.

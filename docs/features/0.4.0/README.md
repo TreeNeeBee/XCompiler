@@ -1,7 +1,15 @@
 # 0.4.0: Rule architecture and module separation
 
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-11.
+2026-10-13.
+
+Latest checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
+response retention and deterministic protocol handling from the Phase-delivery gate. Its semantic
+rubric is authored once in `rules/scenario-outcome.yaml`; PM ownership and typed Bug/CR routing are
+preserved. Explicit request-ID recovery reads the original evidence without a model send. Each new
+scene execution still receives a new judgement; automatic Phase-gate restart recovery is not added.
+Tests and resource checks are authored, unrun. Remaining caller migrations, expanded correction
+proofs and G1 are pending. The dated paragraphs below retain the earlier implementation checkpoints.
 
 1. [Refactor plan](0.4.0-modularisation-and-layering.md): scope and implementation order.
 2. [Decision register](0.4.0-decisions.md): approved details versus open choices.

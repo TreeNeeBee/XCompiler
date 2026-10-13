@@ -1,24 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import {
   judgeScenarioOutcome,
+  SCENARIO_OUTCOME_PROTOCOL,
   ScenarioOutcomeJudgementError,
 } from '../src/application/execution/scenario_outcome_judge.js';
-import type { LLMRouter } from '../src/llm/router.js';
+import type { BusinessProtocolAssessment } from '../src/application/execution/business_request_response.js';
+import { assessJsonProtocolResponse } from '../src/llm/protocol_candidate.js';
+import type { ChatMessage } from '../src/llm/types.js';
 
-/** A router whose single reply is whatever the test wants the judge to have said. */
-function routerReturning(answer: string): LLMRouter {
-  return { for: () => ({ name: 'stub', chat: async () => answer }) } as unknown as LLMRouter;
+/** A protocol boundary returning the chosen reply with complete producer evidence. */
+function sendReturning(answer: string, observe?: (messages: readonly ChatMessage[]) => void) {
+  return async (messages: readonly ChatMessage[]): Promise<BusinessProtocolAssessment> => {
+    observe?.(messages);
+    const inspection = assessJsonProtocolResponse({
+      logicalRequestId: 'abababab-abab-4bab-8bab-abababababab',
+      providerAttemptId: 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd',
+      provider: 'primary', model: 'openai:model-a', output: answer,
+      capture: { status: 'recorded', response: {
+        schemaVersion: 1, source: 'live', output: answer, protocol: 'openai', requestedModel: 'model-a',
+        reportedModels: ['model-a'], transport: 'non-stream', termination: 'response', finishReasons: ['stop'],
+        choiceIndexes: [0], maxChoicesPerFrame: 1, discardedFrames: 0,
+        payloadEvidence: { schemaVersion: 1, observations: [{ frameIndex: 0, location: 'message', choicePosition: 0,
+          value: { content: answer } }] },
+      } },
+    }, SCENARIO_OUTCOME_PROTOCOL);
+    return { outcome: inspection.status === 'ineligible' ? 'ineligible'
+      : inspection.result.status === 'valid' ? 'valid' : 'unresolved', inspection };
+  };
 }
 
-const scenario = { name: 'primary-user-flow', description: '', operation: 'run it', environment: 'live', expected: 'two sources appear' } as never;
-const scene = { stdoutTail: 'fetched 0 items', stderrTail: '' } as never;
+const scenario = { name: 'primary-user-flow', description: 'the accepted user flow', operation: 'run it',
+  environment: 'live' as const, expected: 'two sources appear' };
+const scene = { scenario, capturedAt: '2026-10-13T00:00:00.000Z', command: 'run', exitCode: 0,
+  timedOut: false, stdoutTail: 'fetched 0 items', stderrTail: '' };
 const base = { before: [], scenario, scene };
 
 describe('scenario verdict carries Ticket type and owning Step', () => {
   it('reads a capability Change Request chosen by the judge', async () => {
     const verdict = await judgeScenarioOutcome({
       ...base,
-      router: routerReturning('{"ok": false, "reason": "the accepted source capability is no longer viable", "ticketType": "change-request", "target": "high-level-design"}'),
+      send: sendReturning('{"ok": false, "reason": "the accepted source capability is no longer viable", "ticketType": "change-request", "target": "high-level-design"}'),
     });
     expect(verdict.ok).toBe(false);
     expect(verdict.ticketType).toBe('change-request');
@@ -28,21 +49,21 @@ describe('scenario verdict carries Ticket type and owning Step', () => {
   it('rejects a failed judgement that omits Ticket routing', async () => {
     await expect(judgeScenarioOutcome({
       ...base,
-      router: routerReturning('{"ok": false, "reason": "the report is empty"}'),
+      send: sendReturning('{"ok": false, "reason": "the report is empty"}'),
     })).rejects.toBeInstanceOf(ScenarioOutcomeJudgementError);
   });
 
   it('rejects failed routing values outside the typed contract', async () => {
     await expect(judgeScenarioOutcome({
       ...base,
-      router: routerReturning('{"ok": false, "reason": "x", "ticketType": "incident", "target": "the-network"}'),
+      send: sendReturning('{"ok": false, "reason": "x", "ticketType": "incident", "target": "the-network"}'),
     })).rejects.toBeInstanceOf(ScenarioOutcomeJudgementError);
   });
 
   it('claims no corrective routing when the scenario passed', async () => {
     const verdict = await judgeScenarioOutcome({
       ...base,
-      router: routerReturning('{"ok": true, "reason": "met", "ticketType": "change-request", "target": "requirement-analysis"}'),
+      send: sendReturning('{"ok": true, "reason": "met", "ticketType": "change-request", "target": "requirement-analysis"}'),
     });
     expect(verdict.ok).toBe(true);
     expect(verdict.ticketType).toBeUndefined();
@@ -51,16 +72,11 @@ describe('scenario verdict carries Ticket type and owning Step', () => {
 
   it('states the project framing to the judge when one is available', async () => {
     let seen = '';
-    const router = {
-      for: () => ({
-        name: 'stub',
-        chat: async (messages: Array<{ content: string }>) => {
-          seen = messages.map((m) => m.content).join('\n');
-          return '{"ok": true, "reason": "met"}';
-        },
-      }),
-    } as unknown as LLMRouter;
-    await judgeScenarioOutcome({ ...base, router, requirementDigest: 'public pages, no API keys' });
+    await judgeScenarioOutcome({ ...base,
+      send: sendReturning('{"ok": true, "reason": "met"}', (messages) => {
+        seen = messages.map((message) => message.content).join('\n');
+      }), requirementDigest: 'public pages, no API keys',
+    });
     // Without it the same refusal reads both ways: a missing credential and a service that takes none.
     expect(seen).toContain('public pages, no API keys');
   });
@@ -161,18 +177,11 @@ describe('the process result is evidence, not a verdict', () => {
 
   it('tells the judge how the process ended', async () => {
     let seen = '';
-    const router = {
-      for: () => ({
-        name: 'stub',
-        chat: async (messages: Array<{ content: string }>) => {
-          seen = messages.map((message) => message.content).join('\n');
-          return '{"ok": true, "reason": "met"}';
-        },
-      }),
-    } as unknown as LLMRouter;
     await judgeScenarioOutcome({
-      router, before: [], scenario,
-      scene: { stdoutTail: 'partial', stderrTail: '', exitCode: 3, timedOut: false } as never,
+      send: sendReturning('{"ok": true, "reason": "met"}', (messages) => {
+        seen = messages.map((message) => message.content).join('\n');
+      }), before: [], scenario,
+      scene: { ...scene, stdoutTail: 'partial', stderrTail: '', exitCode: 3, timedOut: false },
     });
     // It was asked whether the run produced what it should while being shown neither.
     expect(seen).toContain('exited with code 3');

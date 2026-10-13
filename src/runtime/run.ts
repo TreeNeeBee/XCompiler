@@ -32,7 +32,8 @@ import {
   defaultDebugWikiPath,
 } from '../infrastructure/knowledge/file_debug_wiki.js';
 import { runProjectAudit } from '../application/delivery/project_audit.js';
-import { judgeScenarioOutcome, isScenarioOutcomeJudgementError } from '../application/execution/scenario_outcome_judge.js';
+import { isScenarioOutcomeJudgementError } from '../application/execution/scenario_outcome_judge.js';
+import { judgeRuntimeScenarioOutcome } from './scenario_outcome.js';
 import {
   generateProjectDevelopmentReport,
 } from '../application/reporting/project_report.js';
@@ -732,8 +733,15 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         scenarios: phaseGate.scenarios,
         runLiveScenario: (operation) => recordReplay.runWithMode('off', operation),
         snapshotArtifacts,
-        judgeScenarioOutcome: ({ scenario, scene, before }) => judgeScenarioOutcome({
+        judgeScenarioOutcome: ({ scenario, scene, before }) => judgeRuntimeScenarioOutcome({
+          config: cfg.rules,
+          container,
+          recordReplay,
+          audit,
           router,
+          projectId: domainProject.id,
+          phaseId: domainPhase.id,
+          signal: opts.abortSignal,
           before,
           scenario,
           scene,

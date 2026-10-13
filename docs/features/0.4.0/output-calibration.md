@@ -538,7 +538,20 @@ protocol assessments through internal Runtime composition. Completion facts prec
 normalization repeats mechanical preservation proof. Logical-ID recovery restores the same original
 response and verifies/recomputes protocol facts, without model dispatch or C1 allowance changes.
 Fresh protected audit verification is separate from exact restart recovery. A missing protocol result
-is not silently published on resume. Business verdict/J06 production integration and expanded proof
-classes remain outstanding; all authored verification is still deferred to G1.
+is not silently published on resume. At that checkpoint, business verdict/J06 production integration
+and expanded proof classes remained outstanding.
+
+The subsequent J06 production-source migration composes retained response processing in the real
+Phase-delivery callback. Application accepts only completion-eligible valid/full JSON or a proven
+normalization before checking scenario verdict fields; missing Bug/CR routing is a business-shape
+failure and cannot be invented by calibration. Arbitrary first/last-brace salvage is removed.
+Unresolved or incomplete output leaves the gate unjudged; infrastructure failure and cancellation
+retain separate paths. There is no new automatic correction send: currently supported `repairable`
+classes already have deterministic value-preserving normalization, while unresolved inputs remain
+ineligible for the C1 ledger. The J06 rubric lives in its selected YAML, outside correction templates.
+Explicit request-ID recovery reads original Rule/input/response evidence, rechecks the same protocol
+and business validator, and sends nothing. It does not advance a gate or reuse a verdict for a new
+scene execution. Additional proof classes and remaining production consumers are still pending;
+all authored verification remains deferred to G1.
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

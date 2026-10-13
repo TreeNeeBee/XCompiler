@@ -44,10 +44,13 @@ msg() {
 }
 
 # Compiler rules are required release sources, never optional attachments.
-if [[ ! -f "$ROOT/rules/genesis.yaml" ]]; then
-  msg package.required_asset_missing "rules/genesis.yaml" >&2
-  exit 1
-fi
+REQUIRED_RULE_SOURCES=(rules/genesis.yaml rules/scenario-outcome.yaml)
+for rule_source in "${REQUIRED_RULE_SOURCES[@]}"; do
+  if [[ ! -f "$ROOT/$rule_source" ]]; then
+    msg package.required_asset_missing "$rule_source" >&2
+    exit 1
+  fi
+done
 
 VERSION="$(node -p "require('./package.json').version")"
 npm run version:check
@@ -264,11 +267,13 @@ build_one() {
     [[ -f "$f" ]] && cp "$f" "$staging_dir/"
     [[ -d "$f" ]] && cp -R "$f" "$staging_dir/"
   done
-  if [[ ! -f "$staging_dir/rules/genesis.yaml" ]]; then
-    msg package.required_asset_missing "rules/genesis.yaml" >&2
-    rm -rf "$staging_dir"
-    return 1
-  fi
+  for rule_source in "${REQUIRED_RULE_SOURCES[@]}"; do
+    if [[ ! -f "$staging_dir/$rule_source" ]]; then
+      msg package.required_asset_missing "$rule_source" >&2
+      rm -rf "$staging_dir"
+      return 1
+    fi
+  done
   mkdir -p "$staging_dir/docs"
   for f in "${DOC_ASSETS[@]}"; do
     cp "$f" "$staging_dir/docs/"

@@ -1,7 +1,7 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-11. This describes the authored F1/R1 source components, not an installed CLI or
-completed Runtime feature. All related tests are authored and unrun. The approved behavior is in
+Updated 2026-10-13. This describes authored F1/R1 components and J06 production composition,
+not a verified installed feature. All related tests are authored and unrun. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
 ## YAML definitions and source authority
@@ -48,9 +48,17 @@ require updating affected Rule/list versions, regenerating the normalized defini
 reviewing the compiled manifest together. No Runtime/Plugin/model or derived-project update entry
 point is provided. The digest checks consistency with compiled source; it is not a signature.
 
-npm and standalone artifacts declare the `rules` resource. Missing genesis stops standalone
+npm and standalone artifacts declare the `rules` resource. Missing either required YAML stops standalone
 packaging before build and before staging publication. All associated tests remain unrun; the
 child-process pkg resolver simulation does not substitute for the native package gate.
+
+The J06 resource is [`rules/scenario-outcome.yaml`](../../../rules/scenario-outcome.yaml): one
+`scenario`/`required` Rule in slot `0x0207`, list and Rule version `1.0.0`. The list restricts role to
+`ProjectManager` and scenario to `scenario-outcome-judgement`. Runtime explicitly binds Rule
+`a707ec22-a5d2-45da-83b3-823d96d18f20`; its instruction level alone does not load it. The existing
+expectation/evidence and Bug/CR rubric is authored here once. It excludes unrelated callers and
+does not create an embedding dependency for required-only J06. Its manifest digest was precomputed
+independently with schema defaults; product-parser validation remains unrun at G1.
 
 [`RuleCatalogue`](../../../src/domain/rules/catalogue.ts) validates the following strict fields:
 
@@ -112,8 +120,8 @@ calibration on its fixed protocol template.
 ## Selector stages
 
 [`RuleSelector`](../../../src/application/rules/rule_selector.ts) exposes the following development
-interfaces. Internal Runtime preparation composes these Application calls; build/run do not yet
-invoke that preparation.
+interfaces. Runtime preparation composes these Application calls; the J06 Phase-delivery callback
+now invokes that preparation. Other approved callers remain to migrate.
 
 | Method | Input and result | Important boundary |
 |---|---|---|
@@ -325,7 +333,7 @@ review and cannot be retried automatically. The result records the draft digest,
 actual provider/model, selected candidate IDs, protocol version and final-request digest.
 `FileRuleRequestStateStore` stores drafts, claims
 and results under the Runtime-supplied state root with the same no-replace publication rules. It is
-called by internal Runtime preparation, but not yet by build/run.
+called by Runtime preparation, including the J06 Phase-delivery callback.
 
 The coordinator requires an injected `RuleReviewEvidenceVerifier`. It verifies before publishing
 a fresh review result, before finalizing a retained result, and before returning a recovered reviewed
@@ -461,9 +469,28 @@ version. Neither record contains message/output bodies or a business verdict. Lo
 resume restores exact original materials and rechecks both audits, bindings and deterministic facts.
 No response authority is `not-retained`; adopted response without published result is `retained`;
 verified result is `processed`. Resume performs no send, new selection, result publication or C1 claim.
-These internal composition paths and real-file/Runtime cases are authored, unrun. J06 production
-adoption and business result integration remain next; executed gates and call-site falsification
-remain at G1.
+These composition paths and real-file/Runtime cases are authored, unrun. The following J06 migration
+now uses them in production source; executed gates and call-site falsification remain at G1.
+
+### J06 caller and original-evidence recovery
+
+[`judgeRuntimeScenarioOutcome`](../../../src/runtime/scenario_outcome.ts) composes explicit required
+selection, retained business send and deterministic protocol processing from the real `runExecute`
+Phase-delivery callback. It allocates request/execution IDs before asynchronous work and correlates
+the input with the current Project/Phase. Application preserves existing evidence limits and owns
+the versioned framework JSON payload, output template and verdict checks. The rubric stays in YAML.
+Only eligible full JSON or a proven normalization reaches business validation; partial-object
+salvage is removed. A required scoped `llm.scenario_outcome_judgement` audit retains the verdict and
+references its adopted response and protocol result. This audit is not Domain lifecycle authority.
+
+`resumeRuntimeScenarioOutcome` restores by explicit logical request ID, checks the original
+template/protocol and pinned required Rule/context, and consumes the original payload's evidence.
+It never loads installed Rules, reads current artifacts, sends a request, writes a result/audit or
+advances a gate. Missing response authority returns `not-retained`; an original response without a
+published protocol result can be assessed read-only. A new actual scenario execution gets a new
+request, and automatic interrupted-Phase-gate discovery is outside this helper. Runtime call-site,
+file/HTTP and resource cases are authored, unrun; G1 must remove the actual binding, preparation,
+protocol consumer, required verdict-audit and run callback to falsify their wiring.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request

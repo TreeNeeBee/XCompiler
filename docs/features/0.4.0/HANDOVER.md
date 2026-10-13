@@ -2,7 +2,7 @@
 
 Updated: 2026-10-13
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`5385bee` (V1 final requests and explicit-attempt recovery), with original baseline `77ff6e2`
+`1f3fb54` (V1 adopted response and protocol recovery), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1022,10 +1022,48 @@ checkpoint contained document updates only; the implementation below follows tha
   and publication, and request-ID resume wiring. Run sibling input/attempt/Rule/C1, Plugin and replay
   gates. Only static source/diff review has occurred; all execution checks remain deferred.
 
-Next: migrate J06's YAML rubric, protocol consumer and Runtime caller together, keeping current scene
+At that checkpoint, next: migrate J06's YAML rubric, protocol consumer and Runtime caller together, keeping current scene
 execution, PM semantic ownership, malformed-verdict handling and typed intake. Build/run/J06 have
 not yet adopted these internal helpers. Business verdict persistence is separate from protocol
 processing; additional correction proofs, other production callers and G1 remain outstanding.
+
+## V1 J06 production migration: 2026-10-13
+
+- `rules/scenario-outcome.yaml` is the single semantic rubric source: one scenario Rule in list
+  `de4378d5-8731-4f17-8e9c-3e973f6ad7fd`, slot `0x0207`, version `1.0.0`; Rule
+  `a707ec22-a5d2-45da-83b3-823d96d18f20` is explicitly required for PM context
+  `scenario-outcome-judgement`. The installed manifest binds the normalized definition. This source
+  is outside Debug and unrelated callers exclude it; required-only J06 needs no embedding.
+- Application keeps the existing bounded evidence collector and business verdict validator. The
+  framework owns a versioned JSON input payload and output-field template; it contains only the
+  expectation, operation, accepted project framing and the previously visible evidence. Three
+  artifacts, 4,000-character reads and 2,000-character stdout/stderr excerpts are retained. The
+  rubric no longer lives in the old system prompt and maintainer instructions are not injected.
+- Runtime `judgeRuntimeScenarioOutcome` allocates caller-owned request/execution IDs, prepares the
+  bound Rule snapshot, captures input/final attempts, adopts the returned response and persists
+  deterministic protocol assessment. Only eligible full JSON or a proven normalization reaches the
+  existing verdict validator. First/last-brace fragment salvage is removed; missing Bug/CR routing
+  remains an unusable judgement, with no invented fields or product Ticket.
+- `runExecute` now invokes that composition from the real Phase-delivery callback. Scenario
+  execution, process-failure checks, typed PM findings and Domain transitions retain their owners.
+  Malformed/incomplete judgements still leave the gate unjudged; audit/configuration/Plugin errors
+  and cancellation keep their distinct paths. A required scoped judgement audit links the verdict
+  to its owner, adopted response and protocol result; it is evidence, not a lifecycle store.
+- `resumeRuntimeScenarioOutcome` takes an explicit logical request ID, verifies original materials
+  and the pinned required binding, then reads the original payload and runs the same validator.
+  It sends no model request, reads no current artifacts/catalogue, publishes no new audit/result and
+  performs no gate transition. A new actual scene execution still gets a new judgement. Automatic
+  discovery/resumption of an interrupted Phase gate is not added by this helper.
+- Source/manifest and standalone source/staging checks now include both required YAML files.
+  Application, real-file/loopback Runtime and real `runExecute` call-site tests are authored, unrun.
+  The new manifest digest was precomputed independently; the product parser has not verified it.
+  G1 must falsify the actual required binding, preparation/Decorator, protocol consumption, required
+  verdict-audit and production callback, plus execute native resource packaging checks.
+
+Next: reconcile the remaining approved V2 caller dispositions and protocol-consumer gaps before
+implementation, then migrate their owning boundaries. Additional quote/escape proofs, controlled
+business-Rule activation, release preparation and all G1 execution remain incomplete. No new
+policy choice is pending in this J06 batch.
 
 ## Work not started or not complete
 

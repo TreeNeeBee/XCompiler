@@ -135,17 +135,17 @@ Progress reconciliation against source, 2026-10-13:
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
-| R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard and J06 input/response/protocol evidence authored | Remaining production callers, protocol separation and full accounting |
+| R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; deterministic protocol-result audit/metadata; logical-request recovery authored | J06 rubric/protocol consumer/Runtime caller and business result integration, then remaining approved callers |
-| P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
+| V1 / V2 | Inputs, final attempts and adopted response authority; deterministic protocol-result audit/metadata; J06 rubric/consumer/Phase-delivery caller and explicit original-evidence recovery authored | Remaining approved caller migrations and business-Rule activation; all executed verification |
+| P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
 No batch is marked verified. A source component or persisted file alone does not establish that
-Runtime invokes it. `prepareRuntimeRuleRequest` now calls `RuleRequestCoordinator` internally, but
-build/run do not call that preparation function. Its draft and review claim/result storage does not
-close Q5 or C1. An existing
+Runtime invokes it. `prepareRuntimeRuleRequest` calls `RuleRequestCoordinator`, and the J06
+Phase-delivery callback now invokes that preparation; other build/run callers still do not.
+Its draft and review claim/result storage does not close Q5 or C1. An existing
 claim without a recorded result remains an explicit incomplete review, never a renewed allowance.
 
 | Batch | Work and owner | Required output and acceptance evidence | Start condition |
@@ -216,7 +216,7 @@ Runtime's advancement call and the service's final save also require separate ca
 | Source group | Disposition | Obligation before changing behavior |
 |---|---|---|
 | Former Core modules | Approved responsibility split; review and test completion pending | Preserve effects, ownership and public behavior |
-| J06 scenario judgement | Rubric-only extraction and current-evidence judgement approved | Resolve common Rule/protocol contracts; preserve existing classification semantics |
+| J06 scenario judgement | Rubric-only extraction and current-evidence judgement authored in YAML/Application/Runtime | Preserve classification/process/PM intake; execute production wiring and recovery tests at G1 |
 | P01-P14 instruction candidates | In-scope inventory, not fourteen already approved RuleLists | Record retained text, authoritative source, caller, binding and replaced duplicate per batch |
 | J01-J05 planning/design/test heuristics | Semantic replacement remains a proposal | Approve each replacement and update producer, calibration, lint and feedback together |
 | J07 disposition/completion | Existing execution/evidence checks remain authoritative | Extract instructions only within an approved batch; no gate waiver |
@@ -701,7 +701,21 @@ It distinguishes no adoption authority, adopted response without a protocol resu
 processed result. Recovery never sends, chooses latest or publishes missing results. No C1 allowance
 or business verdict is produced here. Filesystem/audit/Runtime cases are authored, unrun; G1 must
 remove the actual source/evidence/publication/recovery calls and observe caller regression failures.
-Next migrate J06's rubric, protocol consumer and Runtime call site; production build/run remain open.
+At that checkpoint, J06's rubric, protocol consumer and Runtime call site were next.
+
+J06 migration, 2026-10-13: the installed manifest now includes a scenario-only `0x0207` list, explicitly
+required by PM/scenario context. Application collects the same bounded evidence and builds versioned
+framework JSON; Runtime pins request/execution correlation, prepares Rules and calls the retained
+response/protocol composition. The real Phase-delivery callback consumes only completion-eligible,
+strict full JSON or a value-preserving normalization before business verdict checks. The old
+first/last-brace salvage is removed. A required audit links each valid judgement to its input owner,
+adopted response and protocol result, while existing process gates, typed findings and PM/Domain
+ownership stay intact. Explicit logical-ID recovery uses original payload and Rules with no send,
+current-artifact read or new result publication; it does not automatically resume a whole Phase gate
+or reuse a historical verdict for a newly executed scene. Source/staging package guards cover both
+YAML resources. Unit, real-filesystem/loopback and real run-callback cases are authored, unrun; the
+independently precomputed manifest digest and all wiring falsification remain at G1. Next reconcile
+and migrate the remaining approved V2 callers, then complete proof/activation/release work before G1.
 
 ## Acceptance and verification plan
 

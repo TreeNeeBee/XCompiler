@@ -1,4 +1,7 @@
-import type { LLMRouter } from '../../llm/router.js';
+import { z } from 'zod';
+import type { ChatMessage } from '../../llm/types.js';
+import type { JsonOutputProtocol } from '../../llm/protocol_json.js';
+import type { BusinessProtocolAssessment } from './business_request_response.js';
 import type {
   DeliveryGateScene,
   DeliveryGateScenario,
@@ -20,14 +23,71 @@ export interface ScenarioArtifactReader {
   read(path: string, maxBytes: number): Promise<string | undefined>;
 }
 
-/**
- * Who judges the outcome.
- *
- * PM, because the question is whether the project got what it asked for — and no role that executed
- * the work should answer that about its own output. The finding this produces is routed through
- * PM's problem-intake boundary, so judgement and routing now name the same owner.
- */
-const SCENARIO_JUDGE_ROLE = 'ProjectManager' as const;
+export const SCENARIO_OUTCOME_CONTEXT = 'scenario-outcome-judgement' as const;
+export const SCENARIO_OUTCOME_RULE = Object.freeze({
+  ruleId: 'a707ec22-a5d2-45da-83b3-823d96d18f20', version: '1.0.0',
+});
+export const SCENARIO_OUTCOME_TEMPLATE_VERSION = 'scenario-outcome/1' as const;
+const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
+Object.freeze(PROTOCOL_TRANSFORMATIONS);
+export const SCENARIO_OUTCOME_PROTOCOL: JsonOutputProtocol = Object.freeze({
+  id: 'scenario-outcome', version: '1', root: 'object',
+  transformations: PROTOCOL_TRANSFORMATIONS,
+});
+
+const OUTPUT_TEMPLATE = [
+  'Answer with JSON only:',
+  '{"ok": boolean, "reason": string, "ticketType": "bug"|"change-request",',
+  '"target": "requirement-analysis"|"high-level-design"|"detailed-design"|"code"}.',
+  'Keep `reason` to one sentence naming the concrete discrepancy and ownership rationale.',
+].join(' ');
+const PayloadSchema = z.object({
+  schemaVersion: z.literal(1), kind: z.literal(SCENARIO_OUTCOME_CONTEXT),
+  templateVersion: z.literal(SCENARIO_OUTCOME_TEMPLATE_VERSION),
+  expectation: z.string(), operation: z.string(), requirementDigest: z.string().min(1).optional(),
+  evidence: z.array(z.string()).min(1),
+}).strict();
+export type ScenarioOutcomePayload = z.infer<typeof PayloadSchema>;
+
+export class ScenarioOutcomeInputError extends Error {
+  readonly code = 'scenario_outcome_input_invalid';
+  constructor(readonly reason: 'payload' | 'messages', options?: ErrorOptions) {
+    super(`Scenario outcome input failed: ${reason}`, options);
+    this.name = 'ScenarioOutcomeInputError';
+  }
+}
+
+/** Framework evidence only; the selected Rule owns the semantic judgement rubric. */
+export function buildScenarioOutcomeMessages(input: {
+  expectation: string; operation: string; requirementDigest?: string; evidence: readonly string[];
+}): readonly ChatMessage[] {
+  const parsed = PayloadSchema.safeParse({
+    schemaVersion: 1, kind: SCENARIO_OUTCOME_CONTEXT, templateVersion: SCENARIO_OUTCOME_TEMPLATE_VERSION,
+    expectation: input.expectation, operation: input.operation,
+    ...(input.requirementDigest ? { requirementDigest: input.requirementDigest } : {}), evidence: input.evidence,
+  });
+  if (!parsed.success) throw new ScenarioOutcomeInputError('payload', { cause: parsed.error });
+  return Object.freeze([
+    Object.freeze({ role: 'system' as const, content: OUTPUT_TEMPLATE }),
+    Object.freeze({ role: 'user' as const, content: JSON.stringify(parsed.data) }),
+  ]);
+}
+
+/** Reads already verified pinned input; current files and today’s Rule sources play no part. */
+export function readScenarioOutcomeMessages(messages: readonly ChatMessage[]): ScenarioOutcomePayload {
+  if (messages.length !== 2 || messages[0]?.role !== 'system' || messages[0].content !== OUTPUT_TEMPLATE
+    || messages[1]?.role !== 'user') throw new ScenarioOutcomeInputError('messages');
+  let raw: unknown;
+  try {
+    raw = JSON.parse(messages[1].content);
+  } catch (cause) {
+    throw new ScenarioOutcomeInputError('payload', { cause });
+  }
+  const parsed = PayloadSchema.safeParse(raw);
+  if (!parsed.success) throw new ScenarioOutcomeInputError('payload', { cause: parsed.error });
+  Object.freeze(parsed.data.evidence);
+  return Object.freeze(parsed.data);
+}
 
 const MAX_ARTIFACTS = 3;
 const MAX_ARTIFACT_BYTES = 4_000;
@@ -47,23 +107,33 @@ const MAX_STREAM_CHARS = 2_000;
  * `output/`, and nothing should.
  */
 export async function judgeScenarioOutcome(input: {
-  router: LLMRouter;
+  send: (messages: readonly ChatMessage[]) => Promise<BusinessProtocolAssessment>;
   artifacts?: ScenarioArtifactReader;
   before: readonly ScenarioArtifactSnapshot[];
   scenario: DeliveryGateScenario;
   scene: DeliveryGateScene;
   /** Project framing needed to distinguish a broken implementation from an obsolete accepted contract. */
   requirementDigest?: string;
+  signal?: AbortSignal;
 }): Promise<ScenarioOutcomeVerdict> {
-  const produced = await producedArtifacts(input.artifacts, input.before);
+  const { signal, send, artifacts } = input;
+  signal?.throwIfAborted();
+  const expectation = input.scenario.expected;
+  const operation = input.scenario.operation;
+  const requirementDigest = input.requirementDigest;
+  const scene = { stdoutTail: input.scene.stdoutTail, stderrTail: input.scene.stderrTail,
+    timedOut: input.scene.timedOut, exitCode: input.scene.exitCode };
+  const before = input.before.map((entry) => ({ ...entry }));
+  const produced = await producedArtifacts(artifacts, before, signal);
+  signal?.throwIfAborted();
   // What the run left behind, kept apart from how it ended: silence is a finding about the output,
   // and a process line would hide it by making the list never empty.
   const observations: string[] = [];
-  if (input.scene.stdoutTail) {
-    observations.push(`stdout:\n${truncate(input.scene.stdoutTail, MAX_STREAM_CHARS)}`);
+  if (scene.stdoutTail) {
+    observations.push(`stdout:\n${truncate(scene.stdoutTail, MAX_STREAM_CHARS)}`);
   }
-  if (input.scene.stderrTail) {
-    observations.push(`stderr:\n${truncate(input.scene.stderrTail, MAX_STREAM_CHARS)}`);
+  if (scene.stderrTail) {
+    observations.push(`stderr:\n${truncate(scene.stderrTail, MAX_STREAM_CHARS)}`);
   }
   for (const artifact of produced) {
     observations.push(`artifact ${artifact.path}:\n${artifact.content}`);
@@ -77,56 +147,31 @@ export async function judgeScenarioOutcome(input: {
   // what it was supposed to, and a non-zero exit or a timeout answers part of that already — it was
   // reading the output without being told either.
   const evidence = [
-    input.scene.timedOut
+    scene.timedOut
       ? 'process: timed out before it finished'
-      : `process: exited with code ${input.scene.exitCode}`,
+      : `process: exited with code ${scene.exitCode}`,
     ...observations,
   ];
 
-  const answer = await input.router.for(SCENARIO_JUDGE_ROLE).chat([
-    {
-      role: 'system',
-      content: [
-        'You decide whether a completed run produced what it was supposed to produce.',
-        'You are given the expectation recorded when the work was planned, and the evidence the run',
-        'left behind. Judge only against that expectation. Do not invent requirements, do not',
-        'comment on style, and do not fail a run for anything the expectation does not ask for.',
-        'Report a failure when the evidence contradicts the expectation, including when a required',
-        'element is absent, duplicated, empty, or obviously wrong for the field it fills.',
-        'When it failed, classify the work without relying on any particular protocol, status code,',
-        'vendor, or project domain. Use ticketType="bug" when the accepted requirement and design',
-        'remain valid and the implementation, configuration, or integration realizes them',
-        'incorrectly. Use ticketType="change-request" when satisfying the expectation requires',
-        'changing an accepted requirement, capability, external dependency, interface, data source,',
-        'or design premise because the accepted one is no longer viable.',
-        'Choose target by ownership: requirement-analysis for requirement/scope changes,',
-        'high-level-design for system interfaces, external capabilities and dependency selection,',
-        'detailed-design for internal module contracts, and code for implementation errors.',
-        'An HTTP status, timeout, exception, or empty result is evidence only; it never determines',
-        'ticketType or target by itself. Explain which accepted premise can remain or must change.',
-        'If evidence is insufficient to prove a contract change, choose bug/code.',
-        'Answer with JSON only:',
-        '{"ok": boolean, "reason": string, "ticketType": "bug"|"change-request",',
-        '"target": "requirement-analysis"|"high-level-design"|"detailed-design"|"code"}.',
-        'Keep `reason` to one sentence naming the concrete discrepancy and ownership rationale.',
-      ].join(' '),
-    },
-    {
-      role: 'user',
-      content: [
-        // The accepted framing tells the judge whether the implementation can satisfy the contract
-        // as written or whether that contract/capability itself has to change.
-        ...(input.requirementDigest ? [`Project statement: ${input.requirementDigest}`] : []),
-        `Expectation: ${input.scenario.expected}`,
-        `Operation: ${input.scenario.operation}`,
-        '',
-        'Evidence:',
-        ...evidence,
-      ].join('\n'),
-    },
-  ], { scoreSuccess: false });
+  const assessment = await send(buildScenarioOutcomeMessages({ expectation, operation, requirementDigest, evidence }));
+  signal?.throwIfAborted();
+  return consumeScenarioOutcomeProtocol(assessment, evidence);
+}
 
-  const verdict = parseVerdict(answer);
+/** Protocol validity precedes the existing PM-owned business shape checks. */
+export function consumeScenarioOutcomeProtocol(
+  assessment: BusinessProtocolAssessment, evidence: readonly string[],
+): ScenarioOutcomeVerdict {
+  const inspection = assessment.inspection;
+  if ((assessment.outcome !== 'valid' && assessment.outcome !== 'normalized') || inspection.status !== 'assessed'
+    || inspection.result.status === 'unresolved'
+    || (assessment.outcome === 'valid' && inspection.result.status !== 'valid')
+    || (assessment.outcome === 'normalized' && (inspection.result.status !== 'repairable'
+      || assessment.proof.status !== 'preserved' || assessment.proof.original !== inspection.result.original
+      || assessment.proof.candidate !== inspection.result.normalized))) {
+    throw new ScenarioOutcomeJudgementError('Scenario outcome judgement has no eligible, value-preserving JSON result');
+  }
+  const verdict = parseVerdict(inspection.result.normalized);
   // A malformed judgement is neither evidence that the project passed nor evidence for a Bug. Stop
   // the gate without manufacturing a product Ticket; the runtime/provider failure remains visible.
   if (!verdict) {
@@ -136,23 +181,28 @@ export async function judgeScenarioOutcome(input: {
   }
   return verdict.ok
     ? { ok: true, reason: verdict.reason, evidence: [] }
-    : { ...verdict, evidence };
+    : { ...verdict, evidence: [...evidence] };
 }
 
 async function producedArtifacts(
   reader: ScenarioArtifactReader | undefined,
   before: readonly ScenarioArtifactSnapshot[],
+  signal?: AbortSignal,
 ): Promise<Array<{ path: string; content: string }>> {
+  signal?.throwIfAborted();
   if (!reader) return [];
   const previous = new Map(before.map((entry) => [entry.path, entry.mtimeMs]));
   const after = await reader.snapshot();
+  signal?.throwIfAborted();
   const changed = after
     .filter((entry) => previous.get(entry.path) !== entry.mtimeMs)
     .sort((left, right) => right.mtimeMs - left.mtimeMs)
     .slice(0, MAX_ARTIFACTS);
   const out: Array<{ path: string; content: string }> = [];
   for (const entry of changed) {
+    signal?.throwIfAborted();
     const content = await reader.read(entry.path, MAX_ARTIFACT_BYTES);
+    signal?.throwIfAborted();
     if (content !== undefined) out.push({ path: entry.path, content });
   }
   return out;
@@ -173,11 +223,8 @@ export class ScenarioOutcomeJudgementError extends Error {
 }
 
 function parseVerdict(answer: string): ScenarioOutcomeVerdict | undefined {
-  const start = answer.indexOf('{');
-  const end = answer.lastIndexOf('}');
-  if (start < 0 || end <= start) return undefined;
   try {
-    const parsed: unknown = JSON.parse(answer.slice(start, end + 1));
+    const parsed: unknown = JSON.parse(answer);
     if (typeof parsed !== 'object' || parsed === null) return undefined;
     const value = parsed as {
       ok?: unknown;

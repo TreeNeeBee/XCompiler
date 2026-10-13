@@ -14,6 +14,13 @@ export const COMPILER_RULE_MANIFEST = Object.freeze([
     slot: 0,
     definitionDigest: 'sha256:9122e862d232fd4e7203214d30243f5706df9f514824ae4a9f64ee8abf5e526e',
   }),
+  Object.freeze({
+    relativePath: 'scenario-outcome.yaml',
+    listId: 'de4378d5-8731-4f17-8e9c-3e973f6ad7fd',
+    listVersion: '1.0.0',
+    slot: 0x0207,
+    definitionDigest: 'sha256:ed19fcd5fc746572baf178dac4b07182507f282f409d2b3e4d6f62658e258489',
+  }),
 ]);
 
 export class CompilerRuleSourceError extends Error {

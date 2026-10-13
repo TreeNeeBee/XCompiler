@@ -13,6 +13,7 @@ const execute = promisify(execFile);
 const repositoryRoot = path.resolve(__dirname, '..', '..');
 const npmLayouts = Array.isArray(npmBuildConfig) ? npmBuildConfig : [npmBuildConfig];
 const layouts = [...npmLayouts, standaloneBuildConfig] as Options[];
+const requiredRuleSources = ['genesis.yaml', 'scenario-outcome.yaml'] as const;
 
 describe('installed knowledge, role and compiler rule resources', () => {
   for (const layout of layouts) {
@@ -35,7 +36,7 @@ describe('installed knowledge, role and compiler rule resources', () => {
         // Neither a directory scan nor an environment override may grant this file authority.
         await fs.writeFile(path.join(installedRules, 'unexpected.yaml'), 'unregistered rule: [');
         const sourceCatalogue = await loadCompilerRuleCatalogue(path.join(repositoryRoot, 'rules'));
-        expect(sourceCatalogue.lists).toHaveLength(1);
+        expect(sourceCatalogue.lists).toHaveLength(2);
         const expectedRules = sourceCatalogue.lists.map(({ definition }) => ({
           id: definition.id,
           version: definition.version,
@@ -145,13 +146,16 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
           expect(copiedFiles).toEqual(sourceFiles);
         }
         expect(await fs.readdir(unrelatedRoot)).toEqual(['rules']);
-        await fs.unlink(path.join(installedRules, 'genesis.yaml'));
-        for (const output of outputs) {
-          await expect(execute(process.execPath, [path.join(outDir, output), '--rules-only'], {
-            cwd: unrelatedRoot,
-            env: { ...process.env, XC_PATH: unrelatedRoot, XCOMPILER_PATH: unrelatedRoot },
-            timeout: 10_000,
-          })).rejects.toMatchObject({ code: 1 });
+        for (const source of requiredRuleSources) {
+          await fs.unlink(path.join(installedRules, source));
+          for (const output of outputs) {
+            await expect(execute(process.execPath, [path.join(outDir, output), '--rules-only'], {
+              cwd: unrelatedRoot,
+              env: { ...process.env, XC_PATH: unrelatedRoot, XCOMPILER_PATH: unrelatedRoot },
+              timeout: 10_000,
+            })).rejects.toMatchObject({ code: 1 });
+          }
+          await fs.copyFile(path.join(repositoryRoot, 'rules', source), path.join(installedRules, source));
         }
       } finally {
         await fs.rm(temporaryRoot, { recursive: true, force: true });
@@ -161,7 +165,7 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
 });
 
 describe('compiler rule release attachments', () => {
-  it('includes the genesis source in the npm package file list', async () => {
+  it('includes both released compiler Rule sources in the npm package file list', async () => {
     const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-npm-resources-'));
     try {
       const { stdout } = await execute(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
@@ -169,15 +173,22 @@ describe('compiler rule release attachments', () => {
       ], { cwd: repositoryRoot, timeout: 30_000 });
       const packages = JSON.parse(stdout) as Array<{ files: Array<{ path: string }> }>;
       expect(packages).toHaveLength(1);
-      expect(packages[0]!.files.map((file) => file.path)).toContain('rules/genesis.yaml');
+      expect(packages[0]!.files.map((file) => file.path)).toEqual(expect.arrayContaining(
+        requiredRuleSources.map((source) => `rules/${source}`),
+      ));
     } finally {
       await fs.rm(temporaryRoot, { recursive: true, force: true });
     }
   }, 40_000);
 
-  it.each(['absent directory', 'empty directory'])(
-    'stops standalone packaging before building when genesis is missing (%s)',
-    async (layout) => {
+  it.each([
+    { layout: 'absent directory', missing: 'genesis.yaml', installed: [] },
+    { layout: 'empty directory', missing: 'genesis.yaml', installed: [] },
+    { layout: 'missing genesis', missing: 'genesis.yaml', installed: ['scenario-outcome.yaml'] },
+    { layout: 'missing scenario rubric', missing: 'scenario-outcome.yaml', installed: ['genesis.yaml'] },
+  ])(
+    'stops standalone packaging before building with $layout',
+    async ({ layout, missing, installed }) => {
       const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-missing-rule-resource-'));
       try {
         const scripts = path.join(temporaryRoot, 'scripts');
@@ -185,17 +196,83 @@ describe('compiler rule release attachments', () => {
         for (const name of ['package.sh', 'script_i18n.mjs']) {
           await fs.copyFile(path.join(repositoryRoot, 'scripts', name), path.join(scripts, name));
         }
-        if (layout === 'empty directory') await fs.mkdir(path.join(temporaryRoot, 'rules'));
+        if (layout !== 'absent directory') await fs.mkdir(path.join(temporaryRoot, 'rules'));
+        for (const source of installed) {
+          await fs.copyFile(path.join(repositoryRoot, 'rules', source), path.join(temporaryRoot, 'rules', source));
+        }
         // No package.json, build tools or npm executable is needed to reject this invalid release.
         await expect(execute('bash', [path.join(scripts, 'package.sh'), 'linux-x64'], {
           cwd: temporaryRoot,
           env: { ...process.env, XC_LANG: 'en' },
           timeout: 10_000,
-        })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('rules/genesis.yaml') });
+        })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining(`rules/${missing}`) });
         await expect(fs.stat(path.join(temporaryRoot, 'dist'))).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await fs.rm(temporaryRoot, { recursive: true, force: true });
       }
     },
   );
+
+  it.each(requiredRuleSources)('rejects staging publication when %s disappears after source preflight', async (missing) => {
+    const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-missing-staged-rule-'));
+    try {
+      const scripts = path.join(temporaryRoot, 'scripts');
+      const tools = path.join(temporaryRoot, 'fixture-tools');
+      const pkgDirectory = path.join(temporaryRoot, 'node_modules', '.bin');
+      await fs.mkdir(scripts);
+      await fs.mkdir(tools);
+      await fs.mkdir(pkgDirectory, { recursive: true });
+      await fs.cp(path.join(repositoryRoot, 'rules'), path.join(temporaryRoot, 'rules'), { recursive: true });
+      await fs.mkdir(path.join(temporaryRoot, 'docs'));
+      await fs.mkdir(path.join(temporaryRoot, 'skills'));
+      await fs.mkdir(path.join(temporaryRoot, 'debug-wiki'));
+      await fs.writeFile(path.join(temporaryRoot, 'docs', 'agent_skills.md'), 'Fixture skill documentation');
+      for (const name of ['README.md', 'LICENSE', 'NOTICE', 'config.example.yaml', '.env.example']) {
+        await fs.writeFile(path.join(temporaryRoot, name), 'Fixture attachment');
+      }
+      await fs.writeFile(path.join(temporaryRoot, 'package.json'), JSON.stringify({ version: '0.3.0' }));
+      for (const name of ['package.sh', 'script_i18n.mjs']) {
+        await fs.copyFile(path.join(repositoryRoot, 'scripts', name), path.join(scripts, name));
+      }
+      // Exercise the real shell and staging filesystem without invoking npm or native compilation.
+      const npmFixture = path.join(tools, 'npm');
+      await fs.writeFile(npmFixture, `#!/usr/bin/env bash
+set -eu
+if [[ "$*" == "run --silent build:pkg" ]]; then
+  mkdir -p dist/pkg-build
+  printf 'fixture entry\\n' > dist/pkg-build/xcompiler.cjs
+fi
+`);
+      await fs.chmod(npmFixture, 0o755);
+      const pkgFixture = path.join(pkgDirectory, 'pkg');
+      await fs.writeFile(pkgFixture, `#!/usr/bin/env bash
+set -eu
+output=''
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == '--output' ]]; then output="$2"; shift 2; else shift; fi
+done
+cat > "$output" <<'PROGRAM'
+#!/usr/bin/env bash
+if [[ "\${1:-}" == '--version' ]]; then printf '%s\\n' '0.3.0'; fi
+PROGRAM
+rm -- "rules/$RULE_RESOURCE_TO_REMOVE"
+`);
+      await fs.chmod(pkgFixture, 0o755);
+      await expect(execute('bash', [path.join(scripts, 'package.sh'), 'linux-x64'], {
+        cwd: temporaryRoot,
+        env: {
+          ...process.env, PATH: `${tools}${path.delimiter}${process.env.PATH ?? ''}`,
+          XC_LANG: 'en', RULE_RESOURCE_TO_REMOVE: missing,
+        },
+        timeout: 10_000,
+      })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining(`rules/${missing}`) });
+      await expect(fs.stat(path.join(temporaryRoot, 'dist', 'pkg', 'xcompiler-linux-x64')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(fs.stat(path.join(temporaryRoot, 'dist', 'pkg', 'xcompiler-linux-x64.staging')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readdir(path.join(temporaryRoot, 'dist', 'pkg'))).toEqual([]);
+    } finally {
+      await fs.rm(temporaryRoot, { recursive: true, force: true });
+    }
+  });
 });
