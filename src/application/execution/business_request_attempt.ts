@@ -46,6 +46,8 @@ export interface BusinessRequestAttemptStore {
 export interface BusinessRequestAttemptAudit {
   write(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt, signal?: AbortSignal): Promise<void>;
   verify(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt, signal?: AbortSignal): Promise<void>;
+  verifyResponse(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt,
+    response: RoutedResponseEvidence, signal?: AbortSignal): Promise<void>;
   recover(record: BusinessRequestAttemptRecord, signal?: AbortSignal): Promise<BusinessRequestAttemptRecovery>;
 }
 

@@ -2,7 +2,7 @@
 
 Updated: 2026-10-13
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`df450b0` (V1 original business-input retention), with original baseline `77ff6e2`
+`5385bee` (V1 final requests and explicit-attempt recovery), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -975,6 +975,57 @@ Next: persist the caller-selected response and connect the protocol/result bound
 J06 and its YAML rubric together. Build/run/J06 still do not invoke these internal V1 helpers. Fresh
 scenario execution, current-evidence judgement and typed PM intake remain unchanged. Additional
 correction proof classes, other callers and consolidated G1 verification remain outstanding.
+
+The 2026-10-13 next-batch investigation initially broadened normal recovery into optional response
+replacement. The user clarified that interruption recovery must continue the same request and old
+reply, without automatically calling a model again. Proceed with that normal recovery scope: retain
+the caller-adopted original response, retain protocol processing, and resume by logical request ID.
+No replacement API, latest-attempt choice or renewed calibration allowance is introduced. The earlier
+A/B/C alternatives remain background in [remaining-decisions.md](remaining-decisions.md); do not
+claim an explicit vote for A or reopen that optional feature as a blocker. The initial investigation
+checkpoint contained document updates only; the implementation below follows that clarification.
+
+## V1 adopted response and deterministic protocol recovery: 2026-10-13
+
+- `BusinessRequestRecovery` retains the response actually adopted after the business sender has
+  checked its returned text against Router evidence. `retainedAttempt` and the internal Runtime
+  `source` carry already verified live input/final-request material; adoption does not happen inside
+  Router's callback, where a later Plugin hook can still change the returned output or fail.
+- Required adoption audit precedes no-replace metadata at
+  `.xcompiler/llm/business-inputs/responses/<request-id>.json`. It pins input and attempt record
+  digests plus the pre-redaction response digest. Identical concurrent adoption keeps the first
+  authoritative record ID/time; losing audit is not authority. Different response material cannot
+  replace it. Ordinary raw sends remain separate, without a new send allowance or budget rule.
+- Fresh evidence uses `BusinessRequestInputs.verifyCaptured`, which reads existing input authority
+  and verifies its live audit/snapshot/review without recreating missing metadata. The new actual
+  `BusinessRequestAttemptAuditAdapter.verifyResponse` checks unique request/response events, binding,
+  producer/output and pre-redaction digest. It compares exact values or protects only trusted live
+  expectations; it never protects retained values again. Fresh credentials can therefore be checked
+  against protected audit without requiring exact restart recovery.
+- Protocol processing uses the pinned input protocol, existing producer completion facts and
+  deterministic JSON inspection. Normalization repeats the independent value-preservation proof.
+  Required full assessment audit precedes metadata at
+  `.xcompiler/llm/business-inputs/protocol-results/<request-id>.json`, with a response-record link,
+  proof/assessment digest and `valid`, `normalized`, `unresolved` or `ineligible` outcome. Metadata
+  contains no prompt/output bodies. The returned assessment, including completion facts, is frozen.
+- `createRuntimeBusinessRequestRecovery` composes the existing authority paths;
+  `sendRuntimeBusinessResponse` connects send, adoption and protocol processing. `resume` accepts
+  the logical request ID, revalidates the original input/snapshot, exact attempt/response and both
+  audit records, and repeats deterministic assessment. It never calls a model, renews C1, selects
+  today's Rules or chooses a latest attempt. Irreversibly redacted originals fail exact recovery.
+- No adoption authority returns `not-retained`, which does not prove an unsent request. Adopted
+  response without a published protocol result returns `retained` with a read-only recomputation;
+  it does not publish a result during recovery. Existing result returns `processed` only after its
+  binding, outcome, digest and audit are checked. These statuses never represent business acceptance.
+- Real-file audit/store and Runtime loopback cases are authored, unrun. G1 must falsify the actual
+  `verifyCaptured`, final-response verification, sender-to-source composition, adoption/result audit
+  and publication, and request-ID resume wiring. Run sibling input/attempt/Rule/C1, Plugin and replay
+  gates. Only static source/diff review has occurred; all execution checks remain deferred.
+
+Next: migrate J06's YAML rubric, protocol consumer and Runtime caller together, keeping current scene
+execution, PM semantic ownership, malformed-verdict handling and typed intake. Build/run/J06 have
+not yet adopted these internal helpers. Business verdict persistence is separate from protocol
+processing; additional correction proofs, other production callers and G1 remain outstanding.
 
 ## Work not started or not complete
 

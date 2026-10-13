@@ -446,6 +446,25 @@ Scoped Plugin composition also requires its logger explicitly: missing dependenc
 configured ledger fail instead of omitting required hook evidence. Required error-notification audit
 failure keeps the audit type and original cause, while cancellation retains its primary control.
 
+The 2026-10-13 normal recovery batch now retains the caller-adopted original response after returned
+text matches Router evidence, before protocol/business parsing. Immutable metadata at
+`.xcompiler/llm/business-inputs/responses/<request-id>.json` links the input, snapshot and attempt
+digests plus original response digest; the unique adoption audit ID identifies its authority.
+Concurrent identical adoption reuses the first record; later raw sends cannot replace it implicitly.
+Fresh verification checks existing input authority and exact/protected live request/response audit.
+It does not recreate missing metadata or require reconstruction of redacted credentials.
+
+Deterministic protocol processing retains full audit assessment and immutable metadata at
+`.xcompiler/llm/business-inputs/protocol-results/<request-id>.json`. Completion precedes JSON handling,
+normalization repeats value-preservation proof, and the result links the adopted response and proof
+version. Neither record contains message/output bodies or a business verdict. Logical-request-only
+resume restores exact original materials and rechecks both audits, bindings and deterministic facts.
+No response authority is `not-retained`; adopted response without published result is `retained`;
+verified result is `processed`. Resume performs no send, new selection, result publication or C1 claim.
+These internal composition paths and real-file/Runtime cases are authored, unrun. J06 production
+adoption and business result integration remain next; executed gates and call-site falsification
+remain at G1.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator

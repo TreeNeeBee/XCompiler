@@ -179,6 +179,13 @@ ordinary explicit business sends retain their retry policy. Caller-selected resp
 integration, followed by J06/rubric migration, remain next. Build/run are unchanged. New filesystem,
 audit, Plugin and loopback cases are authored; all execution verification remains deferred to G1.
 
+The 2026-10-13 continuation implements the normal interruption-recovery evidence layer. It retains
+the caller-adopted original response and deterministic protocol result, then restores them by logical
+request ID. Fresh credentials can be verified against protected audit; exact restart recovery rejects
+lost values. Resume never sends another request, picks a latest attempt or publishes a missing result.
+Protocol outcomes remain separate from business judgement. Internal Runtime composition and real
+audit/file/loopback cases are authored, unrun; J06/rubric production integration remains next.
+
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to
 [0.6](../0.6.0/README.md); LLM-switch to [0.7](../0.7.0/README.md).

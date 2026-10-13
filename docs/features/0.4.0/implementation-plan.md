@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-11. This development checkpoint extends `60e54ac` (C1 Runtime composition and recovery)
+Updated: 2026-10-13. This development stage extends `5385bee` (V1 final requests and explicit-attempt recovery)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -138,7 +138,7 @@ Progress reconciliation against source, 2026-10-13:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
-| V1 / V2 | Immutable business inputs, required final-request audit/attempt metadata, scoped response binding and explicit-attempt Runtime recovery authored | Caller-selected response/protocol-result boundary, scenario vertical slice, then remaining approved production callers |
+| V1 / V2 | Inputs, final attempts and adopted response authority; deterministic protocol-result audit/metadata; logical-request recovery authored | J06 rubric/protocol consumer/Runtime caller and business result integration, then remaining approved callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -681,6 +681,27 @@ error notification without converting cancellation, and made attempt-ID validati
 whether input metadata exists. Authored cases also retain an already recorded/scored real provider
 failure when later notification audit fails. None of these cases has run; G1 includes their actual
 call-site removal checks.
+
+The 2026-10-13 investigation initially asked about replacing a selected response. The user clarified
+that normal interruption recovery must continue the same request's retained response without another
+model send. That normal recovery path is the current batch; explicit response replacement is extra
+scope and is not introduced. Record the response actually adopted by the caller and its protocol
+processing, then restore those materials by logical request ID without latest-attempt selection or
+budget renewal. Historical alternatives remain in [remaining-decisions.md](remaining-decisions.md),
+not as an outstanding implementation gate. J06 production integration follows this evidence layer;
+all execution verification stays at G1.
+
+Normal response recovery is now authored: required adoption audit and immutable response metadata
+pin the input/attempt/raw response before protocol handling. Fresh validation reads existing capture
+authority and verifies live exact/protected audit without invoking exact resume or recreating missing
+state. Required protocol audit and metadata retain deterministic completion/inspection/proof facts;
+normalization repeats the independent preservation check. Logical-ID resume restores the adopted
+attempt and original materials, redoes deterministic assessment, and verifies existing result/audit.
+It distinguishes no adoption authority, adopted response without a protocol result and a verified
+processed result. Recovery never sends, chooses latest or publishes missing results. No C1 allowance
+or business verdict is produced here. Filesystem/audit/Runtime cases are authored, unrun; G1 must
+remove the actual source/evidence/publication/recovery calls and observe caller regression failures.
+Next migrate J06's rubric, protocol consumer and Runtime call site; production build/run remain open.
 
 ## Acceptance and verification plan
 

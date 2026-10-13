@@ -6,6 +6,7 @@ import { BusinessRequestAttemptError, assertBusinessRequestAttemptInput } from '
 import { RuleDecorator } from '../application/rules/rule_decorator.js';
 import {
   LLMRuleBusinessRequest, snapshotRuleBusinessChatOptions, type RuleBusinessChatOptions,
+  RuleBusinessRequestError,
 } from '../llm/rule_business_request.js';
 import type { LLMRouter } from '../llm/router.js';
 import { FileBusinessRequestAttemptStore } from '../infrastructure/llm/file_business_request_attempt_store.js';
@@ -31,7 +32,13 @@ export async function sendRuntimeBusinessRequest(input: {
     audit: new BusinessRequestAttemptAuditAdapter(audit, location.auditRoot, container.root),
   });
   signal?.throwIfAborted();
-  return Object.freeze({ ...result, inputRecord: captured.record });
+  if (!result.retainedAttempt) throw new RuleBusinessRequestError('response_evidence_invalid', {
+    logicalRequestId: captured.record.logicalRequestId, kind: 'missing-final-request',
+  });
+  const source = Object.freeze({ input: captured.input, inputRecord: captured.record,
+    request: result.retainedAttempt.request, attemptRecord: result.retainedAttempt.record, response: result.response,
+  });
+  return Object.freeze({ ...result, inputRecord: captured.record, source });
 }
 
 /** A specific attempt only: no latest-response selection, model request or business verdict. */
@@ -57,5 +64,5 @@ export async function resumeRuntimeBusinessRequestAttempt(input: {
   const recovered = await new BusinessRequestAttemptAuditAdapter(audit, container.state.abs('audit'), container.root)
     .recover(record, signal);
   signal?.throwIfAborted();
-  return Object.freeze({ ...recovered, record, inputRecord: captured.record });
+  return Object.freeze({ ...recovered, record, inputRecord: captured.record, input: captured.input });
 }

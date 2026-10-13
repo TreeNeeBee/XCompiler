@@ -532,6 +532,13 @@ explicit-attempt response recovery to an internal business sender. It returns ra
 without invoking calibration, selecting a business verdict or granting correction allowance.
 Prepared or missing-response records cannot prove whether transport occurred. Ordinary explicit
 business sends retain their existing retry policy; C1's one-logical-correction budget remains separate.
-Caller-selected response/protocol-result persistence and production caller migration are still pending.
+At that checkpoint, caller-selected response/protocol-result persistence and production migration were pending.
+The 2026-10-13 normal recovery continuation now retains adopted response authority and deterministic
+protocol assessments through internal Runtime composition. Completion facts precede inspection;
+normalization repeats mechanical preservation proof. Logical-ID recovery restores the same original
+response and verifies/recomputes protocol facts, without model dispatch or C1 allowance changes.
+Fresh protected audit verification is separate from exact restart recovery. A missing protocol result
+is not silently published on resume. Business verdict/J06 production integration and expanded proof
+classes remain outstanding; all authored verification is still deferred to G1.
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

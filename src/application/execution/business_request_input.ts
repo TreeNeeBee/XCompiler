@@ -170,6 +170,23 @@ export class BusinessRequestInputs {
     return Object.freeze({ status: 'recovered', record, input, snapshot });
   }
 
+  /** Verify an existing live capture; evidence checks never recreate missing authority records. */
+  async verifyCaptured(raw: BusinessRequestInput, rawRecord: BusinessRequestInputRecord, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const input = validateBusinessRequestInput(raw);
+    const expected = validateBusinessRequestInputRecord(rawRecord, input.logicalRequestId);
+    assertBusinessRequestInputRecord(expected, input);
+    const stored = await this.store.read(input.logicalRequestId);
+    signal?.throwIfAborted();
+    if (!stored || validateBusinessRequestInputRecord(stored, input.logicalRequestId).digest !== expected.digest) {
+      throw new BusinessRequestInputError('identity_conflict', { logicalRequestId: input.logicalRequestId, field: 'captured_record' });
+    }
+    await this.audit.verify(expected, input, signal);
+    signal?.throwIfAborted();
+    await this.snapshot(input.logicalRequestId, input.owner, input.snapshotDigest, signal);
+    signal?.throwIfAborted();
+  }
+
   private async snapshot(
     id: string, owner: BusinessRequestInput['owner'], digest: string | undefined, signal?: AbortSignal,
   ): Promise<RuleRequestSnapshot> {

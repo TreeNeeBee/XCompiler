@@ -8,6 +8,7 @@ import {
 import {
   createBusinessRequestAttemptRecord, validateBusinessRequestAttempt, assertBusinessRequestAttemptInput,
   type BusinessRequestAttemptAudit, type BusinessRequestAttemptStore,
+  type BusinessRequestAttempt, type BusinessRequestAttemptRecord,
 } from '../application/execution/business_request_attempt.js';
 import { RuleDecorator } from '../application/rules/rule_decorator.js';
 import {
@@ -66,6 +67,7 @@ export interface RuleBusinessResponse {
   readonly output: string;
   readonly response: RoutedResponseEvidence;
   readonly binding: RuleBusinessAuditBinding | BusinessInputAuditBinding;
+  readonly retainedAttempt?: { readonly request: BusinessRequestAttempt; readonly record: BusinessRequestAttemptRecord };
 }
 
 interface RetainedInput {
@@ -123,7 +125,9 @@ export class LLMRuleBusinessRequest {
       }, { cause });
     }
     const logicalRequestId = snapshot.logicalRequestId;
-    const attempts = new Map<string, { provider: string; model: string; binding: RuleBusinessResponse['binding'] }>();
+    type Attempt = { provider: string; model: string; binding: RuleBusinessResponse['binding'];
+      retainedAttempt?: RuleBusinessResponse['retainedAttempt'] };
+    const attempts = new Map<string, Attempt>();
     const responses: unknown[] = [];
     const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = async (request) => {
       input.signal?.throwIfAborted();
@@ -140,7 +144,8 @@ export class LLMRuleBusinessRequest {
         inputRecordId: retained.record.recordId, inputRecordDigest: retained.record.digest,
         inputDigest: retained.record.inputDigest,
       }) : base;
-      attempts.set(actual.providerAttemptId.toLowerCase(), { provider: actual.provider, model: actual.model, binding });
+      const attempt: Attempt = { provider: actual.provider, model: actual.model, binding };
+      attempts.set(actual.providerAttemptId.toLowerCase(), attempt);
       if (retained) {
         const prepared = validateBusinessRequestAttempt({ schemaVersion: 1, logicalRequestId,
           providerAttemptId: actual.providerAttemptId, provider: actual.provider, model: actual.model,
@@ -155,6 +160,7 @@ export class LLMRuleBusinessRequest {
         input.signal?.throwIfAborted();
         await retained.audit.verify(stored, prepared, input.signal);
         input.signal?.throwIfAborted();
+        attempt.retainedAttempt = Object.freeze({ request: prepared, record: stored });
       }
       return binding;
     };
@@ -188,7 +194,9 @@ export class LLMRuleBusinessRequest {
       });
     }
     // Missing transport metadata stays unavailable; only C1 may decide calibration eligibility.
-    return freeze({ output, response, binding: sent.binding });
+    return freeze({ output, response, binding: sent.binding,
+      ...(sent.retainedAttempt ? { retainedAttempt: sent.retainedAttempt } : {}),
+    });
   }
 }
 
