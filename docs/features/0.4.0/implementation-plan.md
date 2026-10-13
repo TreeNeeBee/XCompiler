@@ -129,7 +129,7 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
-Progress reconciliation against source, 2026-10-11:
+Progress reconciliation against source, 2026-10-13:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -138,7 +138,7 @@ Progress reconciliation against source, 2026-10-11:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; internal Rule business send and shared final-send guard; completion/payload eligibility and raw message retention authored | Production request/input recovery, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; internal Runtime selection and business send, raw review verification, installed genesis, business snapshot/request audit binding | Additional definitions/bindings, durable production request/input identity, build/run migration, full accounting and integrity at production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime composition and request-ID-only recovery | Additional quote/escape proofs, production caller integration and legacy-salvage removal |
-| V1 / V2 | Existing owners identified; immutable business-input records, required raw-input audit and internal Runtime exact recovery authored | Dispatch/response binding, scenario vertical slice, then remaining approved production callers |
+| V1 / V2 | Immutable business inputs, required final-request audit/attempt metadata, scoped response binding and explicit-attempt Runtime recovery authored | Caller-selected response/protocol-result boundary, scenario vertical slice, then remaining approved production callers |
 | P1 | Genesis included in npm/standalone resource declarations; installation/failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -653,8 +653,34 @@ store, snapshot-review and factory calls and execute sibling Rule/C1 reader cove
 audit option now validates the injected logger's actual JSONL/Markdown targets before writing; both
 use no-follow regular-file handles. It addresses the static Markdown-link/wrong-project-logger
 finding, with Runtime call-site cases authored and existing unscoped logging left outside that claim.
-G1 must also falsify the location argument and execute sibling required-audit cases. Next implement
+G1 must also falsify the location argument and execute sibling required-audit cases. At that checkpoint, next implement
 dispatch/response linkage before J06 extraction; the ordinary-business send policy remains unchanged.
+
+V1 final-request sub-batch, 2026-10-12: the internal Runtime sender now composes input capture with
+the Rule business sender. Each actual provider attempt retains the post-Plugin request, producer,
+capacity and a `business-input` binding to the original record/snapshot. Required audit, immutable
+attempt metadata and live audit verification precede transport. Metadata records preparation only;
+it cannot prove whether transport ran. Trusted audit scope survives Plugin mutation and is checked
+against actual Router logger targets before logging/transport; response evidence uses that scope.
+All logging for this new scoped request, including retry/failure and Plugin diagnostics, uses that
+required ledger; existing unscoped logging keeps its policy. Default stall diagnosis retains its
+asynchronous advisory contract while using the fixed location.
+Internal scope/bindings never become provider input or replay keys. Explicit-attempt read-only
+recovery verifies original input/Rule evidence, final request and response hashes. It distinguishes
+absent metadata, no retained response and recovered raw response without automatic resend, latest
+selection or business judgement. Ordinary explicit sends/retry/fallback retain their existing policy;
+C1's one-attempt budget is separate. Missing, ambiguous, changed, unavailable or irreversibly redacted
+evidence fails explicitly. Tests are authored, unrun. G1 must falsify actual sender audit/store/verify,
+Runtime composition, Plugin/Router scope propagation, response binding and recovery calls, then run
+sibling Rule/C1/replay/required-audit gates. Next persist caller-selected response and connect the
+protocol/result boundary before J06/rubric migration. No production caller has adopted V1 yet.
+
+The 2026-10-13 model-change review reloaded constraints and independently checked this retained
+batch. It added explicit scoped Plugin audit-dependency failure, preserved typed audit failures from
+error notification without converting cancellation, and made attempt-ID validation independent of
+whether input metadata exists. Authored cases also retain an already recorded/scored real provider
+failure when later notification audit fails. None of these cases has run; G1 includes their actual
+call-site removal checks.
 
 ## Acceptance and verification plan
 

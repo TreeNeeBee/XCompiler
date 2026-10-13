@@ -9,9 +9,16 @@ export const RuleBusinessAuditBindingSchema = z.object({
 }).strict();
 export type RuleBusinessAuditBinding = z.infer<typeof RuleBusinessAuditBindingSchema>;
 
+/** A migrated business caller also pins the original input record before every provider attempt. */
+export const BusinessInputAuditBindingSchema = RuleBusinessAuditBindingSchema.extend({
+  kind: z.literal('business-input'), inputRecordId: z.uuid(),
+  inputRecordDigest: RuleDigestSchema, inputDigest: RuleDigestSchema,
+}).strict();
+export type BusinessInputAuditBinding = z.infer<typeof BusinessInputAuditBindingSchema>;
+
 /** Trusted final-send evidence only; these bindings are never provider input or replay keys. */
 export const RuleRequestAuditBindingSchema = z.discriminatedUnion('kind', [
-  RuleSelectionAuditBindingSchema, RuleBusinessAuditBindingSchema,
+  RuleSelectionAuditBindingSchema, RuleBusinessAuditBindingSchema, BusinessInputAuditBindingSchema,
 ]);
 export type RuleRequestAuditBinding = z.infer<typeof RuleRequestAuditBindingSchema>;
 

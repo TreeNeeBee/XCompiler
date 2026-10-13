@@ -1,5 +1,7 @@
 import type { AuditLogger } from '../audit/audit.js';
+import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 import { AuditPersistenceError } from '../audit/errors.js';
+import { isCancellationError } from '../util/cancellation.js';
 import { t } from '../i18n/index.js';
 import type { LLMClient } from '../llm/types.js';
 import type { Tool } from '../tools/types.js';
@@ -23,6 +25,10 @@ interface RegisteredHook {
   handler: (context: unknown) => void | Promise<void>;
   priority: number;
   order: number;
+}
+interface PluginAuditScope {
+  readonly location: AuditWriteLocation;
+  readonly logicalRequestId?: string;
 }
 
 /** 插件注册、扩展能力合并与生命周期 Hook 调度中心。 */
@@ -60,7 +66,13 @@ export class PluginHost {
     this.audit = audit;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(scope?: PluginAuditScope): Promise<void> {
+    if (scope && this.plugins.length > 0 && !this.audit) {
+      throw new AuditPersistenceError({
+        operation: 'initialize', target: scope.location.auditRoot,
+        eventKind: 'note', messageId: 'plugins.audit_unavailable', logicalRequestId: scope.logicalRequestId,
+      }, { cause: new Error('Scoped LLM hooks require the owning audit logger') });
+    }
     if (this.initialized) return;
     // 先置位，避免 setup 中的间接调用导致递归初始化。
     this.initialized = true;
@@ -76,10 +88,13 @@ export class PluginHost {
             pluginVersion: plugin.manifest.version,
             minXCompilerVersion: plugin.manifest.minXCompilerVersion,
             apiVersion: plugin.manifest.apiVersion,
+            ...(scope ? { logicalRequestId: scope.logicalRequestId } : {}),
           },
+          scope ? { persistence: 'required', location: scope.location } : undefined,
         );
       } catch (error) {
-        await this.handleFailure(plugin, 'setup', error);
+        if (scope && error instanceof AuditPersistenceError) throw error;
+        await this.handleFailure(plugin, 'setup', error, scope);
       }
     }
   }
@@ -102,15 +117,15 @@ export class PluginHost {
     }
   }
 
-  async emit<K extends HookName>(hook: K, context: HookContextMap[K]): Promise<void> {
-    await this.initialize();
+  async emit<K extends HookName>(hook: K, context: HookContextMap[K], scope?: PluginAuditScope): Promise<void> {
+    await this.initialize(scope);
     const handlers = [...(this.hooks.get(hook) ?? [])]
       .sort((a, b) => (b.priority - a.priority) || (a.order - b.order));
     for (const registration of handlers) {
       try {
         await registration.handler(context);
       } catch (error) {
-        await this.handleFailure(registration.plugin, hook, error);
+        await this.handleFailure(registration.plugin, hook, error, scope);
       }
     }
   }
@@ -153,19 +168,24 @@ export class PluginHost {
         // Snapshot framework-owned evidence channels before any hook can replace the options.
         const requestBoundary = {
           logicalRequestId: options?.logicalRequestId,
+          requiredAuditLocation: options?.requiredAuditLocation
+            ? Object.freeze({ ...options.requiredAuditLocation }) : undefined,
           beforeProviderRequest: options?.beforeProviderRequest,
           onResponse: options?.onResponse,
         };
         const identifiedRequestOptions = options?.logicalRequestId === undefined ? {} : {
           signal: options.signal, validate: options.validate, scoreSuccess: options.scoreSuccess,
         };
+        const auditScope = requestBoundary.requiredAuditLocation ? Object.freeze({
+          location: requestBoundary.requiredAuditLocation, logicalRequestId: requestBoundary.logicalRequestId,
+        }) : undefined;
         const before: HookContextMap['llm.before'] = {
           role,
           model: client.name,
           messages: [...messages],
           options: options ? { ...options } : undefined,
         };
-        await this.emit('llm.before', before);
+        await this.emit('llm.before', before, auditScope);
         const startedAt = Date.now();
         try {
           const response = await client.chat(before.messages, { ...before.options, ...identifiedRequestOptions, ...requestBoundary });
@@ -176,7 +196,7 @@ export class PluginHost {
             response,
             durationMs: Date.now() - startedAt,
           };
-          await this.emit('llm.after', after);
+          await this.emit('llm.after', after, auditScope);
           return after.response;
         } catch (error) {
           try {
@@ -186,12 +206,19 @@ export class PluginHost {
               messages: before.messages,
               error,
               durationMs: Date.now() - startedAt,
-            });
+            }, auditScope);
           } catch (hookError) {
             if (error instanceof AuditPersistenceError) {
               throw new AuditPersistenceError(error.failure, {
                 cause: new AggregateError([error, hookError], 'Evidence failure notification also failed'),
                 record: error.record,
+              });
+            }
+            if (auditScope && hookError instanceof AuditPersistenceError
+              && !isCancellationError(error, identifiedRequestOptions.signal)) {
+              throw new AuditPersistenceError(hookError.failure, {
+                cause: new AggregateError([error, hookError], 'Request failure notification could not retain required evidence'),
+                record: hookError.record,
               });
             }
             // A notification hook is secondary. Preserve the producer's typed boundary and cause;
@@ -246,15 +273,24 @@ export class PluginHost {
     };
   }
 
-  private async handleFailure(plugin: XCompilerPlugin, stage: string, error: unknown): Promise<void> {
+  private async handleFailure(plugin: XCompilerPlugin, stage: string, error: unknown, scope?: PluginAuditScope): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     const rendered = t().plugins.hookFailed(plugin.manifest.id, stage, message);
-    await this.audit?.event('note', rendered, {
-      messageId: 'plugins.hook_failed',
-      plugin: plugin.manifest.id,
-      stage,
-      error: message,
-    });
+    try {
+      await this.audit?.event('note', rendered, {
+        messageId: 'plugins.hook_failed',
+        plugin: plugin.manifest.id,
+        stage,
+        error: message,
+        ...(scope ? { logicalRequestId: scope.logicalRequestId } : {}),
+      }, scope ? { persistence: 'required', location: scope.location } : undefined);
+    } catch (cause) {
+      if (scope && cause instanceof AuditPersistenceError) throw new AuditPersistenceError(cause.failure, {
+        cause: new AggregateError([error, cause], 'Plugin hook and required failure-audit persistence both failed'),
+        record: cause.record,
+      });
+      throw cause;
+    }
     if (this.strict || plugin.failureMode === 'fail') throw error;
     console.warn(rendered);
   }

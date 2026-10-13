@@ -4,7 +4,7 @@ import { t } from '../i18n/index.js';
 import { xcEnv } from '../config/env.js';
 import { rebuildAuditSummary } from './summary.js';
 import { AuditPersistenceError, type AuditPersistenceFailure } from './errors.js';
-import { appendScopedAudit, initializeScopedAudit, type AuditWriteLocation } from './scoped_persistence.js';
+import { appendScopedAudit, assertScopedAuditTargets, initializeScopedAudit, type AuditWriteLocation } from './scoped_persistence.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
@@ -165,6 +165,22 @@ export class AuditLogger {
     return path.resolve(path.dirname(this.jsonlAbs), 'artifacts', normalized);
   }
 
+  /** Reject a mismatched or unsafe ledger without creating files or publishing an event. */
+  async assertWriteLocation(
+    location: AuditWriteLocation, logicalRequestId?: string, providerAttemptId?: string,
+  ): Promise<void> {
+    const fixedLocation = Object.freeze({ ...location });
+    try {
+      await assertScopedAuditTargets({ jsonl: this.jsonlAbs, markdown: this.mdAbs }, fixedLocation);
+    } catch (cause) {
+      throw this.persistenceError('initialize', this.jsonlAbs, {
+        ts: new Date().toISOString(), kind: 'llm.request',
+        message: 'Required request evidence ledger is unavailable',
+        messageId: 'llm.required_audit_location', data: { logicalRequestId, providerAttemptId },
+      }, cause);
+    }
+  }
+
   /** 通用事件，jsonl + 简短 markdown 一行。 */
   async event(
     kind: AuditKind,
@@ -239,7 +255,16 @@ export class AuditLogger {
   }
 
   /** LLM 请求/响应：完整 prompt 与回包写入 markdown 折叠块。 */
-  async llmRequest(role: string, model: string, messages: unknown, options?: unknown): Promise<void> {
+  async llmRequest(role: string, model: string, messages: unknown, options?: unknown,
+    auditOptions: AuditEventOptions = {}): Promise<void> {
+    if (auditOptions.location || auditOptions.persistence === 'required') {
+      const logicalRequestId = options && typeof options === 'object' && 'logicalRequestId' in options
+        && typeof options.logicalRequestId === 'string' ? options.logicalRequestId : undefined;
+      await this.event('llm.request', t().audit.eventLlmRequest(role, model), {
+        messageId: 'audit.llm_request', logicalRequestId, role, model, messages, options, contentMode: this.contentMode,
+      }, auditOptions);
+      return;
+    }
     const storedMessages = protectAuditContent(messages, this.contentMode);
     const storedOptions = protectAuditContent(options, this.contentMode);
     await this.appendJsonl({
@@ -264,7 +289,14 @@ export class AuditLogger {
     );
   }
 
-  async llmResponse(role: string, model: string, content: string, meta?: Record<string, unknown>): Promise<void> {
+  async llmResponse(role: string, model: string, content: string, meta?: Record<string, unknown>,
+    auditOptions: AuditEventOptions = {}): Promise<void> {
+    if (auditOptions.location || auditOptions.persistence === 'required') {
+      await this.event('llm.response', t().audit.eventLlmResponse(role, model), {
+        messageId: 'audit.llm_response', ...meta, role, model, content, contentMode: this.contentMode,
+      }, auditOptions);
+      return;
+    }
     const storedContent = protectAuditContent(content, this.contentMode);
     const storedMeta = protectAuditContent(meta, this.contentMode) as Record<string, unknown> | undefined;
     await this.appendJsonl({
@@ -289,11 +321,13 @@ export class AuditLogger {
     );
   }
 
-  async llmError(role: string, model: string, err: unknown): Promise<void> {
+  async llmError(role: string, model: string, err: unknown, auditOptions: AuditEventOptions = {},
+    logicalRequestId?: string): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     await this.event('llm.error', t().audit.eventLlmError(role, model, msg), {
       messageId: 'audit.llm_error', role, model, error: msg,
-    });
+      ...(auditOptions.location ? { logicalRequestId } : {}),
+    }, auditOptions);
   }
 
   /**

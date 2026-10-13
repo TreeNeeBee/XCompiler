@@ -1,5 +1,6 @@
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
 import type { LLMRequestAuditBinding } from './request_binding.js';
+import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -16,6 +17,8 @@ export interface LLMProviderWindow {
 export interface ChatOptions {
   /** Stable identity supplied by the owning persisted request; retry/fallback retain it. */
   logicalRequestId?: string;
+  /** Runtime-owned required-evidence ledger; never provider input or part of a replay key. */
+  requiredAuditLocation?: AuditWriteLocation;
   /** Trusted final-send boundary; optional returned binding is audit-only and never sent to providers. */
   beforeProviderRequest?: (request: {
     logicalRequestId: string;

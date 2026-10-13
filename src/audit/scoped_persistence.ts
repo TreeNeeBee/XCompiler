@@ -17,6 +17,20 @@ export interface AuditWriteTargets {
 export async function initializeScopedAudit(
   targets: AuditWriteTargets, location: AuditWriteLocation, heading: string,
 ): Promise<void> {
+  await assertScopedAuditTargets(targets, location);
+  for (const target of [targets.jsonl, targets.markdown]) {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await checkTarget(target, location);
+  }
+  // Initialize synchronously so another event on this logger cannot append before its header.
+  try { initializeHeader(targets.markdown, heading); }
+  catch (cause) { throw targetError(targets.markdown, 'Audit initialization failed', cause); }
+}
+
+/** Read-only preflight for the actual logger targets, before a provider request can be sent. */
+export async function assertScopedAuditTargets(
+  targets: AuditWriteTargets, location: AuditWriteLocation,
+): Promise<void> {
   if (!path.isAbsolute(location.containerRoot) || !path.isAbsolute(location.auditRoot)
     || targets.jsonl !== path.join(path.resolve(location.auditRoot), 'audit.jsonl')) {
     throw targetError(targets.jsonl, 'Audit logger does not use the requested container ledger');
@@ -27,13 +41,6 @@ export async function initializeScopedAudit(
     throw targetError(targets.markdown, 'Audit Markdown must have a separate target below the requested audit root');
   }
   for (const target of [targets.jsonl, targets.markdown]) await checkTarget(target, location);
-  for (const target of [targets.jsonl, targets.markdown]) {
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await checkTarget(target, location);
-  }
-  // Initialize synchronously so another event on this logger cannot append before its header.
-  try { initializeHeader(targets.markdown, heading); }
-  catch (cause) { throw targetError(targets.markdown, 'Audit initialization failed', cause); }
 }
 
 function initializeHeader(target: string, heading: string): void {

@@ -1,8 +1,17 @@
 import { z } from 'zod';
 import { protectAuditContent } from '../audit/audit.js';
+import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
+import {
+  assertBusinessRequestInputRecord, validateBusinessRequestInput, validateBusinessRequestInputRecord,
+  type BusinessRequestInput, type BusinessRequestInputRecord,
+} from '../application/execution/business_request_input.js';
+import {
+  createBusinessRequestAttemptRecord, validateBusinessRequestAttempt, assertBusinessRequestAttemptInput,
+  type BusinessRequestAttemptAudit, type BusinessRequestAttemptStore,
+} from '../application/execution/business_request_attempt.js';
 import { RuleDecorator } from '../application/rules/rule_decorator.js';
 import {
-  ruleBusinessRequestDigest, type RuleBusinessAuditBinding,
+  ruleBusinessRequestDigest, type RuleBusinessAuditBinding, type BusinessInputAuditBinding,
 } from '../application/rules/rule_request_binding.js';
 import {
   validateRuleRequestSnapshot, type RuleRequestSnapshot,
@@ -39,30 +48,69 @@ export class RuleBusinessRequestError extends Error {
   }
 }
 
+/** Validate before copying so malformed values cannot become an apparently valid empty object. */
+export function snapshotRuleBusinessChatOptions(
+  options: RuleBusinessChatOptions | undefined, logicalRequestId: string,
+): RuleBusinessChatOptions | undefined {
+  if (options === undefined) return undefined;
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || Reflect.ownKeys(options).some((key) => typeof key !== 'string' || !SEND_OPTIONS.has(key))) {
+    throw new RuleBusinessRequestError('invalid_input', {
+      logicalRequestId, stage: 'prepare-business-send', field: 'options',
+    });
+  }
+  return Object.freeze({ ...options });
+}
+
 export interface RuleBusinessResponse {
   readonly output: string;
   readonly response: RoutedResponseEvidence;
-  readonly binding: RuleBusinessAuditBinding;
+  readonly binding: RuleBusinessAuditBinding | BusinessInputAuditBinding;
+}
+
+interface RetainedInput {
+  record: BusinessRequestInputRecord;
+  original: BusinessRequestInput;
+  store: BusinessRequestAttemptStore;
+  audit: BusinessRequestAttemptAudit;
+  location: AuditWriteLocation;
+}
+interface BusinessSend {
+  snapshot: RuleRequestSnapshot; messages: readonly ChatMessage[];
+  options?: RuleBusinessChatOptions; signal?: AbortSignal;
 }
 
 /** One internal send using already pinned selection; no new ID, selection, validation or repair. */
 export class LLMRuleBusinessRequest {
   constructor(private readonly client: LLMClient, private readonly decorator: RuleDecorator) {}
 
-  async send(input: {
-    snapshot: RuleRequestSnapshot; messages: readonly ChatMessage[];
-    options?: RuleBusinessChatOptions; signal?: AbortSignal;
-  }): Promise<RuleBusinessResponse> {
+  send(input: BusinessSend): Promise<RuleBusinessResponse> {
+    return this.dispatch(input);
+  }
+
+  /** Every transport attempt binds this existing input; preparing evidence grants no send budget. */
+  async sendInput(input: Omit<BusinessSend, 'messages'> & RetainedInput): Promise<RuleBusinessResponse> {
+    const original = validateBusinessRequestInput(input.original);
+    const record = validateBusinessRequestInputRecord(input.record, original.logicalRequestId);
+    assertBusinessRequestInputRecord(record, original);
+    const snapshot = validateRuleRequestSnapshot(input.snapshot, original.logicalRequestId);
+    if (snapshot.digest !== record.snapshotDigest || snapshot.context.role !== 'ProjectManager'
+      || snapshot.context.projectId?.toLowerCase() !== original.owner.projectId) {
+      throw new RuleBusinessRequestError('invalid_input', { logicalRequestId: original.logicalRequestId, field: 'input_snapshot' });
+    }
+    return this.dispatch({ snapshot, messages: original.messages, options: input.options, signal: input.signal }, {
+      original, record, store: input.store, audit: input.audit, location: Object.freeze({ ...input.location }),
+    });
+  }
+
+  private async dispatch(input: BusinessSend, retained?: RetainedInput): Promise<RuleBusinessResponse> {
     input.signal?.throwIfAborted();
     let snapshot: RuleRequestSnapshot;
     let messages: readonly Readonly<ChatMessage>[];
+    const options = snapshotRuleBusinessChatOptions(input.options, input.snapshot?.logicalRequestId);
     try {
       snapshot = validateRuleRequestSnapshot(input.snapshot, input.snapshot.logicalRequestId);
       if (snapshot.requestKind !== 'business') throw new Error('A business send requires a business Rule snapshot');
-      if (input.options !== undefined && (!input.options || typeof input.options !== 'object'
-        || Array.isArray(input.options) || Reflect.ownKeys(input.options).some((key) => typeof key !== 'string' || !SEND_OPTIONS.has(key)))) {
-        throw new Error('Unsupported business send options; validation, identity and evidence are not caller options');
-      }
       const frameworkMessages = Messages.parse(input.messages);
       messages = Object.freeze([
         Object.freeze({ role: 'system' as const,
@@ -75,30 +123,49 @@ export class LLMRuleBusinessRequest {
       }, { cause });
     }
     const logicalRequestId = snapshot.logicalRequestId;
-    const attempts = new Map<string, { provider: string; model: string; binding: RuleBusinessAuditBinding }>();
+    const attempts = new Map<string, { provider: string; model: string; binding: RuleBusinessResponse['binding'] }>();
     const responses: unknown[] = [];
-    const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = (request) => {
+    const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = async (request) => {
       input.signal?.throwIfAborted();
       const actual = validateRuleProviderRequest(request, {
         logicalRequestId, messages, hasAttempt: (id) => attempts.has(id),
         error: (reason, details, options) => new RuleBusinessRequestError(reason, details, options),
       });
-      const binding: RuleBusinessAuditBinding = Object.freeze({
+      const base: RuleBusinessAuditBinding = Object.freeze({
         schemaVersion: 1, kind: 'business', logicalRequestId,
         snapshotDigest: snapshot.digest, promptVersion: RULE_BUSINESS_PROMPT_VERSION,
         requestDigest: ruleBusinessRequestDigest(RULE_BUSINESS_PROMPT_VERSION, protectAuditContent(actual.messages, 'redacted')),
       });
+      const binding = retained ? Object.freeze({ ...base, kind: 'business-input' as const,
+        inputRecordId: retained.record.recordId, inputRecordDigest: retained.record.digest,
+        inputDigest: retained.record.inputDigest,
+      }) : base;
       attempts.set(actual.providerAttemptId.toLowerCase(), { provider: actual.provider, model: actual.model, binding });
+      if (retained) {
+        const prepared = validateBusinessRequestAttempt({ schemaVersion: 1, logicalRequestId,
+          providerAttemptId: actual.providerAttemptId, provider: actual.provider, model: actual.model,
+          role: 'ProjectManager', preparedAt: new Date().toISOString(), requestBinding: binding,
+          contextWindowTokens: actual.contextWindowTokens, maxTokens: actual.maxTokens, messages: actual.messages,
+        });
+        const record = createBusinessRequestAttemptRecord(prepared);
+        assertBusinessRequestAttemptInput(record, retained.record);
+        await retained.audit.write(record, prepared, input.signal);
+        input.signal?.throwIfAborted();
+        const stored = await retained.store.create(record);
+        input.signal?.throwIfAborted();
+        await retained.audit.verify(stored, prepared, input.signal);
+        input.signal?.throwIfAborted();
+      }
       return binding;
     };
     // Copy only send options; identity, evidence and scoring are fixed across mutable Plugin hooks.
-    const options = input.options;
     const output = await this.client.chat(messages.map((message) => ({ ...message })), {
       temperature: options?.temperature, maxTokens: options?.maxTokens,
       requestTimeoutMs: options?.requestTimeoutMs, responseFormat: options?.responseFormat,
       onToken: options?.onToken, streamStopWhen: options?.streamStopWhen,
       onProvider: options?.onProvider, onProviderStart: options?.onProviderStart, onStall: options?.onStall,
       logicalRequestId, signal: input.signal, scoreSuccess: false, beforeProviderRequest,
+      ...(retained ? { requiredAuditLocation: retained.location } : {}),
       onResponse: (response) => { responses.push(structuredClone(response)); },
     });
     input.signal?.throwIfAborted();

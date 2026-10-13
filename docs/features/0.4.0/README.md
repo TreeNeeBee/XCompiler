@@ -170,6 +170,15 @@ revalidates exact audit values and Rule review evidence, without selecting Rules
 Redaction that removed original values prevents exact recovery. These are input records only; dispatch,
 retained/selected responses and J06 production migration remain next. Tests are authored, unrun.
 
+The 2026-10-12 V1 continuation connects the internal sender to required final-request audit and
+immutable per-attempt metadata. It binds actual post-Plugin messages and producer identity to the
+original input, and keeps required Router response audit in the same container-owned ledger. Recovery
+requires an explicit request/attempt pair and returns retained raw evidence only. Prepared metadata
+or an absent response cannot prove whether transport happened and never triggers automatic resend;
+ordinary explicit business sends retain their retry policy. Caller-selected response and protocol/result
+integration, followed by J06/rubric migration, remain next. Build/run are unchanged. New filesystem,
+audit, Plugin and loopback cases are authored; all execution verification remains deferred to G1.
+
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to
 [0.6](../0.6.0/README.md); LLM-switch to [0.7](../0.7.0/README.md).

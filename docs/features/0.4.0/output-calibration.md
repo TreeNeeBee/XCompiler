@@ -527,6 +527,11 @@ additional quote/escape proof classes and production wiring. Internal Runtime co
 request-ID-only correction recovery are now authored. The following V1 input-only batch retains
 original business messages and Rule snapshot references separately. Its immutable capture/recovery
 does not grant correction allowance, impose a business send budget or put those messages/Rules into
-the calibration prompt. Business dispatch/response binding and caller migration are still pending.
+the calibration prompt. The 2026-10-12 V1 continuation adds final-request/attempt evidence and
+explicit-attempt response recovery to an internal business sender. It returns raw response facts
+without invoking calibration, selecting a business verdict or granting correction allowance.
+Prepared or missing-response records cannot prove whether transport occurred. Ordinary explicit
+business sends retain their existing retry policy; C1's one-logical-correction budget remains separate.
+Caller-selected response/protocol-result persistence and production caller migration are still pending.
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

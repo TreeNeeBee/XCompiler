@@ -412,6 +412,40 @@ send budget. Production J06/build/run adoption and dispatch/response binding rem
 store/audit/Runtime cases are authored, unrun; the shared JSONL reader also requires existing Rule/C1
 regression execution and actual-call falsification at G1.
 
+The 2026-10-12 V1 sender extends that input foundation with per-provider-attempt evidence. Adopting
+callers use the `business-input` binding: existing snapshot/prompt digests plus `inputRecordId`,
+`inputRecordDigest` and `inputDigest`. The final guard supplies the actual post-Plugin messages,
+provider/model, capacity and attempt ID. Before transport it writes required
+`llm.business_request_attempt` audit, publishes immutable metadata at
+`.xcompiler/llm/business-inputs/attempts/<request-id>/<attempt-id>.json`, and verifies the retained
+request. Metadata owns a pre-redaction full-request digest and contains no messages. It records
+preparation, not successful dispatch or a send allowance.
+The retained request schema covers final messages, binding, producer identity, capacity and preparation
+time. Transport options and the serialized HTTP request remain owned by their existing adapters;
+this record alone is not a complete network replay specification.
+
+`sendRuntimeBusinessRequest` composes capture and send; `resumeRuntimeBusinessRequestAttempt`
+requires an explicit request/attempt pair. It revalidates the original input/snapshot/review and the
+attempt's input binding before restoring final request and matching response from one complete
+raw-audit scan. No model call, latest-response selection or business judgement occurs on recovery.
+Missing metadata returns `not-found`; prepared evidence without a response returns `no-response`;
+neither proves a request was unsent. Recovered raw evidence is not a committed caller verdict.
+Missing/ambiguous/changed or irreversibly redacted evidence fails; unavailable provider capture is
+an explicit recovery failure. Router retains existing ordinary send/retry/fallback policy.
+
+Runtime supplies a trusted audit location that Plugin hooks cannot replace. Router verifies its
+actual logger before request logging and transport; request/response and retry/failure diagnostics
+for that new scoped request, including Plugin failure logs, use required persistence at the same
+confined targets. Existing unscoped logging retains its policy. The default stall diagnosis receives the scope
+while retaining its existing asynchronous advisory contract. The scope and audit binding are excluded
+from provider input and replay keys. New store,
+audit, Router/Plugin and Runtime loopback tests are authored, unrun; G1 must falsify actual composition,
+final audit/publication/verification, scope propagation and response/recovery binding calls. Selected
+response/result persistence and J06/build/run migration remain pending.
+Scoped Plugin composition also requires its logger explicitly: missing dependency and a wrong
+configured ledger fail instead of omitting required hook evidence. Required error-notification audit
+failure keeps the audit type and original cause, while cancellation retains its primary control.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator

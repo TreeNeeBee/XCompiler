@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-11
+Updated: 2026-10-13
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`60e54ac` (C1 Runtime composition and read-only recovery), with original baseline `77ff6e2`
+`df450b0` (V1 original business-input retention), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -921,10 +921,60 @@ one-attempt restriction to business calls or reusing historical verdicts for new
   reader and ordinary required-audit cases after the shared changes. Only static
   source/diff review has been performed.
 
-Next: bind actual dispatch and retained/selected responses to this pinned input, preserving uncertain
+At that checkpoint, next: bind actual dispatch and retained/selected responses to this pinned input, preserving uncertain
 dispatch separately from recovery and without copying C1's send budget. Then migrate the J06 caller
 and YAML rubric together, retaining fresh scenario execution, current-evidence judgement and typed PM
 intake. Additional correction proof classes, other callers and consolidated G1 verification remain.
+
+## V1 final request and explicit attempt recovery: 2026-10-12
+
+- Internal `sendRuntimeBusinessRequest` captures the pinned original input and composes the existing
+  Rule business sender. Every provider attempt binds its actual post-Plugin messages, provider/model,
+  token capacity and attempt ID to the original input record and Rule snapshot. Required
+  `llm.business_request_attempt` audit precedes immutable metadata publication and audit verification,
+  all before transport. Metadata at
+  `.xcompiler/llm/business-inputs/attempts/<request-id>/<attempt-id>.json` contains hashes and identity,
+  never message bodies. Its full-request digest is computed before redaction.
+- `business-input` is a distinct request binding for callers adopting this input contract. The
+  existing generic business send remains available to callers not yet migrated. Runtime fixes the
+  required audit location; Plugin hooks cannot replace it, Router checks its actual logger targets
+  before request logging and transport, and response evidence plus retry/failure diagnostics use the
+  same scoped required ledger, including Plugin hook-failure logging. These new scoped sends require
+  that audit boundary before returning success; unscoped diagnostic logging keeps its existing policy.
+  Default stall diagnosis receives the scope while retaining its asynchronous advisory contract.
+  The location and binding do not enter provider input or replay keys.
+  Scoped Plugin composition requires an explicitly injected logger; an absent logger fails before
+  hooks run, and an already configured wrong ledger is rejected rather than overwritten.
+- `resumeRuntimeBusinessRequestAttempt` requires both the logical request and explicit attempt ID.
+  It revalidates the original input, Rule review evidence and attempt's input binding, then reads the
+  final request and matching provider response from one complete audit scan. Recovery never calls
+  a model, selects a latest response or chooses a business verdict. Exact recovery rejects missing,
+  ambiguous, changed or irreversibly redacted evidence; unavailable transport capture stays a typed
+  `response_unavailable` failure rather than invented raw evidence.
+- An attempt record means **prepared, possibly sent**, never proof that transport happened.
+  `not-found` means metadata is absent; `no-response` means a prepared attempt has no retained
+  response. Neither authorizes an automatic resend. Ordinary explicit sends keep Router's existing
+  retry/fallback policy and may create another attempt; no C1 one-send budget is imposed. A recovered
+  response is raw provider evidence, not a selected or committed caller verdict.
+- Static review also closed malformed-option copying and cancellation gaps at the new Runtime
+  boundary. The final-request schema retains message/binding/producer/capacity material; it is not
+  a serialized HTTP request or a complete transport-replay specification.
+- The 2026-10-13 model-change review reloaded repository constraints and checked the retained tree.
+  It found that a required Plugin error-notification audit failure could be attached as secondary
+  metadata to a retryable model error. Scoped notification now exposes the typed audit failure with
+  the original error retained in its cause; cancellation keeps its existing primary control signal.
+  Source and loopback cases are authored, unrun. A real provider failure already retained and scored
+  keeps those facts if later notification logging fails; no scoring transaction was introduced.
+- Store/audit, Router/Plugin and Runtime loopback cases are authored, unrun. At G1, remove the actual
+  final audit/publication/verification calls, Runtime composition and input-binding checks, scoped
+  audit propagation/preflight and response binding, and confirm the relevant caller tests fail.
+  Run sibling Rule/C1, Plugin, replay and required-audit gates. Only static source/diff review has
+  occurred; tests, typecheck, lint, build and network verification remain deferred.
+
+Next: persist the caller-selected response and connect the protocol/result boundary, then migrate
+J06 and its YAML rubric together. Build/run/J06 still do not invoke these internal V1 helpers. Fresh
+scenario execution, current-evidence judgement and typed PM intake remain unchanged. Additional
+correction proof classes, other callers and consolidated G1 verification remain outstanding.
 
 ## Work not started or not complete
 

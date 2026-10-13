@@ -2,7 +2,8 @@ import { computeRetryDelayMs, DEFAULT_PROVIDER_RETRY, type ProviderRetryPolicy }
 import { randomUUID } from 'node:crypto';
 import type { XCompilerConfig } from '../config/config.js';
 import type { Role } from '../domain/planning/execution_plan.js';
-import type { AuditLogger } from '../audit/audit.js';
+import type { AuditKind, AuditLogger } from '../audit/audit.js';
+import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 import { AuditPersistenceError } from '../audit/errors.js';
 import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
@@ -44,6 +45,11 @@ import {
 
 
 type ProviderConfig = XCompilerConfig['llm']['providers'][string];
+interface RequestAuditScope {
+  readonly location: AuditWriteLocation;
+  readonly logicalRequestId: string;
+  readonly providerAttemptId: string;
+}
 
 /** 可用性检查注入点（测试用）；默认走 health.probeLLMProviderAvailability。 */
 export type ProviderAvailabilityProbe = (
@@ -126,7 +132,8 @@ export class LLMRouter {
    * a new connection, and a new connection can succeed while the socket the request is blocked on
    * stays black-holed. A healthy verdict here narrows the cause; it does not clear the request.
    */
-  private async diagnoseStall(info: { silentForMs: number; provider?: string; model?: string }): Promise<string | undefined> {
+  private async diagnoseStall(info: { silentForMs: number; provider?: string; model?: string },
+    scope?: RequestAuditScope): Promise<string | undefined> {
     try {
       const { runDoctor } = await import('../application/diagnostics/doctor.js');
       const report = await runDoctor({ configPath: this.configPath, probeTimeoutMs: 10_000 });
@@ -146,9 +153,11 @@ export class LLMRouter {
         silentForMs: info.silentForMs,
         fails: report.fails,
         warns: report.warns,
-      });
+        ...(scope ? { logicalRequestId: scope.logicalRequestId, providerAttemptId: scope.providerAttemptId } : {}),
+      }, scope ? { persistence: 'required', location: scope.location } : undefined);
       return `after ${silentFor} of silence — ${summary}`;
-    } catch {
+    } catch (cause) {
+      if (scope && cause instanceof AuditPersistenceError) throw cause;
       // A diagnosis that fails must not become the failure. The request's own error still stands.
       return undefined;
     }
@@ -188,7 +197,7 @@ export class LLMRouter {
       String(role),
       this.scores,
       (name, maxAgeMs) => this.availability(name, maxAgeMs),
-      (info) => this.diagnoseStall(info),
+      (info, scope) => this.diagnoseStall(info, scope),
     );
     const observable = this.audit
       ? wrapWithAudit(composite, String(role), this.audit)
@@ -240,7 +249,7 @@ export class LLMRouter {
       contextWindowTokens: normalizeContextWindowTokens(configured.context_window),
       retry: configured.retry ?? DEFAULT_PROVIDER_RETRY,
     }], this.audit, 'protocol-correction', undefined, undefined,
-    (info) => this.diagnoseStall(info), {
+    (info, scope) => this.diagnoseStall(info, scope), {
       logicalRequestId: source.logicalRequestId, providerAttemptId: source.providerAttemptId,
     });
     const observable = wrapWithAudit(fixed, 'protocol-correction', this.audit);
@@ -355,7 +364,8 @@ class FallbackClient implements LLMClient {
     private readonly scores?: ScoreStore,
     private readonly availability?: (name: string, maxAgeMs?: number) => Promise<LLMProbeResult | undefined>,
     /** Explains total provider silence. Supplied by the router, which may import the checks. */
-    private readonly diagnoseStall?: (info: { silentForMs: number; provider?: string; model?: string }) => Promise<string | undefined>,
+    private readonly diagnoseStall?: (info: { silentForMs: number; provider?: string; model?: string },
+      scope?: RequestAuditScope) => Promise<string | undefined>,
     private readonly protocolCorrection?: Pick<RoutedResponseEvidence, 'logicalRequestId' | 'providerAttemptId'>,
   ) {
     this.name = chain.length === 1
@@ -373,11 +383,26 @@ class FallbackClient implements LLMClient {
    *     先探测确认端点在线再重试一次（流式错误降级为非流式）；端点不可达 → 立即切换。
    */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+    const requiredAuditLocation = options?.requiredAuditLocation
+      ? Object.freeze({ ...options.requiredAuditLocation }) : undefined;
     if (this.protocolCorrection) {
       validateProtocolCorrectionOptions(options);
       options = { ...options, scoreSuccess: false };
     }
     const logicalRequestId = options?.logicalRequestId === undefined ? randomUUID() : z.uuid().parse(options.logicalRequestId);
+    if (requiredAuditLocation && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
+      logicalRequestId, stage: 'required-audit-location',
+    });
+    const auditEvent = async (kind: AuditKind, message: string, data: Record<string, unknown>,
+      preceding?: { error: unknown; required?: true }): Promise<void> => {
+      try {
+        await this.audit?.event(kind, message, requiredAuditLocation ? { ...data, logicalRequestId } : data,
+          requiredAuditLocation ? { persistence: 'required', location: requiredAuditLocation }
+            : preceding?.required ? { persistence: 'required' } : undefined);
+      } catch (cause) {
+        throw requiredAuditLocation && preceding ? preserveAuditFailure(preceding.error, cause) : cause;
+      }
+    };
     let lastErr: unknown;
     const failures: string[] = [];
     // Whether each recorded failure was the provider itself failing, or the model's content being
@@ -394,7 +419,7 @@ class FallbackClient implements LLMClient {
         isSwitch ? PROBE_CACHE_TTL_MS : FallbackClient.COLD_START_PROBE_MAX_AGE_MS,
       );
       if (health && !health.ok) {
-        await this.audit?.event(
+        await auditEvent(
           'note',
           `${this.role} availability check failed for ${c.client.name}: ${health.detail}`,
           {
@@ -434,11 +459,12 @@ class FallbackClient implements LLMClient {
           promptChars: providerMessages.reduce((sum, message) => sum + message.content.length, 0),
         });
         if (providerAttempt === 1) {
-          await this.audit?.event(
+          await auditEvent(
             'note',
             `${this.role} operation window updated for ${c.name}: context=${operationWindow.contextWindowTokens} tokens`,
             {
               messageId: 'llm.operation_window_updated',
+              ...(requiredAuditLocation ? { providerAttemptId } : {}),
               provider: c.name,
               model: c.client.name,
               switched: isSwitch,
@@ -459,11 +485,14 @@ class FallbackClient implements LLMClient {
               : operationWindow.responseTokenBudget,
           // The caller supplies the explanation because the transport may not import it. A caller
           // that already wants its own stall handling keeps it.
-          onStall: attemptOptions?.onStall ?? this.diagnoseStall,
+          onStall: attemptOptions?.onStall ?? (requiredAuditLocation && this.diagnoseStall
+            ? (info) => this.diagnoseStall!(info, { location: requiredAuditLocation, logicalRequestId, providerAttemptId })
+            : this.diagnoseStall),
           // Each transport attempt gets a fresh collector, including retries and fallback. Caller
           // callbacks cannot replace the evidence used for this attempt's required audit.
           onProviderResponse: (response) => { observations.push(response); },
         };
+        delete providerOptions.requiredAuditLocation;
         const attemptMessages = providerMessages.map((message) => Object.freeze({ ...message }));
         Object.freeze(attemptMessages);
         // Guard failures are request/evidence failures, outside all provider retry and score paths.
@@ -495,10 +524,20 @@ class FallbackClient implements LLMClient {
             logicalRequestId, providerAttemptId, stage: 'final-send-binding',
           }, { cause: binding.error });
           requestBinding = binding.data;
+          if (requestBinding?.kind === 'business-input'
+            && (!requiredAuditLocation || requestBinding.logicalRequestId.toLowerCase() !== logicalRequestId.toLowerCase())) {
+            throw new RuleRequestBindingError('invalid', {
+              logicalRequestId, providerAttemptId, stage: 'business-input-identity',
+            });
+          }
           if (requestBinding && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
             logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
             requestKind: requestBinding.kind,
           });
+        }
+        if (requiredAuditLocation) {
+          await this.audit!.assertWriteLocation(requiredAuditLocation, logicalRequestId, providerAttemptId);
+          options?.signal?.throwIfAborted();
         }
         try {
           out = await c.client.chat(attemptMessages, providerOptions);
@@ -544,7 +583,7 @@ class FallbackClient implements LLMClient {
             if (retryWithoutStreaming) {
               attemptOptions = withoutStreamingOptions(attemptOptions);
             }
-            await this.audit?.event(
+            await auditEvent(
               'note',
               rateLimited
                 // The wait is the whole story here, so it is stated: a reader watching a silent run
@@ -557,6 +596,7 @@ class FallbackClient implements LLMClient {
                 messageId: rateLimited
                   ? 'llm.provider_retry_rate_limited'
                   : retryWithoutStreaming ? 'llm.provider_retry_non_stream' : 'llm.provider_retry',
+                ...(requiredAuditLocation ? { providerAttemptId } : {}),
                 provider: c.name,
                 attempt: i + 1,
                 providerAttempt,
@@ -564,6 +604,7 @@ class FallbackClient implements LLMClient {
                 error: errorMessage(err),
                 retryDelayMs,
               },
+              { error: err },
             );
             if (retryDelayMs > 0) {
               await delay(retryDelayMs);
@@ -580,36 +621,41 @@ class FallbackClient implements LLMClient {
             const gate = await this.availability?.(c.name, FallbackClient.RETRY_GATE_PROBE_MAX_AGE_MS);
             if (gate?.ok) {
               attemptOptions = withoutStreamingOptions(attemptOptions);
-              await this.audit?.event(
+              await auditEvent(
                 'note',
                 `${this.role} availability check confirmed ${c.client.name} is reachable; retrying without streaming after transient connectivity failure`,
                 {
                   messageId: 'llm.provider_probe_retry',
+                  ...(requiredAuditLocation ? { providerAttemptId } : {}),
                   provider: c.name,
                   attempt: i + 1,
                   providerAttempt,
                   probeLatencyMs: gate.latencyMs,
                   error: errorMessage(err),
                 },
+                { error: err },
               );
               continue;
             }
           }
-          this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
+          if (!requiredAuditLocation) this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
           failures.push(formatProviderFailure(c.name, c.client.name, err));
           failureKinds.push('transport');
-          await this.audit?.event(
+          await auditEvent(
             'llm.error',
             t().llm.providerCallFailed(this.role, c.client.name),
             {
               messageId: 'llm.provider_call_failed',
+              ...(requiredAuditLocation ? { providerAttemptId } : {}),
               provider: c.name,
               attempt: i + 1,
               providerAttempt,
               remaining: this.chain.length - i - 1,
               error: errorMessage(err),
             },
+            { error: err },
           );
+          if (requiredAuditLocation) this.scores?.decay(c.name, `chat threw in role ${this.role}: ${errorMessage(err).slice(0, 120)}`);
           break;
         }
         const responseEvidence: RoutedResponseEvidence = Object.freeze({
@@ -626,7 +672,7 @@ class FallbackClient implements LLMClient {
             options.validate(out);
           } catch (vErr) {
             const validationError = errorMessage(vErr);
-            await this.audit?.event(
+            await auditEvent(
               'llm.error',
               t().llm.providerValidationFailed(this.role, c.client.name),
               {
@@ -652,7 +698,7 @@ class FallbackClient implements LLMClient {
                 output_chars: out.length,
                 output_has_done: /"done"\s*:/u.test(out),
               },
-              { persistence: 'required' },
+              { error: vErr, required: true },
             );
             if (providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS) {
               const rejectedOutput = validationOutputForRetry(
@@ -666,7 +712,7 @@ class FallbackClient implements LLMClient {
                   content: t().llm.providerValidationRepairPrompt(validationError, rejectedOutput),
                 },
               ];
-              await this.audit?.event(
+              await auditEvent(
                 'note',
                 t().llm.providerValidationRetry(this.role, c.client.name),
                 {
@@ -679,6 +725,7 @@ class FallbackClient implements LLMClient {
                   remaining: this.chain.length - i - 1,
                   error: validationError,
                 },
+                { error: vErr },
               );
               lastErr = vErr;
               continue;
@@ -702,7 +749,10 @@ class FallbackClient implements LLMClient {
           responseEvidence,
           ...(responseEvidenceDigest ? { responseEvidenceDigest } : {}),
           ...(requestBinding ? { requestBinding } : {}),
-        }, { persistence: 'required' });
+        }, { persistence: 'required', ...(requiredAuditLocation ? { location: requiredAuditLocation } : {}) });
+        if (requiredAuditLocation) await this.audit!.llmResponse(this.role, this.name, out, { logicalRequestId }, {
+          persistence: 'required', location: requiredAuditLocation,
+        });
         // This is outside the transport/validation catches: an evidence consumer failure cannot
         // request another response, reset an allowance, or count as provider quality.
         options?.onResponse?.(responseEvidence);
@@ -886,19 +936,37 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function preserveAuditFailure(original: unknown, failure: unknown): unknown {
+  if (!(failure instanceof AuditPersistenceError)) return failure;
+  return new AuditPersistenceError(failure.failure, {
+    cause: new AggregateError([original, failure], 'Request failure and required failure-audit persistence both failed'),
+    record: failure.record,
+  });
+}
+
 function wrapWithAudit(inner: LLMClient, role: string, audit: AuditLogger): LLMClient {
   return {
     name: inner.name,
     async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-      await audit.llmRequest(role, inner.name, messages, options);
+      const requiredAuditLocation = options?.requiredAuditLocation
+        ? Object.freeze({ ...options.requiredAuditLocation }) : undefined;
+      if (requiredAuditLocation) {
+        options = { ...options, requiredAuditLocation };
+        await audit.assertWriteLocation(requiredAuditLocation, options.logicalRequestId);
+        options.signal?.throwIfAborted();
+      }
+      const auditOptions = requiredAuditLocation
+        ? { persistence: 'required' as const, location: requiredAuditLocation } : undefined;
+      await audit.llmRequest(role, inner.name, messages, options, auditOptions);
       try {
         const out = await inner.chat(messages, options);
-        await audit.llmResponse(role, inner.name, out);
+        if (!requiredAuditLocation) await audit.llmResponse(role, inner.name, out);
         return out;
       } catch (err) {
         // Retrying the failed audit here could replace the original storage failure.
         if (err instanceof AuditPersistenceError) throw err;
-        await audit.llmError(role, inner.name, err);
+        try { await audit.llmError(role, inner.name, err, auditOptions, options?.logicalRequestId); }
+        catch (cause) { throw requiredAuditLocation ? preserveAuditFailure(err, cause) : cause; }
         throw err;
       }
     },
