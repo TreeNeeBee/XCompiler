@@ -167,7 +167,7 @@ describe('business request operation ownership', () => {
     const wrongRole = expectedRoles[operation] === 'Planner' ? 'ProjectManager' : 'Planner';
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(attempt(record, wrongRole)), record))
       .toThrow(expect.objectContaining({ code: 'business_request_attempt_failed', reason: 'identity_conflict',
-        details: { field: 'input_binding' } }));
+        details: expect.objectContaining({ field: 'input_binding', logicalRequestId, providerAttemptId: operationId }) }));
   });
 
   it('rejects a non-PM scenario attempt and does not expand into unrelated execution roles', () => {

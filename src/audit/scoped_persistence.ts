@@ -61,13 +61,12 @@ function initializeHeader(target: string, heading: string): void {
   } catch (cause) {
     failure = cause;
     failed = true;
-    throw cause;
-  } finally {
-    try { closeSync(descriptor); }
-    catch (cause) {
-      throw failed ? new AggregateError([failure, cause], 'Audit initialization and close failed') : cause;
-    }
   }
+  try { closeSync(descriptor); }
+  catch (cause) {
+    throw failed ? new AggregateError([failure, cause], 'Audit initialization and close failed') : cause;
+  }
+  if (failed) throw failure;
 }
 
 /** Recheck ancestors, then reject links/non-files at the actual append handle. */
@@ -104,13 +103,12 @@ async function withFile(handle: FileHandle, target: string, write: () => Promise
   } catch (cause) {
     failed = true;
     failure = cause;
-    throw cause;
-  } finally {
-    try { await handle.close(); }
-    catch (cause) {
-      throw failed ? new AggregateError([failure, cause], 'Audit write and close failed') : cause;
-    }
   }
+  try { await handle.close(); }
+  catch (cause) {
+    throw failed ? new AggregateError([failure, cause], 'Audit write and close failed') : cause;
+  }
+  if (failed) throw failure;
 }
 
 function targetError(target: string, message: string, cause?: unknown): Error & { path: string; code?: string } {

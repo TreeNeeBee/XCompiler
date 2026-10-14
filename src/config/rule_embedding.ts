@@ -4,7 +4,8 @@ export const RuleIdentityStringSchema = z.string().refine((value) => value.trim(
   message: 'Expected a non-empty string',
 });
 
-export const RuleEmbeddingBaseUrlSchema = z.string().url().refine((value) => {
+// Check author input before Zod's URL parser strips surrounding whitespace.
+export const RuleEmbeddingBaseUrlSchema = z.string().refine((value) => {
   try {
     const url = new URL(value);
     return (url.protocol === 'http:' || url.protocol === 'https:')
@@ -13,4 +14,4 @@ export const RuleEmbeddingBaseUrlSchema = z.string().url().refine((value) => {
   } catch {
     return false;
   }
-}, { message: 'Expected an HTTP(S) base URL without credentials, query or fragment' });
+}, { message: 'Expected an HTTP(S) base URL without credentials, query or fragment' }).pipe(z.string().url());

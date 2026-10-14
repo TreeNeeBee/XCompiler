@@ -490,6 +490,8 @@ describe('Rule retrieval configuration', () => {
     ['base_url', 'https://embedding.example.test/v1#other'],
     ['base_url', 'https://embedding.example.test/v1#'],
     ['base_url', 'https://embedding.example.test/v1 '],
+    ['base_url', ' https://embedding.example.test/v1'],
+    ['base_url', '\thttps://embedding.example.test/v1\n'],
     ['request_timeout_ms', 0],
   ] as const)('rejects invalid embedding %s = %j through loadConfig', async (field, value) => {
     const embedding = {

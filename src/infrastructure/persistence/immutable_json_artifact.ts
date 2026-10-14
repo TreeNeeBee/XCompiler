@@ -35,6 +35,7 @@ export async function publishImmutableJson(root: string, name: string, value: un
   let temporaryCreated = false;
   let operationError: unknown;
   let operationFailed = false;
+  let stored: unknown;
   try {
     await prepareDurableRoot(root, boundaryRoot);
     const handle = await fs.open(temporary, 'wx', 0o600);
@@ -49,23 +50,22 @@ export async function publishImmutableJson(root: string, name: string, value: un
     }
     // Also sync when another publisher won: its directory entry may not yet be durable.
     await syncDirectory(await fs.realpath(root));
-    const stored = await readImmutableJson(root, name, boundaryRoot);
+    stored = await readImmutableJson(root, name, boundaryRoot);
     if (stored === undefined) throw new Error('Published artifact is missing');
-    return stored;
   } catch (cause) {
     operationError = cause;
     operationFailed = true;
-    throw cause;
-  } finally {
-    if (temporaryCreated) {
-      try { await fs.unlink(temporary); }
-      catch (cleanupError) {
-        throw operationFailed
-          ? new AggregateError([operationError, cleanupError], 'Artifact publication and cleanup failed')
-          : cleanupError;
-      }
+  }
+  if (temporaryCreated) {
+    try { await fs.unlink(temporary); }
+    catch (cleanupError) {
+      throw operationFailed
+        ? new AggregateError([operationError, cleanupError], 'Artifact publication and cleanup failed')
+        : cleanupError;
     }
   }
+  if (operationFailed) throw operationError;
+  return stored;
 }
 
 /** Recheck existing descendants on each operation; the container anchor may use an OS path alias. */
@@ -134,15 +134,16 @@ async function syncDirectory(directory: string): Promise<void> {
 async function withHandle<T>(handle: FileHandle, operation: () => Promise<T>, stage: string): Promise<T> {
   let operationError: unknown;
   let operationFailed = false;
-  try { return await operation(); }
+  let result!: T;
+  try { result = await operation(); }
   catch (error) {
     operationError = error;
     operationFailed = true;
-    throw error;
-  } finally {
-    try { await handle.close(); }
-    catch (closeError) {
-      throw operationFailed ? new AggregateError([operationError, closeError], `${stage} and close failed`) : closeError;
-    }
   }
+  try { await handle.close(); }
+  catch (closeError) {
+    throw operationFailed ? new AggregateError([operationError, closeError], `${stage} and close failed`) : closeError;
+  }
+  if (operationFailed) throw operationError;
+  return result;
 }

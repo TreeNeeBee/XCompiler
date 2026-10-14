@@ -74,6 +74,8 @@ describe('explicit HTTP Rule embedding adapter', () => {
     { baseUrl: 'https://embedding.example.test/v1#other' },
     { baseUrl: 'https://embedding.example.test/v1#' },
     { baseUrl: 'https://embedding.example.test/v1 ' },
+    { baseUrl: ' https://embedding.example.test/v1' },
+    { baseUrl: '\thttps://embedding.example.test/v1\n' },
   ])('rejects invalid explicit configuration %j before transport', (override) => {
     const fetcher = vi.fn();
     expect(() => new HttpRuleEmbeddingClient({ ...config(), ...override }, fetcher))

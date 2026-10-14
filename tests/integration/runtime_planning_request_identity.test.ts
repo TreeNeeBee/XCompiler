@@ -282,8 +282,10 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const forRole = vi.spyOn(current.router, 'for');
     const recovered = await createRuntimeBusinessRequestInputs(new ProjectContainer(current.container.root), current.audit)
       .resume({ logicalRequestId: current.logicalRequestId });
-    expect(recovered).toMatchObject({ status: 'recovered', snapshot: current.snapshot,
+    expect(recovered).toMatchObject({ status: 'recovered',
       input: sent.source.input, record: sent.inputRecord });
+    if (recovered.status !== 'recovered') throw new Error('Expected the retained planning input.');
+    expect(recovered.snapshot).toEqual(current.snapshot);
     expect(await current.resume(sent.response.providerAttemptId)).toMatchObject({ status: 'recovered',
       input: sent.source.input, request: sent.source.request, response: sent.response });
     expect(await current.events()).toEqual(before);

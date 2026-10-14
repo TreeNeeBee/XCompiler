@@ -20,7 +20,7 @@ export async function readRawLLMAudit(input: RawLLMAuditRead, signal?: AbortSign
     logicalRequestId: input.reference.logicalRequestId, providerAttemptId: input.reference.providerAttemptId,
     systemCode: cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' ? cause.code : undefined,
   }, { cause, record: { reference: input.reference, line } });
-  let text: string;
+  let text!: string;
   try {
     await assertArtifactRoot(input.root, input.containerRoot);
     const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -32,13 +32,12 @@ export async function readRawLLMAudit(input: RawLLMAuditRead, signal?: AbortSign
     } catch (cause) {
       readError = cause;
       readFailed = true;
-      throw cause;
-    } finally {
-      try { await handle.close(); }
-      catch (cause) {
-        throw readFailed ? new AggregateError([readError, cause], 'LLM audit read and close failed') : cause;
-      }
     }
+    try { await handle.close(); }
+    catch (cause) {
+      throw readFailed ? new AggregateError([readError, cause], 'LLM audit read and close failed') : cause;
+    }
+    if (readFailed) throw readError;
   } catch (cause) {
     signal?.throwIfAborted();
     throw failure('read-jsonl', cause);

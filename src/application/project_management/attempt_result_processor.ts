@@ -196,6 +196,15 @@ export class AttemptResultProcessor {
     result: AttemptResult,
   ): Promise<AttemptDisposition> {
     const mode = workModeFor(work.ticket);
+    if (result.failureKind === 'infrastructure' && isEvidencePersistenceFailure(result.failure)) {
+      const reason = result.reason ?? result.failure!.message;
+      // Record the interruption in the registry before touching the already failed audit sink.
+      await this.options.controller.deferEvidencePersistenceFailure(work, reason);
+      return {
+        action: 'stop',
+        reason: `Required evidence storage failed; ${work.ticket.name} is pending without a defect Ticket: ${result.failureLog ?? reason}`,
+      };
+    }
     await this.options.audit.event('note', `${work.step.name} attempt rejected`, {
       messageId: 'domain.step_attempt_rejected',
       projectId: work.step.projectId,
@@ -223,15 +232,6 @@ export class AttemptResultProcessor {
       return { action: 'continue' };
     }
     if (result.failureKind === 'infrastructure') {
-      if (isEvidencePersistenceFailure(result.failure)) {
-        const reason = result.reason ?? result.failure!.message;
-        // The state service records the interruption in the registry, outside the failed sink.
-        await this.options.controller.deferEvidencePersistenceFailure(work, reason);
-        return {
-          action: 'stop',
-          reason: `Required evidence storage failed; ${work.ticket.name} is pending without a defect Ticket: ${result.failureLog ?? reason}`,
-        };
-      }
       const reason = result.reason ?? 'LLM infrastructure request failed.';
       const permissionBlocked = result.failure?.code === 'permission_blocked';
       if (permissionBlocked) await this.options.controller.deferPermissionBlocked(work, reason);

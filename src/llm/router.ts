@@ -696,8 +696,9 @@ class FallbackClient implements LLMClient {
             } else {
               options!.validate!(out);
             }
-          } catch (vErr) {
-            if (responseValidator && options?.signal?.aborted) vErr = options.signal.reason;
+          } catch (caughtValidationError) {
+            const vErr = responseValidator && options?.signal?.aborted
+              ? options.signal.reason : caughtValidationError;
             if (responseValidator && (isCancellationError(vErr, options?.signal) || !(vErr instanceof ResponseValidationRejection))) {
               // A consumer failure must retain this candidate, but never adopt it or score/retry it.
               try {

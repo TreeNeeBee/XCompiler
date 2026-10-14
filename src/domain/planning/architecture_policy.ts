@@ -462,11 +462,11 @@ export function missingArchitectureDocumentTokens(
   return [...new Set(required)].filter((token) => !content.includes(token));
 }
 
-function isSourcePath(path: string, extensions: string[]): boolean {
+function isSourcePath(path: string, extensions: readonly string[]): boolean {
   return path.startsWith('src/') && extensions.some((extension) => path.endsWith(extension));
 }
 
-function isRuntimeAssetPath(path: string, extensions: string[]): boolean {
+function isRuntimeAssetPath(path: string, extensions: readonly string[]): boolean {
   return (
     path.startsWith('src/') &&
     !path.endsWith('/') &&
@@ -474,7 +474,7 @@ function isRuntimeAssetPath(path: string, extensions: string[]): boolean {
   );
 }
 
-function isTestPath(path: string, extensions: string[]): boolean {
+function isTestPath(path: string, extensions: readonly string[]): boolean {
   return path.startsWith('tests/') && extensions.some((extension) => path.endsWith(extension));
 }
 
@@ -496,7 +496,7 @@ function transitivelyDependsOn(step: Step, targetId: string, byId: Map<string, S
   return false;
 }
 
-function countBaselineModules(summary: string, codeExtensions: string[]): number {
+function countBaselineModules(summary: string, codeExtensions: readonly string[]): number {
   if (!summary) return 0;
   const modules = new Set<string>();
   for (const line of summary.split('\n')) {
