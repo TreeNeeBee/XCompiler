@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-14. This development stage extends `0c360a5` (V2 Executor whole-response parsing)
+Updated: 2026-10-14. This development stage extends `e92e8d5` (V2 pre-graph planning identity)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -135,10 +135,10 @@ Progress reconciliation against source, 2026-10-14:
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 input/response/protocol evidence and pre-graph planning ownership/role binding authored | Remaining production callers, protocol separation and full accounting |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 evidence, pre-graph planning ownership/role binding and awaited post-transport response validation authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; J06 rubric/consumer/Phase-delivery caller and original-evidence recovery; Executor parsing/no-fragment execution; planning-operation identity foundation authored | Remaining request/Rule/eligibility caller migrations, including production Planner ports, and business-Rule activation; all executed verification |
+| V1 / V2 | Inputs, final attempts and adopted response authority; J06 production caller and recovery; Executor parsing/no-fragment execution; planning identity and Router response-validation prerequisites authored | Remaining request/Rule/eligibility caller migrations, including production P02 port, and business-Rule activation; all executed verification |
 | P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -753,6 +753,22 @@ validator stops as completed replies. Each changed outer feedback request gets a
 under its planning operation; provider attempts stay within that ID. Runtime must inject capability
 into post-graph Phase progression while retaining its real Project context. This foundation adds no
 new decision, compatibility migration, C1 send or automatic planning recovery.
+
+Response-validation prerequisite, 2026-10-14: Router now has an awaited `validateResponse` callback
+after transport/output evidence, independent of provider stream stopping. It requires audit and
+rejects legacy validator/stop-predicate combinations before probes. Only a typed protocol/business
+candidate rejection enters the existing feedback/fallback limits; other exceptions or cancellation
+retain the full candidate and original error in required audit and propagate without scoring or
+retry. The callback is protected against Plugin replacement and excluded from Q0 correction.
+Legacy consumers are unchanged. Real stream/HTTP/filesystem cases are authored, unrun; actual-call
+and await/guard falsification remain at G1. This is a prerequisite, not production P02 migration.
+
+The next migration is P02 PhasePlan only: keep its i18n source authoritative until its own approved
+Rule extraction, retain original versioned parse context and feedback/messages, inject the request
+port from Runtime build, validate protocol before original business checks at Router's candidate
+boundary, and retain only the adopted reply. P01/P03 remain separate; PhaseProgression only uses P03
+and its real Project scope can be handled in that batch. No raw-send fallback, invented Domain ID,
+automatic planning restart discovery or extra C1 allowance is introduced by this prerequisite.
 
 ## Acceptance and verification plan
 

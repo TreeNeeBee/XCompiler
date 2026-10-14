@@ -172,6 +172,7 @@ export class PluginHost {
             ? Object.freeze({ ...options.requiredAuditLocation }) : undefined,
           beforeProviderRequest: options?.beforeProviderRequest,
           onResponse: options?.onResponse,
+          validateResponse: options?.validateResponse,
         };
         const identifiedRequestOptions = options?.logicalRequestId === undefined ? {} : {
           signal: options.signal, validate: options.validate, scoreSuccess: options.scoreSuccess,

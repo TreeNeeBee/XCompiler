@@ -578,5 +578,14 @@ or add a correction allowance. Those ports must retain original parse context an
 after completion/protocol assessment. Current validator-driven local stopping remains incomplete.
 Its contract and file/HTTP cases are authored, unrun, with actual-call falsification deferred to G1.
 
+Router now supplies a separate awaited `validateResponse` channel after original transport evidence,
+exclusive with legacy stream validators/stop predicates and requiring raw audit. It does not pass
+the callback to providers or infer completion. Explicit protocol/business candidate refusals retain
+typed audit and the existing business regeneration bounds; other callback failures and cancellation
+retain the full candidate and error causes, then propagate without retry or scoring. The protected
+callback is excluded from fixed Q0 correction. This prerequisite grants no correction allowance and
+has not switched production Planner/Executor consumers. Stream/HTTP/file cases are authored, unrun;
+G1 must falsify the callback/await, provider-option isolation and fatal/candidate error boundary.
+
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.

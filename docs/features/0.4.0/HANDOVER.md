@@ -2,7 +2,7 @@
 
 Updated: 2026-10-14
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`0c360a5` (V2 Executor whole-response parsing), with original baseline `77ff6e2`
+`e92e8d5` (V2 pre-graph planning identity), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1143,6 +1143,43 @@ same operation; transport attempts retain that request's ID. Post-graph Phase pr
 its actual Project context through Runtime-injected capability, rather than borrowing this
 pre-graph owner or importing Runtime into Application. Remaining caller, proof, activation, release
 and G1 work is unchanged; no new user decision is pending.
+
+## V2 response-validation prerequisite: 2026-10-14
+
+- `ChatOptions.validateResponse` is a Router-owned callback invoked after transport returns the
+  original output and frozen producer evidence. It supports asynchronous validation and is awaited
+  before acceptance/audit notification/success scoring. It is mutually exclusive with legacy
+  `validate` and `streamStopWhen`, requires audit authority, and is never passed to a provider.
+  Invalid combinations fail before probes or transport. The caller must assess the actual completion
+  facts; returning from transport or observing JSON syntax does not establish completion.
+- Only explicit `ResponseValidationRejection(kind: protocol | business, cause)` enters the existing
+  same-provider feedback and fallback path. Raw rejected output, actual messages, producer facts,
+  typed kind and structured error/cause remain in required audit. Existing attempt limits, score
+  success policy and ordinary business-candidate ownership are unchanged. This path regenerates a
+  business candidate; it is not a C1 correction or a renewed correction allowance.
+- Other callback exceptions and cancellation persist a separate required
+  `llm.provider_validation_error` with the complete candidate and original error context, then
+  propagate without retry/fallback/scoring. Required audit failure preserves both the original and
+  storage cause. Cancellation is checked before/after awaited validation and around final response
+  notification; an aborted signal's reason wins over a simultaneous candidate rejection.
+- Plugin request boundaries preserve this callback even without a caller-supplied logical ID. Q0
+  fixed correction dispatch rejects it explicitly. Legacy validation and provider stream-stop
+  behavior remain unchanged; no original Planner, Executor or J06 caller is switched by this batch.
+- Real HTTP/SSE/NDJSON and filesystem cases are authored, unrun, including a complete JSON prefix
+  followed by more output, awaited validation, typed candidate refusal, control/infrastructure
+  exceptions, missing producer facts, Plugin replacement and correction-option exclusion. G1 must
+  remove the actual Router callback, its await, provider-option isolation, typed-rejection boundary,
+  required failure audit and Plugin/Q0 guards and observe caller failures. No executable verification
+  ran in this batch.
+
+Next remains the narrow P02 PhasePlan production port, retaining its versioned parse context and
+rendered i18n messages. Runtime build creates the port; Planner invokes it at the existing candidate
+validation boundary, then retains only the adopted reply. P01 PM clarification and P03 decomposition
+stay in their current flows. PhaseProgression invokes P03 only, so its post-graph Project binding
+does not need alteration in the P02 batch. P02 must distinguish unsupported/ineligible protocol
+output from business contract refusal without granting C1 spending or falling back to a bare sender.
+The current raw retained sender still forbids validators and fixes successful-response scoring off;
+this prerequisite alone does not complete Planner migration, recovery or correction integration.
 
 ## Work not started or not complete
 

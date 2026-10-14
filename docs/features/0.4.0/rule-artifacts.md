@@ -523,6 +523,23 @@ planning still needs its real Project context. Contract, real-file/HTTP and hist
 are authored, unrun; G1 must falsify the actual role selection, snapshot ownership, attempt-input
 recovery binding and scenario-consumer ownership calls.
 
+### Router response-validation prerequisite
+
+`ChatOptions.validateResponse` receives the Router's original output and frozen producer evidence
+after transport returns. The Router awaits asynchronous callbacks before acceptance and scoring.
+It requires audit authority, rejects simultaneous `validate`/`streamStopWhen` before probes, and
+strips the callback from provider options. Completion and protocol assessment still belong to the
+caller; unavailable facts cannot become completed merely because the callback is invoked.
+
+Only `ResponseValidationRejection` with typed `protocol` or `business` kind enters the existing
+candidate feedback/fallback path. Required rejected-candidate audit retains its full output,
+messages, producer facts and structured error cause. Other callback failures/cancellation get a
+required `llm.provider_validation_error` and propagate without retries, fallback or scoring; audit
+failure preserves the original and storage causes. Plugin cannot replace the callback, and fixed
+Q0 correction explicitly rejects it. This does not add C1 allowance, adopt a response or migrate
+production Planner consumers. Real stream/HTTP/file cases and G1 call-site falsification are pending
+execution.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator
@@ -531,6 +548,7 @@ Plugin/compaction/provider-capacity integrity across every production caller. Th
 configuration and state paths above are not evidence of an installed end-to-end feature.
 
 Coverage has been authored in [business_request_owner.test.ts](../../../tests/business_request_owner.test.ts),
+[router_response_validation.test.ts](../../../tests/integration/router_response_validation.test.ts),
 [runtime_planning_request_identity.test.ts](../../../tests/integration/runtime_planning_request_identity.test.ts),
 [rule_selector.test.ts](../../../tests/rule_selector.test.ts),
 [rule_catalogue.test.ts](../../../tests/integration/rule_catalogue.test.ts),

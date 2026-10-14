@@ -57,6 +57,16 @@ export function isLLMRequestError(error: unknown): error is LLMRequestError {
   return error instanceof LLMRequestError;
 }
 
+/** Explicit candidate refusal; all other response-validator errors remain control/infrastructure failures. */
+export class ResponseValidationRejection extends Error {
+  readonly code = 'response_validation_rejected';
+
+  constructor(readonly kind: 'protocol' | 'business', cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'ResponseValidationRejection';
+  }
+}
+
 /**
  * Whether every provider refused the model's content rather than failing itself.
  *

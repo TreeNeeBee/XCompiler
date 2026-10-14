@@ -23,7 +23,7 @@ import {
   normalizeContextWindowTokens,
   resolveSkillOperationWindow,
 } from './window.js';
-import { isLLMRequestError, LLMRequestError } from './errors.js';
+import { isLLMRequestError, LLMRequestError, ResponseValidationRejection } from './errors.js';
 import type { RecordReplayController } from '../application/record_replay/controller.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { z } from 'zod';
@@ -390,6 +390,18 @@ class FallbackClient implements LLMClient {
       options = { ...options, scoreSuccess: false };
     }
     const logicalRequestId = options?.logicalRequestId === undefined ? randomUUID() : z.uuid().parse(options.logicalRequestId);
+    const responseValidator = options?.validateResponse;
+    if (responseValidator !== undefined) {
+      const unsupported = ['validate', 'streamStopWhen'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
+      if (typeof responseValidator !== 'function' || unsupported.length || !this.audit) {
+        throw new LLMRequestError('Response validation requires one validator and raw audit authority', {
+          code: 'request_failed', mode: 'router', retryable: false, switchProvider: false,
+          details: { stage: 'response-validation-options', unsupported, missingAudit: !this.audit,
+            invalidValidator: typeof responseValidator !== 'function' },
+        });
+      }
+      options?.signal?.throwIfAborted();
+    }
     if (requiredAuditLocation && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
       logicalRequestId, stage: 'required-audit-location',
     });
@@ -400,7 +412,7 @@ class FallbackClient implements LLMClient {
           requiredAuditLocation ? { persistence: 'required', location: requiredAuditLocation }
             : preceding?.required ? { persistence: 'required' } : undefined);
       } catch (cause) {
-        throw requiredAuditLocation && preceding ? preserveAuditFailure(preceding.error, cause) : cause;
+        throw (requiredAuditLocation || responseValidator) && preceding ? preserveAuditFailure(preceding.error, cause) : cause;
       }
     };
     let lastErr: unknown;
@@ -411,6 +423,7 @@ class FallbackClient implements LLMClient {
     // reached the orchestrator as an infrastructure failure that aborted the whole run.
     const failureKinds: ('content' | 'transport')[] = [];
     for (let i = 0; i < this.chain.length; i++) {
+      if (responseValidator) options?.signal?.throwIfAborted();
       const c = this.chain[i]!;
       // 冷启动 / 切换时的可用性检查（规则 1 / 2）。
       const isSwitch = i > 0;
@@ -493,6 +506,12 @@ class FallbackClient implements LLMClient {
           onProviderResponse: (response) => { observations.push(response); },
         };
         delete providerOptions.requiredAuditLocation;
+        delete providerOptions.validateResponse;
+        if (responseValidator) {
+          // Callback ownership stays in Router even if caller options change while awaiting a probe.
+          delete providerOptions.validate;
+          delete providerOptions.streamStopWhen;
+        }
         const attemptMessages = providerMessages.map((message) => Object.freeze({ ...message }));
         Object.freeze(attemptMessages);
         // Guard failures are request/evidence failures, outside all provider retry and score paths.
@@ -539,6 +558,7 @@ class FallbackClient implements LLMClient {
           await this.audit!.assertWriteLocation(requiredAuditLocation, logicalRequestId, providerAttemptId);
           options?.signal?.throwIfAborted();
         }
+        if (responseValidator) options?.signal?.throwIfAborted();
         try {
           out = await c.client.chat(attemptMessages, providerOptions);
         } catch (err) {
@@ -667,11 +687,35 @@ class FallbackClient implements LLMClient {
           capture: captureResponseEvidence(observations, out),
         });
         const responseEvidenceDigest = recordedResponseEvidenceDigest(responseEvidence);
-        if (options?.validate) {
+        if (responseValidator || options?.validate) {
           try {
-            options.validate(out);
+            if (responseValidator) {
+              options?.signal?.throwIfAborted();
+              await responseValidator(responseEvidence);
+              options?.signal?.throwIfAborted();
+            } else {
+              options!.validate!(out);
+            }
           } catch (vErr) {
+            if (responseValidator && options?.signal?.aborted) vErr = options.signal.reason;
+            if (responseValidator && (isCancellationError(vErr, options?.signal) || !(vErr instanceof ResponseValidationRejection))) {
+              // A consumer failure must retain this candidate, but never adopt it or score/retry it.
+              try {
+                await this.audit!.event('llm.error', 'Response validator failed outside candidate rejection', {
+                  messageId: 'llm.provider_validation_error', logicalRequestId, providerAttemptId,
+                  role: this.role, provider: c.name, model: c.client.name, stage: 'response-validation',
+                  error: errorMessage(vErr), validationError: responseValidationErrorEvidence(vErr),
+                  output: out, responseEvidence, ...(responseEvidenceDigest ? { responseEvidenceDigest } : {}),
+                  ...(requestBinding ? { requestBinding } : {}), requestMessages: attemptMessages,
+                }, { persistence: 'required', ...(requiredAuditLocation ? { location: requiredAuditLocation } : {}) });
+              } catch (cause) {
+                throw preserveAuditFailure(vErr, cause);
+              }
+              throw vErr;
+            }
             const validationError = errorMessage(vErr);
+            const validationDetails = responseValidator && vErr instanceof ResponseValidationRejection
+              ? { validationKind: vErr.kind, validationError: responseValidationErrorEvidence(vErr) } : {};
             await auditEvent(
               'llm.error',
               t().llm.providerValidationFailed(this.role, c.client.name),
@@ -686,6 +730,7 @@ class FallbackClient implements LLMClient {
                 providerAttempt,
                 remaining: this.chain.length - i - 1,
                 error: validationError,
+                ...validationDetails,
                 // Feedback may be bounded, but the rejected candidate and its actual prompt must
                 // remain available in the raw audit before the next provider attempt starts.
                 output: out,
@@ -700,6 +745,7 @@ class FallbackClient implements LLMClient {
               },
               { error: vErr, required: true },
             );
+            if (responseValidator) options?.signal?.throwIfAborted();
             if (providerAttempt < FallbackClient.MAX_TRANSIENT_PROVIDER_ATTEMPTS) {
               const rejectedOutput = validationOutputForRetry(
                 out,
@@ -724,13 +770,16 @@ class FallbackClient implements LLMClient {
                   providerAttempt,
                   remaining: this.chain.length - i - 1,
                   error: validationError,
+                  ...validationDetails,
                 },
                 { error: vErr },
               );
+              if (responseValidator) options?.signal?.throwIfAborted();
               lastErr = vErr;
               continue;
             }
-            this.scores?.decay(c.name, `validate failed in role ${this.role}`);
+            this.scores?.decay(c.name, responseValidator && vErr instanceof ResponseValidationRejection
+              ? `${vErr.kind} validation failed in role ${this.role}` : `validate failed in role ${this.role}`);
             lastErr = vErr;
             failures.push(formatProviderFailure(c.name, c.client.name, vErr));
             failureKinds.push('content');
@@ -755,7 +804,9 @@ class FallbackClient implements LLMClient {
         });
         // This is outside the transport/validation catches: an evidence consumer failure cannot
         // request another response, reset an allowance, or count as provider quality.
+        if (responseValidator) options?.signal?.throwIfAborted();
         options?.onResponse?.(responseEvidence);
+        if (responseValidator) options?.signal?.throwIfAborted();
         if (options?.scoreSuccess !== false) {
           this.scores?.boost(c.name, `success in role ${this.role}`);
         }
@@ -791,7 +842,7 @@ class FallbackClient implements LLMClient {
 }
 
 function validateProtocolCorrectionOptions(options?: ChatOptions): void {
-  const unsupported = ['validate', 'streamStopWhen'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
+  const unsupported = ['validate', 'validateResponse', 'streamStopWhen'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
   if (unsupported.length || typeof options?.beforeProviderRequest !== 'function') {
     throw new ProtocolCorrectionBindingError('invalid', {
       stage: 'correction-options', unsupported, missingFinalSendGuard: typeof options?.beforeProviderRequest !== 'function',
@@ -801,6 +852,18 @@ function validateProtocolCorrectionOptions(options?: ChatOptions): void {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Error properties are non-enumerable; retain causes and typed diagnostics in the raw event. */
+function responseValidationErrorEvidence(error: unknown, seen = new WeakSet<object>()): unknown {
+  if (!(error instanceof Error)) return error;
+  if (seen.has(error)) return { name: error.name, message: error.message, cycle: true };
+  seen.add(error);
+  return {
+    ...error, name: error.name, message: error.message, stack: error.stack,
+    ...(Object.hasOwn(error, 'cause') ? { cause: responseValidationErrorEvidence(error.cause, seen) } : {}),
+    ...(error instanceof AggregateError ? { errors: Array.from(error.errors, (cause) => responseValidationErrorEvidence(cause, seen)) } : {}),
+  };
 }
 
 function formatProviderFailure(provider: string, model: string, err: unknown): string {

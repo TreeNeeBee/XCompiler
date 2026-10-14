@@ -67,6 +67,14 @@ export interface ChatOptions {
    */
   validate?: (text: string) => void;
   /**
+   * Router-owned validation after transport has returned its output and producer facts.
+   * Never used as a stream-stop predicate; mutually exclusive with validate/streamStopWhen.
+   * Requires raw audit authority; the caller must assess missing/incomplete producer evidence.
+   * The Router awaits this callback. Only ResponseValidationRejection enters candidate regeneration;
+   * other errors propagate after required raw evidence, without retry or model scoring.
+   */
+  validateResponse?: (response: RoutedResponseEvidence) => void | Promise<void>;
+  /**
    * Whether a provider response should increase its dynamic score.
    * Step/workflow executors should disable this and score quality through
    * final Enhance/Bug/CR outcomes instead of treating "returned text" as task success.

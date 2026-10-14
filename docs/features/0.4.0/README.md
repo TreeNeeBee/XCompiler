@@ -3,14 +3,21 @@
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
 2026-10-14.
 
-Latest checkpoint: retained request evidence now supports pre-graph planning-operation identity
+Latest checkpoint: Router now offers awaited validation after transport returns output and producer
+facts, without using the callback to stop streams. Typed protocol/business candidate refusal keeps
+the existing feedback/fallback owners; other failures preserve required raw evidence and propagate
+without retries or scoring. Plugin protects the callback and Q0 correction excludes it. Tests are
+authored, unrun. Production P02 PhasePlan port migration and G1 remain pending; legacy consumers
+have not been switched.
+
+Previous checkpoint: retained request evidence now supports pre-graph planning-operation identity
 without invented Domain IDs. Clarification retains PM; PhasePlan/decomposition retain Planner.
 Input, Rule snapshot and final attempt roles are bound together, including explicit recovery;
 scenario records retain their format and J06 rejects planning-owner responses. Contract and
 real-file/HTTP cases are authored, unrun. This is the identity foundation; production Planner/Build
 ports, validation/scoring integration and G1 remain pending.
 
-Previous checkpoint: Executor whole-response parsing and its stream-shape predicate now share the
+Earlier checkpoint: Executor whole-response parsing and its stream-shape predicate now share the
 proven JSON scanner. Invalid whole replies cannot supply salvaged actions, automatic test gates
 or permission requests; original output/diagnostics are audited and regeneration uses the existing
 business-round allowance. Permission denial still permits only its one adaptation turn. Tests are
