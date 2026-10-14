@@ -2,7 +2,7 @@
 
 Updated: 2026-10-14
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`e92e8d5` (V2 pre-graph planning identity), with original baseline `77ff6e2`
+`bff3893` (V2 response-validation prerequisite), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1180,6 +1180,38 @@ does not need alteration in the P02 batch. P02 must distinguish unsupported/inel
 output from business contract refusal without granting C1 spending or falling back to a bare sender.
 The current raw retained sender still forbids validators and fixes successful-response scoring off;
 this prerequisite alone does not complete Planner migration, recovery or correction integration.
+
+## V2 P02 PhasePlan production retention: 2026-10-14
+
+- User choice A keeps versioned locale, original parse context, clarification answers and semantic
+  attempt/feedback in required `auditContext` only. The full input digest binds it; metadata omits
+  its raw content. Owner/template/protocol and snapshot language are checked together. Original
+  i18n system/user messages remain unchanged provider material; legacy scenario records keep their
+  format. P02 instructions remain framework-authoritative in i18n until their own Rule extraction.
+- Build injects the mandatory PhasePlan port. One operation UUID groups fresh logical IDs for
+  changed outer feedback, while provider repair/transport/fallback retain each logical ID. Context,
+  locale and messages are fixed before the first await; existing candidate and two/three outer
+  budgets remain. P02 retries typed refusals only, with no bare-send fallback. P01/P03 are unchanged.
+- Completion/full JSON/independent normalization proof precede the original business parser.
+  Unsupported/ineligible output is typed protocol candidate refusal; only explicit
+  PlannerContractViolation becomes business refusal. Other exceptions and cancellation are fatal.
+  This is ordinary candidate regeneration, with no C1 allowance. Only P02 removes fragment salvage.
+- Validated sending proves the selected response actually passed its callback. Final Plugin
+  consistency precedes adoption/process and required `llm.phase_plan_judgement`. Raw sends still
+  disable success scoring; P02 preserves Router boost after required provider audit, before Plugin
+  after/adoption/judgement storage. Later failures do not roll back that existing quality score.
+- Explicit `resumeRuntimePhasePlanRequest` uses original input/context/snapshot/response/protocol,
+  re-runs pure parsing, and reads no current i18n/topic/Rules. It sends/writes/advances nothing;
+  missing adoption returns not-retained. Existing Build checkpoint reuse is separate; automatic
+  discovery of an interrupted pre-checkpoint planning request is not introduced.
+- Pure, actual Planner/Runtime HTTP/file and actual Build wiring cases are authored, unrun. G1 must
+  falsify Build injection, port invocation, audit-context digest/language binding, protocol/proof/
+  business calls, accepted-validation evidence, adoption/judgement audit and original-context
+  recovery. No executable verification ran in this batch.
+
+Next: remaining P01/P03/Executor and instruction-source migrations, including P03's real post-graph
+Project scope; additional correction proofs, business-Rule activation and release preparation still
+precede G1. P02's retained production connection is authored, not all Planner migration or verification.
 
 ## Work not started or not complete
 

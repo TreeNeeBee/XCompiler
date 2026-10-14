@@ -3,14 +3,20 @@
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
 2026-10-14.
 
-Latest checkpoint: Router now offers awaited validation after transport returns output and producer
+Latest checkpoint: P02 PhasePlan uses a Runtime-injected retained port in Build. User choice A keeps
+original i18n messages while hashing versioned audit-only parse context. Completion/full JSON/proven
+normalization precede original business checks; candidate/outer budgets and scoring retain their
+owners. Explicit request-ID recovery reads original materials. Pure/file/HTTP/Build cases are
+authored, unrun. P01/P03/Executor, remaining instruction extraction and G1 are still pending.
+
+Previous checkpoint: Router now offers awaited validation after transport returns output and producer
 facts, without using the callback to stop streams. Typed protocol/business candidate refusal keeps
 the existing feedback/fallback owners; other failures preserve required raw evidence and propagate
 without retries or scoring. Plugin protects the callback and Q0 correction excludes it. Tests are
 authored, unrun. Production P02 PhasePlan port migration and G1 remain pending; legacy consumers
 have not been switched.
 
-Previous checkpoint: retained request evidence now supports pre-graph planning-operation identity
+Earlier checkpoint: retained request evidence now supports pre-graph planning-operation identity
 without invented Domain IDs. Clarification retains PM; PhasePlan/decomposition retain Planner.
 Input, Rule snapshot and final attempt roles are bound together, including explicit recovery;
 scenario records retain their format and J06 rejects planning-owner responses. Contract and

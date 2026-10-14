@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   PLAN_VERSION,
   ArchitectureModuleSchema,
@@ -14,6 +15,15 @@ import {
 } from '../domain/planning/execution_plan.js';
 import { lintPlan } from '../domain/planning/plan_lint.js';
 import { getLanguageProfile } from '../application/execution/language_support.js';
+import {
+  PHASE_PLAN_TEMPLATE_VERSION,
+  PhasePlanRequestConfigurationError,
+  buildPhasePlanRequestMessages,
+  validatePhasePlanPayload,
+  type PhasePlanParseContext,
+  type PhasePlanPayload,
+  type PhasePlanRequestPort,
+} from '../application/planning/phase_plan_request.js';
 import { withDefaultQualityGate } from '../domain/quality/stage_quality.js';
 import {
   analyzeArchitectureDemand,
@@ -21,7 +31,9 @@ import {
   pathCoveredByOutputs,
   validateArchitectureContract,
 } from '../domain/planning/architecture_policy.js';
-import type { LLMClient } from '../llm/types.js';
+import type { ChatMessage, LLMClient } from '../llm/types.js';
+import type { RuleBusinessChatOptions } from '../llm/rule_business_request.js';
+import { isContentRejectionExhausted, ResponseValidationRejection } from '../llm/errors.js';
 import {
   PlannerContractViolation,
   errorMessage,
@@ -30,7 +42,7 @@ import {
 } from './planning/validation_retry.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { makeStreamReporter } from '../llm/stream.js';
-import { t } from '../i18n/index.js';
+import { getLocale, t, tFor } from '../i18n/index.js';
 import {
   calibrateDocPaths,
   calibratePythonRequirements,
@@ -78,10 +90,9 @@ export {
   type ClarifyQuestion,
 } from './planning/clarification.js';
 
-// NOTE: SYSTEM_PROMPT, clarify, and decompose user-prompt strings now live in
-// src/i18n/{en,zh}.ts and are pulled at call time via t().prompts.*.
-// They are intentionally lazy so the global --lang flag (parsed by Commander
-// preAction) can switch language before the Planner is constructed/used.
+// Prompt strings remain in src/i18n/{en,zh}.ts and are rendered at invocation time so --lang
+// can select the language before Planner runs. PhasePlan pins its locale and original messages
+// before the first await; recovery uses the retained rendering.
 
 
 export interface PlannerInput {
@@ -130,6 +141,7 @@ export class Planner {
     private readonly streamOutput = false,
     private readonly signal?: AbortSignal,
     skills?: SkillRegistry,
+    private readonly phasePlanRequest?: PhasePlanRequestPort,
   ) {
     this.skills = skills ?? buildDefaultSkills();
   }
@@ -231,36 +243,41 @@ export class Planner {
 
   /** Generate only the project-level PhasePlan so callers can persist a recovery checkpoint. */
   async planPhasePlan(input: PlannerInput): Promise<DraftPhasePlan> {
-    const qa = formatClarificationTranscript(input.clarifications);
+    if (!this.phasePlanRequest) throw new PhasePlanRequestConfigurationError();
+    this.signal?.throwIfAborted();
+    const operationId = randomUUID();
+    const locale = getLocale();
     const addenda = (input.userAddenda ?? '').trim();
     const intent = input.intent ?? 'greenfield';
-    const parseContext: DraftParseContext = {
-      language: this.language,
-      rawRequirement: input.rawRequirement,
-      userAddenda: addenda,
-      baselineSummary: input.baselineContext ?? '',
+    const payload = validatePhasePlanPayload({
+      schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
+      locale, parseContext: {
+        language: this.language, rawRequirement: input.rawRequirement, userAddenda: addenda,
+        baselineSummary: input.baselineContext ?? '', intent,
+      },
+      clarifications: input.clarifications, semanticAttempt: 1, repairFeedback: '',
+    });
+    const parseContext = payload.parseContext;
+    const qa = formatClarificationTranscript(payload.clarifications);
+    const prompts = tFor(locale).prompts;
+    const prompt = prompts.plannerPhasePlan(parseContext.rawRequirement, qa, addenda, {
       intent,
-    };
-    const prompt = t().prompts.plannerPhasePlan(input.rawRequirement, qa, addenda, {
-      intent,
-      baseline: input.baselineContext ?? '',
+      baseline: parseContext.baselineSummary,
+    });
+    const messages = buildPhasePlanRequestMessages({
+      systemPrompt: prompts.plannerPhasePlanSystem(getLanguageProfile(this.language)) +
+        (intent === 'self' ? `\n\n${prompts.plannerSelfMode}` : ''),
+      userPrompt: prompt,
     });
     const { text, provider } = await this.chatWithStructuredValidationRetry({
       label: 'Planner.phasePlan',
       context: parseContext,
-      messages: (feedback) => [
-        {
-          role: 'system',
-          content:
-            t().prompts.plannerPhasePlanSystem(getLanguageProfile(this.language)) +
-            (intent === 'self' ? `\n\n${t().prompts.plannerSelfMode}` : ''),
-        },
-        { role: 'user', content: prompt + feedback },
-      ],
-      validate: (t) => parsePhasePlanJson(t, parseContext),
+      phasePlanRequest: { port: this.phasePlanRequest, operationId, payload, messages },
+      validate: (text) => { parsePhasePlanResponse(text, parseContext); },
     });
-    await this.audit?.plannerThought('phasePlan', text, { qaCount: input.clarifications.length, provider });
-    return parsePhasePlanJson(text, parseContext);
+    this.signal?.throwIfAborted();
+    await this.audit?.plannerThought('phasePlan', text, { qaCount: payload.clarifications.length, provider });
+    return parsePhasePlanResponse(text, parseContext);
   }
 
   private async decomposeCurrentPhase(
@@ -310,41 +327,67 @@ export class Planner {
   private async chatWithStructuredValidationRetry(input: {
     label: string;
     context: DraftParseContext;
-    messages: (feedback: string) => Array<{ role: 'system' | 'user'; content: string }>;
     validate: (text: string) => void;
-  }): Promise<{ text: string; provider?: string }> {
+  } & ({
+    messages: (feedback: string) => Array<{ role: 'system' | 'user'; content: string }>;
+    phasePlanRequest?: never;
+  } | {
+    messages?: never;
+    phasePlanRequest: {
+      port: PhasePlanRequestPort; operationId: string; payload: PhasePlanPayload; messages: readonly ChatMessage[];
+    };
+  })): Promise<{ text: string; provider?: string }> {
     const maxAttempts = plannerStructuredRepairAttemptLimit(input.context);
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (input.phasePlanRequest) this.signal?.throwIfAborted();
       const repairFeedback = formatPlannerValidationFeedback(lastError);
       const rep = makeStreamReporter(
         attempt === 1 ? input.label : `${input.label}.repair${attempt - 1}`,
-        this.llm.name,
+        input.phasePlanRequest?.port.name ?? this.llm.name,
         { enabled: this.streamOutput },
       );
       let provider: string | undefined;
       try {
-        const text = await this.llm.chat(
-          input.messages(repairFeedback),
-          {
-            signal: this.signal,
-            responseFormat: 'json',
-            temperature: 0.1,
-            onToken: rep.onToken,
-            onProvider: (n) => { provider = n; },
-            onProviderStart: (name, model) => {
-              rep.reset();
-              rep.setModel(`${name}/${model}`);
-            },
-            validate: input.validate,
+        const options: RuleBusinessChatOptions = {
+          responseFormat: 'json', temperature: 0.1, onToken: rep.onToken,
+          onProvider: (n) => { provider = n; },
+          onProviderStart: (name, model) => {
+            rep.reset();
+            rep.setModel(`${name}/${model}`);
           },
-        );
+        };
+        let text: string;
+        if (input.phasePlanRequest) {
+          const request = input.phasePlanRequest;
+          const payload = attempt === 1 ? request.payload : validatePhasePlanPayload({
+            ...request.payload, semanticAttempt: attempt, repairFeedback,
+          });
+          const messages = attempt === 1 ? request.messages : buildPhasePlanRequestMessages({
+            systemPrompt: request.messages[0]!.content,
+            userPrompt: request.messages[1]!.content + repairFeedback,
+          });
+          const response = await request.port.send({
+            operationId: request.operationId, payload, messages, options, validate: input.validate, signal: this.signal,
+          });
+          text = response.text;
+          provider = response.provider;
+        } else {
+          text = await this.llm.chat(input.messages(repairFeedback), {
+            ...options, signal: this.signal, validate: input.validate,
+          });
+        }
         rep.done();
         return { text, provider };
       } catch (err) {
         rep.done('failed');
+        if (input.phasePlanRequest) this.signal?.throwIfAborted();
         lastError = err;
-        if (attempt >= maxAttempts || !isPlannerStructuredValidationError(err)) {
+        const structuredRejection = input.phasePlanRequest
+          ? err instanceof PlannerContractViolation || err instanceof ResponseValidationRejection ||
+            isContentRejectionExhausted(err)
+          : isPlannerStructuredValidationError(err);
+        if (attempt >= maxAttempts || !structuredRejection) {
           throw err;
         }
         await this.audit?.event('note', `${input.label} validation failed; retrying with contract feedback`, {
@@ -544,22 +587,18 @@ function injectArchitectureContractPrompts(
   });
 }
 
-interface DraftParseContext {
-  language: Language;
-  rawRequirement: string;
-  userAddenda: string;
-  baselineSummary: string;
-  intent: PlanIntent;
+interface DraftParseContext extends PhasePlanParseContext {
   /** When expanding one implementation phase, scope architecture-demand gates to that phase. */
   phaseDemandText?: string;
   /** Materialized implementation phase. Initial planning defaults to P1. */
   currentPhaseId?: string;
 }
 
-function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhasePlan {
-  const data = parsePlannerJson(text);
+/** Consumes the whole protocol-approved JSON with the original request's retained parsing context. */
+export function parsePhasePlanResponse(text: string, context: PhasePlanParseContext): DraftPhasePlan {
+  const data: unknown = JSON.parse(text);
   if (!data || typeof data !== 'object') {
-    throw new Error('Planner did not return a JSON object for phase planning.');
+    throw new PlannerContractViolation('Planner did not return a JSON object for phase planning.');
   }
   const root = data as Record<string, unknown>;
   const obj =
@@ -568,26 +607,26 @@ function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhas
       : root;
   const digest = obj.requirementDigest;
   if (typeof digest !== 'string' || !digest.trim()) {
-    throw new Error('Planner PhasePlan missing requirementDigest.');
+    throw new PlannerContractViolation('Planner PhasePlan missing requirementDigest.');
   }
   const globalPrompt = typeof obj.globalPrompt === 'string' ? obj.globalPrompt : '';
   const projectType = parseProjectType(obj.projectType);
   if (!projectType) {
-    throw new Error('Planner PhasePlan missing valid projectType; project shape must be classified by the LLM.');
+    throw new PlannerContractViolation('Planner PhasePlan missing valid projectType; project shape must be classified by the LLM.');
   }
   const complexityAssessment = parseComplexityAssessment(obj.complexityAssessment);
   if (!complexityAssessment) {
-    throw new Error('Planner PhasePlan missing valid complexityAssessment; complexity must be assessed before Step planning.');
+    throw new PlannerContractViolation('Planner PhasePlan missing valid complexityAssessment; complexity must be assessed before Step planning.');
   }
   const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
   if (!parsedImplementationPhases || parsedImplementationPhases.length === 0) {
-    throw new Error('Planner PhasePlan missing valid implementationPhases; P1 current phase must be explicit.');
+    throw new PlannerContractViolation('Planner PhasePlan missing valid implementationPhases; P1 current phase must be explicit.');
   }
   const phaseIssue = validateImplementationPhaseDraft(parsedImplementationPhases, complexityAssessment, {
     language: context.language,
   });
   if (phaseIssue) {
-    throw new Error(`Planner PhasePlan implementationPhases invalid: ${phaseIssue}`);
+    throw new PlannerContractViolation(`Planner PhasePlan implementationPhases invalid: ${phaseIssue}`);
   }
   const implementationPhases = normalizeImplementationPhases(
     parsedImplementationPhases,
@@ -616,13 +655,13 @@ function parsePhasePlanJson(text: string, context: DraftParseContext): DraftPhas
     context.userAddenda,
   ].join('\n'));
   if (demand.nonTrivial && !complexityAssessment.splitRecommended) {
-    throw new Error(
+    throw new PlannerContractViolation(
       `Planner PhasePlan underestimates a non-trivial request (${demand.reasonLabel}); ` +
       'splitRecommended must be true and additional planned iterations must be listed in PhasePlan.',
     );
   }
   if (forcedPhaseSplit && !complexityAssessment.userForcedPhaseSplit) {
-    throw new Error('Planner PhasePlan missed the user-forced phase split request.');
+    throw new PlannerContractViolation('Planner PhasePlan missed the user-forced phase split request.');
   }
   return {
     requirementDigest: digest,

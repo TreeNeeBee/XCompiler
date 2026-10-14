@@ -8,6 +8,9 @@ import {
   validateRuleRequestSnapshot, type RuleRequestSnapshot, type RuleRequestSnapshotStore,
 } from '../rules/rule_request_snapshot.js';
 import type { RuleReviewEvidenceVerifier } from '../rules/rule_review_evidence.js';
+import {
+  PhasePlanPayloadSchema, PHASE_PLAN_PROTOCOL, type PhasePlanPayload,
+} from '../planning/phase_plan_request.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
@@ -40,6 +43,8 @@ const Identity = z.object({
 export const BusinessRequestInputSchema = Identity.extend({
   // Framework material only; the separately pinned Rule snapshot owns Rule instructions.
   messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() }).strict()).min(1),
+  // Recovery-only framework context. It is audited and hashed, never rendered or stored in metadata.
+  auditContext: PhasePlanPayloadSchema.optional(),
 }).strict();
 export const BusinessRequestInputRecordSchema = Identity.extend({
   recordId: UUID, inputDigest: RuleDigestSchema, createdAt: z.iso.datetime(), digest: RuleDigestSchema,
@@ -77,11 +82,14 @@ export function businessRequestRole(owner: BusinessRequestOwner): 'ProjectManage
 }
 
 /** These materials are already validated; this checks their shared request ownership boundary. */
-export function assertBusinessRequestSnapshotOwner(snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner): void {
+export function assertBusinessRequestSnapshotOwner(
+  snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: PhasePlanPayload,
+): void {
   const scopeMatches = owner.kind === 'scenario-judgement'
     ? snapshot.context.projectId?.toLowerCase() === owner.projectId
     : snapshot.context.projectId === undefined && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation];
-  if (snapshot.requestKind !== 'business' || snapshot.context.role !== businessRequestRole(owner) || !scopeMatches) {
+  if (snapshot.requestKind !== 'business' || snapshot.context.role !== businessRequestRole(owner) || !scopeMatches
+    || (auditContext !== undefined && snapshot.context.language !== auditContext.parseContext.language)) {
     throw new BusinessRequestInputError('snapshot_mismatch', {
       logicalRequestId: snapshot.logicalRequestId, snapshotDigest: snapshot.digest,
     });
@@ -105,6 +113,7 @@ export interface BusinessRequestInputAudit {
 export function validateBusinessRequestInput(raw: unknown): BusinessRequestInput {
   const parsed = BusinessRequestInputSchema.safeParse(raw);
   if (!parsed.success) throw new BusinessRequestInputError('invalid', { field: 'input' }, { cause: parsed.error });
+  assertAuditContext(parsed.data);
   return freeze(parsed.data);
 }
 
@@ -128,7 +137,7 @@ export function createBusinessRequestInputRecord(
   identity: { recordId: string; createdAt: string } = { recordId: randomUUID(), createdAt: new Date().toISOString() },
 ): BusinessRequestInputRecord {
   const input = validateBusinessRequestInput(raw);
-  const { messages: _messages, ...material } = input;
+  const { messages: _messages, auditContext: _auditContext, ...material } = input;
   const body = { ...material, recordId: requestId(identity.recordId), createdAt: identity.createdAt,
     inputDigest: businessRequestInputDigest(input) };
   return validateBusinessRequestInputRecord({ ...body, digest: ruleEvidenceDigest(body) }, input.logicalRequestId);
@@ -173,7 +182,8 @@ export class BusinessRequestInputs {
     if (!parsed.success) throw new BusinessRequestInputError('invalid', { field: 'capture' }, { cause: parsed.error });
     // Zod copies nested material; freeze it before any collaborator can suspend this operation.
     const captured = freeze(parsed.data);
-    const snapshot = await this.snapshot(captured.logicalRequestId, captured.owner, undefined, signal);
+    assertAuditContext(captured);
+    const snapshot = await this.snapshot(captured.logicalRequestId, captured.owner, undefined, signal, captured.auditContext);
     signal?.throwIfAborted();
     const input = validateBusinessRequestInput({ ...captured, schemaVersion: 1, snapshotDigest: snapshot.digest });
     const existing = await this.store.read(input.logicalRequestId);
@@ -207,7 +217,7 @@ export class BusinessRequestInputs {
     const input = validateBusinessRequestInput(await this.audit.recover(record, signal));
     signal?.throwIfAborted();
     assertBusinessRequestInputRecord(record, input);
-    const snapshot = await this.snapshot(id, record.owner, record.snapshotDigest, signal);
+    const snapshot = await this.snapshot(id, record.owner, record.snapshotDigest, signal, input.auditContext);
     signal?.throwIfAborted();
     return Object.freeze({ status: 'recovered', record, input, snapshot });
   }
@@ -225,24 +235,34 @@ export class BusinessRequestInputs {
     }
     await this.audit.verify(expected, input, signal);
     signal?.throwIfAborted();
-    await this.snapshot(input.logicalRequestId, input.owner, input.snapshotDigest, signal);
+    await this.snapshot(input.logicalRequestId, input.owner, input.snapshotDigest, signal, input.auditContext);
     signal?.throwIfAborted();
   }
 
   private async snapshot(
     id: string, owner: BusinessRequestInput['owner'], digest: string | undefined, signal?: AbortSignal,
+    auditContext?: PhasePlanPayload,
   ): Promise<RuleRequestSnapshot> {
     const stored = await this.snapshots.read(id);
     signal?.throwIfAborted();
     if (!stored) throw new BusinessRequestInputError('snapshot_missing', { logicalRequestId: id });
     const snapshot = validateRuleRequestSnapshot(stored, id);
-    assertBusinessRequestSnapshotOwner(snapshot, owner);
+    assertBusinessRequestSnapshotOwner(snapshot, owner, auditContext);
     if (digest !== undefined && snapshot.digest !== digest) {
       throw new BusinessRequestInputError('snapshot_mismatch', { logicalRequestId: id, snapshotDigest: snapshot.digest });
     }
     await this.ruleEvidence.verify(snapshot, signal);
     signal?.throwIfAborted();
     return snapshot;
+  }
+}
+
+function assertAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId' | 'owner' | 'templateVersion' | 'outputProtocol' | 'auditContext'>): void {
+  if (input.auditContext === undefined) return;
+  if (input.owner.kind !== 'planning-operation' || input.owner.operation !== 'phase-plan'
+    || input.templateVersion !== input.auditContext.templateVersion
+    || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(PHASE_PLAN_PROTOCOL)) {
+    throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });
   }
 }
 

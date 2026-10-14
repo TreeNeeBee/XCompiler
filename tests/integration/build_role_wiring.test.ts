@@ -9,6 +9,9 @@ import { buildPlan } from '../../src/agents/planner.js';
 import { runCompile } from '../../src/runtime/build.js';
 import type { RuntimeIO, RuntimeInteraction } from '../../src/runtime/io.js';
 import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
+import type { AuditEvent } from '../../src/audit/audit.js';
+import type { ChatMessage } from '../../src/llm/types.js';
 
 /**
  * Which role actually spoke, observed from the wire.
@@ -26,6 +29,7 @@ const MODEL_FOR_ROLE = Object.fromEntries(
 interface Captured {
   model: string;
   prompt: string;
+  messages: ChatMessage[];
 }
 
 /**
@@ -68,14 +72,31 @@ const CLARIFY_ANSWER = JSON.stringify([
   { id: 'q8', category: 'extensibility', question: 'Which parts must stay open for later extension?', why: 'growth', options: [{ label: 'A', answer: 'the data sources' }, { label: 'B', answer: 'the output formats' }] },
 ]);
 
+const PHASE_PLAN_ANSWER = JSON.stringify({
+  requirementDigest: 'Build a small Python command that prints one greeting.',
+  globalPrompt: 'Keep the accepted greeting unchanged.',
+  projectType: 'application',
+  complexityAssessment: { level: 'simple', rationale: 'One small command.', splitRecommended: false, userForcedPhaseSplit: false },
+  implementationPhases: [{ id: 'P1', title: 'Greeting command', objective: 'Print one greeting.', status: 'current',
+    scope: ['Print the greeting.'], deliverables: ['src/main.py'], dependsOn: [],
+    deliveryGate: { kind: 'phase-delivery', summary: 'Verify the greeting command.', checks: ['Run the command.'],
+      testAssetPolicy: 'phase-aggregate', externalDataPolicy: 'live', freezeBeforeExecution: true, routeEachFinding: true,
+      scenarios: [{ name: 'greeting', description: 'Run the greeting as a user.', operation: 'Run the Python command.',
+        environment: 'live', expected: 'Print the accepted greeting.', execution: { command: 'python', args: ['src/main.py'] } }],
+    },
+  }],
+});
+
 describe('build speaks to the user as PM', () => {
   let server: Server;
   let baseUrl = '';
   let root = '';
   let captured: Captured[] = [];
+  let outputForCall: (call: number) => string;
 
   beforeEach(async () => {
     captured = [];
+    outputForCall = () => CLARIFY_ANSWER;
     server = createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => { body += chunk.toString(); });
@@ -83,7 +104,7 @@ describe('build speaks to the user as PM', () => {
         // Anything without a chat body — a capability probe, a models listing — is not a role
         // speaking, and must not be recorded as one.
         const request = body.trim().startsWith('{')
-          ? JSON.parse(body) as { model?: string; messages?: Array<{ content: string }> }
+          ? JSON.parse(body) as { model?: string; messages?: ChatMessage[] }
           : {};
         if (!request.model || !request.messages) {
           res.writeHead(200, { 'content-type': 'application/json' });
@@ -93,9 +114,12 @@ describe('build speaks to the user as PM', () => {
         captured.push({
           model: request.model,
           prompt: request.messages.map((message) => message.content).join('\n'),
+          messages: request.messages,
         });
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: CLARIFY_ANSWER } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: request.model, choices: [{ index: 0,
+          delta: { content: outputForCall(captured.length) }, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ model: request.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
         res.write('data: [DONE]\n\n');
         res.end();
       });
@@ -106,6 +130,7 @@ describe('build speaks to the user as PM', () => {
   });
 
   afterEach(async () => {
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -215,5 +240,54 @@ describe('build speaks to the user as PM', () => {
     expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
     expect(captured[0]!.prompt).toContain('## Existing plan summary');
     expect(captured[0]!.prompt).toContain(requirementDigest);
+  });
+
+  it('injects the retained PhasePlan port at the actual Build planning call', { timeout: 30_000 }, async () => {
+    outputForCall = (call) => call === 1 ? PHASE_PLAN_ANSWER : '{}';
+    const configPath = await writeConfig(root, baseUrl);
+    const topicFile = path.join(root, 'topic.md');
+    const originalTopic = '# Topic\n\nBuild a small Python command that prints one greeting.\n';
+    await fs.writeFile(topicFile, originalTopic);
+    const containerRoot = path.join(root, 'phase-plan-port-container');
+    // Step decomposition intentionally fails after the PhasePlan checkpoint. No Step/Domain
+    // transition is needed to prove that Build injected and used the retained request port.
+    await expect(runCompile({ workspace: containerRoot, name: 'phase-plan-port', configPath, topicFile,
+      io: cancellingIO(),
+    })).rejects.toThrow();
+    expect(captured.length).toBeGreaterThan(1);
+    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(captured[0]!.messages).toHaveLength(3);
+    expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
+    expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
+    const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
+    const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as AuditEvent);
+    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input');
+    expect(capturedInputs).toHaveLength(1);
+    const original = capturedInputs[0]!.data!.input as BusinessRequestInput;
+    expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'phase-plan', operationId: expect.any(String) });
+    expect(original.owner).not.toHaveProperty('projectId');
+    expect(original.templateVersion).toBe('planning-phase-plan/1');
+    expect(original.messages).toEqual(captured[0]!.messages.slice(1));
+    expect(original.messages[1]!.content).toContain(originalTopic.trim());
+    expect(original.messages[1]!.content.trimStart().startsWith('{')).toBe(false);
+    expect(original.auditContext).toMatchObject({ parseContext: { language: 'python', rawRequirement: originalTopic } });
+    const logicalRequestId = original.logicalRequestId;
+    const retained = events.filter((event) => event.messageId === 'llm.business_response_retained');
+    expect(retained).toHaveLength(1);
+    expect(retained[0]!.data!.logicalRequestId).toBe(logicalRequestId);
+    expect(events.filter((event) => event.messageId === 'llm.business_protocol_result')).toHaveLength(1);
+    expect(events.find((event) => event.messageId === 'llm.business_request_attempt')!.data)
+      .toMatchObject({ request: { logicalRequestId, role: 'Planner' } });
+    const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
+    expect(snapshot).toMatchObject({ context: { role: 'Planner', scenario: 'planning-phase-plan' } });
+    expect(snapshot.requiredRuleIds).toHaveLength(3);
+    expect(snapshot.context).not.toHaveProperty('projectId');
+    const inputMetadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
+    expect(inputMetadata).not.toHaveProperty('auditContext');
+    expect(inputMetadata).not.toHaveProperty('messages');
+    await expect(fs.stat(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'responses', `${logicalRequestId}.json`))).resolves.toBeDefined();
+    const checkpoint = JSON.parse(await fs.readFile(path.join(containerRoot, 'phasePlan.json'), 'utf8'));
+    expect(checkpoint.requirementDigest).toBe(JSON.parse(PHASE_PLAN_ANSWER).requirementDigest);
   });
 });

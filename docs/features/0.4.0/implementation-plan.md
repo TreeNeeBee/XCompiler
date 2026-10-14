@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-14. This development stage extends `e92e8d5` (V2 pre-graph planning identity)
+Updated: 2026-10-14. This development stage extends `bff3893` (V2 response-validation prerequisite)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -138,7 +138,7 @@ Progress reconciliation against source, 2026-10-14:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 evidence, pre-graph planning ownership/role binding and awaited post-transport response validation authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; J06 production caller and recovery; Executor parsing/no-fragment execution; planning identity and Router response-validation prerequisites authored | Remaining request/Rule/eligibility caller migrations, including production P02 port, and business-Rule activation; all executed verification |
+| V1 / V2 | Inputs, final attempts and adopted response authority; J06 production/recovery; Executor parsing; actual P02 Build port with audit-only context, full protocol validation and explicit recovery authored | Remaining P01/P03/Executor and instruction-source migrations, business-Rule activation and all executed verification |
 | P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -218,6 +218,7 @@ Runtime's advancement call and the service's final save also require separate ca
 | Former Core modules | Approved responsibility split; review and test completion pending | Preserve effects, ownership and public behavior |
 | J06 scenario judgement | Rubric-only extraction and current-evidence judgement authored in YAML/Application/Runtime | Preserve classification/process/PM intake; execute production wiring and recovery tests at G1 |
 | P01-P14 instruction candidates | In-scope inventory, not fourteen already approved RuleLists | Record retained text, authoritative source, caller, binding and replaced duplicate per batch |
+| P02 PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, execute actual Build/Planner/recovery wiring at G1 |
 | J01-J05 planning/design/test heuristics | Semantic replacement remains a proposal | Approve each replacement and update producer, calibration, lint and feedback together |
 | J07 disposition/completion | Existing execution/evidence checks remain authoritative | Extract instructions only within an approved batch; no gate waiver |
 | J08 Wiki/retrieval | Current Wiki knowledge is advisory; Q4 C and items 2 A/3 A settle vector semantic Rule retrieval and low-score review | Implement the confirmed input/index/score/review contract; do not reuse Wiki score >=4 or its lexical filter as the semantic selection policy |
@@ -769,6 +770,17 @@ port from Runtime build, validate protocol before original business checks at Ro
 boundary, and retain only the adopted reply. P01/P03 remain separate; PhaseProgression only uses P03
 and its real Project scope can be handled in that batch. No raw-send fallback, invented Domain ID,
 automatic planning restart discovery or extra C1 allowance is introduced by this prerequisite.
+
+P02 production retention, 2026-10-14: user choice A retains structured original parsing inputs only
+in required audit, binds them through inputDigest, omits raw context from metadata and keeps the
+original i18n messages unchanged. Build injects the mandatory port. Completion/full JSON/proven
+normalization precede original typed business checks at the candidate boundary; candidate feedback,
+scoring and two/three outer budgets keep their owners. One operation groups fresh logical requests
+for changed outer feedback. Actual callback-validation evidence and final Plugin identity precede
+adoption/process/required judgement audit. Explicit ID recovery reads original materials only,
+without sending, publishing, automatic discovery or Domain advancement. P02 instructions remain
+in i18n until their own extraction; P01/P03 are separate. Pure, real HTTP/file and actual Build cases
+are authored, unrun; all call-site falsification and affected gates remain at G1.
 
 ## Acceptance and verification plan
 

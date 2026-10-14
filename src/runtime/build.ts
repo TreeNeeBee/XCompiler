@@ -72,6 +72,7 @@ import {
 } from '../application/planning/requirement_intake.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { validateImplementationPhaseDraft } from '../agents/planning/phase_strategy.js';
+import { createRuntimePhasePlanRequestPort } from './phase_plan_request.js';
 
 export {
   formatClarificationQuestion,
@@ -463,6 +464,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       io.terminalOutput === true,
       opts.abortSignal,
       capabilities.skills,
+      createRuntimePhasePlanRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
     );
     const plannerInput: PlannerInput = {
       rawRequirement: finalTopicMd,

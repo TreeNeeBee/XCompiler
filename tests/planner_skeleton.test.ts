@@ -1,7 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { Planner } from '../src/agents/planner.js';
 import { LLMRequestError } from '../src/llm/errors.js';
+import type { PhasePlanRequestPort } from '../src/application/planning/phase_plan_request.js';
+import type { Language } from '../src/domain/planning/execution_plan.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
+
+/** An explicit port fixture keeps these pure business tests independent of Runtime persistence. */
+function plannerWithPhasePlanPort(llm: LLMClient, language: Language = 'python'): Planner {
+  const port: PhasePlanRequestPort = {
+    name: llm.name,
+    async send(input) {
+      const text = await llm.chat([...input.messages], {
+        ...input.options, validate: input.validate, signal: input.signal,
+      });
+      return { text, provider: llm.name };
+    },
+  };
+  return new Planner(llm, undefined, language, false, undefined, undefined, port);
+}
 
 function fakeLLM(reply: string | string[]): LLMClient {
   const replies = Array.isArray(reply) ? reply : [reply];
@@ -305,7 +321,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps().slice(0, 2),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/Planner draft incomplete/);
@@ -396,7 +412,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       ...invalidStepPlan,
       architectureModules,
     };
-    const p = new Planner(fakeLLM([
+    const p = plannerWithPhasePlanPort(fakeLLM([
       JSON.stringify(withDeliveryGates(phasePlan)),
       JSON.stringify(invalidStepPlan),
       JSON.stringify(validStepPlan),
@@ -427,7 +443,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
         minimalStep('S007', 'DELIVERY', ['docs/05-delivery.md']),
       ],
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/non-canonical phase/);
@@ -441,7 +457,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps().filter((step) => step.phase !== 'CODE'),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/missing=\[CODE\]/);
@@ -455,7 +471,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps().filter((step) => step.phase !== 'FUNCTIONAL_TEST'),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/missing=\[FUNCTIONAL_TEST\]/);
@@ -469,7 +485,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps().filter((step) => step.phase !== 'UNIT_TEST'),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/missing=\[UNIT_TEST\]/);
@@ -483,7 +499,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps(),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     const out = await p.decompose({ rawRequirement: 'x', clarifications: [] });
     expect(out.steps.length).toBe(8);
   });
@@ -496,7 +512,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps(),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/complexityAssessment/);
@@ -516,7 +532,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps(),
     };
-    const p = new Planner(fakeLLM(JSON.stringify(draft)));
+    const p = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(draft)));
     await expect(
       p.decompose({ rawRequirement: 'x', clarifications: [] }),
     ).rejects.toThrow(/projectType/);
@@ -531,7 +547,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       complexityAssessment: planMetadata.complexityAssessment,
       implementationPhases: [phaseWithoutGate],
     };
-    const planner = new Planner(fakeLLM(JSON.stringify(phasePlan)));
+    const planner = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(phasePlan)));
 
     await expect(planner.decompose({ rawRequirement: 'Build a runnable command.', clarifications: [] }))
       .rejects.toThrow(/deliveryGate with executable real-user scenarios/);
@@ -549,7 +565,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       command: 'npx ts-node src/main.ts',
       args: [],
     };
-    const planner = new Planner(fakeLLM(JSON.stringify(invalid)), undefined, 'typescript');
+    const planner = plannerWithPhasePlanPort(fakeLLM(JSON.stringify(invalid)), 'typescript');
 
     await expect(planner.planPhasePlan({
       rawRequirement: 'Build a small TypeScript command.',
@@ -583,9 +599,8 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       }],
       steps: vModelSteps('P1', 1, 'src/cli.ts', 'tests/cli.test.ts'),
     };
-    const planner = new Planner(
+    const planner = plannerWithPhasePlanPort(
       fakeLLM([JSON.stringify(phasePlan), JSON.stringify(stepPlan)]),
-      undefined,
       'typescript',
     );
 
@@ -643,7 +658,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
     };
-    const p = new Planner(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]));
+    const p = plannerWithPhasePlanPort(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]));
     const plan = await p.decompose({ rawRequirement: requirementDigest, clarifications: [] });
     expect(plan.implementationPhases?.map((phase) => phase.id)).toEqual(['P1', 'P2', 'P3']);
     expect(plan.steps).toHaveLength(8);
@@ -774,7 +789,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
     };
 
-    const p = new Planner(fakeLLM([
+    const p = plannerWithPhasePlanPort(fakeLLM([
       JSON.stringify(withDeliveryGates(invalidPhasePlan)),
       JSON.stringify(withDeliveryGates(repairedPhasePlan)),
       JSON.stringify(stepPlan),
@@ -1119,7 +1134,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       steps,
     };
 
-    const p = new Planner(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]), undefined, 'typescript');
+    const p = plannerWithPhasePlanPort(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]), 'typescript');
     const plan = await p.decompose({ rawRequirement, clarifications: [] });
 
     expect(plan.architectureModules).toHaveLength(4);
@@ -1176,7 +1191,7 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
       dependencies: ['pytest'],
       steps: vModelSteps('P1', 1, 'src/main.py', 'tests/test_main.py'),
     };
-    const p = new Planner(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]));
+    const p = plannerWithPhasePlanPort(fakeLLM([JSON.stringify(withDeliveryGates(phasePlan)), JSON.stringify(stepPlan)]));
     await expect(
       p.decompose({ rawRequirement: requirementDigest, clarifications: [] }),
     ).rejects.toThrow(/omitted architectureModules/);

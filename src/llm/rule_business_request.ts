@@ -18,7 +18,10 @@ import {
 import {
   validateRuleRequestSnapshot, type RuleRequestSnapshot,
 } from '../application/rules/rule_request_snapshot.js';
-import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
+import {
+  normalizeRoutedResponseEvidence, recordedResponseEvidenceDigest,
+  RoutedResponseEvidenceSchema, type RoutedResponseEvidence,
+} from './response_evidence.js';
 import { validateRuleProviderRequest } from './rule_request_guard.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 
@@ -82,6 +85,7 @@ interface BusinessSend {
   snapshot: RuleRequestSnapshot; messages: readonly ChatMessage[];
   options?: RuleBusinessChatOptions; signal?: AbortSignal;
 }
+type RetainedSend = Omit<BusinessSend, 'messages'> & RetainedInput;
 
 /** One internal send using already pinned selection; no new ID, selection, validation or repair. */
 export class LLMRuleBusinessRequest {
@@ -92,7 +96,20 @@ export class LLMRuleBusinessRequest {
   }
 
   /** Every transport attempt binds this existing input; preparing evidence grants no send budget. */
-  async sendInput(input: Omit<BusinessSend, 'messages'> & RetainedInput): Promise<RuleBusinessResponse> {
+  async sendInput(input: RetainedSend): Promise<RuleBusinessResponse> {
+    if (Object.hasOwn(input, 'validateResponse')) throw new RuleBusinessRequestError('invalid_input', { field: 'validateResponse' });
+    return this.sendRetainedInput(input);
+  }
+
+  /** Caller-owned candidate validation; ordinary Router feedback/scoring, never C1 dispatch. */
+  async sendValidatedInput(input: RetainedSend & {
+    validateResponse: NonNullable<ChatOptions['validateResponse']>;
+  }): Promise<RuleBusinessResponse> {
+    if (typeof input.validateResponse !== 'function') throw new RuleBusinessRequestError('invalid_input', { field: 'validateResponse' });
+    return this.sendRetainedInput(input, input.validateResponse);
+  }
+
+  private async sendRetainedInput(input: RetainedSend, validator?: NonNullable<ChatOptions['validateResponse']>): Promise<RuleBusinessResponse> {
     const original = validateBusinessRequestInput(input.original);
     const record = validateBusinessRequestInputRecord(input.record, original.logicalRequestId);
     assertBusinessRequestInputRecord(record, original);
@@ -101,7 +118,7 @@ export class LLMRuleBusinessRequest {
       throw new RuleBusinessRequestError('invalid_input', { logicalRequestId: original.logicalRequestId, field: 'input_snapshot' });
     }
     try {
-      assertBusinessRequestSnapshotOwner(snapshot, original.owner);
+      assertBusinessRequestSnapshotOwner(snapshot, original.owner, original.auditContext);
     } catch (cause) {
       throw new RuleBusinessRequestError('invalid_input', {
         logicalRequestId: original.logicalRequestId, field: 'input_snapshot',
@@ -109,14 +126,17 @@ export class LLMRuleBusinessRequest {
     }
     return this.dispatch({ snapshot, messages: original.messages, options: input.options, signal: input.signal }, {
       original, record, store: input.store, audit: input.audit, location: Object.freeze({ ...input.location }),
-    });
+    }, validator);
   }
 
-  private async dispatch(input: BusinessSend, retained?: RetainedInput): Promise<RuleBusinessResponse> {
+  private async dispatch(input: BusinessSend, retained?: RetainedInput,
+    validator?: NonNullable<ChatOptions['validateResponse']>): Promise<RuleBusinessResponse> {
     input.signal?.throwIfAborted();
+    if (!validator && Object.hasOwn(input, 'validateResponse')) throw new RuleBusinessRequestError('invalid_input', { field: 'validateResponse' });
     let snapshot: RuleRequestSnapshot;
     let messages: readonly Readonly<ChatMessage>[];
     const options = snapshotRuleBusinessChatOptions(input.options, input.snapshot?.logicalRequestId);
+    if (validator && options?.streamStopWhen !== undefined) throw new RuleBusinessRequestError('invalid_input', { field: 'streamStopWhen' });
     try {
       snapshot = validateRuleRequestSnapshot(input.snapshot, input.snapshot.logicalRequestId);
       if (snapshot.requestKind !== 'business') throw new Error('A business send requires a business Rule snapshot');
@@ -136,6 +156,7 @@ export class LLMRuleBusinessRequest {
       retainedAttempt?: RuleBusinessResponse['retainedAttempt'] };
     const attempts = new Map<string, Attempt>();
     const responses: unknown[] = [];
+    const validated = new Map<string, string>();
     const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = async (request) => {
       input.signal?.throwIfAborted();
       const actual = validateRuleProviderRequest(request, {
@@ -171,13 +192,32 @@ export class LLMRuleBusinessRequest {
       }
       return binding;
     };
+    const validateResponse = validator ? async (raw: RoutedResponseEvidence) => {
+      input.signal?.throwIfAborted();
+      const response = normalizeRoutedResponseEvidence(raw);
+      const attempt = attempts.get(response.providerAttemptId.toLowerCase());
+      if (response.logicalRequestId.toLowerCase() !== logicalRequestId.toLowerCase()
+        || !attempt?.retainedAttempt || attempt.provider !== response.provider || attempt.model !== response.model) {
+        throw new RuleBusinessRequestError('response_evidence_invalid', {
+          logicalRequestId, providerAttemptId: response.providerAttemptId, kind: 'validation-binding',
+        });
+      }
+      await validator(response);
+      input.signal?.throwIfAborted();
+      const digest = recordedResponseEvidenceDigest(response);
+      if (!digest) throw new RuleBusinessRequestError('response_evidence_invalid', {
+        logicalRequestId, providerAttemptId: response.providerAttemptId, kind: 'validation-evidence-unavailable',
+      });
+      validated.set(response.providerAttemptId.toLowerCase(), digest);
+    } : undefined;
     // Copy only send options; identity, evidence and scoring are fixed across mutable Plugin hooks.
     const output = await this.client.chat(messages.map((message) => ({ ...message })), {
       temperature: options?.temperature, maxTokens: options?.maxTokens,
       requestTimeoutMs: options?.requestTimeoutMs, responseFormat: options?.responseFormat,
       onToken: options?.onToken, streamStopWhen: options?.streamStopWhen,
       onProvider: options?.onProvider, onProviderStart: options?.onProviderStart, onStall: options?.onStall,
-      logicalRequestId, signal: input.signal, scoreSuccess: false, beforeProviderRequest,
+      logicalRequestId, signal: input.signal, scoreSuccess: !!validator, beforeProviderRequest,
+      ...(validateResponse ? { validateResponse } : {}),
       ...(retained ? { requiredAuditLocation: retained.location } : {}),
       onResponse: (response) => { responses.push(structuredClone(response)); },
     });
@@ -194,6 +234,8 @@ export class LLMRuleBusinessRequest {
     if (response.logicalRequestId.toLowerCase() !== logicalRequestId.toLowerCase()
       || !sent || sent.provider !== response.provider || sent.model !== response.model
       || response.output !== output
+      || (validator && (!validated.has(response.providerAttemptId.toLowerCase())
+        || validated.get(response.providerAttemptId.toLowerCase()) !== recordedResponseEvidenceDigest(response)))
       || (response.capture.status === 'recorded' && response.capture.response.output !== output)) {
       throw new RuleBusinessRequestError('response_evidence_invalid', {
         logicalRequestId, providerAttemptId: response.providerAttemptId, kind: 'response-mismatch',

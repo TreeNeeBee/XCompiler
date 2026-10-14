@@ -540,6 +540,22 @@ Q0 correction explicitly rejects it. This does not add C1 allowance, adopt a res
 production Planner consumers. Real stream/HTTP/file cases and G1 call-site falsification are pending
 execution.
 
+### P02 production retention and audit-only context
+
+User choice A adds strict versioned `BusinessRequestInput.auditContext` in required audit only.
+The full input digest binds it, metadata omits it, and original parse language must match the Rule
+snapshot. Build injects the mandatory P02 port; original i18n system/user messages remain provider
+material, with required genesis declarations. The P02 rubric remains in i18n until its own extraction.
+
+Separate validated send APIs preserve candidate feedback/scoring and prove the adopted response
+actually passed its callback. Raw sends still forbid validators and disable success scoring.
+Completion and independent full-response proof precede original typed business checks. Final
+Plugin identity precedes adoption/process and required P02 judgement audit. Explicit ID recovery
+verifies original context/evidence, re-runs pure parsing and sends/writes/advances nothing; no current
+i18n/Rules/project files or automatic request discovery are involved. Existing scoring precedes
+Plugin after/adoption/judgement storage and is not rolled back on later failure. P01/P03 are separate.
+Pure, real file/HTTP and Build cases are authored, unrun; actual-call falsification remains at G1.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator
@@ -548,6 +564,8 @@ Plugin/compaction/provider-capacity integrity across every production caller. Th
 configuration and state paths above are not evidence of an installed end-to-end feature.
 
 Coverage has been authored in [business_request_owner.test.ts](../../../tests/business_request_owner.test.ts),
+[phase_plan_request.test.ts](../../../tests/phase_plan_request.test.ts),
+[runtime_phase_plan_request.test.ts](../../../tests/integration/runtime_phase_plan_request.test.ts),
 [router_response_validation.test.ts](../../../tests/integration/router_response_validation.test.ts),
 [runtime_planning_request_identity.test.ts](../../../tests/integration/runtime_planning_request_identity.test.ts),
 [rule_selector.test.ts](../../../tests/rule_selector.test.ts),

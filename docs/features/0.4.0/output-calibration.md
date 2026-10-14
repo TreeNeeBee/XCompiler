@@ -587,5 +587,13 @@ callback is excluded from fixed Q0 correction. This prerequisite grants no corre
 has not switched production Planner/Executor consumers. Stream/HTTP/file cases are authored, unrun;
 G1 must falsify the callback/await, provider-option isolation and fatal/candidate error boundary.
 
+The subsequent P02 production caller uses this boundary with original i18n messages and the user's
+audit-only context choice. Completion/independent full-response proof precede original business
+checks. Unsupported/ineligible output is ordinary typed candidate refusal, without C1 spending;
+only explicit Planner contract refusal becomes business rejection, while other exceptions remain
+fatal. Callback-validation evidence and Plugin identity precede adoption/process. Explicit ID
+recovery reuses original context and response read-only; candidate and outer budgets are unchanged.
+P01/P03/Executor remain separate. Pure/file/HTTP/Build cases are authored, unrun.
+
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.
