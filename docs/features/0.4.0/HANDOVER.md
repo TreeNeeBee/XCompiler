@@ -2,7 +2,7 @@
 
 Updated: 2026-10-14
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`2d2dbc5` (V1 J06 production integration), with original baseline `77ff6e2`
+`0c360a5` (V2 Executor whole-response parsing), with original baseline `77ff6e2`
 Status: implementation in progress; deliberately not validated yet
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1105,6 +1105,44 @@ retry owners while implementing a planning-operation identity and pinned-role re
 Application Phase progression needs Runtime-injected request capability, not a reverse import.
 Remaining proof classes, caller/resource migration, controlled business-Rule activation and G1 are
 still incomplete. No executable verification or provider call ran during this batch.
+
+## V2 pre-graph planning identity foundation: 2026-10-14
+
+- Retained inputs now distinguish the unchanged `scenario-judgement` owner from a strict
+  `planning-operation` owner with `operationId` and one of `clarification`, `phase-plan` or
+  `phase-decomposition`. Operation correlation is not a Domain object or lifecycle store; it does
+  not invent a Project/Phase/Step or persist a planning verdict. Schema version 1 and existing
+  scenario input/attempt fields and digest material are unchanged.
+- A shared ownership check pins the existing role split: clarification uses ProjectManager;
+  PhasePlan and decomposition use Planner. Pre-graph planning snapshots must be business requests,
+  have no Project scope, and use their exact `planning-clarification`, `planning-phase-plan` or
+  `planning-phase-decomposition` context. Capture, live verification, recovery and retained sending
+  invoke this check. Scenario PM/Project binding remains unchanged.
+- Runtime selects the role from the captured owner, not the mutable caller object. Final attempt
+  metadata carries that role and binds it to the original input alongside its hashes. Explicit
+  attempt recovery rejects an internally consistent wrong-role attempt even when its metadata,
+  audit and provider role agree. Existing audit/store schemas already retain these materials;
+  no duplicate ownership fields or alternate recovery authority were added.
+- Scenario recovery first checks the owner kind before reading scenario-specific fields. A
+  planning response cannot be consumed as a J06 judgement even when its template/protocol match.
+- Contract and real-file/HTTP cases are authored, unrun: all three operations, role/model selection,
+  wrong snapshot rejection before dispatch, input copying before the first await, immutable owner
+  rebinding, original-only recovery, exact/protected audit distinction, wrong-role recovery and
+  historical scenario bytes/hashes. At G1, remove actual role selection, snapshot-owner and
+  attempt-input binding calls; observe caller regressions, then restore them. Also falsify the
+  scenario-consumer owner check. No executable verification ran in this batch.
+
+This is the identity foundation, not Planner/Build production migration. The retained sender still
+rejects caller `validate` and fixes `scoreSuccess: false`; production planning must not be routed
+through it without preserving Router candidate validation, success/failure scoring and outer
+semantic-feedback owners. The next P02 port must retain the original versioned parsing context
+(`language`, requirement, addenda, baseline and intent) and i18n template, then validate only after
+producer completion/protocol assessment. Provider validator-driven local stopping is still
+incomplete for C1. Changed semantic-feedback messages receive a new logical request ID under the
+same operation; transport attempts retain that request's ID. Post-graph Phase progression must keep
+its actual Project context through Runtime-injected capability, rather than borrowing this
+pre-graph owner or importing Runtime into Application. Remaining caller, proof, activation, release
+and G1 work is unchanged; no new user decision is pending.
 
 ## Work not started or not complete
 

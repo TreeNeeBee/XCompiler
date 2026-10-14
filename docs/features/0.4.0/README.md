@@ -3,14 +3,21 @@
 Status: implementation in progress; consolidated verification intentionally deferred. Updated
 2026-10-14.
 
-Latest checkpoint: Executor whole-response parsing and its stream-shape predicate now share the
+Latest checkpoint: retained request evidence now supports pre-graph planning-operation identity
+without invented Domain IDs. Clarification retains PM; PhasePlan/decomposition retain Planner.
+Input, Rule snapshot and final attempt roles are bound together, including explicit recovery;
+scenario records retain their format and J06 rejects planning-owner responses. Contract and
+real-file/HTTP cases are authored, unrun. This is the identity foundation; production Planner/Build
+ports, validation/scoring integration and G1 remain pending.
+
+Previous checkpoint: Executor whole-response parsing and its stream-shape predicate now share the
 proven JSON scanner. Invalid whole replies cannot supply salvaged actions, automatic test gates
 or permission requests; original output/diagnostics are audited and regeneration uses the existing
 business-round allowance. Permission denial still permits only its one adaptation turn. Tests are
 authored, unrun. This parsing slice does not complete producer eligibility, C1 or Executor Rule/input
-retention. Planner identity/role and validation-owner integration are the next caller boundaries.
+retention. Production planning ports and validation-owner integration are the next caller boundaries.
 
-Previous checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
+Earlier checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
 response retention and deterministic protocol handling from the Phase-delivery gate. Its semantic
 rubric is authored once in `rules/scenario-outcome.yaml`; PM ownership and typed Bug/CR routing are
 preserved. Explicit request-ID recovery reads the original evidence without a model send. Each new

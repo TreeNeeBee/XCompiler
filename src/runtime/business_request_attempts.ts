@@ -1,7 +1,7 @@
 import type { AuditLogger } from '../audit/audit.js';
 import { z } from 'zod';
 import type { ProjectContainer } from '../workspace/project_container.js';
-import type { BusinessRequestInputCapture } from '../application/execution/business_request_input.js';
+import { businessRequestRole, type BusinessRequestInputCapture } from '../application/execution/business_request_input.js';
 import { BusinessRequestAttemptError, assertBusinessRequestAttemptInput } from '../application/execution/business_request_attempt.js';
 import { RuleDecorator } from '../application/rules/rule_decorator.js';
 import {
@@ -13,7 +13,7 @@ import { FileBusinessRequestAttemptStore } from '../infrastructure/llm/file_busi
 import { BusinessRequestAttemptAuditAdapter } from '../infrastructure/llm/business_request_attempt_audit.js';
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 
-/** Internal V1 send. The caller must have persisted Rule selection and owns the current scene. */
+/** Internal retained send. The caller owns the operation and its already persisted Rule selection. */
 export async function sendRuntimeBusinessRequest(input: {
   container: ProjectContainer; audit: AuditLogger; router: Pick<LLMRouter, 'for'>;
   request: BusinessRequestInputCapture; options?: RuleBusinessChatOptions;
@@ -26,7 +26,7 @@ export async function sendRuntimeBusinessRequest(input: {
   const captured = await inputs.capture(input.request);
   signal?.throwIfAborted();
   const location = Object.freeze({ auditRoot: container.state.abs('audit'), containerRoot: container.root });
-  const result = await new LLMRuleBusinessRequest(router.for('ProjectManager'), new RuleDecorator()).sendInput({
+  const result = await new LLMRuleBusinessRequest(router.for(businessRequestRole(captured.input.owner)), new RuleDecorator()).sendInput({
     snapshot: captured.snapshot, original: captured.input, record: captured.record, options, signal, location,
     store: new FileBusinessRequestAttemptStore(container.state.abs('llm', 'business-inputs'), container.root),
     audit: new BusinessRequestAttemptAuditAdapter(audit, location.auditRoot, container.root),

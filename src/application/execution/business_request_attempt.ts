@@ -2,14 +2,14 @@ import { z } from 'zod';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import { BusinessInputAuditBindingSchema } from '../rules/rule_request_binding.js';
 import { ruleEvidenceDigest } from '../rules/rule_evidence_encoding.js';
-import { validateBusinessRequestInputRecord, type BusinessRequestInputRecord } from './business_request_input.js';
+import { businessRequestRole, validateBusinessRequestInputRecord, type BusinessRequestInputRecord } from './business_request_input.js';
 import type { RoutedResponseEvidence } from '../../llm/response_evidence.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const Text = z.string().refine(value => value.trim().length > 0);
 const Material = z.object({
   schemaVersion: z.literal(1), logicalRequestId: UUID, providerAttemptId: UUID,
-  provider: Text, model: Text, role: z.literal('ProjectManager'), preparedAt: z.iso.datetime(),
+  provider: Text, model: Text, role: z.enum(['ProjectManager', 'Planner']), preparedAt: z.iso.datetime(),
   contextWindowTokens: z.number().int().positive(), maxTokens: z.number().int().positive(),
   requestBinding: BusinessInputAuditBindingSchema.transform(binding => ({
     ...binding, logicalRequestId: binding.logicalRequestId.toLowerCase(), inputRecordId: binding.inputRecordId.toLowerCase(),
@@ -99,7 +99,8 @@ export function assertBusinessRequestAttemptInput(raw: BusinessRequestAttemptRec
   const record = validateBusinessRequestAttemptRecord(raw, input.logicalRequestId, raw.providerAttemptId);
   const pinned = validateBusinessRequestInputRecord(input, record.logicalRequestId);
   const binding = record.requestBinding;
-  if (binding.inputRecordId !== pinned.recordId || binding.inputRecordDigest !== pinned.digest
+  if (record.role !== businessRequestRole(pinned.owner)
+    || binding.inputRecordId !== pinned.recordId || binding.inputRecordDigest !== pinned.digest
     || binding.inputDigest !== pinned.inputDigest || binding.snapshotDigest !== pinned.snapshotDigest) {
     throw new BusinessRequestAttemptError('identity_conflict', {
       logicalRequestId: record.logicalRequestId, providerAttemptId: record.providerAttemptId, field: 'input_binding',

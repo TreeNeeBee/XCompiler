@@ -1,7 +1,8 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-13. This describes authored F1/R1 components and J06 production composition,
-not a verified installed feature. All related tests are authored and unrun. The approved behavior is in
+Updated 2026-10-14. This describes authored F1/R1 components, J06 production composition and
+pre-graph planning identity. All related tests are authored and unrun; installed behavior is not yet
+verified. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
 ## YAML definitions and source authority
@@ -492,6 +493,36 @@ request, and automatic interrupted-Phase-gate discovery is outside this helper. 
 file/HTTP and resource cases are authored, unrun; G1 must remove the actual binding, preparation,
 protocol consumer, required verdict-audit and run callback to falsify their wiring.
 
+### Pre-graph planning ownership and role binding
+
+[`BusinessRequestOwnerSchema`](../../../src/application/execution/business_request_input.ts)
+now distinguishes the existing `scenario-judgement` fields from the strict pre-graph branch
+`{ kind: 'planning-operation', operationId, operation }`. `operationId` is a normalized UUID for
+caller correlation, not a canonical Domain ID. The branch has no Project/Phase fields or separately
+chosen role. Existing scenario bytes/digest material and schema version 1 are unchanged.
+
+| Operation | Owning role | Required snapshot scenario |
+|---|---|---|
+| `clarification` | `ProjectManager` | `planning-clarification` |
+| `phase-plan` | `Planner` | `planning-phase-plan` |
+| `phase-decomposition` | `Planner` | `planning-phase-decomposition` |
+
+These planning snapshots must have `requestKind: business` and no Project scope. Capture, live
+verification, recovery and retained sending check this binding. Runtime chooses the role from
+the captured owner. Final attempt metadata and recovery require the original input's role as well
+as its record/snapshot hashes; matching attempt/audit/provider roles alone are insufficient.
+Scenario binding retains its existing PM/Project contract, and the J06 consumer rejects a planning
+owner before reading scenario-specific fields. No new lifecycle, scoring or correction owner is
+introduced. Existing audit adapters already parse and preserve this shared input/attempt material.
+
+The current retained sender still rejects `validate` and uses `scoreSuccess: false`; this branch
+does not migrate actual Planner/Build callers. Production P02 ports must separately preserve
+original versioned parsing context/i18n messages, Router candidate validation/scoring and outer
+semantic feedback, with producer/protocol assessment before business validation. Post-graph
+planning still needs its real Project context. Contract, real-file/HTTP and historical-record cases
+are authored, unrun; G1 must falsify the actual role selection, snapshot ownership, attempt-input
+recovery binding and scenario-consumer ownership calls.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator
@@ -499,7 +530,9 @@ and additional per-transformation preservation proofs; controlled business-Rule 
 Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
 configuration and state paths above are not evidence of an installed end-to-end feature.
 
-Coverage has been authored in [rule_selector.test.ts](../../../tests/rule_selector.test.ts),
+Coverage has been authored in [business_request_owner.test.ts](../../../tests/business_request_owner.test.ts),
+[runtime_planning_request_identity.test.ts](../../../tests/integration/runtime_planning_request_identity.test.ts),
+[rule_selector.test.ts](../../../tests/rule_selector.test.ts),
 [rule_catalogue.test.ts](../../../tests/integration/rule_catalogue.test.ts),
 [rule_vector_index.test.ts](../../../tests/integration/rule_vector_index.test.ts) and
 [rule_request_snapshot.test.ts](../../../tests/integration/rule_request_snapshot.test.ts),

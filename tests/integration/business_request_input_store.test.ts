@@ -67,6 +67,7 @@ describe('immutable business request input metadata', () => {
 
   it('normalizes request and owner UUID spelling without rewriting literal content', async () => {
     const material = input();
+    if (material.owner.kind !== 'scenario-judgement') throw new Error('Expected scenario fixture owner');
     const proposed = record(input({
       logicalRequestId: logicalRequestId.toUpperCase(),
       owner: { ...material.owner, executionId: material.owner.executionId.toUpperCase() },
@@ -75,6 +76,7 @@ describe('immutable business request input metadata', () => {
     expect(await store.create(proposed)).toEqual(proposed);
     const restored = await store.read(logicalRequestId.toUpperCase());
     expect(restored?.logicalRequestId).toBe(logicalRequestId);
+    if (restored?.owner.kind !== 'scenario-judgement') throw new Error('Expected restored scenario fixture owner');
     expect(restored?.owner.executionId).toBe(material.owner.executionId);
     expect(restored?.templateVersion).toBe(' Case-sensitive/1 ');
   });
@@ -82,6 +84,7 @@ describe('immutable business request input metadata', () => {
   it.each(['messages', 'owner', 'templateVersion', 'outputProtocol', 'snapshotDigest'] as const)(
     'rejects reusing a request identity with changed %s', async field => {
       const original = input();
+      if (original.owner.kind !== 'scenario-judgement') throw new Error('Expected scenario fixture owner');
       const first = await store.create(record(original));
       const changed = input({
         [field]: field === 'messages' ? [{ role: 'user', content: 'Different observation' }]

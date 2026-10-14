@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { AuditLogger } from '../audit/audit.js';
 import {
-  BusinessRequestInputError, BusinessRequestInputSchema, type BusinessRequestInput,
+  BusinessRequestInputError, ScenarioJudgementOwnerSchema,
+  type BusinessRequestInput, type ScenarioJudgementOwner,
 } from '../application/execution/business_request_input.js';
 import {
   judgeScenarioOutcome, readScenarioOutcomeMessages, consumeScenarioOutcomeProtocol,
@@ -41,7 +42,7 @@ export async function judgeRuntimeScenarioOutcome(input: {
   const { container, audit, router, signal } = input;
   signal?.throwIfAborted();
   const logicalRequestId = randomUUID();
-  const owner = Object.freeze(BusinessRequestInputSchema.shape.owner.parse({
+  const owner = Object.freeze(ScenarioJudgementOwnerSchema.parse({
     kind: 'scenario-judgement', projectId: input.projectId, phaseId: input.phaseId, executionId: randomUUID(),
   }));
   let processed: Awaited<ReturnType<typeof sendRuntimeBusinessResponse>> | undefined;
@@ -101,7 +102,10 @@ export async function resumeRuntimeScenarioOutcome(input: {
     logicalRequestId: restored.source.input.logicalRequestId, owner: restored.source.input.owner, verdict });
 }
 
-function assertScenarioInput(input: BusinessRequestInput): void {
+function assertScenarioInput(input: BusinessRequestInput): asserts input is BusinessRequestInput & { owner: ScenarioJudgementOwner } {
+  if (input.owner.kind !== 'scenario-judgement') {
+    throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'scenario_owner' });
+  }
   if (input.templateVersion !== SCENARIO_OUTCOME_TEMPLATE_VERSION
     || canonicalRuleJson(input.outputProtocol) !== canonicalRuleJson(SCENARIO_OUTCOME_PROTOCOL)) {
     throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'scenario_template' });

@@ -3,6 +3,7 @@ import { protectAuditContent } from '../audit/audit.js';
 import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 import {
   assertBusinessRequestInputRecord, validateBusinessRequestInput, validateBusinessRequestInputRecord,
+  assertBusinessRequestSnapshotOwner, businessRequestRole,
   type BusinessRequestInput, type BusinessRequestInputRecord,
 } from '../application/execution/business_request_input.js';
 import {
@@ -96,9 +97,15 @@ export class LLMRuleBusinessRequest {
     const record = validateBusinessRequestInputRecord(input.record, original.logicalRequestId);
     assertBusinessRequestInputRecord(record, original);
     const snapshot = validateRuleRequestSnapshot(input.snapshot, original.logicalRequestId);
-    if (snapshot.digest !== record.snapshotDigest || snapshot.context.role !== 'ProjectManager'
-      || snapshot.context.projectId?.toLowerCase() !== original.owner.projectId) {
+    if (snapshot.digest !== record.snapshotDigest) {
       throw new RuleBusinessRequestError('invalid_input', { logicalRequestId: original.logicalRequestId, field: 'input_snapshot' });
+    }
+    try {
+      assertBusinessRequestSnapshotOwner(snapshot, original.owner);
+    } catch (cause) {
+      throw new RuleBusinessRequestError('invalid_input', {
+        logicalRequestId: original.logicalRequestId, field: 'input_snapshot',
+      }, { cause });
     }
     return this.dispatch({ snapshot, messages: original.messages, options: input.options, signal: input.signal }, {
       original, record, store: input.store, audit: input.audit, location: Object.freeze({ ...input.location }),
@@ -149,7 +156,7 @@ export class LLMRuleBusinessRequest {
       if (retained) {
         const prepared = validateBusinessRequestAttempt({ schemaVersion: 1, logicalRequestId,
           providerAttemptId: actual.providerAttemptId, provider: actual.provider, model: actual.model,
-          role: 'ProjectManager', preparedAt: new Date().toISOString(), requestBinding: binding,
+          role: businessRequestRole(retained.original.owner), preparedAt: new Date().toISOString(), requestBinding: binding,
           contextWindowTokens: actual.contextWindowTokens, maxTokens: actual.maxTokens, messages: actual.messages,
         });
         const record = createBusinessRequestAttemptRecord(prepared);

@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-14. This development stage extends `2d2dbc5` (V1 J06 production integration)
+Updated: 2026-10-14. This development stage extends `0c360a5` (V2 Executor whole-response parsing)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
@@ -135,10 +135,10 @@ Progress reconciliation against source, 2026-10-14:
 |---|---|---|
 | M0 | Core owner migration, Plan/Debug Wiki ports and caller/resource test cases | Module/export/package review and executed gates; migration is not validated |
 | D1 | Q0-Q6 and all four detailed choices accepted; catalogue/vector/snapshot schemas authored | Per-source dispositions and concrete correction-preservation contracts |
-| F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard and J06 input/response/protocol evidence authored | Remaining production callers, protocol separation and full accounting |
+| F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 input/response/protocol evidence and pre-graph planning ownership/role binding authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; J06 rubric/consumer/Phase-delivery caller and original-evidence recovery; Executor parsing/no-fragment execution authored | Remaining request/Rule/eligibility caller migrations and business-Rule activation; all executed verification |
+| V1 / V2 | Inputs, final attempts and adopted response authority; J06 rubric/consumer/Phase-delivery caller and original-evidence recovery; Executor parsing/no-fragment execution; planning-operation identity foundation authored | Remaining request/Rule/eligibility caller migrations, including production Planner ports, and business-Rule activation; all executed verification |
 | P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
 | G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
 
@@ -735,6 +735,24 @@ invented Project/Phase IDs. Preserve i18n sources and existing deterministic heu
 Router candidate validation and outer semantic feedback as separate owners while introducing
 retained role-aware request ports; Phase progression must receive them from Runtime. Remaining
 caller migrations, proof classes, activation and release work still precede G1.
+
+Pre-graph planning identity foundation, 2026-10-14: retained inputs now accept a strict operation
+owner without invented Domain IDs. Clarification keeps PM; PhasePlan/decomposition keep Planner.
+Shared checks bind each operation to its exact business snapshot role/purpose and absent Project
+scope. Runtime uses the captured owner for role selection; final attempt and explicit recovery bind
+the role to the original input even if attempt/audit hashes are internally consistent. Scenario
+input/attempt format and hash material remain unchanged, and J06 rejects planning-owner responses.
+Contract and real-file/HTTP recovery cases are authored, unrun; actual-call falsification remains at
+G1. This closes only the pre-graph identity prerequisite, not production P02 migration.
+
+Next: introduce the retained planning port with original versioned parse context and i18n messages,
+preserving Router candidate validation/scoring and outer semantic-feedback budgets. The current raw
+sender rejects `validate` and fixes `scoreSuccess: false`, so using it directly would change the
+production contract. Validate after producer completion/protocol assessment without treating local
+validator stops as completed replies. Each changed outer feedback request gets a new logical ID
+under its planning operation; provider attempts stay within that ID. Runtime must inject capability
+into post-graph Phase progression while retaining its real Project context. This foundation adds no
+new decision, compatibility migration, C1 send or automatic planning recovery.
 
 ## Acceptance and verification plan
 

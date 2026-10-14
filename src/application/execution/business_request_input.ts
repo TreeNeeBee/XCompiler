@@ -12,12 +12,28 @@ import type { RuleReviewEvidenceVerifier } from '../rules/rule_review_evidence.j
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
 const Text = z.string().refine((value) => value.trim().length > 0);
+export const ScenarioJudgementOwnerSchema = z.object({
+  kind: z.literal('scenario-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
+}).strict();
+export const PlanningOperationOwnerSchema = z.object({
+  kind: z.literal('planning-operation'), operationId: UUID,
+  operation: z.enum(['clarification', 'phase-plan', 'phase-decomposition']),
+}).strict();
+export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
+  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema,
+]);
+export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
+export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema>;
+export type BusinessRequestOwner = z.infer<typeof BusinessRequestOwnerSchema>;
+export const PLANNING_REQUEST_CONTEXTS = Object.freeze({
+  clarification: 'planning-clarification',
+  'phase-plan': 'planning-phase-plan',
+  'phase-decomposition': 'planning-phase-decomposition',
+} as const);
 const Identity = z.object({
   schemaVersion: z.literal(1), logicalRequestId: UUID,
   // Correlation declared by the caller, not an alternate Domain lifecycle store.
-  owner: z.object({
-    kind: z.literal('scenario-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
-  }).strict(),
+  owner: BusinessRequestOwnerSchema,
   templateVersion: Text, outputProtocol: JsonOutputProtocolSchema, snapshotDigest: RuleDigestSchema,
 }).strict();
 
@@ -43,6 +59,32 @@ export class BusinessRequestInputError extends Error {
   ) {
     super(`Business request input failed: ${reason}`, options);
     this.name = 'BusinessRequestInputError';
+  }
+}
+
+/** Typed operation ownership is fixed by the caller contract, never by a model or Plugin. */
+export function businessRequestRole(owner: BusinessRequestOwner): 'ProjectManager' | 'Planner' {
+  switch (owner.kind) {
+    case 'scenario-judgement': return 'ProjectManager';
+    case 'planning-operation':
+      switch (owner.operation) {
+        case 'clarification': return 'ProjectManager';
+        case 'phase-plan':
+        case 'phase-decomposition': return 'Planner';
+      }
+  }
+  throw new BusinessRequestInputError('invalid', { field: 'owner' });
+}
+
+/** These materials are already validated; this checks their shared request ownership boundary. */
+export function assertBusinessRequestSnapshotOwner(snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner): void {
+  const scopeMatches = owner.kind === 'scenario-judgement'
+    ? snapshot.context.projectId?.toLowerCase() === owner.projectId
+    : snapshot.context.projectId === undefined && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation];
+  if (snapshot.requestKind !== 'business' || snapshot.context.role !== businessRequestRole(owner) || !scopeMatches) {
+    throw new BusinessRequestInputError('snapshot_mismatch', {
+      logicalRequestId: snapshot.logicalRequestId, snapshotDigest: snapshot.digest,
+    });
   }
 }
 
@@ -194,9 +236,8 @@ export class BusinessRequestInputs {
     signal?.throwIfAborted();
     if (!stored) throw new BusinessRequestInputError('snapshot_missing', { logicalRequestId: id });
     const snapshot = validateRuleRequestSnapshot(stored, id);
-    if (snapshot.requestKind !== 'business' || snapshot.context.role !== 'ProjectManager'
-      || snapshot.context.projectId?.toLowerCase() !== owner.projectId
-      || (digest !== undefined && snapshot.digest !== digest)) {
+    assertBusinessRequestSnapshotOwner(snapshot, owner);
+    if (digest !== undefined && snapshot.digest !== digest) {
       throw new BusinessRequestInputError('snapshot_mismatch', { logicalRequestId: id, snapshotDigest: snapshot.digest });
     }
     await this.ruleEvidence.verify(snapshot, signal);

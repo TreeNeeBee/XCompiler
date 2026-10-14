@@ -569,5 +569,14 @@ classifier deliberately treats as incomplete. No JSON syntax result overrides th
 evidence, stable role/request/Rule retention and post-transport caller validation must still be
 integrated before claiming C1 coverage. Unit and real-file/HTTP cases are authored, unrun; G1 must
 remove actual parsing/rejection/proof and permission-adaptation calls and confirm regression failures.
+
+The subsequent planning identity foundation lets retained original input/attempt evidence bind
+clarification to PM and PhasePlan/decomposition to Planner without inventing pre-graph Domain IDs.
+Scenario records keep their original format; role/snapshot ownership is checked on fresh send and
+recovery. This does not connect production Planner correction, change its validation/scoring owners
+or add a correction allowance. Those ports must retain original parse context and validate only
+after completion/protocol assessment. Current validator-driven local stopping remains incomplete.
+Its contract and file/HTTP cases are authored, unrun, with actual-call falsification deferred to G1.
+
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.
