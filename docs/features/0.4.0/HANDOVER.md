@@ -1,8 +1,8 @@
 # 0.4.0 refactor handover
 
-Updated: 2026-10-14
+Updated: 2026-10-15
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`d06db05` (P02 retained PhasePlan requests), with original baseline `77ff6e2`
+`a20dae0` (P01 retained PM clarification requests), with original baseline `77ff6e2`
 Status: feature development in progress; tests follow complete functional milestones; release follows last
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1280,6 +1280,74 @@ Executor and instruction-source migrations, production C1 correction and busines
 Run their checks only once the corresponding larger milestone is fully implemented. P1 release
 metadata, native/resource work, Debug Rule curation and the recorded resource failures stay last.
 
+## P03 verified functional milestone — 2026-10-15
+
+Continued from clean, synchronized `a20dae0` on `feature/0.4.0`; root AGENTS and relevant project
+constraints were loaded. No new policy choice was needed. All product code, callers, recovery and
+regression fixtures for this milestone were completed before execution, following the user's
+feature-first / tests-at-complete-node / release-last order.
+
+- `PhaseDecompositionRequestPort` retains strict audit-only approved PhasePlan/current phase,
+  original parse context/clarifications, available Skill names and semantic attempt/feedback.
+  Original i18n system/user strings plus Skill metadata remain the framework prompt source; no
+  duplicate YAML rubric or Skill activation is introduced. Public `decompose()` pins the entire
+  original intake before P02 awaits, preventing old requirements/new answers from being mixed.
+- Build injects mandatory P03 with `planning-operation` before Domain registration. Runtime Run
+  injects `project-planning-operation` with the existing canonical Project ID through the
+  Application progression port. Rule snapshot, request and attempt bind Planner, purpose, language
+  and real Project scope. Implementation IDs such as P2 are context, never invented Domain IDs.
+  Final-phase completion needs no P03 request; concrete next Plan still precedes checkpoint writes.
+- Whole response eligibility and independent representation proof precede the same original
+  canonical eight-Step, architecture/delivery/ownership, Skill and lint checks for candidate/final/
+  recovery parsing. Known content refusals are typed; other failures and cancellation escape
+  semantic retry. Existing Router candidate budget and Planner two/three outer attempts remain;
+  no C1 allowance or new retry owner is added. Unused fragment salvage and message-matching
+  Planner retry helpers were removed after their final caller migration.
+- `resumeRuntimePhaseDecompositionRequest` returns one adopted original draft by exact ID. It reads
+  no current Registry, Rules, prompt or project sources; it sends/writes/advances nothing and does
+  not discover or resume an entire interrupted Build/Run automatically.
+- Review reproduced an upstream unique-ID hole: P02 accepted P1/P2/P2 while P03 rejected it after
+  checkpoint save. Five new tests failed before the fix and passed after it. The existing shared
+  phase validator now explicitly rejects duplicates without deduplication: P02 uses its existing
+  typed feedback and Build rejects/rebuilds a bad stored checkpoint. A real Build recovery case
+  proves unchanged-topic/sourceDigest checkpoints no longer trap subsequent invocations.
+- Three initial integration failures were test defects: P01/P02 event filters mixed the new P03
+  context, and recovery expected fence-internal trailing whitespace to disappear. Corrected typed
+  filters and full parsed-value equality preserve the actual contract. Typechecking also exposed
+  readonly Domain gate outputs versus raw schema inputs; capture now types both raw and validated
+  material while retaining the same runtime parser. A stale i18n import was removed for lint.
+
+Executed checks with Node v24.16.0:
+
+| Check | Result |
+|---|---|
+| Initial P03 / nearest core | 213 passed |
+| Initial P03 / nearest integration | 112 passed, 3 test defects; both repaired files then 21 passed |
+| Duplicate phase identity regression | 5 failed before correction, 5 passed after; actual Build checkpoint file 6 passed |
+| Complete core | 114 files, 1,586 passed |
+| Functional integration, explicitly excluding only `installation_resources.test.ts` | 62 files, 1,452 passed |
+| e2e | 2 files, 11 passed |
+| typecheck / lint / build | Passed; automatic version check still uses unchanged 0.3.0 release metadata |
+| Actual-call falsification | 14 removals, each produced expected test failures; all original source bytes restored |
+| Restored complete P03 and nearest P01/P02/J06 cases | 15 files, 334 passed |
+
+Falsified calls: Build injection, Run injection, progression-to-Planner injection, business validation,
+Rule preparation, required judgement audit, Skill validation, output-ownership lint, Registry helper
+binding, P02 phase validation, Build checkpoint validation, post-Project snapshot binding, protocol
+consumer and recovery parser. Source restoration was verified after every mutation. Local reports
+and logs are `/private/tmp/xcompiler-p03-*` and are not repository artifacts.
+
+The restricted core run's two existing loopback Router cases did not complete; the same whole gate
+passed in the approved local environment. Functional integration/e2e/falsification used only local
+HTTP, subprocesses and temporary files. No external/paid model, generated-project model run,
+package publication, native binary validation or dependency audit was performed.
+
+**Full integration remains open:** the ten previously recorded release-resource failures were not
+rerun or waived. They stay in P1 after functional acceptance; the functional filter changes no test
+configuration. Next functional work is full Executor migration, remaining per-source instruction
+migration, production C1 composition/proofs and controlled business-Rule activation. P1 release
+metadata, resource/native work, reviewed Debug Rules and dependency audit remain last.
+
 ## Work not started or not complete
 
 ### 1. Finish module-boundary review
@@ -1342,7 +1410,7 @@ production caller migration:
    replay identity for the first migrated caller and every later batch. Keep review-audit verification
    on every recovery path and add final outbound business Rule integrity.
 6. Replace each approved prompt source once; leave deterministic F01-F20 enforcement in code.
-7. Execute the authored npm/standalone Rule-resource checks at G1 and include later migrated lists.
+7. At P1 after G1 functional acceptance, execute npm/standalone Rule-resource checks, fix the ten recorded resource failures and include later migrated lists.
 
 ### 4. Implement output-protocol calibration
 

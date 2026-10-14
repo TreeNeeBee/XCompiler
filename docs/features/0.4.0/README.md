@@ -1,13 +1,26 @@
 # 0.4.0: Rule architecture and module separation
 
-Status: implementation in progress; consolidated verification intentionally deferred. Updated
-2026-10-14.
+Status: feature implementation in progress; tests follow complete functional milestones and release
+preparation follows functional acceptance. Updated 2026-10-15.
 
-Latest checkpoint: P02 PhasePlan uses a Runtime-injected retained port in Build. User choice A keeps
-original i18n messages while hashing versioned audit-only parse context. Completion/full JSON/proven
-normalization precede original business checks; candidate/outer budgets and scoring retain their
-owners. Explicit request-ID recovery reads original materials. Pure/file/HTTP/Build cases are
-authored, unrun. P01/P03/Executor, remaining instruction extraction and G1 are still pending.
+Latest checkpoint: P03 phase decomposition is now retained in both Build (pre-graph planning
+operation) and Run phase progression (real canonical Project identity). Original i18n messages
+remain authoritative. The approved PhasePlan/current phase, parse context and available Skill names
+are audit-only recovery inputs; no new Domain lifecycle state is added. The complete milestone
+passed 1,586 core, 1,452 functional-integration and 11 e2e cases, typecheck/lint/build and fourteen
+actual-call removal checks. Restored P03/nearest-caller checks passed all 334 cases. The shared
+phase validator now rejects duplicate identifiers before P02 adoption or checkpoint reuse.
+
+P01's complete retained PM intake milestone passed 1,476 core, 1,434 functional-integration and 11 e2e
+cases, plus typecheck/lint/build and actual-call falsification. P02/J06 and foundation checks were
+included. Full integration remains open: ten release-resource failures are recorded in HANDOVER and
+deferred to P1. Full Executor migration, remaining instruction extraction, production C1 and
+business-Rule activation remain separate functional work; release preparation stays last.
+
+Earlier P02 checkpoint: Build injects its retained port. User choice A keeps original i18n messages
+while hashing versioned audit-only parse context. Completion/full JSON/proven normalization precede
+original business checks; candidate/outer budgets and scoring retain their owners. Explicit
+request-ID recovery reads original materials. Its focused/functional checks passed with P01.
 
 Previous checkpoint: Router now offers awaited validation after transport returns output and producer
 facts, without using the callback to stop streams. Typed protocol/business candidate refusal keeps
@@ -128,7 +141,7 @@ build/run Rule recovery remain incomplete. Runtime composition and filesystem ca
 [runtime_rule_infrastructure.test.ts](../../../tests/integration/runtime_rule_infrastructure.test.ts).
 Recording/replay cases are authored in
 [rule_embedding_record_replay.test.ts](../../../tests/integration/rule_embedding_record_replay.test.ts).
-All checks are unrun.
+Those dated implementation checkpoints preceded milestone verification; current executed outcomes are recorded in HANDOVER.
 
 The 2026-09-25 continuation adds raw review-audit verification before result/snapshot publication and
 on recovery. The trusted final-send callback returns a selection binding for Router audit; it does

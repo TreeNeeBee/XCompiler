@@ -27,6 +27,11 @@ export function validateImplementationPhaseDraft(
   assessment: ComplexityAssessment,
   context: { language: Language; expectedCurrentPhaseId?: string },
 ): string | undefined {
+  const phaseIds = new Set<string>();
+  for (const phase of phases) {
+    if (phaseIds.has(phase.id)) return `duplicate implementation phase id ${phase.id}`;
+    phaseIds.add(phase.id);
+  }
   const expectedCurrentPhaseId = context.expectedCurrentPhaseId ?? 'P1';
   const requiredCount = requiredImplementationPhaseCount(assessment);
   const executable = phases.filter((phase) => phase.status !== 'deferred');

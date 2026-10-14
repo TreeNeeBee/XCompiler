@@ -1,7 +1,7 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-14. This describes authored F1/R1 components, J06/P02 production composition and
-pre-graph planning identity. Initial focused checks have run; complete functional milestones are
+Updated 2026-10-15. This describes authored F1/R1 components, J06/P01/P02/P03 production composition
+and pre/post-graph planning identity. Initial focused checks have run; complete functional milestones are
 verified before further development and release remains last. Installed behavior is not yet
 verified. Current results are recorded in HANDOVER. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
@@ -508,7 +508,7 @@ chosen role. Existing scenario bytes/digest material and schema version 1 are un
 | `phase-plan` | `Planner` | `planning-phase-plan` |
 | `phase-decomposition` | `Planner` | `planning-phase-decomposition` |
 
-These planning snapshots must have `requestKind: business` and no Project scope. Capture, live
+These pre-graph planning snapshots must have `requestKind: business` and no Project scope. Capture, live
 verification, recovery and retained sending check this binding. Runtime chooses the role from
 the captured owner. Final attempt metadata and recovery require the original input's role as well
 as its record/snapshot hashes; matching attempt/audit/provider roles alone are insufficient.
@@ -516,12 +516,12 @@ Scenario binding retains its existing PM/Project contract, and the J06 consumer 
 owner before reading scenario-specific fields. No new lifecycle, scoring or correction owner is
 introduced. Existing audit adapters already parse and preserve this shared input/attempt material.
 
-The current retained sender still rejects `validate` and uses `scoreSuccess: false`; this branch
-does not migrate actual Planner/Build callers. Production P02 ports must separately preserve
+The raw retained sender rejects `validate` and uses `scoreSuccess: false`; the separate validated
+sender is used by the production ports described below. Those ports preserve
 original versioned parsing context/i18n messages, Router candidate validation/scoring and outer
 semantic feedback, with producer/protocol assessment before business validation. Post-graph
-planning still needs its real Project context. Contract, real-file/HTTP and historical-record cases
-are authored, unrun; G1 must falsify the actual role selection, snapshot ownership, attempt-input
+planning now has its real Project context in the P03 milestone described below. These dated
+foundation cases preceded milestone checks; G1 must falsify the actual role selection, snapshot ownership, attempt-input
 recovery binding and scenario-consumer ownership calls.
 
 ### Router response-validation prerequisite
@@ -585,6 +585,33 @@ before tests ran. Core, functional integration and e2e gates passed, and actual 
 were falsified and restored. Release-resource failures are separately recorded in HANDOVER; P03
 and full Executor migration remain separate.
 
+### P03 phase decomposition retention
+
+`planning-phase-decomposition/1` retains strict audit-only approved PhasePlan, current implementation
+phase, parsing context, clarifications, original available Skill names and semantic attempt/feedback.
+It pins the original i18n system/user messages; neither context nor Skill files become a second
+instruction source. The same pure parser enforces original eight-Step, architecture, ownership,
+delivery, Skill-reference and lint contracts for candidate acceptance, final parsing and recovery.
+Only explicit contract refusals enter semantic retry; other failures/cancellation propagate.
+
+Build's first decomposition retains `planning-operation` without invented Domain IDs. Run injects
+`project-planning-operation` with its existing canonical `projectId`; the Rule snapshot binds Planner,
+decomposition purpose, language and that same Project. Implementation phase labels such as `P2`
+remain audit context and are not Domain Phase IDs. Old P01/P02/J06 owner formats are unchanged.
+The Application progression service consumes an injected port and retains concrete-plan-before-
+checkpoint persistence; final completion requires no decomposition request. No Domain lifecycle
+state is added.
+
+`resumeRuntimePhaseDecompositionRequest` restores one adopted original request and returns its draft.
+It does not call a model, read current Skills/source/Rules, create evidence or advance phases. Original
+Skill names permit reference validation without activating Skills or granting tools. Required genesis
+selection, Router candidate budget/scoring and Planner two/three semantic attempts are preserved;
+full production C1 correction remains separate. This complete node passed core/functional integration/
+e2e/typecheck/lint/build and fourteen actual-call removal checks, with all 334 restored focused
+cases passing. The shared phase validator rejects duplicate IDs before P02 adoption and Build
+checkpoint reuse, retaining existing feedback/rebuild behavior. Exact outcomes and deferred P1
+resource failures are recorded in HANDOVER.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request
 identity/recovery and full request accounting; production composition of the C1 calibration coordinator
@@ -620,8 +647,9 @@ Coverage has been authored in [business_request_owner.test.ts](../../../tests/bu
 [response_payload.test.ts](../../../tests/integration/response_payload.test.ts),
 [protocol_json.test.ts](../../../tests/integration/protocol_json.test.ts), and the
 Router/Plugin evidence tests.
-None has been executed for this implementation. Tests, typecheck, lint, build, packaging and
-model/scenario validation remain deferred until all approved implementation is complete, as the
-user requested. A later verification pass must falsify the real Selector/retriever/store calls,
+The dated authored-only checkpoints above predate the later milestone testing order. Current core,
+functional integration, e2e, typecheck/lint/build results and deferred P1 failures are recorded in
+HANDOVER; they do not establish full 0.4 acceptance. Each remaining complete functional milestone
+receives its checks before release preparation. A later verification pass must falsify the real Selector/retriever/store calls,
 the Runtime default source load and manifest comparison, not accept isolated schema/helper
 assertions as proof of Runtime wiring.

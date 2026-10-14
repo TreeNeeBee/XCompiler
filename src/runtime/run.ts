@@ -67,6 +67,7 @@ import { PhaseProgressionService } from '../application/planning/phase_progressi
 import type { RecordReplayMode } from '../application/record_replay/types.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
+import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -307,6 +308,9 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     io.terminalOutput === true,
     opts.abortSignal,
     capabilities.skills,
+    createRuntimePhaseDecompositionRequestPort({
+      config: cfg.rules, container, recordReplay, router, audit, projectId: domainProject.id,
+    }),
   );
   await reportRoleModelAdvice(router, audit, (message) => runtimeLog(io, 'warning', message));
   if (recoverUnadvancedPhase) {

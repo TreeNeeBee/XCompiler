@@ -1,10 +1,13 @@
 import { promises as fs } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
 import { buildPlan } from '../../src/agents/planner.js';
 import { DomainAttemptRunner } from '../../src/application/execution/attempt_runner.js';
+import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/phase_plan_files.js';
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
@@ -118,6 +121,86 @@ describe('Runtime initializes the configured knowledge store', () => {
 });
 
 describe('Runtime preserves the Phase checkpoint across orchestration outcomes', () => {
+  it('retains the next Phase decomposition under the canonical Project at the actual run boundary', async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-next-phase-')));
+    const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const previous = envKeys.map(key => process.env[key]);
+    const calls: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = [];
+    const nextPlan = runtimePlan('P2');
+    const reply = JSON.stringify({ dependencies: nextPlan.dependencies, architectureModules: nextPlan.architectureModules, steps: nextPlan.steps });
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        const parsed = body ? JSON.parse(body) as { model: string; messages: Array<{ role: string; content: string }> } : undefined;
+        if (!parsed?.messages) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
+        calls.push(parsed);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        response.end('data: [DONE]\n\n');
+      });
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      process.env.XC_PATH = path.join(root, 'fallback-installation');
+      process.env.XCOMPILER_PATH = process.env.XC_PATH;
+      process.env.GIT_CONFIG_GLOBAL = path.join(root, 'empty-git-config');
+      process.env.GIT_CONFIG_NOSYSTEM = '1';
+      await fs.writeFile(process.env.GIT_CONFIG_GLOBAL, '');
+      const container = new ProjectContainer(path.join(root, 'project'));
+      const workspace = container.canonical().workspace;
+      await workspace.ensure('.');
+      const plan = runtimePlan();
+      plan.complexityAssessment = { level: 'moderate', rationale: 'Core followed by presentation polish.', splitRecommended: true, userForcedPhaseSplit: false };
+      plan.implementationPhases.push({ ...nextPlan.implementationPhases[0]!, status: 'planned', dependsOn: ['P1'] });
+      const graph = compileProjectGraph({ draft: plan, topic: 'Deliver a small reporting utility.', projectName: 'runtime-next-phase' });
+      const repository = new DomainObjectRepository(container.state);
+      await repository.load();
+      await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      const planPath = container.control.abs('plan.P1.json');
+      const phasePlanPath = container.control.abs('phasePlan.json');
+      const store = new FilePlanStore();
+      const checkpoint = buildPhasePlanFromCurrentPlan({ plan, phasePlanPath, currentPlanPath: planPath });
+      await store.savePlan(planPath, plan);
+      await store.savePhasePlan(phasePlanPath, checkpoint);
+      const unexpectedExecution = vi.fn(async (): Promise<never> => { throw new Error('This wiring fixture must not execute project commands.'); });
+      vi.mocked(createSandbox).mockReturnValue({ kind: 'subprocess',
+        build: vi.fn(async () => ({ rebuilt: false, reason: 'Installation is outside this wiring fixture.' })),
+        exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution });
+      const run = vi.spyOn(ProjectOrchestrator.prototype, 'run').mockImplementation(async phaseId => ({ phaseId, totalSteps: 8, executedSteps: 8 }));
+      const stop = new Error('Stop after retained next-Phase preparation.');
+      const report = vi.spyOn(projectReports, 'generateProjectDevelopmentReport').mockRejectedValue(stop);
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+      const result = await runExecute({ workspace: container.root, planPath: phasePlanPath,
+        configPath: await writeConfig(root, url), debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'),
+        io: silentRuntimeIO, recordReplayMode: 'off' });
+      expect(result).toMatchObject({ status: 'error', exitCode: 5, message: stop.message });
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(report).toHaveBeenCalledTimes(1);
+      expect(unexpectedExecution).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(1);
+      const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(Boolean)
+        .map(line => JSON.parse(line) as { messageId?: string; data?: { input?: BusinessRequestInput } });
+      const original = events.find(event => event.messageId === 'llm.business_request_input')!.data!.input!;
+      expect(original.owner).toMatchObject({ kind: 'project-planning-operation', operation: 'phase-decomposition', projectId: graph.project.id });
+      expect(original.owner).not.toHaveProperty('phaseId');
+      expect(original.auditContext).toMatchObject({ kind: 'planning-phase-decomposition', phaseId: 'P2', parseContext: { language: 'python', intent: 'feature' } });
+      expect(original.messages).toEqual(calls[0]!.messages.slice(1));
+      expect(events.filter(event => event.messageId === 'llm.phase_decomposition_judgement')).toHaveLength(1);
+      expect(events.filter(event => event.messageId === 'execute.phase_prepared')).toHaveLength(1);
+      const restored = await store.loadPlanTarget(phasePlanPath);
+      expect(restored.plan.phaseId).toBe('P2');
+      expect(restored.plan.steps.every(step => step.iterationId === 'P2')).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['complete', 'failed'] as const)('persists the expected checkpoint for %s work', async (outcome) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-checkpoint-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
@@ -201,13 +284,13 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
   });
 });
 
-async function writeConfig(root: string): Promise<string> {
+async function writeConfig(root: string, baseUrl = 'http://127.0.0.1:1/v1'): Promise<string> {
   const config = YAML.parse(await fs.readFile(path.resolve('config.example.yaml'), 'utf8')) as {
     llm: { providers: Record<string, unknown>; roles: Record<string, string[]> };
   };
   config.llm.providers = {
     local: {
-      type: 'openai', api_key: '', base_url: 'http://127.0.0.1:1/v1', model: 'initialization-only',
+      type: 'openai', api_key: '', base_url: baseUrl, model: 'initialization-only',
       context_window: '128K', connect_timeout_ms: 1_000, request_timeout_ms: 1_000,
       stream_first_token_timeout_ms: 1_000, stream_idle_timeout_ms: 1_000,
     },
@@ -218,9 +301,8 @@ async function writeConfig(root: string): Promise<string> {
   return configPath;
 }
 
-function runtimePlan() {
-  const iterationId = 'P1';
-  const baseline = (kind: string) => `tests/test_${kind}_p1.py`;
+function runtimePlan(iterationId = 'P1') {
+  const baseline = (kind: string) => `tests/test_${kind}_${iterationId.toLowerCase()}.py`;
   const doc = (phase: Phase) => phaseDocForIteration(phase, iterationId)!;
   const testPlan = (phase: Phase) => testPlanDocForIteration(phase, iterationId)!;
   const specifications: Array<{ phase: Phase; role: Step['role']; outputs: string[]; inputs?: string[] }> = [

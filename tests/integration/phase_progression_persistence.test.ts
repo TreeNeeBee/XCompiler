@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPlan } from '../../src/agents/planner.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { PhaseProgressionService } from '../../src/application/planning/phase_progression_service.js';
+import type { PhaseDecompositionRequestPort } from '../../src/application/planning/phase_decomposition_request.js';
 import {
   buildPhasePlanFromCurrentPlan,
   defaultPhasePlanPath,
@@ -106,13 +107,17 @@ describe('Phase progression persists its recovery checkpoint', () => {
     });
     const client: LLMClient = {
       name: 'deterministic-planner',
-      chat: vi.fn<LLMClient['chat']>(async (_messages, options) => {
-        options?.validate?.(reply);
-        return reply;
-      }),
+      chat: vi.fn<LLMClient['chat']>(async () => { throw new Error('Phase decomposition must use the retained request port.'); }),
     };
+    const send = vi.fn<PhaseDecompositionRequestPort['send']>(async (request) => {
+      await request.validate(reply);
+      return { text: reply, provider: client.name };
+    });
+    const port: PhaseDecompositionRequestPort = { name: client.name, send };
     const router = { for: vi.fn(() => client) } as unknown as LLMRouter;
-    const service = new PhaseProgressionService(workspace, state, control, store, router, audit, false);
+    // The final Phase has no further decomposition and must work without a configured port.
+    const service = new PhaseProgressionService(workspace, state, control, store, router, audit, false,
+      undefined, undefined, hasNextPhase ? port : undefined);
     const complete = () => service.completeAndPrepareNext({
       phasePlan,
       phasePlanPath,
@@ -122,7 +127,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
     const events = async (): Promise<AuditEvent[]> =>
       (await state.readFile('audit/audit.jsonl')).trim().split('\n')
         .map((line) => JSON.parse(line) as AuditEvent);
-    return { store, workspace, phasePlanPath, currentPlanPath, nextPlanPath, client, complete, events };
+    return { store, workspace, phasePlanPath, currentPlanPath, nextPlanPath, client, send, complete, events };
   }
 
   it('reopens the completed final Phase from disk without asking for another plan', async () => {
@@ -136,6 +141,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
     expect(restored).toEqual(result.phasePlan);
     expect(restored.phases.map((phase) => [phase.id, phase.status])).toEqual([['P1', 'complete']]);
     expect(fixture.client.chat).not.toHaveBeenCalled();
+    expect(fixture.send).not.toHaveBeenCalled();
     expect((await fixture.events()).filter((event) => event.kind === 'plan.persist'))
       .toMatchObject([{ messageId: 'execute.phase_completed', data: { phaseId: 'P1' } }]);
   });
@@ -165,7 +171,15 @@ describe('Phase progression persists its recovery checkpoint', () => {
     expect(restored.plan.steps).toHaveLength(8);
     expect(restored.plan.steps.map((step) => step.phase)).toEqual(REQUIRED_V_MODEL_PHASES);
     expect(restored.plan.steps.every((step) => step.iterationId === 'P2')).toBe(true);
-    expect(fixture.client.chat).toHaveBeenCalledTimes(1);
+    expect(fixture.client.chat).not.toHaveBeenCalled();
+    expect(fixture.send).toHaveBeenCalledTimes(1);
+    const request = fixture.send.mock.calls[0]![0];
+    expect(request.payload).toMatchObject({ kind: 'planning-phase-decomposition', phaseId: 'P2',
+      parseContext: { language: 'python', intent: 'feature' }, semanticAttempt: 1, repairFeedback: '' });
+    expect(request.payload.phasePlan.implementationPhases.map(phase => [phase.id, phase.status]))
+      .toEqual([['P1', 'complete'], ['P2', 'current']]);
+    expect(request.messages).toHaveLength(2);
+    expect(request.messages[1]!.content).toContain('P2');
     expect(await fixture.workspace.exists('phasePlan.json')).toBe(false);
     expect(await fixture.workspace.exists('plan.P2.json')).toBe(false);
     expect((await fixture.events()).filter((event) => event.kind === 'plan.persist'))

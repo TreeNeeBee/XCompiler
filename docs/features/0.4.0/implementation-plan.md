@@ -1,6 +1,6 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-14. This development stage extends `d06db05` (P02 retained PhasePlan requests)
+Updated: 2026-10-15. This development stage extends `a20dae0` (P01 retained PM clarification requests)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; feature development proceeds to complete
 functional milestones before their verification, and release preparation follows last.
 The original assessment baseline was `77ff6e2`.
@@ -141,7 +141,7 @@ executable checks. Historical checkpoint notes below retain the verification sta
 Local files, subprocesses and loopback fixtures do not authorize external paid-model calls;
 fresh-project external-call scope and spending remain separately agreed.
 
-Progress reconciliation against source, 2026-10-14:
+Progress reconciliation against source, 2026-10-15:
 
 | Batch | Implemented or authored | Remaining before completion |
 |---|---|---|
@@ -150,8 +150,8 @@ Progress reconciliation against source, 2026-10-14:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 evidence, pre-graph planning ownership/role binding and awaited post-transport response validation authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
-| V1 / V2 | J06 and P02 production/recovery; Executor parsing; P01 full retained intake milestone implemented and checked with actual Build/PM wiring, audit-only context, protocol/business validation and explicit recovery | Remaining P03/Executor and instruction-source migrations, full production C1 correction and business-Rule activation |
-| G1 | P01 milestone: 1,476 core, 1,434 functional integration and 11 e2e cases passed; typecheck/lint/build passed; changed-call falsification executed | Other functional milestones remain; full integration is not green because release-resource checks are deferred with recorded failures |
+| V1 / V2 | J06 and P02 production/recovery; Executor parsing; P01/P03 complete retained milestones verified with actual Build/PM/Run/progression wiring, original audit context, protocol/business validation and explicit recovery | Full Executor and instruction-source migrations, production C1 correction and business-Rule activation |
+| G1 | P03 milestone: 1,586 core, 1,452 functional integration and 11 e2e passed; typecheck/lint/build passed; 14 actual-call falsifications and 334 restored checks passed | Other functional milestones remain; full integration is not green because release-resource checks are deferred with recorded failures |
 | P1 | Genesis/J06 resources declared; installation/source/staging cases executed during initial full integration | Ten release-resource failures recorded in HANDOVER; resolve them plus final resource assembly, metadata and reviewed Debug Rules after functional acceptance |
 
 No complete batch is marked verified. A source component or persisted file alone does not establish
@@ -231,7 +231,8 @@ Runtime's advancement call and the service's final save also require separate ca
 | J06 scenario judgement | Rubric-only extraction and current-evidence judgement authored in YAML/Application/Runtime | Preserve classification/process/PM intake; execute production wiring and recovery tests at G1 |
 | P01-P14 instruction candidates | In-scope inventory, not fourteen already approved RuleLists | Record retained text, authoritative source, caller, binding and replaced duplicate per batch |
 | P01 clarification caller | Complete retained PM intake milestone implemented and checked; original i18n remains authoritative, with required genesis selection | Preserve question counts/coverage and J01 policies; no duplicate YAML rubric or outer repair budget; further instruction extraction remains separate |
-| P02 PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, execute actual Build/Planner/recovery wiring at G1 |
+| P02 PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, actual Build/Planner/recovery wiring checked with P01/P03; remaining instruction extraction stays separate |
+| P03 decomposition caller | Retained port, original approved phase/context/Skill-name evidence and pure original-context parsing implemented; actual Build and Project-bound phase progression connected and verified | Keep i18n/Skill metadata as original prompt source, eight Steps/ownership/delivery checks and 2/3 semantic budget; read-only exact-request recovery cannot advance phases or read current registry |
 | J01-J05 planning/design/test heuristics | Semantic replacement remains a proposal | Approve each replacement and update producer, calibration, lint and feedback together |
 | J07 disposition/completion | Existing execution/evidence checks remain authoritative | Extract instructions only within an approved batch; no gate waiver |
 | J08 Wiki/retrieval | Current Wiki knowledge is advisory; Q4 C and items 2 A/3 A settle vector semantic Rule retrieval and low-score review | Implement the confirmed input/index/score/review contract; do not reuse Wiki score >=4 or its lexical filter as the semantic selection policy |
@@ -813,6 +814,20 @@ The node also fixed demonstrated shared URL validation, readonly language-contra
 error-preserving close/cleanup structure and storage-interruption routing before the failed audit
 sink. No release version was changed, external model called or native artifact published.
 
+P03 production retention, 2026-10-15: first Build decomposition uses its pre-graph planning operation;
+subsequent Run progression binds the canonical existing Project ID through a Runtime factory-injected
+Application port. Audit-only context retains the original approved PhasePlan/current phase, language,
+requirements/baseline/clarifications, Skill names and semantic attempt/feedback. Frozen original i18n
+system/user messages remain the only framework prompt rendering; no duplicate rubric is introduced.
+Independent whole-response completion/proof precedes typed business/Skill/lint validation. Exact-ID
+recovery rechecks original materials without current Registry/Rules/source reads, sends, writes or
+Domain advancement. Existing Router candidate and Planner 2/3 semantic budgets remain separate; no
+C1 allowance is added. Whole-node verification passed 1,586 core, 1,452 functional integration and
+11 e2e cases plus typecheck/lint/build; fourteen actual-call removals each failed the corresponding
+test and all 334 restored focused cases passed. A demonstrated duplicate-ID gap was fixed in the
+shared phase validator, so P02 rejects it through existing feedback and Build rejects/rebuilds old
+invalid checkpoints. Full integration's ten P1 resource failures remain open.
+
 ## Acceptance and verification plan
 
 Define fixtures and tests while implementing; execute focused checks and changed-call falsification
@@ -869,5 +884,5 @@ version/package/resource checks, the npm package dry run and production-dependen
 Record actual results and limitations; fix failures and rerun the affected gates as required.
 Fresh-project validation follows separately agreed external access and paid-model spending.
 
-This review performed document/source inspection and document consistency checks only. It ran no
+The original assessment performed document/source inspection and document consistency checks only. It ran no
 test suite, typecheck, lint, build, package, external model call or generated-project scenario.

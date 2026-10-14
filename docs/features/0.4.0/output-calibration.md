@@ -1,6 +1,6 @@
 # 0.4.0: LLM output-protocol calibration
 
-Updated 2026-10-14; earlier source observations below retain the `77ff6e2` review baseline.
+Updated 2026-10-15; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport
 retries and fallback cannot reset that allowance. The later user choice selects remaining-decision
@@ -597,3 +597,13 @@ P01/P03/Executor remain separate. Pure/file/HTTP/Build cases are authored, unrun
 
 No tests, typecheck, lint, build, package, Tool action, external
 model call or generated-project run was performed for this implementation checkpoint.
+
+
+P03 milestone, 2026-10-15: Build and real Project-bound Run progression now retain decomposition
+requests. Completion/full JSON/proven representation handling precedes the original approved-phase,
+Skill-reference and lint contract; only typed business refusals use the existing semantic retry.
+Exact-ID recovery rechecks original context and Skill names without current sources or new sends,
+writes or lifecycle effects. This adds no production C1 allowance or quote/escape repair class.
+The complete milestone passed core/functional integration/e2e/typecheck/lint/build, fourteen actual-
+call falsifications and 334 restored focused checks. Full 0.4 acceptance and ten P1 resource
+failures remain open; see HANDOVER for counts and limits.

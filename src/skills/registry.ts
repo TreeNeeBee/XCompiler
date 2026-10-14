@@ -106,17 +106,23 @@ export class SkillRegistry {
 
   /** Validate plan references from metadata without activating Skill instructions. */
   validateRefs(refs: readonly string[]): void {
-    for (const ref of refs) {
-      if (!ref.startsWith('skill:')) continue;
-      const name = ref.slice('skill:'.length);
-      if (!name || !this.skills.has(name)) {
-        throw new AgentSkillError('skill-not-found', `Unknown Agent Skill "${name || ref}"`, { ref, name });
-      }
-    }
+    validateSkillReferences(refs, [...this.skills.keys()]);
   }
 
   list(): AgentSkillMetadata[] {
     return [...this.skills.values()];
+  }
+}
+
+/** Validate only retained names; planning and recovery never activate or reread Skills. */
+export function validateSkillReferences(refs: readonly string[], availableNames: readonly string[]): void {
+  const available = new Set(availableNames);
+  for (const ref of refs) {
+    if (!ref.startsWith('skill:')) continue;
+    const name = ref.slice('skill:'.length);
+    if (!name || !available.has(name)) {
+      throw new AgentSkillError('skill-not-found', `Unknown Agent Skill "${name || ref}"`, { ref, name });
+    }
   }
 }
 

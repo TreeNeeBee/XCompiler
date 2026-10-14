@@ -73,6 +73,7 @@ import {
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { validateImplementationPhaseDraft } from '../agents/planning/phase_strategy.js';
 import { createRuntimePhasePlanRequestPort } from './phase_plan_request.js';
+import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
 import { createRuntimeClarificationRequestPort } from './clarification_request.js';
 
 export {
@@ -468,6 +469,8 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       opts.abortSignal,
       capabilities.skills,
       createRuntimePhasePlanRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
+      undefined,
+      createRuntimePhaseDecompositionRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
     );
     const plannerInput: PlannerInput = {
       rawRequirement: finalTopicMd,

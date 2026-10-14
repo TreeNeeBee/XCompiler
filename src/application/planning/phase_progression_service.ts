@@ -12,6 +12,7 @@ import { archiveIfExists } from '../../workspace/doc_archive.js';
 import type { LLMRouter } from '../../llm/router.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { SkillRegistry } from '../../skills/index.js';
+import type { PhaseDecompositionRequestPort } from './phase_decomposition_request.js';
 
 export interface PhaseProgressionResult {
   completedPhaseId: string;
@@ -32,6 +33,7 @@ export class PhaseProgressionService {
     private readonly terminalOutput: boolean,
     private readonly signal?: AbortSignal,
     private readonly skills?: SkillRegistry,
+    private readonly phaseDecompositionRequest?: PhaseDecompositionRequestPort,
   ) {}
 
   async completeAndPrepareNext(input: {
@@ -94,6 +96,9 @@ export class PhaseProgressionService {
       this.terminalOutput,
       this.signal,
       this.skills,
+      undefined,
+      undefined,
+      this.phaseDecompositionRequest,
     );
     const draft = await planner.decomposePhase(
       {

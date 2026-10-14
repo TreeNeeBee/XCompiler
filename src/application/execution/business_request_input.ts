@@ -14,6 +14,9 @@ import {
 import {
   ClarificationPayloadSchema, CLARIFICATION_PROTOCOL,
 } from '../planning/clarification_request.js';
+import {
+  PhaseDecompositionPayloadSchema, PHASE_DECOMPOSITION_PROTOCOL,
+} from '../planning/phase_decomposition_request.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
@@ -25,11 +28,16 @@ export const PlanningOperationOwnerSchema = z.object({
   kind: z.literal('planning-operation'), operationId: UUID,
   operation: z.enum(['clarification', 'phase-plan', 'phase-decomposition']),
 }).strict();
+export const ProjectPlanningOperationOwnerSchema = z.object({
+  kind: z.literal('project-planning-operation'), operationId: UUID,
+  operation: z.literal('phase-decomposition'), projectId: ObjectId,
+}).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
-  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema,
+  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema, ProjectPlanningOperationOwnerSchema,
 ]);
 export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
 export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema>;
+export type ProjectPlanningOperationOwner = z.infer<typeof ProjectPlanningOperationOwnerSchema>;
 export type BusinessRequestOwner = z.infer<typeof BusinessRequestOwnerSchema>;
 export const PLANNING_REQUEST_CONTEXTS = Object.freeze({
   clarification: 'planning-clarification',
@@ -44,7 +52,7 @@ const Identity = z.object({
 }).strict();
 
 export const BusinessRequestAuditContextSchema = z.discriminatedUnion('kind', [
-  PhasePlanPayloadSchema, ClarificationPayloadSchema,
+  PhasePlanPayloadSchema, ClarificationPayloadSchema, PhaseDecompositionPayloadSchema,
 ]);
 export type BusinessRequestAuditContext = z.infer<typeof BusinessRequestAuditContextSchema>;
 
@@ -79,6 +87,7 @@ export class BusinessRequestInputError extends Error {
 export function businessRequestRole(owner: BusinessRequestOwner): 'ProjectManager' | 'Planner' {
   switch (owner.kind) {
     case 'scenario-judgement': return 'ProjectManager';
+    case 'project-planning-operation': return 'Planner';
     case 'planning-operation':
       switch (owner.operation) {
         case 'clarification': return 'ProjectManager';
@@ -95,7 +104,10 @@ export function assertBusinessRequestSnapshotOwner(
 ): void {
   const scopeMatches = owner.kind === 'scenario-judgement'
     ? snapshot.context.projectId?.toLowerCase() === owner.projectId
-    : snapshot.context.projectId === undefined && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation];
+    : owner.kind === 'project-planning-operation'
+      ? snapshot.context.projectId?.toLowerCase() === owner.projectId
+        && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation]
+      : snapshot.context.projectId === undefined && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation];
   if (snapshot.requestKind !== 'business' || snapshot.context.role !== businessRequestRole(owner) || !scopeMatches
     || (auditContext !== undefined && snapshot.context.language !== auditContext.parseContext.language)) {
     throw new BusinessRequestInputError('snapshot_mismatch', {
@@ -168,7 +180,8 @@ export function assertBusinessRequestInputRecord(record: BusinessRequestInputRec
 }
 
 const Capture = BusinessRequestInputSchema.omit({ schemaVersion: true, snapshotDigest: true });
-export type BusinessRequestInputCapture = z.input<typeof Capture> & { signal?: AbortSignal };
+// Schema transforms can retain readonly Domain values; capture accepts raw or validated material.
+export type BusinessRequestInputCapture = (z.input<typeof Capture> | z.output<typeof Capture>) & { signal?: AbortSignal };
 export type BusinessRequestInputRecovery = { readonly status: 'not-found' } | {
   readonly status: 'recovered'; readonly record: BusinessRequestInputRecord;
   readonly input: BusinessRequestInput; readonly snapshot: RuleRequestSnapshot;
@@ -267,9 +280,27 @@ export class BusinessRequestInputs {
 
 function assertAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId' | 'owner' | 'templateVersion' | 'outputProtocol' | 'auditContext'>): void {
   if (input.auditContext === undefined) return;
-  const operation = input.auditContext.kind === 'planning-phase-plan' ? 'phase-plan' : 'clarification';
-  const protocol = input.auditContext.kind === 'planning-phase-plan' ? PHASE_PLAN_PROTOCOL : CLARIFICATION_PROTOCOL;
-  if (input.owner.kind !== 'planning-operation' || input.owner.operation !== operation
+  let operation: PlanningOperationOwner['operation'];
+  let protocol: BusinessRequestInput['outputProtocol'];
+  let ownerMatches: boolean;
+  switch (input.auditContext.kind) {
+    case 'planning-clarification':
+      operation = 'clarification';
+      protocol = CLARIFICATION_PROTOCOL;
+      ownerMatches = input.owner.kind === 'planning-operation';
+      break;
+    case 'planning-phase-plan':
+      operation = 'phase-plan';
+      protocol = PHASE_PLAN_PROTOCOL;
+      ownerMatches = input.owner.kind === 'planning-operation';
+      break;
+    case 'planning-phase-decomposition':
+      operation = 'phase-decomposition';
+      protocol = PHASE_DECOMPOSITION_PROTOCOL;
+      ownerMatches = input.owner.kind === 'planning-operation' || input.owner.kind === 'project-planning-operation';
+      break;
+  }
+  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion
     || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(protocol)) {
     throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });

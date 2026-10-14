@@ -28,6 +28,13 @@ import {
   type PhasePlanPayload,
   type PhasePlanRequestPort,
 } from '../application/planning/phase_plan_request.js';
+import {
+  PHASE_DECOMPOSITION_TEMPLATE_VERSION, PhaseDecompositionRequestConfigurationError,
+  buildPhaseDecompositionRequestMessages, validatePhaseDecompositionPayload,
+  type PhaseDecompositionPayload, type PhaseDecompositionRequestPort,
+} from '../application/planning/phase_decomposition_request.js';
+import { validateSkillReferences } from '../skills/registry.js';
+import { AgentSkillError } from '../skills/types.js';
 import { withDefaultQualityGate } from '../domain/quality/stage_quality.js';
 import {
   analyzeArchitectureDemand,
@@ -42,11 +49,10 @@ import {
   PlannerContractViolation,
   errorMessage,
   formatPlannerValidationFeedback,
-  isPlannerStructuredValidationError,
 } from './planning/validation_retry.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { makeStreamReporter } from '../llm/stream.js';
-import { getLocale, t, tFor } from '../i18n/index.js';
+import { getLocale, tFor } from '../i18n/index.js';
 import {
   calibrateDocPaths,
   calibratePythonRequirements,
@@ -81,7 +87,6 @@ import {
   validateCurrentPhaseDeliveryEntrypoints,
   validateIterationVModelDraft,
 } from './planning/phase_strategy.js';
-import { parsePlannerJson } from './planning/json.js';
 import { buildDefaultSkills, renderSkillCatalog, type SkillRegistry } from '../skills/index.js';
 
 export {
@@ -94,7 +99,7 @@ export {
 } from './planning/clarification.js';
 
 // Prompt strings remain in src/i18n/{en,zh}.ts and are rendered at invocation time so --lang
-// can select the language before Planner runs. PhasePlan pins its locale and original messages
+// can select the language before Planner runs. Each request pins its locale and original messages
 // before the first await; recovery uses the retained rendering.
 
 
@@ -138,7 +143,7 @@ export class Planner {
   private readonly skills: SkillRegistry;
 
   constructor(
-    private readonly llm: LLMClient,
+    _llm: LLMClient,
     private readonly audit?: AuditLogger,
     private readonly language: Language = 'python',
     private readonly streamOutput = false,
@@ -146,6 +151,7 @@ export class Planner {
     skills?: SkillRegistry,
     private readonly phasePlanRequest?: PhasePlanRequestPort,
     private readonly clarificationRequest?: ClarificationRequestPort,
+    private readonly phaseDecompositionRequest?: PhaseDecompositionRequestPort,
   ) {
     this.skills = skills ?? buildDefaultSkills();
   }
@@ -208,23 +214,24 @@ export class Planner {
   }
 
   async decompose(input: PlannerInput): Promise<DraftPlan> {
-    const qa = formatClarificationTranscript(input.clarifications);
-    const addenda = (input.userAddenda ?? '').trim();
-    const parseContext = {
-      language: this.language,
-      rawRequirement: input.rawRequirement,
-      userAddenda: addenda,
-      baselineSummary: input.baselineContext ?? '',
-      intent: input.intent ?? 'greenfield' as PlanIntent,
+    const retained = validatePhasePlanPayload({
+      schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
+      locale: getLocale(), parseContext: {
+        language: this.language, rawRequirement: input.rawRequirement, userAddenda: (input.userAddenda ?? '').trim(),
+        baselineSummary: input.baselineContext ?? '', intent: input.intent ?? 'greenfield',
+      }, clarifications: input.clarifications, semanticAttempt: 1, repairFeedback: '',
+    });
+    // Both requests use the same original intake, including answers captured before P02 awaits.
+    const capturedInput: PlannerInput = {
+      rawRequirement: retained.parseContext.rawRequirement, clarifications: retained.clarifications,
+      userAddenda: retained.parseContext.userAddenda, baselineContext: retained.parseContext.baselineSummary,
+      intent: retained.parseContext.intent,
     };
-    const intent = input.intent ?? 'greenfield';
-    const phasePlan = await this.planPhasePlan(input);
+    const phasePlan = await this.planPhasePlan(capturedInput);
     const currentPhase = phasePlan.implementationPhases.find((phase) => phase.status === 'current') ??
       phasePlan.implementationPhases[0];
-    if (!currentPhase) {
-      throw new Error('Planner phase plan has no current implementation phase.');
-    }
-    return this.decomposeCurrentPhase(input, qa, addenda, parseContext, intent, phasePlan, currentPhase);
+    if (!currentPhase) throw new Error('Planner phase plan has no current implementation phase.');
+    return this.decomposeCurrentPhase(capturedInput, retained.parseContext, phasePlan, currentPhase);
   }
 
   /** Expand one approved PhasePlan goal without replanning the remaining iterations. */
@@ -235,7 +242,6 @@ export class Planner {
     if (!currentPhase) {
       throw new Error(`Planner cannot decompose ${phaseId}: the phase is not current in PhasePlan.`);
     }
-    const qa = formatClarificationTranscript(input.clarifications);
     const addenda = (input.userAddenda ?? '').trim();
     const intent = input.intent ?? 'greenfield';
     const parseContext: DraftParseContext = {
@@ -246,7 +252,7 @@ export class Planner {
       intent,
       currentPhaseId: phaseId,
     };
-    return this.decomposeCurrentPhase(input, qa, addenda, parseContext, intent, phasePlan, currentPhase);
+    return this.decomposeCurrentPhase(input, parseContext, phasePlan, currentPhase);
   }
 
   /** Generate only the project-level PhasePlan so callers can persist a recovery checkpoint. */
@@ -280,7 +286,7 @@ export class Planner {
     const { text, provider } = await this.chatWithStructuredValidationRetry({
       label: 'Planner.phasePlan',
       context: parseContext,
-      phasePlanRequest: { port: this.phasePlanRequest, operationId, payload, messages },
+      request: { kind: 'phase-plan', port: this.phasePlanRequest, operationId, payload, messages },
       validate: (text) => { parsePhasePlanResponse(text, parseContext); },
     });
     this.signal?.throwIfAborted();
@@ -290,70 +296,66 @@ export class Planner {
 
   private async decomposeCurrentPhase(
     input: PlannerInput,
-    qa: string,
-    addenda: string,
     parseContext: DraftParseContext,
-    intent: PlanIntent,
     phasePlan: DraftPhasePlan,
     currentPhase: ImplementationPhase,
   ): Promise<DraftPlan> {
-    const prompt = t().prompts.plannerPhaseDecompose(input.rawRequirement, qa, addenda, {
-      intent,
-      baseline: input.baselineContext ?? '',
-      phasePlan: JSON.stringify(phasePlan, null, 2),
-      phaseId: currentPhase.id,
+    if (!this.phaseDecompositionRequest) throw new PhaseDecompositionRequestConfigurationError();
+    this.signal?.throwIfAborted();
+    const operationId = randomUUID();
+    const locale = getLocale();
+    const skills = this.skills.list();
+    const intent = parseContext.intent;
+    const payload = validatePhaseDecompositionPayload({
+      schemaVersion: 1, kind: 'planning-phase-decomposition', templateVersion: PHASE_DECOMPOSITION_TEMPLATE_VERSION,
+      locale, parseContext: {
+        language: parseContext.language, rawRequirement: parseContext.rawRequirement,
+        userAddenda: parseContext.userAddenda, baselineSummary: parseContext.baselineSummary, intent,
+      },
+      clarifications: input.clarifications, phasePlan, phaseId: currentPhase.id,
+      availableSkillNames: skills.map((skill) => skill.name), semanticAttempt: 1, repairFeedback: '',
+    });
+    const prompts = tFor(locale).prompts;
+    const messages = buildPhaseDecompositionRequestMessages({
+      systemPrompt: prompts.plannerPhaseDecomposeSystem(getLanguageProfile(payload.parseContext.language)) +
+        `\n\n${renderSkillCatalog(skills)}` + (intent === 'self' ? `\n\n${prompts.plannerSelfMode}` : ''),
+      userPrompt: prompts.plannerPhaseDecompose(payload.parseContext.rawRequirement,
+        formatClarificationTranscript(payload.clarifications), payload.parseContext.userAddenda, {
+        intent, baseline: payload.parseContext.baselineSummary,
+        phasePlan: JSON.stringify(payload.phasePlan, null, 2), phaseId: payload.phaseId,
+      }),
     });
     const { text, provider } = await this.chatWithStructuredValidationRetry({
-      label: `Planner.decompose.${currentPhase.id}`,
-      context: parseContext,
-      messages: (feedback) => [
-        {
-          role: 'system',
-          content:
-            t().prompts.plannerPhaseDecomposeSystem(getLanguageProfile(this.language)) +
-            `\n\n${renderSkillCatalog(this.skills.list())}` +
-            (intent === 'self' ? `\n\n${t().prompts.plannerSelfMode}` : ''),
-        },
-        { role: 'user', content: prompt + feedback },
-      ],
-      validate: (t) => {
-        const candidate = parsePhaseStepPlanJson(t, parseContext, phasePlan, currentPhase);
-        this.skills.validateRefs(candidate.steps.flatMap((step) => step.tools));
-        assertPlanRulesSatisfied(candidate, parseContext);
-      },
+      label: `Planner.decompose.${payload.phaseId}`, context: payload.parseContext,
+      request: { kind: 'phase-decomposition', port: this.phaseDecompositionRequest, operationId, payload, messages },
+      validate: (text) => { parsePhaseDecompositionResponse(text, payload); },
     });
+    this.signal?.throwIfAborted();
     await this.audit?.plannerThought('decompose', text, {
-      qaCount: input.clarifications.length,
-      provider,
-      phaseId: currentPhase.id,
+      qaCount: payload.clarifications.length, provider, phaseId: payload.phaseId,
     });
-    const result = parsePhaseStepPlanJson(text, parseContext, phasePlan, currentPhase);
-    this.skills.validateRefs(result.steps.flatMap((step) => step.tools));
-    return result;
+    this.signal?.throwIfAborted();
+    return parsePhaseDecompositionResponse(text, payload);
   }
 
   private async chatWithStructuredValidationRetry(input: {
     label: string;
     context: DraftParseContext;
     validate: (text: string) => void;
-  } & ({
-    messages: (feedback: string) => Array<{ role: 'system' | 'user'; content: string }>;
-    phasePlanRequest?: never;
-  } | {
-    messages?: never;
-    phasePlanRequest: {
-      port: PhasePlanRequestPort; operationId: string; payload: PhasePlanPayload; messages: readonly ChatMessage[];
-    };
-  })): Promise<{ text: string; provider?: string }> {
+    request: {
+      operationId: string; messages: readonly ChatMessage[];
+    } & ({ kind: 'phase-plan'; port: PhasePlanRequestPort; payload: PhasePlanPayload }
+      | { kind: 'phase-decomposition'; port: PhaseDecompositionRequestPort; payload: PhaseDecompositionPayload });
+  }): Promise<{ text: string; provider?: string }> {
     const maxAttempts = plannerStructuredRepairAttemptLimit(input.context);
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      if (input.phasePlanRequest) this.signal?.throwIfAborted();
+      this.signal?.throwIfAborted();
       const repairFeedback = formatPlannerValidationFeedback(lastError);
+      const request = input.request;
       const rep = makeStreamReporter(
         attempt === 1 ? input.label : `${input.label}.repair${attempt - 1}`,
-        input.phasePlanRequest?.port.name ?? this.llm.name,
-        { enabled: this.streamOutput },
+        request.port.name, { enabled: this.streamOutput },
       );
       let provider: string | undefined;
       try {
@@ -365,45 +367,38 @@ export class Planner {
             rep.setModel(`${name}/${model}`);
           },
         };
-        let text: string;
-        if (input.phasePlanRequest) {
-          const request = input.phasePlanRequest;
-          const payload = attempt === 1 ? request.payload : validatePhasePlanPayload({
-            ...request.payload, semanticAttempt: attempt, repairFeedback,
+        const retryMessages = { systemPrompt: request.messages[0]!.content,
+          userPrompt: request.messages[1]!.content + repairFeedback };
+        const response = request.kind === 'phase-plan'
+          ? await request.port.send({
+            operationId: request.operationId,
+            payload: attempt === 1 ? request.payload : validatePhasePlanPayload({
+              ...request.payload, semanticAttempt: attempt, repairFeedback,
+            }),
+            messages: attempt === 1 ? request.messages : buildPhasePlanRequestMessages(retryMessages),
+            options, validate: input.validate, signal: this.signal,
+          })
+          : await request.port.send({
+            operationId: request.operationId,
+            payload: attempt === 1 ? request.payload : validatePhaseDecompositionPayload({
+              ...request.payload, semanticAttempt: attempt, repairFeedback,
+            }),
+            messages: attempt === 1 ? request.messages : buildPhaseDecompositionRequestMessages(retryMessages),
+            options, validate: input.validate, signal: this.signal,
           });
-          const messages = attempt === 1 ? request.messages : buildPhasePlanRequestMessages({
-            systemPrompt: request.messages[0]!.content,
-            userPrompt: request.messages[1]!.content + repairFeedback,
-          });
-          const response = await request.port.send({
-            operationId: request.operationId, payload, messages, options, validate: input.validate, signal: this.signal,
-          });
-          text = response.text;
-          provider = response.provider;
-        } else {
-          text = await this.llm.chat(input.messages(repairFeedback), {
-            ...options, signal: this.signal, validate: input.validate,
-          });
-        }
+        provider = response.provider;
+        this.signal?.throwIfAborted();
         rep.done();
-        return { text, provider };
+        return { text: response.text, provider };
       } catch (err) {
         rep.done('failed');
-        if (input.phasePlanRequest) this.signal?.throwIfAborted();
+        this.signal?.throwIfAborted();
         lastError = err;
-        const structuredRejection = input.phasePlanRequest
-          ? err instanceof PlannerContractViolation || err instanceof ResponseValidationRejection ||
-            isContentRejectionExhausted(err)
-          : isPlannerStructuredValidationError(err);
-        if (attempt >= maxAttempts || !structuredRejection) {
-          throw err;
-        }
+        const structuredRejection = err instanceof PlannerContractViolation || err instanceof ResponseValidationRejection ||
+          isContentRejectionExhausted(err);
+        if (attempt >= maxAttempts || !structuredRejection) throw err;
         await this.audit?.event('note', `${input.label} validation failed; retrying with contract feedback`, {
-          messageId: 'planner.validation_retry',
-          label: input.label,
-          attempt,
-          maxAttempts,
-          error: errorMessage(err),
+          messageId: 'planner.validation_retry', label: input.label, attempt, maxAttempts, error: errorMessage(err),
         });
       }
     }
@@ -680,15 +675,32 @@ export function parsePhasePlanResponse(text: string, context: PhasePlanParseCont
   };
 }
 
+/** Recheck the retained response against its original PhasePlan and Skill catalogue. */
+export function parsePhaseDecompositionResponse(text: string, payload: PhaseDecompositionPayload): DraftPlan {
+  const retained = validatePhaseDecompositionPayload(payload);
+  const currentPhase = retained.phasePlan.implementationPhases.find(
+    (phase) => phase.id === retained.phaseId && phase.status === 'current',
+  )!;
+  const draft = parsePhaseStepPlanJson(text, retained.parseContext, retained.phasePlan, currentPhase);
+  try {
+    validateSkillReferences(draft.steps.flatMap((step) => step.tools), retained.availableSkillNames);
+  } catch (error) {
+    if (!(error instanceof AgentSkillError) || error.code !== 'skill-not-found') throw error;
+    throw new PlannerContractViolation(error.message, { cause: error });
+  }
+  assertPlanRulesSatisfied(draft, retained.parseContext);
+  return draft;
+}
+
 function parsePhaseStepPlanJson(
   text: string,
   context: DraftParseContext,
   phasePlan: DraftPhasePlan,
   currentPhase: ImplementationPhase,
 ): DraftPlan {
-  const data = parsePlannerJson(text);
-  if (!data || typeof data !== 'object') {
-    throw new Error('Planner did not return a JSON object for phase Step planning.');
+  const data: unknown = JSON.parse(text);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new PlannerContractViolation('Planner did not return a JSON object for phase Step planning.');
   }
   const obj = data as Record<string, unknown>;
   const rawDeps = Array.isArray(obj.dependencies) ? obj.dependencies : [];
@@ -716,7 +728,7 @@ function parsePhaseStepPlanJson(
   const currentIterationId = currentPhase.id;
   const wrongIteration = parsed.steps.find((step) => (step.iterationId ?? 'P1') !== currentIterationId);
   if (wrongIteration) {
-    throw new Error(
+    throw new PlannerContractViolation(
       `Planner phase StepPlan must materialize only ${currentIterationId}; ` +
       `${wrongIteration.id} references ${wrongIteration.iterationId ?? 'P1'}. ` +
       'Future planned phases must stay in PhasePlan until they are loaded as the current phase.',
@@ -728,26 +740,39 @@ function parsePhaseStepPlanJson(
     context.language,
   );
   if (deliveryEntrypointIssue) {
-    throw new Error(`Planner phase StepPlan delivery contract invalid: ${deliveryEntrypointIssue}`);
+    throw new PlannerContractViolation(`Planner phase StepPlan delivery contract invalid: ${deliveryEntrypointIssue}`);
   }
   return parsed;
 }
 
 export function parseDraftPlanJson(text: string, context?: DraftParseContext): DraftPlan {
-  const data = parsePlannerJson(text);
-  if (!data || typeof data !== 'object') {
-    throw new Error('Planner did not return a JSON object.');
+  const data: unknown = JSON.parse(text);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new PlannerContractViolation('Planner did not return a JSON object.');
   }
   const obj = data as Record<string, unknown>;
   const digest = obj.requirementDigest;
   const steps = obj.steps;
   if (typeof digest !== 'string' || !Array.isArray(steps)) {
-    throw new Error('Planner JSON missing requirementDigest or steps.');
+    throw new PlannerContractViolation('Planner JSON missing requirementDigest or steps.');
+  }
+  // Preserve omitted-field calibration, but reject elements that would crash it instead of
+  // turning malformed model content into a transport or infrastructure failure.
+  for (const [index, rawStep] of steps.entries()) {
+    if (!rawStep || typeof rawStep !== 'object' || Array.isArray(rawStep)) {
+      throw new PlannerContractViolation(`Planner JSON steps.${index} must be a Step object.`);
+    }
+    const step = rawStep as Record<string, unknown>;
+    for (const field of ['tools', 'inputs', 'outputs', 'dependsOn'] as const) {
+      if (Array.isArray(step[field]) && step[field].some((value) => typeof value !== 'string')) {
+        throw new PlannerContractViolation(`Planner JSON steps.${index}.${field} must contain only strings.`);
+      }
+    }
   }
   const globalPrompt = typeof obj.globalPrompt === 'string' ? obj.globalPrompt : '';
   const parsedProjectType = parseProjectType(obj.projectType);
   if (context && !parsedProjectType) {
-    throw new Error(
+    throw new PlannerContractViolation(
       'Planner JSON missing valid projectType; project shape must be classified by the LLM after clarification.',
     );
   }
@@ -772,7 +797,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
       })
       .filter((step) => !validPhaseNames.has(step.phase));
     if (nonCanonical.length > 0) {
-      throw new Error(
+      throw new PlannerContractViolation(
         `Planner draft uses non-canonical phase(s): ` +
         `${nonCanonical.map((step) => `${step.id}:${step.phase || '(missing)'}`).join(', ')}. ` +
         `V-model phases must be exactly ${REQUIRED_V_MODEL_PHASES.join(' -> ')} ` +
@@ -794,7 +819,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
   const required = [...REQUIRED_V_MODEL_PHASES];
   const missing = required.filter((p) => !phases.has(p));
   if (steps.length < required.length || missing.length > 0) {
-    throw new Error(
+    throw new PlannerContractViolation(
       `Planner draft incomplete (likely token-loop / truncation): ` +
       `got ${steps.length} step(s), phases=[${[...phases].join(',') || '(none)'}], ` +
       `missing=[${missing.join(',') || '(none)'}]. V-model requires core phases: ${required.join('/')}.`,
@@ -821,7 +846,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
         : typeof named?.name === 'string' ? named.name : undefined;
       return label ? `architectureModules.${String(index)} (${label})` : `architectureModules.${String(index)}`;
     };
-    throw new Error(
+    throw new PlannerContractViolation(
       `Planner architectureModules invalid: ${architectureResult.error.issues
         .map((issue) => {
           const [index, ...rest] = issue.path;
@@ -843,7 +868,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
     .flatMap((step) => step.outputs)
     .filter((output) => moduleTestPaths.has(output));
   if (codeOwnedModuleTests.length > 0) {
-    throw new Error(
+    throw new PlannerContractViolation(
       `Planner architecture test ownership invalid: architectureModules.testPaths are module contract tests ` +
       `authored by HIGH_LEVEL_DESIGN and consumed by MODULE_TEST; CODE must author separate unit tests. ` +
       `Remove these paths from CODE outputs or replace architectureModules.testPaths with the corresponding ` +
@@ -852,7 +877,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
   }
   const parsedComplexityAssessment = parseComplexityAssessment(obj.complexityAssessment);
   if (context && !parsedComplexityAssessment) {
-    throw new Error('Planner JSON missing valid complexityAssessment; complexity must be assessed during plan decomposition.');
+    throw new PlannerContractViolation('Planner JSON missing valid complexityAssessment; complexity must be assessed during plan decomposition.');
   }
   const complexityAssessment =
     parsedComplexityAssessment ??
@@ -867,7 +892,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
     });
   const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
   if (context && (!parsedImplementationPhases || parsedImplementationPhases.length === 0)) {
-    throw new Error('Planner JSON missing valid implementationPhases; the materialized current phase must be explicit.');
+    throw new PlannerContractViolation('Planner JSON missing valid implementationPhases; the materialized current phase must be explicit.');
   }
   const phaseIssue = parsedImplementationPhases
     ? validateImplementationPhaseDraft(
@@ -880,7 +905,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
       )
     : undefined;
   if (context && phaseIssue) {
-    throw new Error(`Planner implementationPhases invalid: ${phaseIssue}`);
+    throw new PlannerContractViolation(`Planner implementationPhases invalid: ${phaseIssue}`);
   }
   const implementationPhases = normalizeImplementationPhases(
     parsedImplementationPhases,
@@ -890,7 +915,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
   const stepsWithIterations = normalizeStepIterations(normalizedDraftStepsForValidation, implementationPhases);
   const iterationIssue = validateIterationVModelDraft(stepsWithIterations, implementationPhases);
   if (context && iterationIssue) {
-    throw new Error(`Planner iteration V-model invalid: ${iterationIssue}`);
+    throw new PlannerContractViolation(`Planner iteration V-model invalid: ${iterationIssue}`);
   }
   if (context) {
     const demand = analyzeArchitectureDemand(
@@ -908,16 +933,16 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
       context.userAddenda,
     ].join('\n'));
     if (demand.nonTrivial && !complexityAssessment.splitRecommended) {
-      throw new Error(
+      throw new PlannerContractViolation(
         `Planner complexityAssessment underestimates a non-trivial request (${demand.reasonLabel}); ` +
         'splitRecommended must be true and additional executable iterations must be planned.',
       );
     }
     if (forcedPhaseSplit && !complexityAssessment.userForcedPhaseSplit) {
-      throw new Error('Planner complexityAssessment missed the user-forced phase split request.');
+      throw new PlannerContractViolation('Planner complexityAssessment missed the user-forced phase split request.');
     }
     if (demand.nonTrivial && architectureModules.length === 0) {
-      throw new Error(
+      throw new PlannerContractViolation(
         `Planner omitted architectureModules for a non-trivial request (${demand.reasonLabel}); ` +
         'the architecture contract must provide HIGH_LEVEL_DESIGN/CODE/MODULE_TEST traceability.',
       );
@@ -944,7 +969,7 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
         demand,
       );
       if (contractIssues.length > 0) {
-        throw new Error(
+        throw new PlannerContractViolation(
           `Planner architecture contract incomplete: ${contractIssues.map((issue) => issue.message).join(' | ')}`,
         );
       }

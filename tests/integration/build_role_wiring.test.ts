@@ -12,6 +12,7 @@ import { ROLES } from '../../src/domain/planning/execution_plan.js';
 import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
 import type { AuditEvent } from '../../src/audit/audit.js';
 import type { ChatMessage } from '../../src/llm/types.js';
+import type { PhasePlan } from '../../src/domain/planning/phase_plan_checkpoint.js';
 
 /**
  * Which role actually spoke, observed from the wire.
@@ -199,7 +200,8 @@ describe('build speaks to the user as PM', () => {
     const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
     const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
       .map((line) => JSON.parse(line) as AuditEvent);
-    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input');
+    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input'
+      && (event.data!.input as BusinessRequestInput).auditContext?.kind === 'planning-clarification');
     expect(capturedInputs).toHaveLength(1);
     const original = capturedInputs[0]!.data!.input as BusinessRequestInput;
     expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'clarification', operationId: expect.any(String) });
@@ -316,7 +318,8 @@ describe('build speaks to the user as PM', () => {
     const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
     const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
       .map((line) => JSON.parse(line) as AuditEvent);
-    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input');
+    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input'
+      && (event.data!.input as BusinessRequestInput).auditContext?.kind === 'planning-phase-plan');
     expect(capturedInputs).toHaveLength(1);
     const original = capturedInputs[0]!.data!.input as BusinessRequestInput;
     expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'phase-plan', operationId: expect.any(String) });
@@ -343,5 +346,73 @@ describe('build speaks to the user as PM', () => {
     await expect(fs.stat(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'responses', `${logicalRequestId}.json`))).resolves.toBeDefined();
     const checkpoint = JSON.parse(await fs.readFile(path.join(containerRoot, 'phasePlan.json'), 'utf8'));
     expect(checkpoint.requirementDigest).toBe(JSON.parse(PHASE_PLAN_ANSWER).requirementDigest);
+    // The actual initial decomposition is also retained. Removing Build's ninth Planner argument
+    // must fail this assertion before any legacy/direct send can make it look like P03 was wired.
+    const decompositions = events.filter(event => event.messageId === 'llm.business_request_input')
+      .map(event => event.data!.input as BusinessRequestInput)
+      .filter(input => input.auditContext?.kind === 'planning-phase-decomposition');
+    expect(decompositions).toHaveLength(2);
+    expect(decompositions[0]!.owner).toMatchObject({ kind: 'planning-operation', operation: 'phase-decomposition' });
+    expect(decompositions[0]!.owner).not.toHaveProperty('projectId');
+    expect(decompositions[0]!.auditContext).toMatchObject({ phaseId: 'P1', parseContext: { language: 'python' },
+      semanticAttempt: 1, availableSkillNames: expect.any(Array) });
+    expect(decompositions[0]!.messages).toEqual(captured[1]!.messages.slice(1));
+    const decompositionSnapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules',
+      'requests', 'snapshots', `${decompositions[0]!.logicalRequestId}.json`), 'utf8'));
+    expect(decompositionSnapshot.context).toMatchObject({ role: 'Planner', scenario: 'planning-phase-decomposition', language: 'python' });
+    expect(decompositionSnapshot.context).not.toHaveProperty('projectId');
+  });
+
+  it('rejects duplicate phase identities in a reusable checkpoint and requests a new PhasePlan before decomposition', { timeout: 30_000 }, async () => {
+    const configPath = await writeConfig(root, baseUrl);
+    const topicFile = path.join(root, 'topic.md');
+    await fs.writeFile(topicFile, '# Topic\n\nBuild a small Python command that prints one greeting.\n');
+    const containerRoot = path.join(root, 'duplicate-checkpoint-container');
+    const compile = () => runCompile({ workspace: containerRoot, name: 'duplicate-checkpoint', configPath,
+      topicFile, io: cancellingIO() });
+    // Persist the accepted P02 checkpoint, then stop on deliberately invalid Step content.
+    outputForCall = call => call === 1 ? PHASE_PLAN_ANSWER : '{}';
+    await expect(compile()).rejects.toThrow();
+    const checkpointPath = path.join(containerRoot, 'phasePlan.json');
+    const checkpoint = JSON.parse(await fs.readFile(checkpointPath, 'utf8')) as PhasePlan;
+    const sourceDigest = checkpoint.sourceDigest;
+    expect(sourceDigest).toMatch(/^[a-f0-9]{64}$/u);
+    const core = { ...checkpoint.phases[0]!, verificationGate: {
+      summary: 'Verify the greeting utility.', checks: ['python src/main.py'], failurePolicy: 'Repair the owning Step.',
+    } };
+    const next: PhasePlan['phases'][number] = { ...core, id: 'P2', status: 'planned', title: 'Presentation polish',
+      objective: 'Polish the greeting presentation.', scope: ['Greeting presentation'],
+      deliverables: ['Polished greeting'], dependsOn: ['P1'], planPath: 'plan.P2.json' };
+    checkpoint.phases = [core, next, { ...next }];
+    checkpoint.complexityAssessment = { level: 'moderate', rationale: 'Core and presentation are separate iterations.',
+      splitRecommended: true, userForcedPhaseSplit: false };
+    await fs.writeFile(checkpointPath, JSON.stringify(checkpoint));
+    const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
+    const beforeLines = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean).length;
+    const beforeCalls = captured.length;
+    // The current topic/context digest is unchanged; validity is the only reason to reject reuse.
+    outputForCall = call => call === beforeCalls + 1 ? PHASE_PLAN_ANSWER : '{}';
+    await expect(compile()).rejects.toThrow();
+    const records = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean).slice(beforeLines)
+      .map(line => JSON.parse(line) as AuditEvent);
+    const rejection = records.filter(event => event.messageId === 'compile.phase_plan_checkpoint_rejected');
+    expect(rejection).toHaveLength(1);
+    expect(rejection[0]!.data).toMatchObject({ phasePlanPath: checkpointPath, reason: expect.stringContaining('duplicate implementation phase id P2') });
+    expect(records.some(event => event.messageId === 'compile.phase_plan_checkpoint_reused')).toBe(false);
+    const inputs = records.filter(event => event.messageId === 'llm.business_request_input')
+      .map(event => event.data!.input as BusinessRequestInput);
+    expect(inputs.filter(input => input.auditContext?.kind === 'planning-phase-plan')).toHaveLength(1);
+    expect(inputs[0]!.auditContext?.kind).toBe('planning-phase-plan');
+    const decompositions = inputs.filter(input => input.auditContext?.kind === 'planning-phase-decomposition');
+    expect(decompositions).toHaveLength(2);
+    expect(decompositions[0]!.auditContext).toMatchObject({ phasePlan: { implementationPhases: [
+      expect.objectContaining({ id: 'P1', status: 'current' }),
+    ] } });
+    expect(captured[beforeCalls]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(inputs[0]!.messages).toEqual(captured[beforeCalls]!.messages.slice(1));
+    const repaired = JSON.parse(await fs.readFile(checkpointPath, 'utf8')) as PhasePlan;
+    expect(repaired.sourceDigest).toBe(sourceDigest);
+    expect(repaired.phases.map(phase => phase.id)).toEqual(['P1']);
+    expect(records.filter(event => event.messageId === 'llm.business_response_retained')).toHaveLength(1);
   });
 });
