@@ -182,6 +182,60 @@ describe('build speaks to the user as PM', () => {
     expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_ROLE.Planner);
   });
 
+  it('injects the retained clarification port at the actual Build PM call before Gate 1', { timeout: 30_000 }, async () => {
+    const configPath = await writeConfig(root, baseUrl);
+    const inputFile = path.join(root, 'requirement.md');
+    const originalRequirement = 'Build a small tool that summarizes a local text file into a report.\n';
+    await fs.writeFile(inputFile, originalRequirement);
+    const containerRoot = path.join(root, 'clarification-port-container');
+    // Cancel the real Gate 1 after its question conversation. Planning and Domain publication
+    // are unnecessary to prove that this specific Build call uses the retained PM boundary.
+    await runCompile({ workspace: containerRoot, name: 'clarification-port', configPath, inputFile, io: cancellingIO() });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.ProjectManager);
+    expect(captured[0]!.messages).toHaveLength(3);
+    expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
+    expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
+    const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
+    const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as AuditEvent);
+    const capturedInputs = events.filter((event) => event.messageId === 'llm.business_request_input');
+    expect(capturedInputs).toHaveLength(1);
+    const original = capturedInputs[0]!.data!.input as BusinessRequestInput;
+    expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'clarification', operationId: expect.any(String) });
+    expect(original.owner).not.toHaveProperty('projectId');
+    expect(original.owner).not.toHaveProperty('phaseId');
+    expect(original.templateVersion).toBe('planning-clarification/1');
+    expect(original.outputProtocol).toMatchObject({ id: 'planning-clarification', version: '1', root: 'any' });
+    expect(original.messages).toEqual(captured[0]!.messages.slice(1));
+    expect(original.messages[1]!.content).toContain(originalRequirement.trim());
+    expect(original.messages[1]!.content.trimStart().startsWith('{')).toBe(false);
+    expect(original.auditContext).toMatchObject({ kind: 'planning-clarification', parseContext: {
+      language: 'python', rawRequirement: originalRequirement, intent: 'greenfield',
+      hasBaseline: false, languageAmbiguous: true, projectShapeAmbiguous: false, externalApiRequired: false,
+    } });
+    const logicalRequestId = original.logicalRequestId;
+    const retained = events.filter((event) => event.messageId === 'llm.business_response_retained');
+    expect(retained).toHaveLength(1);
+    expect(retained[0]!.data!.logicalRequestId).toBe(logicalRequestId);
+    const judgement = events.filter((event) => event.messageId === 'llm.clarification_judgement');
+    expect(judgement).toHaveLength(1);
+    expect(judgement[0]!.data).toMatchObject({ logicalRequestId, owner: original.owner,
+      responseRecordId: expect.any(String), protocolResultId: expect.any(String) });
+    expect(events.filter((event) => event.messageId === 'llm.business_protocol_result')).toHaveLength(1);
+    expect(events.find((event) => event.messageId === 'llm.business_request_attempt')!.data)
+      .toMatchObject({ request: { logicalRequestId, role: 'ProjectManager' } });
+    const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
+    expect(snapshot).toMatchObject({ context: { role: 'ProjectManager', scenario: 'planning-clarification', language: 'python' } });
+    expect(snapshot.requiredRuleIds).toHaveLength(3);
+    expect(snapshot.context).not.toHaveProperty('projectId');
+    const metadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
+    expect(metadata).not.toHaveProperty('auditContext');
+    expect(metadata).not.toHaveProperty('messages');
+    await expect(fs.stat(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'responses', `${logicalRequestId}.json`))).resolves.toBeDefined();
+    await expect(fs.stat(path.join(containerRoot, 'phasePlan.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   // The other half of the boundary: PM owns the conversation, not the planning. Routing the whole
   // build through PM would be the same mistake pointed the other way — the role that judges the
   // delivery would also be the role that wrote the plan being judged.

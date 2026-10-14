@@ -16,6 +16,10 @@ import {
 import { lintPlan } from '../domain/planning/plan_lint.js';
 import { getLanguageProfile } from '../application/execution/language_support.js';
 import {
+  CLARIFICATION_TEMPLATE_VERSION, ClarificationRequestConfigurationError,
+  buildClarificationRequestMessages, validateClarificationPayload, type ClarificationRequestPort,
+} from '../application/planning/clarification_request.js';
+import {
   PHASE_PLAN_TEMPLATE_VERSION,
   PhasePlanRequestConfigurationError,
   buildPhasePlanRequestMessages,
@@ -58,7 +62,6 @@ import {
 } from './calibration.js';
 import {
   hasExternalApiOrUrlRequirement,
-  parseClarifyJson,
   validateClarifyJson,
   type ClarificationCategory,
   type ClarifyOption,
@@ -142,6 +145,7 @@ export class Planner {
     private readonly signal?: AbortSignal,
     skills?: SkillRegistry,
     private readonly phasePlanRequest?: PhasePlanRequestPort,
+    private readonly clarificationRequest?: ClarificationRequestPort,
   ) {
     this.skills = skills ?? buildDefaultSkills();
   }
@@ -150,30 +154,35 @@ export class Planner {
     rawRequirement: string,
     opts: { intent?: PlanIntent; hasBaseline?: boolean; languageAmbiguous?: boolean } = {},
   ): Promise<ClarifyQuestion[]> {
+    if (!this.clarificationRequest) throw new ClarificationRequestConfigurationError();
+    this.signal?.throwIfAborted();
+    const operationId = randomUUID();
+    const locale = getLocale();
     const demand = analyzeArchitectureDemand(
       { requirementDigest: rawRequirement, intent: opts.intent ?? 'greenfield' },
       this.language,
     );
     const projectShapeAmbiguous = isProjectShapeAmbiguous(rawRequirement);
     const externalApiRequired = hasExternalApiOrUrlRequirement(rawRequirement);
-    const prompt = t().prompts.plannerClarify(rawRequirement, {
-      intent: opts.intent ?? 'greenfield',
-      hasBaseline: !!opts.hasBaseline,
-      complex: demand.nonTrivial,
-      projectShapeAmbiguous,
-      languageAmbiguous: !!opts.languageAmbiguous,
+    const payload = validateClarificationPayload({
+      schemaVersion: 1, kind: 'planning-clarification', templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale,
+      parseContext: { language: this.language, rawRequirement, intent: opts.intent ?? 'greenfield',
+        hasBaseline: !!opts.hasBaseline, complex: demand.nonTrivial, projectShapeAmbiguous,
+        externalApiRequired, languageAmbiguous: !!opts.languageAmbiguous },
     });
-    const rep = makeStreamReporter('Planner.clarify', this.llm.name, { enabled: this.streamOutput });
+    const context = payload.parseContext;
+    const prompts = tFor(locale).prompts;
+    const messages = buildClarificationRequestMessages({
+      systemPrompt: prompts.plannerClarifySystem,
+      userPrompt: prompts.plannerClarify(context.rawRequirement, context),
+    });
+    const rep = makeStreamReporter('Planner.clarify', this.clarificationRequest.name, { enabled: this.streamOutput });
     let provider: string | undefined;
     let text: string;
     try {
-      text = await this.llm.chat(
-        [
-          { role: 'system', content: t().prompts.plannerClarifySystem },
-          { role: 'user', content: prompt },
-        ],
-        {
-          signal: this.signal,
+      const response = await this.clarificationRequest.send({
+        operationId, payload, messages, signal: this.signal,
+        options: {
           responseFormat: 'json',
           temperature: 0.2,
           onToken: rep.onToken,
@@ -182,21 +191,20 @@ export class Planner {
             rep.reset();
             rep.setModel(`${name}/${model}`);
           },
-          // 在 provider fallback 层校验问题集质量，避免“只有两三个泛泛问题”直接进入 Gate 1。
-          validate: (t) => validateClarifyJson(t, demand.nonTrivial, {
-            projectShapeAmbiguous,
-            externalApiRequired,
-            languageAmbiguous: !!opts.languageAmbiguous,
-          }),
         },
-      );
+        validate: (text) => { validateClarifyJson(text, context.complex, context); },
+      });
+      text = response.text;
+      provider = response.provider;
+      this.signal?.throwIfAborted();
       rep.done();
     } catch (err) {
       rep.done('failed');
       throw err;
     }
     await this.audit?.plannerThought('clarify', text, { rawRequirement, provider });
-    return parseClarifyJson(text);
+    this.signal?.throwIfAborted();
+    return validateClarifyJson(text, context.complex, context);
   }
 
   async decompose(input: PlannerInput): Promise<DraftPlan> {

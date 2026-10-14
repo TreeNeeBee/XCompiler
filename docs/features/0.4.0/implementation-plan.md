@@ -1,7 +1,8 @@
 # 0.4.0 implementation plan and overall assessment
 
-Updated: 2026-10-14. This development stage extends `bff3893` (V2 response-validation prerequisite)
-on `feature/0.4.0`, tracking `origin/feature/0.4.0`; execution verification remains deferred.
+Updated: 2026-10-14. This development stage extends `d06db05` (P02 retained PhasePlan requests)
+on `feature/0.4.0`, tracking `origin/feature/0.4.0`; feature development proceeds to complete
+functional milestones before their verification, and release preparation follows last.
 The original assessment baseline was `77ff6e2`.
 This is the current sequencing and readiness assessment for the
 [development plan](0.4.0-modularisation-and-layering.md). The
@@ -129,6 +130,17 @@ size of the new schemas, provider integration and migration coverage.
 The labels below are repository work batches, not new Runtime Phase or Step objects. This sequence
 supersedes the earlier A/B1/C/B2 order where it placed evidence integration after caller migration.
 
+**Latest user sequencing update, 2026-10-14:** continue feature development first; start tests only
+after a larger functional milestone is fully implemented, and put release last. The dependency order
+is now M0 -> D1 -> F1 -> R1 -> C1 -> V1 -> V2 -> G1 -> P1. Group contracts, actual caller wiring,
+audit/recovery and regression cases into a complete milestone before executing its focused checks
+and call-site falsification. Do not interrupt development to verify each small helper. The complete affected functional gates still follow the
+remaining implementation; version updates, package assembly, release curation and publication
+remain P1 work after functional acceptance. This supersedes the earlier blanket deferral of
+executable checks. Historical checkpoint notes below retain the verification state at that time.
+Local files, subprocesses and loopback fixtures do not authorize external paid-model calls;
+fresh-project external-call scope and spending remain separately agreed.
+
 Progress reconciliation against source, 2026-10-14:
 
 | Batch | Implemented or authored | Remaining before completion |
@@ -138,13 +150,13 @@ Progress reconciliation against source, 2026-10-14:
 | F1 | Provider facts, required response audit, replay integrity/storage failures; Rule business send/final guard, J06 evidence, pre-graph planning ownership/role binding and awaited post-transport response validation authored | Remaining production callers, protocol separation and full accounting |
 | R1 | Catalogue/YAML, Selector/Decorator, index/HTTP/configuration, snapshots/durable review; installed genesis and J06 rubric; J06 Runtime selection/send with pinned evidence | Remaining approved definitions/bindings and caller migrations, full accounting and integrity at other production callers |
 | C1 | Independent response/proof gates; fixed prompt/guard; durable ledger; actual-producer Router; exact raw-audit authority; internal Runtime recovery; Executor whole-response parsing authored | Additional quote/escape proofs, full production eligibility/correction integration and remaining caller salvage removal |
-| V1 / V2 | Inputs, final attempts and adopted response authority; J06 production/recovery; Executor parsing; actual P02 Build port with audit-only context, full protocol validation and explicit recovery authored | Remaining P01/P03/Executor and instruction-source migrations, business-Rule activation and all executed verification |
-| P1 | Genesis/J06 included in required npm/standalone resources; installation/source/staging failure cases authored | Executed package/resource gates, remaining migrated definitions, release metadata and controlled business-Rule activation integration |
-| G1 | Test cases authored throughout implementation | All execution intentionally deferred until approved implementation is finished |
+| V1 / V2 | J06 and P02 production/recovery; Executor parsing; P01 full retained intake milestone implemented and checked with actual Build/PM wiring, audit-only context, protocol/business validation and explicit recovery | Remaining P03/Executor and instruction-source migrations, full production C1 correction and business-Rule activation |
+| G1 | P01 milestone: 1,476 core, 1,434 functional integration and 11 e2e cases passed; typecheck/lint/build passed; changed-call falsification executed | Other functional milestones remain; full integration is not green because release-resource checks are deferred with recorded failures |
+| P1 | Genesis/J06 resources declared; installation/source/staging cases executed during initial full integration | Ten release-resource failures recorded in HANDOVER; resolve them plus final resource assembly, metadata and reviewed Debug Rules after functional acceptance |
 
-No batch is marked verified. A source component or persisted file alone does not establish that
-Runtime invokes it. `prepareRuntimeRuleRequest` calls `RuleRequestCoordinator`, and the J06
-Phase-delivery callback now invokes that preparation; other build/run callers still do not.
+No complete batch is marked verified. A source component or persisted file alone does not establish
+that Runtime invokes it. `prepareRuntimeRuleRequest` calls `RuleRequestCoordinator`, and J06
+Phase delivery plus the P02 PhasePlan port invoke that preparation; remaining callers still do not.
 Its draft and review claim/result storage does not close Q5 or C1. An existing
 claim without a recorded result remains an explicit incomplete review, never a renewed allowance.
 
@@ -157,8 +169,8 @@ claim without a recorded result remains an explicit incomplete review, never a r
 | C1: protocol coordinator | LLM protocol service outside business roles and Rule selection | Fixed versioned template, permitted representation changes, one budget owner, nonrecursive correction, unchanged/exhausted outcomes | Q0/Q5/Q6 approved; F1 completion/raw evidence available |
 | V1: scenario vertical slice | Existing PM scenario judge and Runtime Phase-delivery caller | J06 rubric extracted once, current-evidence verdict retained, same typed PM intake; malformed outputs and calibration routed distinctly | R1/C1/F1 ready for caller integration |
 | V2: remaining approved callers | Planner clarification/PhasePlan/decomposition, Executor, role/language/project instruction owners | One authoring source per instruction; producer/validator/gate agree; selected Rule identity survives compaction, hooks and fallback; remove only superseded paths | Per-source disposition approved; V1 integration complete in code |
-| P1: release preparation | Runtime/CLI/ACP, config templates, package manifests, resource loaders and manual Debug Rule curation | Rule/Skill/Wiki resources in npm and standalone outputs; reviewed/versioned Debug Rules with source, applicability and verification evidence; release metadata, public config/docs and source-disposition map | Required caller migrations complete |
-| G1: consolidated verification | Focused contracts and wiring, then affected repository gates and artifacts | Executed results, production-call falsification, bounded repair of failures, separate environment/permission outcomes | All approved implementation edits complete |
+| G1: functional verification | Focused contracts and wiring after each complete functional milestone, then affected repository functional gates | Executed results, production-call falsification, bounded repair of failures, separate environment/permission outcomes | Complete milestone implementation; consolidate after required functional migrations |
+| P1: release preparation | Runtime/CLI/ACP, config templates, package manifests, resource loaders and manual Debug Rule curation | Rule/Skill/Wiki resources in npm and standalone outputs; reviewed/versioned Debug Rules with source, applicability and verification evidence; release metadata, public config/docs and source-disposition map | Required functional migrations and G1 acceptance complete |
 
 R1 and C1 can be developed independently after their shared contracts are fixed. Neither may ship a
 caller without its F1 evidence. V1 is the first integration target because scenario judgement is
@@ -218,6 +230,7 @@ Runtime's advancement call and the service's final save also require separate ca
 | Former Core modules | Approved responsibility split; review and test completion pending | Preserve effects, ownership and public behavior |
 | J06 scenario judgement | Rubric-only extraction and current-evidence judgement authored in YAML/Application/Runtime | Preserve classification/process/PM intake; execute production wiring and recovery tests at G1 |
 | P01-P14 instruction candidates | In-scope inventory, not fourteen already approved RuleLists | Record retained text, authoritative source, caller, binding and replaced duplicate per batch |
+| P01 clarification caller | Complete retained PM intake milestone implemented and checked; original i18n remains authoritative, with required genesis selection | Preserve question counts/coverage and J01 policies; no duplicate YAML rubric or outer repair budget; further instruction extraction remains separate |
 | P02 PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, execute actual Build/Planner/recovery wiring at G1 |
 | J01-J05 planning/design/test heuristics | Semantic replacement remains a proposal | Approve each replacement and update producer, calibration, lint and feedback together |
 | J07 disposition/completion | Existing execution/evidence checks remain authoritative | Extract instructions only within an approved batch; no gate waiver |
@@ -782,10 +795,30 @@ without sending, publishing, automatic discovery or Domain advancement. P02 inst
 in i18n until their own extraction; P01/P03 are separate. Pure, real HTTP/file and actual Build cases
 are authored, unrun; all call-site falsification and affected gates remain at G1.
 
+P01 production retention, 2026-10-14: following the latest development-first milestone order,
+Application contracts, shared audit-context union, actual Planner/Build PM port, full-response
+validation, required adoption/judgement audit and exact-ID read-only recovery are implemented.
+Original prompts and intake rules remain authoritative. Typed business refusals keep existing Router
+candidate/fallback budgets without an outer loop or C1 allowance. Invalid prototype category names
+are rejected by the original category contract. Existing source/parser/port cases and the actual
+Build injection are covered; removing Build injection and the Runtime business-validation call
+caused the corresponding tests to fail, and restored calls passed.
+
+Milestone verification: all 110 core files/1,476 cases passed; functional integration excludes only
+`installation_resources.test.ts` and passed 61 files/1,434 cases; e2e passed 2 files/11 cases;
+typecheck, lint and build passed. The earlier full integration attempt passed 1,435 cases and failed
+11: one optional-undefined snapshot assertion was corrected, while ten release-resource failures
+remain explicitly deferred to P1. This is not a green full-integration or completed 0.4 release claim.
+The node also fixed demonstrated shared URL validation, readonly language-contract signatures,
+error-preserving close/cleanup structure and storage-interruption routing before the failed audit
+sink. No release version was changed, external model called or native artifact published.
+
 ## Acceptance and verification plan
 
-Define fixtures and tests while implementing, then execute only after all approved implementation is
-complete. The following cases add to the existing project constraints:
+Define fixtures and tests while implementing; execute focused checks and changed-call falsification
+only after the larger functional milestone is complete. Consolidate affected functional gates after the remaining
+functional implementation. Release preparation follows functional acceptance. The following cases
+add to the existing project constraints:
 
 - **Rubric reuse:** current evidence and accepted premises can produce a different Bug/CR type and
   target from a highly similar earlier case. Observe the real semantic call; removing it must fail
@@ -831,8 +864,8 @@ complete. The following cases add to the existing project constraints:
   must receive prompts consistent with the already computed baseline-execution policy.
 
 At G1, run focused new cases and falsify changed production calls, followed by `test:core`,
-`test:integration`, `test:e2e`, `typecheck`, `lint`, `build`, and relevant version/package/resource
-checks. Release preparation also requires the npm package dry run and production-dependency audit.
+`test:integration`, `test:e2e`, `typecheck`, `lint` and `build`. At P1, run relevant
+version/package/resource checks, the npm package dry run and production-dependency audit.
 Record actual results and limitations; fix failures and rerun the affected gates as required.
 Fresh-project validation follows separately agreed external access and paid-model spending.
 

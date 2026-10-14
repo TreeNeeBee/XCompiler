@@ -2,8 +2,8 @@
 
 Updated: 2026-10-14
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`bff3893` (V2 response-validation prerequisite), with original baseline `77ff6e2`
-Status: implementation in progress; deliberately not validated yet
+`d06db05` (P02 retained PhasePlan requests), with original baseline `77ff6e2`
+Status: feature development in progress; tests follow complete functional milestones; release follows last
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
 LLM output-protocol calibration work. Read it together with
@@ -18,8 +18,12 @@ LLM output-protocol calibration work. Read it together with
    after inspecting all references and impact.
 2. Breaking changes are allowed for 0.4.0. Do not add compatibility wrappers for the former Core
    import paths.
-3. Finish all approved 0.4.0 implementation changes, then run one consolidated verification pass.
-   Tests may be authored now, but must not be executed before the refactor is complete.
+3. Latest update 2026-10-14: continue feature development first; test only after a larger functional
+   milestone is completely implemented, and put release preparation last. Finish each milestone's
+   contracts, actual caller wiring, audit/recovery and regression cases before focused checks and
+   call-site falsification. Consolidate affected functional gates before P1.
+   This supersedes the earlier instruction to defer every executable check until all implementation
+   was complete; historical checkpoints below retain their original unrun status.
 4. LLM output calibration repairs only the response protocol and representation. It does not know
    or decide Project, Phase, Step, Ticket, gate, permission, Bug/CR, or generated-product semantics.
 5. User-fixture planning belongs to 0.5.0, Sandbox to 0.6.0, and LLM-switch to 0.7.0.
@@ -1213,6 +1217,69 @@ Next: remaining P01/P03/Executor and instruction-source migrations, including P0
 Project scope; additional correction proofs, business-Rule activation and release preparation still
 precede G1. P02's retained production connection is authored, not all Planner migration or verification.
 
+## P01 complete retained intake milestone and verification: 2026-10-14
+
+The latest user order is feature development first, tests after a larger functional milestone is
+fully implemented, and release last. This P01 milestone closes the retained clarification request
+chain, not all Planner instruction extraction or the full 0.4 feature set.
+
+- Build injects the mandatory PM clarification port. Planner freezes locale, original messages and
+  parsing flags before awaiting collaborators; context enters required audit only and is excluded
+  from metadata/provider messages. The shared strict audit-context union preserves original P02 and
+  context-free input shapes/hashes and binds operation/template/protocol/language on capture,
+  direct retained sending and recovery.
+- The complete producer response and independent whole-JSON normalization proof precede existing
+  QA checks. Arrays and `questions`/`items` containers, category aliases, ID/option normalization,
+  7/8-10 question counts and required topic questions retain their business meaning. Known content
+  refusals use `PlannerContractViolation`; invalid non-object members are typed refusals. A guarded
+  alias lookup rejects inherited `__proto__`/`constructor` values instead of treating them as categories.
+- Existing Router candidate/fallback budgets remain, without a new outer retry or C1 allowance.
+  Ordinary errors/cancellation remain fatal. Final Plugin consistency precedes adoption/process and
+  required `llm.clarification_judgement`; existing success scoring still precedes that later storage.
+- Exact-ID recovery uses original context/snapshot/reply and re-runs original QA checks without
+  sending, writing, reading current prompts/Rules or advancing Domain/user-answer intake. Automatic
+  discovery/resumption of the whole interrupted Build intake is not introduced.
+- Node verification exposed and fixed earlier defects: Zod URL parsing normalized input before the
+  explicit whitespace rejection; three ownership assertions required exact error-detail objects;
+  legacy clarification fixtures lacked the now-required port; one recovery assertion confused
+  missing optional JSON keys with explicit `undefined`. These test corrections keep product gates.
+- Complete checks also exposed readonly language-array parameter mismatches and unsafe-finally /
+  catch-variable lint violations. Readonly signatures and explicit post-operation close/cleanup keep
+  the same behavior, including original plus cleanup failures. A reproduced storage-interruption
+  defect was fixed by invoking the existing registry deferral before writing to the failed audit
+  sink; no Bug, merge, provider retry or lost original reason is introduced.
+
+Executed checks with Node v24.16.0:
+
+| Check | Result |
+|---|---|
+| Initial P01/nearest core cases | 255 passed |
+| Initial P01/P02/J06/request/recovery integration | 176 passed |
+| Complete core gate | 110 files, 1,476 passed |
+| Functional integration, excluding only the release-resource file | 61 files, 1,434 passed |
+| e2e | 2 files, 11 passed |
+| typecheck / lint / build | Passed; build's automatic version check passed at the unchanged 0.3.0 metadata |
+| Wiring falsification | Removing P01 Build injection: 1 failure; removing Runtime business validation: 2 failures; restored full P01/Build files: 45 passed |
+| Repair falsification | Removing registry storage deferral: 1 failure; removing the real config URL-schema binding: 10 failures; restoring the prior unsafe category lookup: 2 failures; restored cases passed |
+
+Restricted loopback runs produced `EPERM`/timeouts, not product failures; exact local-test commands
+were approved for escalation and reran successfully. No external model or paid-model call was made.
+Temporary mutation edits were restored. Reports are local under `/private/tmp/xcompiler-p01-*.json`
+and are not repository artifacts.
+
+**Full integration remains open:** the initial unfiltered run passed 1,435 cases and failed 11.
+The planning snapshot assertion is fixed. The remaining ten failures are in
+`tests/integration/installation_resources.test.ts`: four isolated ESM resource probes encounter
+`Dynamic require of "process" is not supported`, and six standalone source/staging guard cases fail
+their expected error-output assertions. Their fixtures/product boundary still needs P1 investigation;
+do not label them passed or silently remove them from final acceptance. The explicit functional
+filter follows the user's release-last order and does not change test configuration or relax a gate.
+
+Next functional milestone: P03 decomposition and its real post-graph Project scope, then full
+Executor and instruction-source migrations, production C1 correction and business-Rule activation.
+Run their checks only once the corresponding larger milestone is fully implemented. P1 release
+metadata, native/resource work, Debug Rule curation and the recorded resource failures stay last.
+
 ## Work not started or not complete
 
 ### 1. Finish module-boundary review
@@ -1292,9 +1359,10 @@ Q6 A fixes the actual original producer/model and at most one logical correction
 quote/escape repair is selected subject to individual value-preservation proofs. Implement those
 proofs, request accounting and integration; do not treat the choice as blanket semantic repair.
 
-### 5. Consolidated verification only after implementation
+### 5. Functional verification before release
 
-When all approved 0.4.0 work is complete, run the full matrix in the project constraints:
+Complete each larger functional milestone before executing focused checks and call-site falsification.
+After the required functional implementation, consolidate the matrix in the project constraints:
 
 1. focused new Rule, calibration, architecture, and wiring tests;
 2. `npm run test:core`;
@@ -1302,7 +1370,12 @@ When all approved 0.4.0 work is complete, run the full matrix in the project con
 4. `npm run test:e2e`;
 5. `npm run typecheck` and `npm run lint`;
 6. `npm run build`;
-7. package/resource checks and a fresh 0.4 project validation after external model use is approved.
+7. a fresh 0.4 project validation after external model use is approved.
+
+P1 follows functional acceptance: finish release metadata, remaining resource assembly and reviewed
+Debug Rules, then run package/resource/version checks, the npm package dry run and the
+production-dependency audit. Moving release last does not postpone business-Rule activation or
+other functional behavior into release work.
 
 Falsify production wiring by removing each new call and confirming the relevant test fails. A helper
 test alone is not sufficient evidence.
@@ -1328,8 +1401,9 @@ do not run broad staging until the user explicitly asks to prepare a commit.
 
 ## Verification record for this handover
 
-Since implementation began, no test, typecheck, lint, build, package, external model call,
-or generated-project run has been performed. Checks have been limited to static source, dependency,
+Before the 2026-10-14 sequencing update, no test, typecheck, lint, build, package, external model call,
+or generated-project run had been performed. Checks had been limited to static source, dependency,
 path, document consistency, whitespace and Git inspection. Git network access on 2026-09-28 is for
 the user's requested branch synchronization and stage publication, not a product/provider test.
-Runtime verification remains intentionally deferred per the user's requested order.
+That blanket deferral is superseded by active user decision 3. Record current executed outcomes
+separately; do not infer full acceptance from focused checks.

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Planner } from '../src/agents/planner.js';
 import { LLMRequestError } from '../src/llm/errors.js';
 import type { PhasePlanRequestPort } from '../src/application/planning/phase_plan_request.js';
+import type { ClarificationRequestPort } from '../src/application/planning/clarification_request.js';
 import type { Language } from '../src/domain/planning/execution_plan.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 
@@ -17,6 +18,19 @@ function plannerWithPhasePlanPort(llm: LLMClient, language: Language = 'python')
     },
   };
   return new Planner(llm, undefined, language, false, undefined, undefined, port);
+}
+
+function plannerWithClarificationPort(llm: LLMClient): Planner {
+  const port: ClarificationRequestPort = {
+    name: llm.name,
+    async send(input) {
+      const text = await llm.chat([...input.messages], {
+        ...input.options, validate: input.validate, signal: input.signal,
+      });
+      return { text, provider: llm.name };
+    },
+  };
+  return new Planner(llm, undefined, 'python', false, undefined, undefined, undefined, port);
 }
 
 function fakeLLM(reply: string | string[]): LLMClient {
@@ -274,6 +288,14 @@ const languageClarificationQuestion = {
 };
 
 describe('Planner.decompose — V 模型骨架完整性校验', () => {
+  it('澄清缺少 Runtime 接口时明确报错，不回退到直接模型调用', async () => {
+    const seen: ChatMessage[][] = [];
+    const planner = new Planner(observingLLM(JSON.stringify(projectShapeQuestions), seen));
+    await expect(planner.clarify('Build an API for weather data'))
+      .rejects.toMatchObject({ code: 'clarification_request_not_configured' });
+    expect(seen).toHaveLength(0);
+  });
+
   it('澄清阶段在 API/library 与应用形态不明时必须提出项目形态问题', async () => {
     const questionsWithoutShape = projectShapeQuestions.map((question) =>
       question.id === 'Q6'
@@ -284,31 +306,31 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
           }
         : question,
     );
-    const p = new Planner(fakeLLM(JSON.stringify(questionsWithoutShape)));
+    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(questionsWithoutShape)));
     await expect(p.clarify('Build an API for weather data')).rejects.toThrow(/project shape question/);
   });
 
   it('澄清阶段接受显式 API library / application / mixed 边界问题', async () => {
-    const p = new Planner(fakeLLM(JSON.stringify(projectShapeQuestions)));
+    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(projectShapeQuestions)));
     const questions = await p.clarify('Build an API for weather data');
     expect(questions.some((question) => question.question.includes('API library'))).toBe(true);
   });
 
   it('澄清阶段在外部 API 需求中必须确认凭证或免 key 接口策略', async () => {
     const questionsWithoutCredential = projectShapeQuestions.filter((question) => question.id !== 'Q9');
-    const p = new Planner(fakeLLM(JSON.stringify(questionsWithoutCredential)));
+    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(questionsWithoutCredential)));
     await expect(p.clarify('Build a CLI that fetches weather data from an external API')).rejects.toThrow(/external API credential question/);
   });
 
   it('澄清阶段在 topic 无法判断开发语言时必须确认 Python 或 TypeScript', async () => {
-    const p = new Planner(fakeLLM(JSON.stringify(projectShapeQuestions)));
+    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(projectShapeQuestions)));
     await expect(
       p.clarify('Build a report generator tool', { languageAmbiguous: true }),
     ).rejects.toThrow(/development language question/);
   });
 
   it('澄清阶段接受开发语言确认问题', async () => {
-    const p = new Planner(fakeLLM(JSON.stringify([...projectShapeQuestions, languageClarificationQuestion])));
+    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify([...projectShapeQuestions, languageClarificationQuestion])));
     const questions = await p.clarify('Build a report generator tool', { languageAmbiguous: true });
     expect(questions.some((question) => question.question.includes('development language'))).toBe(true);
   });

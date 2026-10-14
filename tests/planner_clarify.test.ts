@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Planner } from '../src/agents/planner.js';
+import type { ClarificationRequestPort } from '../src/application/planning/clarification_request.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 
 function fakeLLM(reply: string): LLMClient {
@@ -11,6 +12,20 @@ function fakeLLM(reply: string): LLMClient {
       return reply;
     },
   };
+}
+
+function plannerWithClarificationPort(reply: string): Planner {
+  const llm = fakeLLM(reply);
+  const port: ClarificationRequestPort = {
+    name: llm.name,
+    async send(input) {
+      const text = await llm.chat([...input.messages], {
+        ...input.options, validate: input.validate, signal: input.signal,
+      });
+      return { text, provider: llm.name };
+    },
+  };
+  return new Planner(llm, undefined, 'python', false, undefined, undefined, undefined, port);
 }
 
 const options = [
@@ -48,7 +63,7 @@ const standardQuestions = [
 
 describe('Planner.clarify — multi-dimensional quality gate', () => {
   it('accepts a function-first seven-question set', async () => {
-    const p = new Planner(fakeLLM(JSON.stringify(standardQuestions)));
+    const p = plannerWithClarificationPort(JSON.stringify(standardQuestions));
     const questions = await p.clarify('Create a small customer lookup CLI application.');
     expect(questions).toHaveLength(7);
     expect(questions[0]).toMatchObject({ id: 'Q1', category: 'functionality' });
@@ -60,7 +75,7 @@ describe('Planner.clarify — multi-dimensional quality gate', () => {
     const aliased = standardQuestions.map((question) => ({ ...question }));
     aliased[3]!.category = 'scope';
     aliased[4]!.category = 'performance';
-    const p = new Planner(fakeLLM(JSON.stringify({ questions: aliased })));
+    const p = plannerWithClarificationPort(JSON.stringify({ questions: aliased }));
     const questions = await p.clarify('Create a small customer lookup CLI application.');
     expect(questions[3]?.category).toBe('boundary');
     expect(questions[4]?.category).toBe('quality');
@@ -70,42 +85,42 @@ describe('Planner.clarify — multi-dimensional quality gate', () => {
     const questionsWithProjectShapeOptions = standardQuestions.map((question) => ({ ...question }));
     questionsWithProjectShapeOptions[3] = projectShapeQuestion;
 
-    const p = new Planner(fakeLLM(JSON.stringify(questionsWithProjectShapeOptions)));
+    const p = plannerWithClarificationPort(JSON.stringify(questionsWithProjectShapeOptions));
     await expect(p.clarify('Build a customer lookup capability.')).resolves.toHaveLength(7);
   });
 
   it('rejects empty or underspecified question sets so fallback can regenerate them', async () => {
-    await expect(new Planner(fakeLLM('[]')).clarify('x')).rejects.toThrow(/no questions/);
+    await expect(plannerWithClarificationPort('[]').clarify('x')).rejects.toThrow(/no questions/);
     await expect(
-      new Planner(fakeLLM(JSON.stringify(standardQuestions.slice(0, 3)))).clarify('x'),
+      plannerWithClarificationPort(JSON.stringify(standardQuestions.slice(0, 3))).clarify('x'),
     ).rejects.toThrow(/expected 7-10 unique questions/);
   });
 
   it('rejects legacy questions without category and rationale', async () => {
     const legacy = standardQuestions.map(({ id, question }) => ({ id, question }));
     await expect(
-      new Planner(fakeLLM(JSON.stringify(legacy))).clarify('Create a command.'),
+      plannerWithClarificationPort(JSON.stringify(legacy)).clarify('Create a command.'),
     ).rejects.toThrow(/valid category/);
   });
 
   it('rejects clarification questions without prioritized answer options', async () => {
     const withoutOptions = standardQuestions.map(({ options: _options, ...question }) => question);
     await expect(
-      new Planner(fakeLLM(JSON.stringify(withoutOptions))).clarify('Create a command.'),
+      plannerWithClarificationPort(JSON.stringify(withoutOptions)).clarify('Create a command.'),
     ).rejects.toThrow(/2-5 prioritized answer options/);
   });
 
   it('rejects duplicate questions after normalization', async () => {
     const duplicated = [...standardQuestions, { ...standardQuestions[0]!, id: 'Q7', question: 'Who is the primary user of this capability？' }];
     await expect(
-      new Planner(fakeLLM(JSON.stringify(duplicated))).clarify('Create a command.'),
+      plannerWithClarificationPort(JSON.stringify(duplicated)).clarify('Create a command.'),
     ).rejects.toThrow(/duplicate or empty questions/);
   });
 
   it('requires one additional function-focused question for a complex topic', async () => {
     const topic = 'Build a complex API platform with CLI, database persistence, import/export and a dashboard.';
     await expect(
-      new Planner(fakeLLM(JSON.stringify(standardQuestions))).clarify(topic),
+      plannerWithClarificationPort(JSON.stringify(standardQuestions)).clarify(topic),
     ).rejects.toThrow(/expected 8-10 unique questions/);
 
     // A complex topic spanning API platform, CLI and dashboard leaves the deliverable shape
@@ -115,7 +130,7 @@ describe('Planner.clarify — multi-dimensional quality gate', () => {
       withOptions({ id: 'Q8', category: 'functionality', question: 'What state transition completes the main workflow?', why: 'Defines the core lifecycle.' }),
     ];
     await expect(
-      new Planner(fakeLLM(JSON.stringify(deepQuestions))).clarify(topic),
+      plannerWithClarificationPort(JSON.stringify(deepQuestions)).clarify(topic),
     ).resolves.toHaveLength(8);
   });
 });

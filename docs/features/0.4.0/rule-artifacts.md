@@ -1,8 +1,9 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-14. This describes authored F1/R1 components, J06 production composition and
-pre-graph planning identity. All related tests are authored and unrun; installed behavior is not yet
-verified. The approved behavior is in
+Updated 2026-10-14. This describes authored F1/R1 components, J06/P02 production composition and
+pre-graph planning identity. Initial focused checks have run; complete functional milestones are
+verified before further development and release remains last. Installed behavior is not yet
+verified. Current results are recorded in HANDOVER. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
 
 ## YAML definitions and source authority
@@ -554,7 +555,35 @@ Plugin identity precedes adoption/process and required P02 judgement audit. Expl
 verifies original context/evidence, re-runs pure parsing and sends/writes/advances nothing; no current
 i18n/Rules/project files or automatic request discovery are involved. Existing scoring precedes
 Plugin after/adoption/judgement storage and is not rolled back on later failure. P01/P03 are separate.
-Pure, real file/HTTP and Build cases are authored, unrun; actual-call falsification remains at G1.
+Pure, real file/HTTP and Build cases passed during the P01 node's nearest-path checks; full 0.4
+acceptance and the remaining call-site falsification are still open.
+
+### P01 clarification production retention
+
+Build injects `createRuntimeClarificationRequestPort` into the existing PM clarification caller.
+`Planner.clarify` requires that port; it cannot fall back to an unaudited direct send. It pins the
+locale, original system/user messages and parsing flags before awaiting collaborators. The typed
+`planning-clarification/1` context extends the existing audit-only union; input digests bind it,
+metadata excludes it, and required Rule snapshots retain the same language and PM operation.
+No raw parsing context is added to provider messages. Existing i18n instructions remain the single
+framework source until their own approved extraction; J01 policies and question-count/coverage
+requirements remain in code.
+
+The complete response and independent normalization proof precede original clarification checks.
+The protocol root is `any` so existing arrays and `questions`/`items` containers remain business
+formats; scalar/no-question content fails the unchanged intake contract. Known contract refusals
+are typed business failures; protocol failures are separate. Cancellation and other errors escape
+candidate retry/fallback. There is no new outer repair loop or C1 allowance. Plugin final consistency
+precedes adoption and required `llm.clarification_judgement`; existing Router success scoring still
+precedes Plugin after/adoption/judgement and is not rolled back on later storage failure.
+
+`resumeRuntimeClarificationRequest` restores one adopted original request/context/snapshot/reply,
+re-runs its original question checks and returns the questions. It sends, writes and advances nothing,
+reads no latest prompts/Rules/project files, and does not automatically discover interrupted intake
+or recreate user answers. This P01 milestone's implementation and regression cases were completed
+before tests ran. Core, functional integration and e2e gates passed, and actual Build/validation calls
+were falsified and restored. Release-resource failures are separately recorded in HANDOVER; P03
+and full Executor migration remain separate.
 
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; build/run caller migration, production request

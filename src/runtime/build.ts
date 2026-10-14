@@ -73,6 +73,7 @@ import {
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { validateImplementationPhaseDraft } from '../agents/planning/phase_strategy.js';
 import { createRuntimePhasePlanRequestPort } from './phase_plan_request.js';
+import { createRuntimeClarificationRequestPort } from './clarification_request.js';
 
 export {
   formatClarificationQuestion,
@@ -305,6 +306,8 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       io.terminalOutput === true,
       opts.abortSignal,
       capabilities.skills,
+      undefined,
+      createRuntimeClarificationRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
     );
     trace('ora.clarify.start');
     const spin = io.progress(M.compile.spinClarify, { animate: false });

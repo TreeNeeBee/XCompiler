@@ -9,8 +9,11 @@ import {
 } from '../rules/rule_request_snapshot.js';
 import type { RuleReviewEvidenceVerifier } from '../rules/rule_review_evidence.js';
 import {
-  PhasePlanPayloadSchema, PHASE_PLAN_PROTOCOL, type PhasePlanPayload,
+  PhasePlanPayloadSchema, PHASE_PLAN_PROTOCOL,
 } from '../planning/phase_plan_request.js';
+import {
+  ClarificationPayloadSchema, CLARIFICATION_PROTOCOL,
+} from '../planning/clarification_request.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
@@ -40,11 +43,16 @@ const Identity = z.object({
   templateVersion: Text, outputProtocol: JsonOutputProtocolSchema, snapshotDigest: RuleDigestSchema,
 }).strict();
 
+export const BusinessRequestAuditContextSchema = z.discriminatedUnion('kind', [
+  PhasePlanPayloadSchema, ClarificationPayloadSchema,
+]);
+export type BusinessRequestAuditContext = z.infer<typeof BusinessRequestAuditContextSchema>;
+
 export const BusinessRequestInputSchema = Identity.extend({
   // Framework material only; the separately pinned Rule snapshot owns Rule instructions.
   messages: z.array(z.object({ role: z.enum(['system', 'user', 'assistant']), content: z.string() }).strict()).min(1),
   // Recovery-only framework context. It is audited and hashed, never rendered or stored in metadata.
-  auditContext: PhasePlanPayloadSchema.optional(),
+  auditContext: BusinessRequestAuditContextSchema.optional(),
 }).strict();
 export const BusinessRequestInputRecordSchema = Identity.extend({
   recordId: UUID, inputDigest: RuleDigestSchema, createdAt: z.iso.datetime(), digest: RuleDigestSchema,
@@ -83,7 +91,7 @@ export function businessRequestRole(owner: BusinessRequestOwner): 'ProjectManage
 
 /** These materials are already validated; this checks their shared request ownership boundary. */
 export function assertBusinessRequestSnapshotOwner(
-  snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: PhasePlanPayload,
+  snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: BusinessRequestAuditContext,
 ): void {
   const scopeMatches = owner.kind === 'scenario-judgement'
     ? snapshot.context.projectId?.toLowerCase() === owner.projectId
@@ -241,7 +249,7 @@ export class BusinessRequestInputs {
 
   private async snapshot(
     id: string, owner: BusinessRequestInput['owner'], digest: string | undefined, signal?: AbortSignal,
-    auditContext?: PhasePlanPayload,
+    auditContext?: BusinessRequestAuditContext,
   ): Promise<RuleRequestSnapshot> {
     const stored = await this.snapshots.read(id);
     signal?.throwIfAborted();
@@ -259,9 +267,11 @@ export class BusinessRequestInputs {
 
 function assertAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId' | 'owner' | 'templateVersion' | 'outputProtocol' | 'auditContext'>): void {
   if (input.auditContext === undefined) return;
-  if (input.owner.kind !== 'planning-operation' || input.owner.operation !== 'phase-plan'
+  const operation = input.auditContext.kind === 'planning-phase-plan' ? 'phase-plan' : 'clarification';
+  const protocol = input.auditContext.kind === 'planning-phase-plan' ? PHASE_PLAN_PROTOCOL : CLARIFICATION_PROTOCOL;
+  if (input.owner.kind !== 'planning-operation' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion
-    || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(PHASE_PLAN_PROTOCOL)) {
+    || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(protocol)) {
     throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });
   }
 }

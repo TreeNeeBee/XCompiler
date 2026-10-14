@@ -297,10 +297,12 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
     expect(inputs).toHaveLength(2);
     expect(inputs[0]!.logicalRequestId).not.toBe(inputs[1]!.logicalRequestId);
     expect(inputs[0]!.owner).toEqual(inputs[1]!.owner);
-    expect(inputs[0]!.auditContext?.semanticAttempt).toBe(1);
-    expect(inputs[1]!.auditContext?.semanticAttempt).toBe(2);
-    expect(inputs[1]!.auditContext?.repairFeedback).toContain('requirementDigest');
-    expect(inputs[1]!.messages[1]!.content).toBe(inputs[0]!.messages[1]!.content + inputs[1]!.auditContext!.repairFeedback);
+    const firstContext = validatePhasePlanPayload(inputs[0]!.auditContext);
+    const secondContext = validatePhasePlanPayload(inputs[1]!.auditContext);
+    expect(firstContext.semanticAttempt).toBe(1);
+    expect(secondContext.semanticAttempt).toBe(2);
+    expect(secondContext.repairFeedback).toContain('requirementDigest');
+    expect(inputs[1]!.messages[1]!.content).toBe(inputs[0]!.messages[1]!.content + secondContext.repairFeedback);
     const attempts = records.filter(event => event.messageId === 'llm.business_request_attempt');
     expect(attempts).toHaveLength(5);
     expect(new Set(attempts.map(event => (event.data!.request as { providerAttemptId: string }).providerAttemptId)).size).toBe(5);
@@ -325,7 +327,8 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
       expect(inputs).toHaveLength(attempts);
       expect(new Set(inputs.map(input => input.logicalRequestId)).size).toBe(attempts);
       expect(new Set(inputs.map(input => JSON.stringify(input.owner))).size).toBe(1);
-      expect(inputs.map(input => input.auditContext!.semanticAttempt)).toEqual(Array.from({ length: attempts }, (_, index) => index + 1));
+      expect(inputs.map(input => validatePhasePlanPayload(input.auditContext).semanticAttempt))
+        .toEqual(Array.from({ length: attempts }, (_, index) => index + 1));
       expect(records.filter(event => event.messageId === 'planner.validation_retry')).toHaveLength(attempts - 1);
       expect(records.some(event => event.messageId === 'llm.business_response_retained')).toBe(false);
       expect(current.boost).not.toHaveBeenCalled();

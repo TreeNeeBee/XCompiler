@@ -1,4 +1,4 @@
-import { parsePlannerJson } from './json.js';
+import { PlannerContractViolation } from './validation_retry.js';
 
 export const CLARIFICATION_CATEGORIES = [
   'functionality',
@@ -35,7 +35,7 @@ interface RawClarifyQuestion {
 }
 
 export function parseClarifyJson(text: string): ClarifyQuestion[] {
-  const raw = coerceClarifyArray(parsePlannerJson(text));
+  const raw = coerceClarifyArray(JSON.parse(text));
   const seenQuestions = new Set<string>();
   const seenIds = new Set<string>();
   const questions: ClarifyQuestion[] = [];
@@ -72,52 +72,52 @@ export function validateClarifyJson(
     languageAmbiguous?: boolean;
   } = {},
 ): ClarifyQuestion[] {
-  const raw = coerceClarifyArray(parsePlannerJson(text));
+  const raw = coerceClarifyArray(JSON.parse(text));
   if (raw.length === 0) {
-    throw new Error('clarify returned no questions; interactive intake requires a multi-dimensional question set');
+    throw new PlannerContractViolation('clarify returned no questions; interactive intake requires a multi-dimensional question set');
   }
   for (const [index, question] of raw.entries()) {
     if (typeof question.question !== 'string' || question.question.trim().length < 6) {
-      throw new Error(`clarify question ${index + 1} is missing or too short`);
+      throw new PlannerContractViolation(`clarify question ${index + 1} is missing or too short`);
     }
     if (!parseClarificationCategory(question.category)) {
-      throw new Error(`clarify question ${index + 1} is missing a valid category`);
+      throw new PlannerContractViolation(`clarify question ${index + 1} is missing a valid category`);
     }
     if (typeof question.why !== 'string' || question.why.trim().length < 4) {
-      throw new Error(`clarify question ${index + 1} is missing a concise why field`);
+      throw new PlannerContractViolation(`clarify question ${index + 1} is missing a concise why field`);
     }
     const rawOptions = Array.isArray(question.options) ? question.options : [];
     const parsedOptions = parseClarifyOptions(question.options);
     if (rawOptions.length < 2 || rawOptions.length > 5 || parsedOptions.length !== rawOptions.length) {
-      throw new Error(`clarify question ${index + 1} must include 2-5 prioritized answer options`);
+      throw new PlannerContractViolation(`clarify question ${index + 1} must include 2-5 prioritized answer options`);
     }
   }
   const parsed = parseClarifyJson(text);
   if (parsed.length !== raw.length) {
-    throw new Error(`clarify contains duplicate or empty questions (${raw.length} raw, ${parsed.length} unique)`);
+    throw new PlannerContractViolation(`clarify contains duplicate or empty questions (${raw.length} raw, ${parsed.length} unique)`);
   }
   const minQuestions = complex ? 8 : 7;
   if (parsed.length < minQuestions || parsed.length > 10) {
-    throw new Error(`clarify expected ${minQuestions}-10 unique questions, got ${parsed.length}`);
+    throw new PlannerContractViolation(`clarify expected ${minQuestions}-10 unique questions, got ${parsed.length}`);
   }
   const count = (category: ClarificationCategory): number =>
     parsed.filter((question) => question.category === category).length;
   const functionalCount = count('functionality') + count('data') + count('acceptance');
   const minFunctional = complex ? 5 : 4;
   if (functionalCount < minFunctional) {
-    throw new Error(`clarify requires at least ${minFunctional} function-focused questions, got ${functionalCount}`);
+    throw new PlannerContractViolation(`clarify requires at least ${minFunctional} function-focused questions, got ${functionalCount}`);
   }
   for (const required of ['boundary', 'quality', 'extensibility'] as const) {
-    if (count(required) === 0) throw new Error(`clarify missing required ${required} question`);
+    if (count(required) === 0) throw new PlannerContractViolation(`clarify missing required ${required} question`);
   }
   if (options.projectShapeAmbiguous && !parsed.some(isProjectShapeClarification)) {
-    throw new Error('clarify missing required project shape question: ask whether this should be an API library, runnable application, or mixed deliverable');
+    throw new PlannerContractViolation('clarify missing required project shape question: ask whether this should be an API library, runnable application, or mixed deliverable');
   }
   if (options.externalApiRequired && !parsed.some(isExternalApiCredentialClarification)) {
-    throw new Error('clarify missing required external API credential question: ask whether the user has an API/key/token; if not, default to open no-key APIs');
+    throw new PlannerContractViolation('clarify missing required external API credential question: ask whether the user has an API/key/token; if not, default to open no-key APIs');
   }
   if (options.languageAmbiguous && !parsed.some(isDevelopmentLanguageClarification)) {
-    throw new Error('clarify missing required development language question: ask whether the project should use Python or TypeScript/Node.js, with Python as the default option');
+    throw new PlannerContractViolation('clarify missing required development language question: ask whether the project should use Python or TypeScript/Node.js, with Python as the default option');
   }
   return parsed;
 }
@@ -135,14 +135,20 @@ export function hasExternalApiOrUrlRequirement(text: string): boolean {
 }
 
 function coerceClarifyArray(data: unknown): RawClarifyQuestion[] {
-  if (Array.isArray(data)) return data as RawClarifyQuestion[];
-  if (data && typeof data === 'object') {
+  let questions: unknown[] = [];
+  if (Array.isArray(data)) questions = data;
+  else if (data && typeof data === 'object') {
     const object = data as Record<string, unknown>;
-    if (Array.isArray(object.questions)) return object.questions as RawClarifyQuestion[];
-    if (Array.isArray(object.items)) return object.items as RawClarifyQuestion[];
-    if (typeof object.question === 'string') return [object as RawClarifyQuestion];
+    if (Array.isArray(object.questions)) questions = object.questions;
+    else if (Array.isArray(object.items)) questions = object.items;
+    else if (typeof object.question === 'string') questions = [object];
   }
-  return [];
+  for (const [index, item] of questions.entries()) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new PlannerContractViolation(`clarify question ${index + 1} must be an object`);
+    }
+  }
+  return questions as RawClarifyQuestion[];
 }
 
 const CATEGORY_ALIASES: Record<string, ClarificationCategory> = {
@@ -155,7 +161,8 @@ const CATEGORY_ALIASES: Record<string, ClarificationCategory> = {
 };
 
 function parseClarificationCategory(value: unknown): ClarificationCategory | undefined {
-  return CATEGORY_ALIASES[typeof value === 'string' ? value.trim().toLowerCase() : ''];
+  const key = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return Object.hasOwn(CATEGORY_ALIASES, key) ? CATEGORY_ALIASES[key] : undefined;
 }
 
 function parseClarifyOptions(value: unknown): ClarifyOption[] {
