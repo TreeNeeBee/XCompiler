@@ -1,13 +1,10 @@
 import {
   inspectJsonProtocol, proveJsonProtocolCorrection,
-  type JsonOutputProtocol, type JsonProtocolDiagnostic,
+  type JsonProtocolDiagnostic,
 } from '../../llm/protocol_json.js';
+import { EXECUTION_TURN_PROTOCOL } from '../../application/execution/execution_turn_request.js';
 
-const EXECUTION_TURN_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
-Object.freeze(EXECUTION_TURN_TRANSFORMATIONS);
-export const EXECUTION_TURN_PROTOCOL: JsonOutputProtocol = Object.freeze({
-  id: 'execution-turn', version: '1', root: 'object', transformations: EXECUTION_TURN_TRANSFORMATIONS,
-});
+export { EXECUTION_TURN_PROTOCOL } from '../../application/execution/execution_turn_request.js';
 
 export class ExecutionTurnProtocolError extends Error {
   readonly code = 'execution_turn_protocol_invalid';

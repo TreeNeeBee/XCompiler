@@ -16,7 +16,7 @@ import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js
 
 type RuntimeBusinessSend = {
   container: ProjectContainer; audit: AuditLogger; router: Pick<LLMRouter, 'for'>;
-  request: BusinessRequestInputCapture; options?: RuleBusinessChatOptions;
+  request: BusinessRequestInputCapture; options?: RuleBusinessChatOptions; providerPool?: readonly string[];
 };
 
 /** Internal retained send. The caller owns the operation and its already persisted Rule selection. */
@@ -33,7 +33,16 @@ export async function sendRuntimeValidatedBusinessRequest(input: RuntimeBusiness
   return sendCapturedRuntimeBusinessRequest(input, input.validateResponse);
 }
 
-async function sendCapturedRuntimeBusinessRequest(input: RuntimeBusinessSend, validator?: NonNullable<ChatOptions['validateResponse']>) {
+/** Dedicated Executor path retains its original Actor pool, deterministic rendering and outcome scoring. */
+export async function sendRuntimeExecutionBusinessRequest(input: RuntimeBusinessSend & {
+  validateResponse: NonNullable<ChatOptions['validateResponse']>;
+  prepareProviderRequest: NonNullable<ChatOptions['prepareProviderRequest']>;
+}) {
+  return sendCapturedRuntimeBusinessRequest(input, input.validateResponse, input.prepareProviderRequest);
+}
+
+async function sendCapturedRuntimeBusinessRequest(input: RuntimeBusinessSend, validator?: NonNullable<ChatOptions['validateResponse']>,
+  projection?: NonNullable<ChatOptions['prepareProviderRequest']>) {
   const { container, audit, router } = input;
   const signal = input.request.signal;
   signal?.throwIfAborted();
@@ -42,13 +51,17 @@ async function sendCapturedRuntimeBusinessRequest(input: RuntimeBusinessSend, va
   const captured = await inputs.capture(input.request);
   signal?.throwIfAborted();
   const location = Object.freeze({ auditRoot: container.state.abs('audit'), containerRoot: container.root });
-  const sender = new LLMRuleBusinessRequest(router.for(businessRequestRole(captured.input.owner)), new RuleDecorator());
+  const role = businessRequestRole(captured.input.owner);
+  const client = input.providerPool ? router.for(role, { providerPool: [...input.providerPool] }) : router.for(role);
+  const sender = new LLMRuleBusinessRequest(client, new RuleDecorator());
   const prepared = {
     snapshot: captured.snapshot, original: captured.input, record: captured.record, options, signal, location,
     store: new FileBusinessRequestAttemptStore(container.state.abs('llm', 'business-inputs'), container.root),
     audit: new BusinessRequestAttemptAuditAdapter(audit, location.auditRoot, container.root),
   };
-  const result = await (validator ? sender.sendValidatedInput({ ...prepared, validateResponse: validator }) : sender.sendInput(prepared));
+  const result = await (projection && validator
+    ? sender.sendExecutionInput({ ...prepared, validateResponse: validator, prepareProviderRequest: projection })
+    : validator ? sender.sendValidatedInput({ ...prepared, validateResponse: validator }) : sender.sendInput(prepared));
   signal?.throwIfAborted();
   if (!result.retainedAttempt) throw new RuleBusinessRequestError('response_evidence_invalid', {
     logicalRequestId: captured.record.logicalRequestId, kind: 'missing-final-request',

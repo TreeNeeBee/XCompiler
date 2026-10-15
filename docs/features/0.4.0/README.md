@@ -3,7 +3,20 @@
 Status: feature implementation in progress; tests follow complete functional milestones and release
 preparation follows functional acceptance. Updated 2026-10-15.
 
-Latest checkpoint: P03 phase decomposition is now retained in both Build (pre-graph planning
+Latest checkpoint: the complete Executor retained-request node is implemented and verified through
+Runtime Run, AttemptRunner and StepExecutor. It binds original prompt
+context, canonical work scope, actual role and Actor model pool to Rules, attempts and adopted output.
+Whole producer completion/protocol/proof precedes original business checks and Tool/permission
+effects. Existing round budgets and outcome scoring are preserved. A trusted actual-provider
+projection keeps dynamic prompt and Tool windows consistent while protecting all selected Rule and
+other message bytes. Exact-ID recovery is read-only and grants no Tool replay or lifecycle progress.
+P04-P14 retain their original instruction sources; production C1 and further extraction are separate.
+The restored final gates passed 1,651 core, 1,483 functional-integration and 11 e2e cases,
+typecheck/lint/build, and 24 actual-call removal checks. Typed content refusal now survives Runner
+and PM without creating a generated-project Bug. Final results and limits are recorded in HANDOVER;
+the [review handover](2026-10-15-executor-review-handover.md) describes scope and review priorities.
+
+Previous checkpoint: P03 phase decomposition is now retained in both Build (pre-graph planning
 operation) and Run phase progression (real canonical Project identity). Original i18n messages
 remain authoritative. The approved PhasePlan/current phase, parse context and available Skill names
 are audit-only recovery inputs; no new Domain lifecycle state is added. The complete milestone
@@ -14,7 +27,7 @@ phase validator now rejects duplicate identifiers before P02 adoption or checkpo
 P01's complete retained PM intake milestone passed 1,476 core, 1,434 functional-integration and 11 e2e
 cases, plus typecheck/lint/build and actual-call falsification. P02/J06 and foundation checks were
 included. Full integration remains open: ten release-resource failures are recorded in HANDOVER and
-deferred to P1. Full Executor migration, remaining instruction extraction, production C1 and
+deferred to P1. Remaining instruction extraction, production C1 and
 business-Rule activation remain separate functional work; release preparation stays last.
 
 Earlier P02 checkpoint: Build injects its retained port. User choice A keeps original i18n messages

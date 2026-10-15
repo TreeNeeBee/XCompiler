@@ -1,3 +1,5 @@
+import { executorBugTicketFixture, executorChangeRequestFixture } from './helpers/executor_ticket_fixtures.js';
+import { withFixtureExecutionRequest } from './support/execution_request_fixture.js';
 import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
@@ -16,6 +18,7 @@ import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
 import { runTestsTool } from '../src/tools/sandbox.js';
 import { seedRoleDefinition } from '../src/domain/workflow/role_definition.js';
+import { ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
 
 class CapturingLLM implements LLMClient {
   readonly name = 'cap';
@@ -61,6 +64,35 @@ const baseStep: Step = {
   maxAttempts: 3,
 };
 
+describe('StepExecutor Runtime request ownership', () => {
+  it('requires an explicit request port before invoking any bare client or Tool', async () => {
+    const chat = vi.fn(async () => { throw new Error('A bare client is not the execution boundary'); });
+    const permission = vi.fn(async () => ({ approved: true }));
+    await expect(new StepExecutor({ llm: { name: 'bare', chat }, maxRounds: 1 }).run({
+      step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission },
+    })).rejects.toBeInstanceOf(ExecutionTurnRequestConfigurationError);
+    expect(chat).not.toHaveBeenCalled();
+    expect(permission).not.toHaveBeenCalled();
+    await expect(fs.access(path.join(tmp, 'src/x.py'))).rejects.toThrow();
+  });
+
+  it('uses the explicit request port for the actual model turn and pins its original business context', async () => {
+    const chat = vi.fn(async () => { throw new Error('The legacy client must not be called'); });
+    const send = vi.fn(async () => ({ provider: 'retained-model', text: JSON.stringify({ thoughts: 'Deliver through the port',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'retained\r\n' } }], done: true }) }));
+    const result = await new StepExecutor({ llm: { name: 'bare', chat }, request: { name: 'retained', send }, maxRounds: 1 })
+      .run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(result.success).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ payload: { kind: 'step-execution-turn', round: 1,
+      promptContext: { step: { id: baseStep.id, phase: 'CODE', systemPrompt: baseStep.systemPrompt } },
+      tools: [{ name: 'write_file', argsSchema: writeFileTool.argsSchema }] } });
+    expect(chat).not.toHaveBeenCalled();
+    expect(result.metrics.providers).toEqual(['retained-model']);
+    expect(await ws.readFile('src/x.py')).toBe('retained\r\n');
+  });
+});
+
 describe('StepExecutor system prompt assembly', () => {
   it('returns a storage interruption unchanged without another model turn or partial-output audit', async () => {
     const original = new AuditPersistenceError({
@@ -70,7 +102,7 @@ describe('StepExecutor system prompt assembly', () => {
     const artifactPath = vi.fn(() => { throw new Error('secondary sink failure'); });
     const executorTurn = vi.fn(async () => { throw new Error('secondary sink failure'); });
     const event = vi.fn(async () => { throw new Error('secondary sink failure'); });
-    const exec = new StepExecutor({ llm: { name: 'offline', chat }, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'offline', chat }, maxRounds: 3 }));
     await expect(exec.run({
       step: baseStep, tools: [writeFileTool],
       ctx: { ...ctx, audit: { artifactPath, executorTurn, event } as unknown as ToolContext['audit'] },
@@ -86,7 +118,7 @@ describe('StepExecutor system prompt assembly', () => {
     const canonicalId = '019fbc80-af28-728a-949c-1ac2396a57d0';
     const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const events: ToolExecutionEvent[] = [];
-    const exec = new StepExecutor({ llm: new CapturingLLM(), maxRounds: 1, streamOutput: true });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new CapturingLLM(), maxRounds: 1, streamOutput: true }));
 
     const result = await exec.run({
       step: { ...baseStep, id: canonicalId },
@@ -112,7 +144,7 @@ describe('StepExecutor system prompt assembly', () => {
 
   it('injects the assignee role identity into the system message', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const identity = seedRoleDefinition('developer');
     const r = await exec.run({
       step: baseStep,
@@ -133,7 +165,7 @@ describe('StepExecutor system prompt assembly', () => {
 
   it('injects the assembled layered context, and nothing when there is none', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     await exec.run({
       step: baseStep,
       tools: [writeFileTool],
@@ -144,7 +176,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.lastSystem).toContain('constraint: no network');
 
     const bare = new CapturingLLM();
-    await new StepExecutor({ llm: bare, maxRounds: 2 })
+    await new StepExecutor(withFixtureExecutionRequest({ llm: bare, maxRounds: 2 }))
       .run({ step: baseStep, tools: [writeFileTool], ctx, layeredContext: '   ' });
     expect(bare.lastSystem).not.toContain('objective:');
     expect(bare.lastSystem.length).toBeLessThan(llm.lastSystem.length);
@@ -152,14 +184,14 @@ describe('StepExecutor system prompt assembly', () => {
 
   it('omits the role block when no actor identity is supplied', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(llm.lastSystem).not.toContain('## Your role');
   });
 
   it('injects globalPrompt + step.systemPrompt into system message', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool],
@@ -175,7 +207,7 @@ describe('StepExecutor system prompt assembly', () => {
 
   it('injects required path contracts and current Step path candidates into tool docs', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, inputs: ['docs/topic.md'], tools: ['read_file', 'write_file', 'replace_in_file'] },
       tools: [readFileTool, writeFileTool, replaceInFileTool],
@@ -202,7 +234,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('docs/03-detailed-design.md', '# design\n');
     await ws.writeFile('tests/integration/pipeline.test.ts', 'test("contract", () => {});\n');
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
 
     await exec.run({
       step: designStep,
@@ -222,7 +254,7 @@ describe('StepExecutor system prompt assembly', () => {
 
   it('prioritizes exact missing outputs in the first model turn', async () => {
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
 
     const result = await exec.run({
       step: baseStep,
@@ -257,7 +289,7 @@ describe('StepExecutor system prompt assembly', () => {
       tools: [],
       outputs: [],
     };
-    const exec = new StepExecutor({ llm: new ValidationDefectLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new ValidationDefectLLM(), maxRounds: 1 }));
 
     const result = await exec.run({
       step,
@@ -293,11 +325,11 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new ContradictedChangeRequestLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 1 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
       step: { ...baseStep, outputs: [] },
       tools: [],
       ctx,
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-CONTRADICTED',
         revision: 1,
         state: 'in_progress',
@@ -326,7 +358,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['functional tests pass'],
           affectedArtifacts: ['src/cli.ts'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(false);
@@ -371,11 +403,11 @@ describe('StepExecutor system prompt assembly', () => {
 
     await ws.writeFile('src/cli.ts', 'export async function run(): Promise<number> { return 0; }\n');
     const llm = new ConvergingChangeRequestLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 4 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 })).run({
       step: { ...baseStep, outputs: [] },
       tools: [readFileTool],
       ctx,
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-CONVERGE',
         revision: 1,
         state: 'in_progress',
@@ -404,7 +436,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['functional tests pass'],
           affectedArtifacts: ['src/cli.ts'],
         },
-      } as never,
+      }),
     });
 
     expect(llm.calls).toBe(3);
@@ -464,7 +496,7 @@ describe('StepExecutor system prompt assembly', () => {
         tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
       },
     };
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step,
       tools: [readFileTool, tests],
       ctx: { ...ctx, allowedWrites: [], stepId: step.id },
@@ -546,7 +578,7 @@ describe('StepExecutor system prompt assembly', () => {
         tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
       },
     };
-    const result = await new StepExecutor({ llm, maxRounds: 3 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 })).run({
       step,
       tools: [readFileTool, tests, writeFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/'], stepId: step.id },
@@ -610,7 +642,7 @@ describe('StepExecutor system prompt assembly', () => {
       tools: ['run_tests'],
       outputs: ['tests/unit/x.test.ts'],
     };
-    const result = await new StepExecutor({ llm: new ReportingLLM(), maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new ReportingLLM(), maxRounds: 2 })).run({
       step,
       tools: [tests],
       ctx: { ...ctx, allowedWrites: [], stepId: step.id, testGateArgs: ['tests/unit/x.test.ts'] },
@@ -679,7 +711,7 @@ describe('StepExecutor system prompt assembly', () => {
         tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
       },
     };
-    const result = await new StepExecutor({ llm: new RepeatingGateLLM(), maxRounds: 3 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new RepeatingGateLLM(), maxRounds: 3 })).run({
       step,
       tools: [tests],
       ctx: {
@@ -723,7 +755,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
 
     const llm = new SwitchingWindowLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1, maxWriteChunkBytes: 'auto' });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1, maxWriteChunkBytes: 'auto' }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
 
     expect(r.success).toBe(true);
@@ -740,7 +772,7 @@ describe('StepExecutor system prompt assembly', () => {
     const audit = new AuditLogger({ root: tmp, command: 'test' });
     await audit.start({});
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const ctxWithAudit = { ...ctx, audit };
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: ctxWithAudit });
     expect(r.success).toBe(true);
@@ -758,7 +790,7 @@ describe('StepExecutor system prompt assembly', () => {
     const audit = new AuditLogger({ root: tmp, command: 'test' });
     await audit.start({});
     const llm = new CapturingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -785,7 +817,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new MissingPlanLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingPlanLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -826,7 +858,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new CorrectedPlanLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -872,7 +904,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new PlanThenRepairLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
       executionRole: 'Debugger',
@@ -919,7 +951,7 @@ describe('StepExecutor system prompt assembly', () => {
       outputs: ['src/x.ts'],
       tools: ['write_file', 'run_program'],
     };
-    const exec = new StepExecutor({ llm: new RepairOnlyLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RepairOnlyLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step,
       executionRole: 'Debugger',
@@ -980,7 +1012,7 @@ describe('StepExecutor system prompt assembly', () => {
       tools: ['write_file', 'run_program', 'run_tests'],
     };
     const llm = new RollbackRepairLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step,
       executionRole: 'Debugger',
@@ -1041,7 +1073,7 @@ describe('StepExecutor system prompt assembly', () => {
         return { ok: true, summary: 'module baseline passed' };
       },
     };
-    const exec = new StepExecutor({ llm: new DesignRepairLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new DesignRepairLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -1133,7 +1165,7 @@ describe('StepExecutor system prompt assembly', () => {
       outputs: ['package.json'],
       tools: ['read_file', 'run_tests'],
     };
-    const result = await new StepExecutor({ llm: new DesignRecheckLLM(), maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new DesignRecheckLLM(), maxRounds: 2 })).run({
       step,
       baselineTestExecution: 'execute',
       tools: [readFileTool, runTests],
@@ -1142,7 +1174,7 @@ describe('StepExecutor system prompt assembly', () => {
         allowedWrites: [],
         testGateArgs: ['tests/modules/dependencies.test.ts'],
       },
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'DEP-P1-RECHECK',
         revision: 1,
         state: 'in_progress',
@@ -1155,7 +1187,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['node-cron is available to the project'],
           affectedArtifacts: ['package.json'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success, result.error).toBe(true);
@@ -1213,7 +1245,7 @@ describe('StepExecutor system prompt assembly', () => {
         return { ok: true, summary: 'unit baseline passed' };
       },
     };
-    const result = await new StepExecutor({ llm: new InspectThenImplementLLM(), maxRounds: 3 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new InspectThenImplementLLM(), maxRounds: 3 })).run({
       step: {
         ...baseStep,
         phase: 'CODE',
@@ -1279,7 +1311,7 @@ describe('StepExecutor system prompt assembly', () => {
           : { ok: false, error: 'module baseline is still malformed' };
       },
     };
-    const result = await new StepExecutor({ llm: new InspectThenRepairLLM(), maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new InspectThenRepairLLM(), maxRounds: 2 })).run({
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
@@ -1324,7 +1356,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new PlannedLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new PlannedLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -1357,7 +1389,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new DeferredGateLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -1419,7 +1451,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new DeferredFailureLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -1505,7 +1537,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const result = await new StepExecutor({ llm: new DeferredNoopLLM(), maxRounds: 1 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new DeferredNoopLLM(), maxRounds: 1 })).run({
       step: {
         ...baseStep,
         phase: 'REQUIREMENT_ANALYSIS',
@@ -1528,14 +1560,14 @@ describe('StepExecutor system prompt assembly', () => {
         { path: 'src/x.py', content: 'x = 1\n' },
         { path: 'src/cli.ts', content: 'export async function run() { return 1; }\n' },
       ],
-      ticket: {
+      ticket: executorBugTicketFixture({
         id: 'BUG-DEFERRED-NOOP',
         name: 'BUG-DEFERRED-NOOP',
         type: 'bug',
         state: 'in_progress',
         acceptance: ['carry the concrete downstream implementation delta through CRs'],
         failure: { code: 'test_command_failed' },
-      } as never,
+      }),
       debugContext: {
         bugTicketId: 'BUG-DEFERRED-NOOP',
         reason: 'functional behavior is not implemented',
@@ -1588,20 +1620,20 @@ describe('StepExecutor system prompt assembly', () => {
 
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new UnstructuredBugNoopLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step: { ...baseStep, phase: 'REQUIREMENT_ANALYSIS' },
       executionRole: 'Debugger',
       tools: [],
       ctx,
       contextSnippets: [{ path: 'src/x.py', content: 'x = 1\n' }],
-      ticket: {
+      ticket: executorBugTicketFixture({
         id: 'BUG-UNSTRUCTURED-NOOP',
         name: 'BUG-UNSTRUCTURED-NOOP',
         type: 'bug',
         state: 'in_progress',
         acceptance: ['repair or identify the concrete downstream owner'],
         failure: { code: 'test_command_failed' },
-      } as never,
+      }),
       debugContext: {
         bugTicketId: 'BUG-UNSTRUCTURED-NOOP',
         reason: 'functional gate failed',
@@ -1655,7 +1687,7 @@ describe('StepExecutor system prompt assembly', () => {
       role: 'Planner',
       outputs: ['tests/functional/cli.test.ts'],
     };
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step,
       executionRole: 'Debugger',
       tools: [],
@@ -1664,14 +1696,14 @@ describe('StepExecutor system prompt assembly', () => {
         path: 'tests/functional/cli.test.ts',
         content: 'test("cli", () => {});\n',
       }],
-      ticket: {
+      ticket: executorBugTicketFixture({
         id: 'BUG-VALIDATION-CONTRACT',
         name: 'BUG-VALIDATION-CONTRACT',
         type: 'bug',
         state: 'in_progress',
         acceptance: ['correct the paired validation contract'],
         failure: { code: 'validation_contract_defect' },
-      } as never,
+      }),
       debugContext: {
         bugTicketId: 'BUG-VALIDATION-CONTRACT',
         reason: 'the failed validation contract was contradicted by current product evidence',
@@ -1704,11 +1736,11 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const result = await new StepExecutor({ llm: new NoopChangeRequestLLM(), maxRounds: 4 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new NoopChangeRequestLLM(), maxRounds: 4 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-CODE-IMPACT',
         revision: 1,
         state: 'in_progress',
@@ -1721,7 +1753,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['CLI writes the requested output.'],
           affectedArtifacts: ['src/x.py'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(false);
@@ -1787,12 +1819,12 @@ describe('StepExecutor system prompt assembly', () => {
 
     await ws.writeFile('src/x.py', 'export const entrypoint = true;\n');
     const llm = new InvalidOwnershipDispositionLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 3 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 })).run({
       step: baseStep,
       tools: [readFileTool, writeFileTool],
       ctx,
       contextSnippets: [{ path: 'src/x.py', content: 'export const entrypoint = true;\n' }],
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-INVALID-OWNERSHIP',
         revision: 1,
         state: 'in_progress',
@@ -1821,7 +1853,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['The entrypoint is executable.'],
           affectedArtifacts: ['src/x.py'],
         },
-      } as never,
+      }),
     });
 
     expect(llm.calls).toBe(2);
@@ -1871,14 +1903,14 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'export const value = 1;\n');
-    const result = await new StepExecutor({
+    const result = await new StepExecutor(withFixtureExecutionRequest({
       llm: new ReviewedNoopChangeRequestLLM(),
       maxRounds: 3,
-    }).run({
+    })).run({
       step: baseStep,
       tools: [readFileTool, writeFileTool],
       ctx,
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-CODE-REVIEWED-NOOP',
         revision: 1,
         state: 'in_progress',
@@ -1891,7 +1923,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['The project entrypoint exits successfully.'],
           affectedArtifacts: ['src/x.py', 'src/cli.py'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(true);
@@ -1926,7 +1958,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
 
     await ws.writeFile('docs/design.md', '# accepted design\n');
-    const result = await new StepExecutor({ llm: new MissingDispositionLLM(), maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new MissingDispositionLLM(), maxRounds: 2 })).run({
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
@@ -1937,7 +1969,7 @@ describe('StepExecutor system prompt assembly', () => {
       tools: [readFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/', 'tests/'] },
       contextSnippets: [{ path: 'src/cli.ts', content: 'export async function run() { return 1; }\n' }],
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-MISSING-DISPOSITION',
         revision: 1,
         state: 'in_progress',
@@ -1950,7 +1982,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['CLI exits successfully.'],
           affectedArtifacts: ['src/cli.ts'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(false);
@@ -2010,10 +2042,10 @@ describe('StepExecutor system prompt assembly', () => {
     await ws.writeFile('src/cli.ts', 'export async function run(): Promise<number> { return 1; }\n');
     await ws.writeFile('docs/design.md', '# accepted design\n');
     const llm = new DeniedRewriteThenPassThroughLLM();
-    const result = await new StepExecutor({
+    const result = await new StepExecutor(withFixtureExecutionRequest({
       llm,
       maxRounds: 4,
-    }).run({
+    })).run({
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
@@ -2030,7 +2062,7 @@ describe('StepExecutor system prompt assembly', () => {
           reason: 'CR does not apply to this accepted design artifact',
         }),
       },
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-PASS-THROUGH',
         revision: 1,
         state: 'in_progress',
@@ -2043,7 +2075,7 @@ describe('StepExecutor system prompt assembly', () => {
           after: ['CLI exits successfully and writes output.'],
           affectedArtifacts: ['src/cli.ts'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(true);
@@ -2084,7 +2116,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new ProductiveLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, outputs: ['src/a.py', 'src/b.py'] },
       tools: [writeFileTool],
@@ -2117,7 +2149,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new FinalWriteThenVerifyLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool, runTestsTool],
@@ -2161,7 +2193,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new MalformedThenWriteThenVerifyLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool, runTestsTool],
@@ -2223,7 +2255,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new FailRepairVerifyLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool, runTests], ctx });
 
     expect(r.success).toBe(true);
@@ -2271,7 +2303,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new RetryWithLongerTimeoutLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({ step: baseStep, tools: [runTests], ctx });
 
     expect(r.success).toBe(true);
@@ -2314,7 +2346,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new DifferentVerificationLLM(), maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new DifferentVerificationLLM(), maxRounds: 3 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['run_program'] },
       tools: [runProgram],
@@ -2348,7 +2380,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new RepeatedVerificationLLM(), maxRounds: 4 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RepeatedVerificationLLM(), maxRounds: 4 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['run_program'] },
       tools: [runProgram],
@@ -2384,7 +2416,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new RepeatedDependencyLLM(), maxRounds: 4 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RepeatedDependencyLLM(), maxRounds: 4 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['add_dependency'] },
       tools: [addDependency],
@@ -2422,7 +2454,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new NoopDependencyLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoopDependencyLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['add_dependency'] },
       executionRole: 'Debugger',
@@ -2451,7 +2483,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new NoopWriteLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoopWriteLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -2488,7 +2520,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new HistoryInspectingLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
 
     expect(r.success).toBe(true);
@@ -2526,7 +2558,7 @@ describe('StepExecutor system prompt assembly', () => {
         ].join('\n');
       }
     }
-    const exec = new StepExecutor({ llm: new MultiBlockLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MultiBlockLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(false);
     expect(r.toolCalls).toHaveLength(0);
@@ -2551,7 +2583,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new NativeToolUseLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
 
     expect(result.success).toBe(true);
@@ -2571,7 +2603,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'stale\n');
-    const exec = new StepExecutor({ llm: new TruncatedMutationLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new TruncatedMutationLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['replace_in_file'] },
       tools: [replaceInFileTool],
@@ -2631,7 +2663,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new EnvelopeEchoLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
@@ -2671,7 +2703,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new DeclarativeWriterLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -2738,7 +2770,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new QualityHandshakeLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -2825,7 +2857,7 @@ describe('StepExecutor system prompt assembly', () => {
         'describe("x", () => { it("has a contract", () => expect(typeof x).toBe("function")); });\n',
     );
     const llm = new DeferredAssessmentLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
@@ -2902,7 +2934,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     const llm = new CoverageGapLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -2973,7 +3005,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     const llm = new StaleCoverageGapLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step: {
         ...baseStep,
         phase: 'UNIT_TEST',
@@ -3042,10 +3074,10 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({
+    const exec = new StepExecutor(withFixtureExecutionRequest({
       llm: new FailedVerificationAfterAssessmentLLM(),
       maxRounds: 2,
-    });
+    }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -3091,7 +3123,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new EmptyArtifactLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new EmptyArtifactLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -3121,7 +3153,7 @@ describe('StepExecutor system prompt assembly', () => {
 }`;
       }
     }
-    const exec = new StepExecutor({ llm: new TrailingCommaLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new TrailingCommaLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(r.toolCalls.find((c) => c.tool === 'write_file' && c.ok)).toBeTruthy();
@@ -3142,7 +3174,7 @@ describe('StepExecutor system prompt assembly', () => {
         ].join('');
       }
     }
-    const exec = new StepExecutor({ llm: new MalformedActionsListLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MalformedActionsListLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, outputs: ['src/a.py', 'src/b.py'] },
       tools: [writeFileTool],
@@ -3171,7 +3203,7 @@ describe('StepExecutor system prompt assembly', () => {
 }`;
       }
     }
-    const exec = new StepExecutor({ llm: new BrokenCodeJsonLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new BrokenCodeJsonLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(false);
     expect(r.toolCalls).toHaveLength(0);
@@ -3182,7 +3214,7 @@ describe('StepExecutor system prompt assembly', () => {
     const content = 'first\r\nsecond\tlast\r';
     const output = '{"thoughts":"write literal controls","actions":[{"tool":"write_file",' +
       '"args":{"path":"src/x.py","content":"' + content + '"}}],"done":true}';
-    const exec = new StepExecutor({ llm: { name: 'raw-string-controls', chat: async () => output }, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'raw-string-controls', chat: async () => output }, maxRounds: 1 }));
     const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(result.success).toBe(true);
     expect(result.toolCalls.filter(call => call.tool === 'write_file' && call.ok)).toHaveLength(1);
@@ -3200,7 +3232,7 @@ describe('StepExecutor system prompt assembly', () => {
   ])('rejects $name before any permission or filesystem mutation', async ({ output }) => {
     await ws.writeFile('src/x.py', 'original\r\n');
     const permission = vi.fn(async () => ({ approved: true }));
-    const exec = new StepExecutor({ llm: { name: 'invalid-whole-document', chat: async () => output }, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'invalid-whole-document', chat: async () => output }, maxRounds: 1 }));
     const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission } });
     expect(result.success).toBe(false);
     expect(result.toolCalls).toHaveLength(0);
@@ -3216,7 +3248,7 @@ describe('StepExecutor system prompt assembly', () => {
       const run = vi.fn(async () => ({ ok: true, summary: 'This automatic gate must remain uncalled' }));
       const tool: Tool = { name: 'run_tests', description: 'Controlled automatic test gate', argsSchema: {}, run };
       const chat = vi.fn(async () => '{"thoughts":"invalid test response","actions":[],"done":false');
-      const result = await new StepExecutor({ llm: { name: 'invalid-test-turn', chat }, maxRounds: 1 }).run({
+      const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'invalid-test-turn', chat }, maxRounds: 1 })).run({
         step: { ...baseStep, phase, role: 'Tester', tools: ['run_tests'], outputs: [] }, tools: [tool],
         ctx: { ...ctx, requestPermission: permission },
       });
@@ -3239,7 +3271,7 @@ describe('StepExecutor system prompt assembly', () => {
       return prompts.length === 1 ? invalid : valid;
     });
     const permission = vi.fn(async () => ({ approved: true }));
-    const result = await new StepExecutor({ llm: { name: 'same-caller-regeneration', chat }, maxRounds: 2 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'same-caller-regeneration', chat }, maxRounds: 2 })).run({
       step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission },
     });
     expect(result.success).toBe(true);
@@ -3270,7 +3302,7 @@ describe('StepExecutor system prompt assembly', () => {
       return answer;
     });
     const permission = vi.fn(async () => ({ approved: true }));
-    const result = await new StepExecutor({ llm: { name: 'custom-debugger-validation', chat }, maxRounds: 1 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'custom-debugger-validation', chat }, maxRounds: 1 })).run({
       step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
       ctx: { ...ctx, audit, requestPermission: permission },
       debugContext: { bugTicketId: 'BUG-PROTOCOL', reason: 'Current implementation output is missing.',
@@ -3314,7 +3346,7 @@ describe('StepExecutor system prompt assembly', () => {
       return answer;
     });
     const permission = vi.fn(async () => ({ approved: false, outcome: 'denied' as const, reason: 'Controlled user denial' }));
-    const result = await new StepExecutor({ llm: { name: 'custom-denied-validation', chat }, maxRounds: 6 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'custom-denied-validation', chat }, maxRounds: 6 })).run({
       step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
       ctx: { ...ctx, audit, requestPermission: permission },
       debugContext: { bugTicketId: 'BUG-DENIED-PROTOCOL', reason: 'Current implementation output is missing.',
@@ -3356,7 +3388,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
 
-    const exec = new StepExecutor({ llm: new MalformedActionLLM(), maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MalformedActionLLM(), maxRounds: 2 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx: { ...ctx, audit } });
 
     expect(r.success).toBe(true);
@@ -3380,7 +3412,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new FailedToolLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new FailedToolLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(false);
     expect(r.error).toContain('unresolved tool failures remain');
@@ -3442,7 +3474,7 @@ describe('StepExecutor system prompt assembly', () => {
       argsSchema: {},
       async run() { return { ok: true, summary: '1 passed' }; },
     };
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -3517,7 +3549,7 @@ describe('StepExecutor system prompt assembly', () => {
       async run() { return { ok: true, summary: '47 passed' }; },
     };
     const llm = new TestThenReportLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -3570,7 +3602,7 @@ describe('StepExecutor system prompt assembly', () => {
         return { ok: false, code: 'manifest_missing' as const, error: 'npm test exit=254\nNo package.json' };
       },
     };
-    const exec = new StepExecutor({ llm: new RerunsLLM(), maxRounds: 4 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RerunsLLM(), maxRounds: 4 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool, failing], ctx: blocked });
 
     expect(r.error ?? '').not.toContain('verification command repeated');
@@ -3603,7 +3635,7 @@ describe('StepExecutor system prompt assembly', () => {
         return { ok: false, code: 'manifest_missing' as const, error: 'npm test exit=254\nNo package.json' };
       },
     };
-    const exec = new StepExecutor({ llm: new MissingManifestLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingManifestLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool, failing], ctx: blocked });
 
     expect(r.toolCalls.find((c) => c.tool === 'run_tests')?.ok).toBe(false);
@@ -3625,7 +3657,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new MissingPathThenValidWriteLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingPathThenValidWriteLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(r.toolCalls.find((c) => c.tool === 'write_file' && !c.ok)?.error).toContain('path must be a non-empty string');
@@ -3660,7 +3692,7 @@ describe('StepExecutor system prompt assembly', () => {
     const llm = new MissingPathThenValidReplaceLLM();
     const permissionTargets: string[] = [];
     const startedTargets: Array<string | undefined> = [];
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['replace_in_file'] },
       tools: [replaceInFileTool],
@@ -3707,7 +3739,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new BadEditThenRewriteAndTestLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new BadEditThenRewriteAndTestLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       tools: [replaceInFileTool, writeFileTool, runTestsTool],
@@ -3743,7 +3775,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new OptionalCoverageThenPlainTestLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new OptionalCoverageThenPlainTestLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool, runTestsTool],
@@ -3778,7 +3810,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new ReadProbeThenWriteLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new ReadProbeThenWriteLLM(), maxRounds: 1 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(r.toolCalls.find((c) => c.tool === 'read_file' && !c.ok)?.error).toContain('tool not allowed');
@@ -3818,7 +3850,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new DeferredVerificationLLM(), maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new DeferredVerificationLLM(), maxRounds: 2 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -3860,7 +3892,7 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const exec = new StepExecutor({ llm: new MissingOutputProbeThenWriteLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingOutputProbeThenWriteLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
       tools: [readFileTool, writeFileTool],
@@ -3899,7 +3931,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     const llm = new LongFailureLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({ step: { ...baseStep, tools: ['huge_fail'] }, tools: [hugeFailTool], ctx });
 
     expect(r.success).toBe(false);
@@ -3933,7 +3965,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     const llm = new RepeatingTestFailureLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 6, maxFailedTestRuns: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 6, maxFailedTestRuns: 2 }));
     const testStep: Step = {
       ...baseStep,
       phase: 'INTEGRATION_TEST',
@@ -3972,7 +4004,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new VerifyWithoutDoneLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new VerifyWithoutDoneLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['run_tests'], outputs: ['src/x.py'] },
       tools: [runTestsTool],
@@ -3989,7 +4021,7 @@ describe('StepExecutor system prompt assembly', () => {
     const events: string[] = [];
     let permissionCallId: string | undefined;
     let firstStartedCallId: string | undefined;
-    const exec = new StepExecutor({ llm: new CapturingLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new CapturingLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool],
@@ -4031,7 +4063,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new DeniedVariantsLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 10 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx: {
@@ -4063,7 +4095,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 0\n');
     const llm = new EndlessMutationLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 1 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
@@ -4089,7 +4121,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new ReadLoopLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const r = await exec.run({ step: baseStep, tools: [readFileTool], ctx });
     expect(r.success).toBe(false);
     expect(r.error).toContain('repeated read-only/probe actions without progress');
@@ -4109,7 +4141,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new EmptyTurnLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const result = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
 
     expect(result.success).toBe(false);
@@ -4131,7 +4163,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new FocusedEmptyTurnLLM();
-    await new StepExecutor({ llm, maxRounds: 10 }).run({
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 })).run({
       step: { ...baseStep, outputs: ['src/first.py', 'src/second.py'] },
       tools: [writeFileTool],
       ctx,
@@ -4159,7 +4191,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'value = 1\n');
     const llm = new SettledEmptyTurnLLM();
-    await new StepExecutor({ llm, maxRounds: 10 }).run({
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
@@ -4210,7 +4242,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new ProviderValidatedQualityLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 5 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 5 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -4254,7 +4286,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new InvalidCompletionLoopLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -4315,7 +4347,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new ContentRefusedThenValidLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 10 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 })).run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
@@ -4354,7 +4386,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new WriteInspectVerifyLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['write_file', 'read_file', 'run_tests'] },
       tools: [writeFileTool, readFileTool, runTestsTool],
@@ -4398,7 +4430,7 @@ describe('StepExecutor system prompt assembly', () => {
       acceptance: 'both files exist',
     };
     const llm = new StalledWritesLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const r = await exec.run({ step, tools: [writeFileTool], ctx });
 
     expect(r.success).toBe(false);
@@ -4433,7 +4465,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'TOKEN = "visible-to-debugger"\n');
     const llm = new ReadThenRepairLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({ step: baseStep, tools: [readFileTool, writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(llm.sawFileContent).toBe(true);
@@ -4463,7 +4495,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new ReadTwiceThenWriteLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const r = await exec.run({ step: baseStep, tools: [readFileTool, writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(llm.sawWarning).toBe(true);
@@ -4490,7 +4522,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new RecoveryReadLoopLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 10 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -4539,7 +4571,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new MultiFileRecoveryLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -4608,7 +4640,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new SequentialMultiFileRecoveryLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
       executionRole: 'Debugger',
@@ -4658,7 +4690,7 @@ describe('StepExecutor system prompt assembly', () => {
     for (let index = 0; index < 9; index++) {
       await ws.writeFile(`src/probe-${index}.py`, `value = ${index}\n`);
     }
-    const exec = new StepExecutor({ llm: new BoundedRecoveryLLM(), maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new BoundedRecoveryLLM(), maxRounds: 2 }));
     const result = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -4740,7 +4772,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new RecoveryValidationLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, outputs: ['src/source.py'] },
       executionRole: 'Debugger',
@@ -4832,7 +4864,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.py', 'export const stale = 1;\n');
     const llm = new CompilerRepairLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 4 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['run_program', 'read_file', 'write_file'] },
       executionRole: 'Debugger',
@@ -4857,7 +4889,7 @@ describe('StepExecutor system prompt assembly', () => {
       calls = 0;
       async chat(): Promise<string> {
         this.calls++;
-        throw new Error(
+        throw new ExecutionTurnContractViolation('debugger-repeated-probe',
           'all LLM providers failed for role Debugger: ' +
           'openrouter_deepseek_flash/openai:deepseek/deepseek-v4-flash: ' +
           'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
@@ -4865,7 +4897,7 @@ describe('StepExecutor system prompt assembly', () => {
         );
       }
     }
-    const exec = new StepExecutor({ llm: new LowQualityRejectedLLM(), maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new LowQualityRejectedLLM(), maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -4899,7 +4931,7 @@ describe('StepExecutor system prompt assembly', () => {
           });
         }
         if (this.calls === 2) {
-          throw new Error(
+          throw new ExecutionTurnContractViolation('debugger-repeated-probe',
             'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
             'produce a repair action, verification action, or concrete blocker instead',
           );
@@ -4921,7 +4953,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'export const stale = 1;\n');
     const llm = new RetainedContextLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
       executionRole: 'Debugger',
@@ -4963,7 +4995,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new StrictRecoveryLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -5012,7 +5044,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new MissingOutputRepairLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 3 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const r = await exec.run({
       step: {
         ...baseStep,
@@ -5049,7 +5081,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('docs/02-high-level-design.md', '# HLD\n');
     await ws.writeFile('docs/tests/module-test-plan.md', '# Module Test Plan\n');
-    const exec = new StepExecutor({ llm: new ConfirmOutputsLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new ConfirmOutputsLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: {
         ...baseStep,
@@ -5084,7 +5116,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
-    const exec = new StepExecutor({ llm: new NoisyCompletionLLM(), maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoisyCompletionLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -5126,7 +5158,7 @@ describe('StepExecutor system prompt assembly', () => {
     }
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new DebugReadThenWriteLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
       executionRole: 'Debugger',
@@ -5212,13 +5244,13 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.ts', 'export const x = 1;\n');
     const llm = new VerifiedExistingDependencyLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: {
         ...baseStep,
         outputs: ['src/x.ts'],
         tools: ['add_dependency', 'run_program', 'run_tests'],
-        qualityGate: { metrics: {} },
+        qualityGate: { metrics: {}, tolerance: { maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 } },
       },
       executionRole: 'Debugger',
       tools: [addDependency, runProgram, runTests],
@@ -5281,13 +5313,13 @@ describe('StepExecutor system prompt assembly', () => {
       outputs: ['docs/03-detailed-design.md'],
     };
     const llm = new AdvisoryFailureThenWriteLLM();
-    const exec = new StepExecutor({
+    const exec = new StepExecutor(withFixtureExecutionRequest({
       llm,
       maxRounds: 1,
       advisoryFailureRules: [
         { tool: 'replace_in_file', errorIncludes: 'expected 1 occurrences of find, found 0' },
       ],
-    });
+    }));
     const r = await exec.run({
       step: designStep,
       executionRole: 'Debugger',
@@ -5338,7 +5370,7 @@ describe('StepExecutor system prompt assembly', () => {
       },
     };
     const llm = new ReplaceMissThenPatchLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['replace_in_file', 'write_file'] },
       tools: [replaceMissTool, writeFileTool],
@@ -5376,7 +5408,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/source.py', 'value = 1\n');
     const llm = new ShorthandArgsLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'run_tests'], outputs: ['src/source.py'] },
       tools: [readFileTool, runTestsTool],
@@ -5413,7 +5445,7 @@ describe('StepExecutor system prompt assembly', () => {
       }
     }
     const llm = new LargeWriteThenInspectLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 2 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(r.success).toBe(true);
     expect(llm.sawOmissionNote).toBe(false);
@@ -5445,7 +5477,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new CaptureDebugPromptLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 1 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['run_tests'], outputs: ['src/x.py'] },
       executionRole: 'Debugger',
@@ -5505,7 +5537,7 @@ describe('StepExecutor system prompt assembly', () => {
     };
     await ws.writeFile('src/x.py', 'x = 1\n');
     const llm = new MultiRoundDebugLLM();
-    const exec = new StepExecutor({ llm, maxRounds: 5 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 5 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['inspect_state', 'run_tests'], outputs: ['src/x.py'] },
       executionRole: 'Debugger',
@@ -5553,7 +5585,7 @@ describe('glob outputs', () => {
 describe('design-phase policy', () => {
   const capture = async (phase: Step['phase']): Promise<string> => {
     const llm = new CapturingLLM();
-    await new StepExecutor({ llm, maxRounds: 1 })
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }))
       .run({ step: { ...baseStep, phase, outputs: ['src/x.py'] }, tools: [writeFileTool], ctx });
     return llm.lastSystem;
   };
@@ -5582,7 +5614,7 @@ describe('design-phase policy', () => {
     // A Bug reaches a design Step only because its paired verification opened one. Telling that
     // attempt not to repair failing assertions would suppress the repair it exists to make.
     const llm = new CapturingLLM();
-    await new StepExecutor({ llm, maxRounds: 1 }).run({
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
       step: { ...baseStep, phase: 'DETAILED_DESIGN', outputs: ['src/x.py'] },
       tools: [writeFileTool],
       ctx,
@@ -5695,7 +5727,7 @@ describe('repeat-verification ticket carries the owed outputs', () => {
   }
 
   it('names the declared outputs the Step still owes', async () => {
-    const exec = new StepExecutor({ llm: new RepeatingVerificationLLM(), maxRounds: 4 });
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RepeatingVerificationLLM(), maxRounds: 4 }));
     const result = await exec.run({
       step: {
         ...baseStep,
@@ -5785,11 +5817,11 @@ describe('an affected artifact that is not there', () => {
     };
 
     const llm = new OutOfScopeLLM();
-    const result = await new StepExecutor({ llm, maxRounds: 4 }).run({
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 })).run({
       step: { ...baseStep, outputs: [] },
       tools: [missingRead as never],
       ctx: { ...ctx, allowedWrites: [], stepId: baseStep.id },
-      changeRequest: {
+      changeRequest: executorChangeRequestFixture({
         id: 'CR-ABSENT', revision: 1, state: 'in_progress',
         sourceTicketIds: ['BUG-X'], description: 'Handle the briefing artifact.',
         triggerStepId: 'S006', sourceStepId: 'S004', targetStepId: 'S006', originFailures: [],
@@ -5798,7 +5830,7 @@ describe('an affected artifact that is not there', () => {
           before: [], after: ['handled'],
           affectedArtifacts: ['output/briefing-2026-09-01.md'],
         },
-      } as never,
+      }),
     });
 
     expect(result.success).toBe(true);

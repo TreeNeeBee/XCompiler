@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -21,6 +22,13 @@ import type { RoutedResponseEvidence } from '../../src/llm/response_evidence.js'
 import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_encoding.js';
 import type { RuleSelectionAuditBinding } from '../../src/application/rules/rule_review_evidence.js';
 import * as installationRoots from '../../src/config/installation_root.js';
+import * as compilerCatalogue from '../../src/infrastructure/rules/compiler_rule_catalogue.js';
+import { createObjectId } from '../../src/domain/identity/object_id.js';
+import { createRuntimeExecutionTurnRequestPort } from '../../src/runtime/execution_turn_request.js';
+import {
+  ExecutionTurnContractViolation, validateExecutionRequestScope, validateExecutionTurnPayload,
+} from '../../src/application/execution/execution_turn_request.js';
+import { renderExecutionUserPrompt } from '../../src/agents/execution/prompt_renderer.js';
 
 let root: string;
 const servers: Server[] = [];
@@ -37,7 +45,7 @@ afterEach(async () => {
 
 async function fixture(options: {
   optional?: boolean; endpoint?: string; threshold?: number; mode?: 'off' | 'record';
-  audit?: boolean; contentMode?: 'full' | 'redacted';
+  audit?: boolean; contentMode?: 'full' | 'redacted'; assignedEndpoint?: string;
 } = {}) {
   const container = new ProjectContainer(path.join(root, 'project'));
   await container.canonical().workspace.ensure('.');
@@ -45,7 +53,9 @@ async function fixture(options: {
   await fs.writeFile(configPath, YAML.stringify({
     llm: {
       providers: { roleProvider: { type: 'openai', base_url: options.endpoint ?? 'http://127.0.0.1:1/v1',
-        model: 'role-model', context_window: 131072, request_timeout_ms: 1000 } },
+        model: 'role-model', context_window: 131072, request_timeout_ms: 1000 },
+      ...(options.assignedEndpoint ? { assignedReview: { type: 'openai', base_url: options.assignedEndpoint,
+        model: 'assigned-review-model', context_window: 131072, request_timeout_ms: 1000 } } : {}) },
       roles: Object.fromEntries(ROLES.map((role) => [role, ['roleProvider']])),
     },
     agent: {},
@@ -82,7 +92,7 @@ async function fixture(options: {
   const router = new LLMRouter(config, options.audit === false ? undefined : audit, undefined, undefined, undefined,
     async () => ({ ok: true, latencyMs: 0, detail: 'controlled loopback provider' }), recordReplay);
   return {
-    config: config.rules, container, router, recordReplay,
+    config: config.rules, container, router, recordReplay, audit,
     logicalRequestId: id(800), loadCatalogue,
     context: { role: 'Coder' as const, language: 'python' as const }, required: [],
     taskSummary: 'Inspect the current operation.', errorSummary: 'No result was returned.',
@@ -228,6 +238,67 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(restored).toEqual(snapshot);
     expect(server.calls).toHaveLength(3);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the assigned Actor pool for low-score review while embeddings keep their configured service', async () => {
+    const defaultService = await endpoint();
+    const assigned = await endpoint();
+    const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url });
+    const forRole = vi.spyOn(input.router, 'for');
+    const snapshot = await prepareRuntimeRuleRequest({ ...input, providerPool: ['assignedReview'] });
+    expect(snapshot.ranking.decision).toBe('review-required');
+    expect(snapshot.rules.map(rule => rule.ruleId)).toEqual([id(2), id(4)]);
+    expect(forRole).toHaveBeenCalledExactlyOnceWith('Coder', { providerPool: ['assignedReview'] });
+    expect(defaultService.calls.map(call => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
+    expect(assigned.calls).toHaveLength(1);
+    expect(assigned.calls[0]!.path).toBe('/v1/chat/completions');
+    expect(assigned.calls[0]!.input.model).toBe('assigned-review-model');
+    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/1');
+    expect(snapshot.review!.provider).toBe('assignedReview');
+    const result = JSON.parse(await input.container.state.readFile(`rules/requests/review-results/${id(800)}.json`));
+    expect(result).toMatchObject({ provider: 'assignedReview', model: 'openai:assigned-review-model' });
+  });
+
+  it('forwards the execution port Actor pool into its actual optional Rule review', async () => {
+    const defaultService = await endpoint();
+    const assigned = await endpoint();
+    const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url });
+    // Only installation discovery is substituted; selection, embedding, review and send stay real.
+    vi.spyOn(compilerCatalogue, 'loadCompilerRuleCatalogue').mockImplementation(input.loadCatalogue);
+    const scope = validateExecutionRequestScope({
+      projectId: createObjectId(), phaseId: createObjectId(), stepId: createObjectId(), ticketId: createObjectId(),
+      actorId: createObjectId(), assignmentId: createObjectId(), executionId: randomUUID(), role: 'Coder',
+      providerPool: ['assignedReview'],
+    });
+    const payload = validateExecutionTurnPayload({
+      schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
+      locale: 'en', parseContext: { language: 'python' }, round: 1,
+      promptContext: { step: { id: scope.stepId, iterationId: 'P1', phase: 'CODE', role: 'Coder',
+        title: 'Inspect the current operation', description: input.taskSummary, systemPrompt: 'Preserve the current scope.',
+        tools: [], inputs: [], outputs: [], dependsOn: [], acceptance: 'Inspect current evidence.', maxAttempts: 3 },
+      ctx: { allowedWrites: [] } }, initialMissingOutputs: [], tools: [],
+      validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,
+        requireBugResolutionPlanBeforeAction: false, allowNovelReadOnlyProbes: false,
+        seenProbeFingerprints: [], baselineExecutionDeferred: false },
+    });
+    const refusal = new ExecutionTurnContractViolation('turn-shape', 'The fixture refuses the business turn after the real Rule review.');
+    const port = createRuntimeExecutionTurnRequestPort({
+      config: input.config, container: input.container, router: input.router,
+      recordReplay: input.recordReplay, audit: input.audit, scope,
+    });
+    await expect(port.send({ payload, messages: [
+      { role: 'system', content: 'Original execution instructions.' },
+      { role: 'user', content: renderExecutionUserPrompt(payload.promptContext, '', [], payload.locale) },
+    ], validate: () => { throw refusal; } })).rejects.toBe(refusal);
+    expect(defaultService.calls.map(call => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
+    expect(assigned.calls.map(call => call.path)).toEqual(['/v1/chat/completions', '/v1/chat/completions']);
+    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/1');
+    const events = (await input.container.state.readFile('audit/audit.jsonl')).trim().split('\n')
+      .map(line => JSON.parse(line) as AuditEvent);
+    const review = events.find(event => event.messageId === 'llm.provider_response'
+      && event.data?.requestBinding && (event.data.requestBinding as RuleSelectionAuditBinding).kind === 'rule-selection');
+    expect(review?.data).toMatchObject({ provider: 'assignedReview', role: 'Coder' });
+    expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(false);
   });
 
   it('keeps a failed review consumed after restart and performs no new retrieval', async () => {

@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { DomainAttemptRunner, type AttemptInput, type ExecutionScope } from '../src/application/execution/attempt_runner.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
+import { ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
 
 /**
  * The scope decides which working copy an attempt touches. Resolving it per attempt is what lets a
  * Ticket develop in its own worktree while work without a ChangeSet stays on the canonical copy.
  */
 describe('attempt execution scope', () => {
+  it('rejects a public attempt without Runtime request composition before touching its working copy', async () => {
+    const runner = new DomainAttemptRunner(options(bindings('canonical')), 'typescript');
+    await expect(runner.run(input())).rejects.toBeInstanceOf(ExecutionTurnRequestConfigurationError);
+  });
+
   it('falls back to the canonical bindings when no resolver is supplied', async () => {
     const canonical = bindings('canonical');
     const runner = new DomainAttemptRunner(options(canonical), 'typescript');

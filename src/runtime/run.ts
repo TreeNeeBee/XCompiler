@@ -68,6 +68,7 @@ import type { RecordReplayMode } from '../application/record_replay/types.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
+import { createRuntimeExecutionTurnRequestPort } from './execution_turn_request.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -553,6 +554,9 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   let finalProjectAudit: ProjectAuditResult | undefined;
   const engine = new ProjectOrchestrator({
+    executionRequests: (scope) => createRuntimeExecutionTurnRequestPort({
+      config: cfg.rules, container, recordReplay, router, audit, scope,
+    }),
     workspace: ws,
     git,
     sandbox,

@@ -1,6 +1,7 @@
 import { isLLMRequestError } from '../../llm/errors.js';
 import { RecordReplayError } from '../record_replay/types.js';
 import { AuditPersistenceError, EVIDENCE_PERSISTENCE_FAILURE } from '../../audit/errors.js';
+import { ExecutionTurnRequestFailure } from './execution_turn_request.js';
 
 export type AttemptFailureKind = 'execution' | 'infrastructure';
 
@@ -13,6 +14,16 @@ export interface AttemptFailure {
   switchProvider: boolean;
   statusCode?: number;
   details?: Record<string, unknown>;
+}
+
+/** The Executor sets this only after its typed content-refusal budget is exhausted. */
+export function agentContentRejectionFailure(cause: unknown): AttemptFailure {
+  return {
+    kind: 'execution', category: 'internal', code: 'agent_execution_stalled',
+    message: cause instanceof Error ? cause.message : String(cause),
+    retryable: true, switchProvider: true,
+    details: { cause: executionRequestCauseEvidence(cause) },
+  };
 }
 
 /**
@@ -51,6 +62,13 @@ export function classifyFailure(
       retryable: false,
       switchProvider: false,
       details: { ...reason.failure },
+    };
+  }
+  if (reason instanceof ExecutionTurnRequestFailure) {
+    return {
+      kind: 'infrastructure', category: 'internal', code: reason.code, message: reason.message,
+      retryable: false, switchProvider: false,
+      details: { ...reason.details, cause: executionRequestCauseEvidence(reason.cause) },
     };
   }
   if (isLLMRequestError(reason)) {
@@ -115,6 +133,18 @@ export function classifyFailure(
     message,
     retryable: true,
     switchProvider: false,
+  };
+}
+
+/** Error properties are not enumerable; preserve the request cause in persisted attempt evidence. */
+function executionRequestCauseEvidence(error: unknown, seen = new WeakSet<object>()): unknown {
+  if (!(error instanceof Error)) return error;
+  if (seen.has(error)) return { name: error.name, message: error.message, cycle: true };
+  seen.add(error);
+  return {
+    ...error, name: error.name, message: error.message, stack: error.stack,
+    ...(Object.hasOwn(error, 'cause') ? { cause: executionRequestCauseEvidence(error.cause, seen) } : {}),
+    ...(error instanceof AggregateError ? { errors: Array.from(error.errors, cause => executionRequestCauseEvidence(cause, seen)) } : {}),
   };
 }
 

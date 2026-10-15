@@ -171,6 +171,7 @@ export class PluginHost {
           requiredAuditLocation: options?.requiredAuditLocation
             ? Object.freeze({ ...options.requiredAuditLocation }) : undefined,
           beforeProviderRequest: options?.beforeProviderRequest,
+          prepareProviderRequest: options?.prepareProviderRequest,
           onResponse: options?.onResponse,
           validateResponse: options?.validateResponse,
         };

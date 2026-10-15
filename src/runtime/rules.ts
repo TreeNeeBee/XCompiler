@@ -92,6 +92,7 @@ export async function prepareRuntimeRuleRequest(input: {
   container: ProjectContainer;
   recordReplay: RecordReplayController;
   router: LLMRouter;
+  providerPool?: readonly string[];
   logicalRequestId: string;
   context: RuleContext;
   required: readonly { ruleId: string; version: string }[];
@@ -109,7 +110,8 @@ export async function prepareRuntimeRuleRequest(input: {
       if (!role) throw new RuntimeRuleConfigurationError('review_role_missing', {
         logicalRequestId: review.draft.logicalRequestId,
       });
-      return new LLMRuleSelectionReviewer(input.router.for(role), new RuleDecorator()).review(review);
+      const client = input.providerPool ? input.router.for(role, { providerPool: [...input.providerPool] }) : input.router.for(role);
+      return new LLMRuleSelectionReviewer(client, new RuleDecorator()).review(review);
     },
   }, new LLMRuleReviewEvidenceVerifier(
     new FileRuleReviewAuditReader(input.container.state.abs('audit'), input.container.root),

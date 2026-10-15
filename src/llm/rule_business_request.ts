@@ -22,7 +22,7 @@ import {
   normalizeRoutedResponseEvidence, recordedResponseEvidenceDigest,
   RoutedResponseEvidenceSchema, type RoutedResponseEvidence,
 } from './response_evidence.js';
-import { validateRuleProviderRequest } from './rule_request_guard.js';
+import { validateRuleProviderRequest, validateRuleProviderRequestIdentity } from './rule_request_guard.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 
 export const RULE_BUSINESS_PROMPT_VERSION = 'rule-business-request/1' as const;
@@ -109,8 +109,22 @@ export class LLMRuleBusinessRequest {
     return this.sendRetainedInput(input, input.validateResponse);
   }
 
-  private async sendRetainedInput(input: RetainedSend, validator?: NonNullable<ChatOptions['validateResponse']>): Promise<RuleBusinessResponse> {
+  /** Executor alone permits the captured deterministic provider-window projection and no text success credit. */
+  async sendExecutionInput(input: RetainedSend & {
+    validateResponse: NonNullable<ChatOptions['validateResponse']>;
+    prepareProviderRequest: NonNullable<ChatOptions['prepareProviderRequest']>;
+  }): Promise<RuleBusinessResponse> {
+    if (input.original.owner.kind !== 'step-execution' || typeof input.validateResponse !== 'function'
+      || typeof input.prepareProviderRequest !== 'function') {
+      throw new RuleBusinessRequestError('invalid_input', { field: 'execution-request' });
+    }
+    return this.sendRetainedInput(input, input.validateResponse, input.prepareProviderRequest);
+  }
+
+  private async sendRetainedInput(input: RetainedSend, validator?: NonNullable<ChatOptions['validateResponse']>,
+    projection?: NonNullable<ChatOptions['prepareProviderRequest']>): Promise<RuleBusinessResponse> {
     const original = validateBusinessRequestInput(input.original);
+    if (original.owner.kind === 'step-execution' && !projection) throw new RuleBusinessRequestError('invalid_input', { field: 'execution-projection' });
     const record = validateBusinessRequestInputRecord(input.record, original.logicalRequestId);
     assertBusinessRequestInputRecord(record, original);
     const snapshot = validateRuleRequestSnapshot(input.snapshot, original.logicalRequestId);
@@ -126,11 +140,12 @@ export class LLMRuleBusinessRequest {
     }
     return this.dispatch({ snapshot, messages: original.messages, options: input.options, signal: input.signal }, {
       original, record, store: input.store, audit: input.audit, location: Object.freeze({ ...input.location }),
-    }, validator);
+    }, validator, projection);
   }
 
   private async dispatch(input: BusinessSend, retained?: RetainedInput,
-    validator?: NonNullable<ChatOptions['validateResponse']>): Promise<RuleBusinessResponse> {
+    validator?: NonNullable<ChatOptions['validateResponse']>,
+    projection?: NonNullable<ChatOptions['prepareProviderRequest']>): Promise<RuleBusinessResponse> {
     input.signal?.throwIfAborted();
     if (!validator && Object.hasOwn(input, 'validateResponse')) throw new RuleBusinessRequestError('invalid_input', { field: 'validateResponse' });
     let snapshot: RuleRequestSnapshot;
@@ -157,10 +172,32 @@ export class LLMRuleBusinessRequest {
     const attempts = new Map<string, Attempt>();
     const responses: unknown[] = [];
     const validated = new Map<string, string>();
+    const projectedMessages = new Map<string, readonly Readonly<ChatMessage>[]>();
+    const prepareProviderRequest: ChatOptions['prepareProviderRequest'] = projection ? (request) => {
+      // Preserve the generic literal guard before any trusted projection, including pinned Rules.
+      validateRuleProviderRequestIdentity({ ...request, maxTokens: 1 }, {
+        logicalRequestId, messages, hasAttempt: id => attempts.has(id),
+        error: (reason, details, options) => new RuleBusinessRequestError(reason, details, options),
+      });
+      const projected = projection(request);
+      const expected = Object.freeze(projected.messages.map(message => Object.freeze({ ...message })));
+      projectedMessages.set(request.providerAttemptId.toLowerCase(), expected);
+      return { messages: expected, maxTokens: projected.maxTokens, window: projected.window };
+    } : undefined;
     const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = async (request) => {
       input.signal?.throwIfAborted();
+      if (projection && !projectedMessages.has(request.providerAttemptId.toLowerCase())) {
+        throw new RuleBusinessRequestError('request_integrity', { logicalRequestId, kind: 'missing-execution-projection' });
+      }
+      const expectedProjection = projectedMessages.get(request.providerAttemptId.toLowerCase());
+      if (projection && expectedProjection && (request.messages.length !== expectedProjection.length
+        || request.messages.some((message, index) => message.role !== expectedProjection[index]!.role
+          || message.content !== expectedProjection[index]!.content))) {
+        throw new RuleBusinessRequestError('request_integrity', { logicalRequestId, kind: 'execution-projection-mismatch' });
+      }
       const actual = validateRuleProviderRequest(request, {
-        logicalRequestId, messages, hasAttempt: (id) => attempts.has(id),
+        logicalRequestId, messages: projection ? projectedMessages.get(request.providerAttemptId.toLowerCase()) ?? [] : messages,
+        hasAttempt: (id) => attempts.has(id),
         error: (reason, details, options) => new RuleBusinessRequestError(reason, details, options),
       });
       const base: RuleBusinessAuditBinding = Object.freeze({
@@ -216,7 +253,8 @@ export class LLMRuleBusinessRequest {
       requestTimeoutMs: options?.requestTimeoutMs, responseFormat: options?.responseFormat,
       onToken: options?.onToken, streamStopWhen: options?.streamStopWhen,
       onProvider: options?.onProvider, onProviderStart: options?.onProviderStart, onStall: options?.onStall,
-      logicalRequestId, signal: input.signal, scoreSuccess: !!validator, beforeProviderRequest,
+      logicalRequestId, signal: input.signal, scoreSuccess: !!validator && !projection, beforeProviderRequest,
+      ...(prepareProviderRequest ? { prepareProviderRequest } : {}),
       ...(validateResponse ? { validateResponse } : {}),
       ...(retained ? { requiredAuditLocation: retained.location } : {}),
       onResponse: (response) => { responses.push(structuredClone(response)); },

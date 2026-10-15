@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { ExecutionTurnRequestConfigurationError, type ExecutionTurnRequestPortFactory } from './execution_turn_request.js';
 import type { AuditLogger } from '../../audit/audit.js';
 import type { WorkspaceKind } from '../../domain/workspace/change_set.js';
 import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
@@ -173,6 +175,7 @@ export interface AttemptRunnerOptions {
   /** Keeps ChangeSet recovery metadata aligned with commits made in its working copy. */
   recordChangeSetRevision?: (ticketId: Ticket['id'], revision: string) => Promise<void>;
   router: LLMRouter;
+  executionRequests?: ExecutionTurnRequestPortFactory;
   audit: AuditLogger;
   repository: DomainObjectRepositoryPort;
   plugins: PluginHost;
@@ -277,6 +280,7 @@ export class DomainAttemptRunner {
   }
 
   async run(input: AttemptInput): Promise<AttemptResult> {
+    if (!this.options.executionRequests) throw new ExecutionTurnRequestConfigurationError();
     return this.runAttempt(input);
   }
 
@@ -513,7 +517,7 @@ export class DomainAttemptRunner {
               retryable: true,
               switchProvider: false,
             }
-          : classifyFailure(result.error);
+          : result.failure ?? classifyFailure(result.error);
         const failureKind = failure.kind;
         if (
           failureKind === 'execution' &&
@@ -821,6 +825,13 @@ export class DomainAttemptRunner {
     );
     return {
       executor: new StepExecutor({
+        request: this.options.executionRequests?.({
+          projectId: input.domainStep.projectId, phaseId: input.domainStep.phaseId,
+          stepId: input.domainStep.id, ticketId: input.ticket.id, executionId: randomUUID(),
+          role: input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
+          actorId: input.assignee?.actor.id, assignmentId: input.ticket.activeAssignmentId,
+          providerPool: input.assignee?.actor.llmBinding?.providerPool,
+        }),
         llm: this.options.router.for(
           input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
           { providerPool: input.assignee?.actor.llmBinding?.providerPool },

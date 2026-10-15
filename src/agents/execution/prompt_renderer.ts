@@ -1,13 +1,14 @@
 import type { Step } from '../../domain/planning/execution_plan.js';
 import { resolveQualityGate } from '../../domain/quality/stage_quality.js';
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../../domain/tickets/ticket.js';
-import { t } from '../../i18n/index.js';
-import type { ExecutorRunInput } from '../executor.js';
+import { getLocale, tFor, type Locale } from '../../i18n/index.js';
+import type { ExecutionPromptContext } from '../../application/execution/execution_turn_request.js';
 
 export function renderExecutionUserPrompt(
-  input: ExecutorRunInput,
+  input: ExecutionPromptContext,
   toolDocs: string,
   initialMissingOutputs: string[] = [],
+  locale: Locale = getLocale(),
 ): string {
   const role = input.executionRole ?? input.step.role;
   const compactContext = !!input.debugContext;
@@ -289,7 +290,7 @@ export function renderExecutionUserPrompt(
       ? `## context\nTreat these existing files as the current project truth. Extend or refactor them in place; do not replace the project with a tiny parallel implementation.\n\n${contextBlock}\n`
       : '',
     debugBlock,
-    t().prompts.executorUserPromptOutro,
+    tFor(locale).prompts.executorUserPromptOutro,
   ].filter(Boolean).join('\n');
 }
 
@@ -336,7 +337,7 @@ function renderStepSubTasks(tasks: NonNullable<Step['subTasks']>, depth: number)
 }
 
 function renderOriginFailures(
-  failures: NonNullable<ExecutorRunInput['changeRequest']>['originFailures'],
+  failures: NonNullable<ExecutionPromptContext['changeRequest']>['originFailures'],
 ): string {
   return truncate(failures.map((failure) => {
     const evidence = failure.rawEvidenceRef ? ` evidence=${failure.rawEvidenceRef}` : '';

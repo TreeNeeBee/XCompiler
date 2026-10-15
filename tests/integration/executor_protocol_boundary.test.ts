@@ -15,11 +15,18 @@ import { ScoreStore } from '../../src/llm/scores.js';
 import type { ChatMessage } from '../../src/llm/types.js';
 import { writeFileTool } from '../../src/tools/fs.js';
 import type { Tool, ToolContext, ToolPermissionDecision } from '../../src/tools/types.js';
-import { Workspace } from '../../src/workspace/workspace.js';
+import { ProjectContainer } from '../../src/workspace/project_container.js';
+import { createRuntimeRecordReplay } from '../../src/runtime/record_replay.js';
+import { createRuntimeExecutionTurnRequestPort } from '../../src/runtime/execution_turn_request.js';
+import type { ExecutionRequestScope } from '../../src/application/execution/execution_turn_request.js';
+import { randomUUID } from 'node:crypto';
 
 let root: string;
 const servers: Server[] = [];
-const step: Step = { id: 'S010', iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Current implementation',
+const stores: ScoreStore[] = [];
+const scope = { projectId: '01952f27-7900-7000-8000-000000000001', phaseId: '01952f27-7900-7000-8000-000000000002',
+  stepId: '01952f27-7900-7000-8000-000000000003', ticketId: '01952f27-7900-7000-8000-000000000004' };
+const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Current implementation',
   description: 'Produce the declared implementation.', systemPrompt: 'Write only the declared output.',
   tools: ['write_file'], inputs: [], outputs: ['src/accepted.py'], dependsOn: [], acceptance: 'The output exists.', maxAttempts: 3 };
 const rejected = '{"thoughts":"complete action inside an incomplete turn","actions":[{"tool":"write_file",' +
@@ -29,6 +36,7 @@ const accepted = JSON.stringify({ thoughts: 'Complete replacement turn',
 
 beforeEach(async () => { root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-executor-protocol-'))); });
 afterEach(async () => {
+  for (const store of stores.splice(0)) await store.flush();
   vi.restoreAllMocks();
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
@@ -73,7 +81,8 @@ async function endpoint(outputs: string[]) {
 }
 
 async function fixture(url: string) {
-  const ws = new Workspace(path.join(root, 'workspace'));
+  const container = new ProjectContainer(root);
+  const ws = container.canonical().workspace;
   await ws.ensure('.');
   const configPath = path.join(root, 'config.yaml');
   await fs.writeFile(configPath, YAML.stringify({ llm: {
@@ -82,15 +91,20 @@ async function fixture(url: string) {
     roles: Object.fromEntries(ROLES.map(role => [role, ['primary']])), fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
-  const audit = new AuditLogger({ root, command: 'executor-protocol-boundary', contentMode: 'full' });
+  const audit = new AuditLogger({ root, stateRoot: container.state.root, command: 'executor-protocol-boundary', contentMode: 'full' });
   await audit.start();
   const scores = new ScoreStore(configPath, audit);
+  stores.push(scores);
   await scores.load();
   const decay = vi.spyOn(scores, 'decay');
   const router = new LLMRouter(config, audit, scores);
+  const recordReplay = createRuntimeRecordReplay(config, container.control, { mode: 'off' });
   const ctx: ToolContext = { ws, sandbox: undefined as never, audit, allowedWrites: ['src/'], stepId: step.id };
-  return { ws, audit, decay, router, ctx,
-    events: async () => (await fs.readFile(path.join(root, 'audit', 'audit.jsonl'), 'utf8')).split('\n')
+  return { ws, audit, decay, router, ctx, container,
+    executionRequest: (role: ExecutionRequestScope['role']) => createRuntimeExecutionTurnRequestPort({
+      config: config.rules, container, recordReplay, router, audit, scope: { ...scope, role, executionId: randomUUID() },
+    }),
+    events: async () => (await fs.readFile(container.state.abs('audit/audit.jsonl'), 'utf8')).split('\n')
       .filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
   };
 }
@@ -100,7 +114,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const server = await endpoint([rejected, accepted]);
     const current = await fixture(server.url);
     const permission = vi.fn(async () => ({ approved: true }));
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 2 }).run({
+    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
       step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     expect(result.success).toBe(true);
@@ -113,13 +127,14 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     expect(await current.ws.readFile('src/accepted.py')).toBe('accepted\r\n');
     await expect(fs.stat(current.ws.abs('src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });
     const events = await current.events();
-    expect(events.filter(event => event.messageId === 'llm.provider_response')).toHaveLength(2);
-    const raw = events.find(event => event.messageId === 'llm.provider_response' && event.data?.output === rejected)!;
+    expect(events.filter(event => ['llm.provider_response', 'llm.provider_validation_error'].includes(event.messageId ?? ''))).toHaveLength(2);
+    const raw = events.find(event => event.messageId === 'llm.provider_validation_error' && event.data?.output === rejected)!;
     expect(raw.data).toMatchObject({ provider: 'primary', output: rejected,
       responseEvidence: { capture: { status: 'recorded', response: { output: rejected,
         finishReasons: ['stop'], termination: 'finish-reason' } } } });
     expect(events.find(event => event.messageId === 'audit.executor_turn_protocol_rejected')?.data).toMatchObject({
-      stepId: step.id, round: 1, code: 'execution_turn_protocol_invalid', stage: 'post-chat', diagnostic: { code: 'unexpected_end' },
+      stepId: step.id, round: 1, code: 'execution_turn_round_refused', stage: 'protocol',
+      assessment: { result: { diagnostic: { code: 'unexpected_end' } } },
     });
     expect(events.find(event => event.kind === 'executor.turn' && event.data?.raw === rejected)?.data)
       .toMatchObject({ actions: [], done: false, raw: rejected });
@@ -135,7 +150,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
       const permission = vi.fn(async () => ({ approved: true }));
       const run = vi.fn(async () => ({ ok: true, summary: 'The automatic gate must not be invoked' }));
       const tool: Tool = { name: 'run_tests', description: 'Controlled automatic verification', argsSchema: {}, run };
-      const result = await new StepExecutor({ llm: current.router.for('Tester'), maxRounds: 1 }).run({
+      const result = await new StepExecutor({ request: current.executionRequest('Tester'), llm: current.router.for('Tester'), maxRounds: 1 }).run({
         step: { ...step, phase, role: 'Tester', tools: ['run_tests'], outputs: [] }, tools: [tool],
         ctx: { ...current.ctx, requestPermission: permission },
       });
@@ -158,7 +173,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
       '"args":{"path":"src/accepted.py","content":"' + content + '"}},],"done":true,}\n```';
     const server = await endpoint([output]);
     const current = await fixture(server.url);
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 1 }).run({
+    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 1 }).run({
       step, tools: [writeFileTool], ctx: current.ctx,
     });
     expect(result.success).toBe(true);
@@ -174,7 +189,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const complete = JSON.stringify({ thoughts: 'The native action is complete', actions: [], done: true });
     const server = await endpoint([native, complete]);
     const current = await fixture(server.url);
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 2 }).run({
+    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
       step, tools: [writeFileTool], ctx: current.ctx,
     });
     expect(result.success).toBe(true);
@@ -197,7 +212,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const waiting = new Promise<void>(resolve => { entered = resolve; });
     const decision = new Promise<ToolPermissionDecision>(resolve => { release = resolve; });
     const permission = vi.fn(async () => { entered(); return decision; });
-    const pending = new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 2 }).run({
+    const pending = new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
       step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     await waiting;
@@ -222,7 +237,7 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const server = await endpoint([denied, rejected, accepted]);
     const current = await fixture(server.url);
     const permission = vi.fn(async () => ({ approved: false, outcome: 'denied' as const, reason: 'Controlled user denial' }));
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 6 }).run({
+    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 6 }).run({
       step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     expect(result.success).toBe(false);
@@ -238,9 +253,10 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     expect(events.find(event => event.kind === 'tool.result' && event.data?.permissionDenied === true)?.data)
       .toMatchObject({ tool: 'write_file', ok: false, permissionDenied: true });
     expect(events.find(event => event.messageId === 'audit.executor_turn_protocol_rejected')?.data)
-      .toMatchObject({ round: 2, code: 'execution_turn_protocol_invalid', stage: 'post-chat', diagnostic: { code: 'unexpected_end' } });
+      .toMatchObject({ round: 2, code: 'execution_turn_round_refused', stage: 'protocol',
+        assessment: { result: { diagnostic: { code: 'unexpected_end' } } } });
     expect(events.some(event => event.messageId === 'audit.executor_permission_blocked')).toBe(true);
-    expect(events.filter(event => event.messageId === 'llm.provider_response')).toHaveLength(2);
+    expect(events.filter(event => ['llm.provider_response', 'llm.provider_validation_error'].includes(event.messageId ?? ''))).toHaveLength(2);
     expect(events.some(event => event.messageId === 'llm.provider_validation_retry')).toBe(false);
     expect(current.decay).not.toHaveBeenCalled();
   });
@@ -248,14 +264,14 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
   it('preserves an audit storage interruption without another model round or an executable partial turn', async () => {
     const server = await endpoint([rejected, accepted]);
     const current = await fixture(server.url);
-    const failure = new AuditPersistenceError({ operation: 'append-jsonl', target: path.join(root, 'audit', 'audit.jsonl'),
+    const failure = new AuditPersistenceError({ operation: 'append-jsonl', target: path.join(root, '.xcompiler', 'audit', 'audit.jsonl'),
       eventKind: 'llm.error', messageId: 'audit.executor_turn_protocol_rejected' }, { cause: new Error('Injected audit persistence failure') });
     const original = current.audit.event.bind(current.audit);
     vi.spyOn(current.audit, 'event').mockImplementation(async (kind, message, data, options) => {
       if (data?.messageId === 'audit.executor_turn_protocol_rejected') throw failure;
       return original(kind, message, data, options);
     });
-    await expect(new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 2 }).run({
+    await expect(new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
       step, tools: [writeFileTool], ctx: current.ctx,
     })).rejects.toBe(failure);
     expect(server.calls).toHaveLength(1);

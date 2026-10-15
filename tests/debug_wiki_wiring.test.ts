@@ -1,3 +1,4 @@
+import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -271,7 +272,7 @@ async function fixture() {
   const wikiOptions = { projectPath: projectWiki, bundledPath: path.join(root, 'empty-seed') };
   const wiki = new FileDebugWiki(installationWiki, wikiOptions);
   const audit = new AuditLogger({ root: workspace.root, stateRoot: container.state.root, command: 'wiki-wiring-test' });
-  const runner = new DomainAttemptRunner({
+  const runner = new DomainAttemptRunner(withFixtureExecutionRequests({
     workspace,
     repository,
     debugWiki: wiki,
@@ -288,7 +289,7 @@ async function fixture() {
     } as unknown as AttemptRunnerOptions['git'],
     sandbox: {} as AttemptRunnerOptions['sandbox'],
     router: { for: () => ({}) } as unknown as AttemptRunnerOptions['router'],
-  }, 'typescript');
+  }), 'typescript');
   return { container, repository, graph, bug, input, runner, wiki, installationWiki, projectWiki, wikiOptions, audit };
 }
 

@@ -402,6 +402,10 @@ class FallbackClient implements LLMClient {
       }
       options?.signal?.throwIfAborted();
     }
+    if (options?.prepareProviderRequest && (!responseValidator || !requiredAuditLocation
+      || typeof options.beforeProviderRequest !== 'function')) {
+      throw new RuleRequestBindingError('invalid', { logicalRequestId, stage: 'execution-projection-options' });
+    }
     if (requiredAuditLocation && !this.audit) throw new RuleRequestBindingError('audit_unavailable', {
       logicalRequestId, stage: 'required-audit-location',
     });
@@ -467,9 +471,29 @@ class FallbackClient implements LLMClient {
             switched: isSwitch,
           });
         } catch { /* display only */ }
-        const operationWindow = resolveSkillOperationWindow({
+        let projectedMessages = providerMessages;
+        let projectedMaxTokens: number | undefined;
+        let projectedWindow: ReturnType<typeof resolveSkillOperationWindow> | undefined;
+        if (options?.prepareProviderRequest) {
+          options.signal?.throwIfAborted();
+          const projected = options.prepareProviderRequest({
+            logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+            messages: Object.freeze(providerMessages.map(message => Object.freeze({ ...message }))),
+            contextWindowTokens: c.contextWindowTokens,
+          });
+          if (!Number.isInteger(projected.maxTokens) || projected.maxTokens <= 0
+            || projected.maxTokens !== projected.window.responseTokenBudget
+            || projected.window.contextWindowTokens !== c.contextWindowTokens) {
+            throw new RuleRequestBindingError('invalid', { logicalRequestId, providerAttemptId, stage: 'execution-window-projection' });
+          }
+          projectedWindow = { ...projected.window };
+          projectedMessages = projected.messages.map(message => ({ ...message }));
+          projectedMaxTokens = projected.maxTokens;
+          options.signal?.throwIfAborted();
+        }
+        const operationWindow = projectedWindow ?? resolveSkillOperationWindow({
           contextWindowTokens: c.contextWindowTokens,
-          promptChars: providerMessages.reduce((sum, message) => sum + message.content.length, 0),
+          promptChars: projectedMessages.reduce((sum, message) => sum + message.content.length, 0),
         });
         if (providerAttempt === 1) {
           await auditEvent(
@@ -493,9 +517,10 @@ class FallbackClient implements LLMClient {
         const providerOptions: ChatOptions = {
           ...attemptOptions,
           maxTokens:
-            typeof attemptOptions?.maxTokens === 'number'
-              ? Math.min(attemptOptions.maxTokens, operationWindow.responseTokenBudget)
-              : operationWindow.responseTokenBudget,
+            typeof projectedMaxTokens === 'number' ? projectedMaxTokens
+              : typeof attemptOptions?.maxTokens === 'number'
+                ? Math.min(attemptOptions.maxTokens, operationWindow.responseTokenBudget)
+                : operationWindow.responseTokenBudget,
           // The caller supplies the explanation because the transport may not import it. A caller
           // that already wants its own stall handling keeps it.
           onStall: attemptOptions?.onStall ?? (requiredAuditLocation && this.diagnoseStall
@@ -506,13 +531,14 @@ class FallbackClient implements LLMClient {
           onProviderResponse: (response) => { observations.push(response); },
         };
         delete providerOptions.requiredAuditLocation;
+        delete providerOptions.prepareProviderRequest;
         delete providerOptions.validateResponse;
         if (responseValidator) {
           // Callback ownership stays in Router even if caller options change while awaiting a probe.
           delete providerOptions.validate;
           delete providerOptions.streamStopWhen;
         }
-        const attemptMessages = providerMessages.map((message) => Object.freeze({ ...message }));
+        const attemptMessages = projectedMessages.map((message) => Object.freeze({ ...message }));
         Object.freeze(attemptMessages);
         // Guard failures are request/evidence failures, outside all provider retry and score paths.
         const rawBinding = await options?.beforeProviderRequest?.({
@@ -843,7 +869,7 @@ class FallbackClient implements LLMClient {
 }
 
 function validateProtocolCorrectionOptions(options?: ChatOptions): void {
-  const unsupported = ['validate', 'validateResponse', 'streamStopWhen'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
+  const unsupported = ['validate', 'validateResponse', 'streamStopWhen', 'prepareProviderRequest'].filter((key) => options?.[key as keyof ChatOptions] !== undefined);
   if (unsupported.length || typeof options?.beforeProviderRequest !== 'function') {
     throw new ProtocolCorrectionBindingError('invalid', {
       stage: 'correction-options', unsupported, missingFinalSendGuard: typeof options?.beforeProviderRequest !== 'function',

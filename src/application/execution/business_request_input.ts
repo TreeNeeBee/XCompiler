@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ObjectIdSchema } from '../../domain/identity/object_id.js';
+import type { Role } from '../../domain/workflow/role.js';
+import { workStepId } from '../../domain/tickets/ticket.js';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import { JsonOutputProtocolSchema } from '../../llm/protocol_json.js';
 import { ruleEvidenceDigest } from '../rules/rule_evidence_encoding.js';
@@ -17,6 +19,9 @@ import {
 import {
   PhaseDecompositionPayloadSchema, PHASE_DECOMPOSITION_PROTOCOL,
 } from '../planning/phase_decomposition_request.js';
+import {
+  EXECUTION_TURN_PROTOCOL, ExecutionRequestScopeSchema, ExecutionTurnPayloadSchema,
+} from './execution_turn_request.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
@@ -32,12 +37,14 @@ export const ProjectPlanningOperationOwnerSchema = z.object({
   kind: z.literal('project-planning-operation'), operationId: UUID,
   operation: z.literal('phase-decomposition'), projectId: ObjectId,
 }).strict();
+export const StepExecutionOwnerSchema = ExecutionRequestScopeSchema.extend({ kind: z.literal('step-execution') }).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
-  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema, ProjectPlanningOperationOwnerSchema,
+  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema, ProjectPlanningOperationOwnerSchema, StepExecutionOwnerSchema,
 ]);
 export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
 export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema>;
 export type ProjectPlanningOperationOwner = z.infer<typeof ProjectPlanningOperationOwnerSchema>;
+export type StepExecutionOwner = z.infer<typeof StepExecutionOwnerSchema>;
 export type BusinessRequestOwner = z.infer<typeof BusinessRequestOwnerSchema>;
 export const PLANNING_REQUEST_CONTEXTS = Object.freeze({
   clarification: 'planning-clarification',
@@ -52,7 +59,7 @@ const Identity = z.object({
 }).strict();
 
 export const BusinessRequestAuditContextSchema = z.discriminatedUnion('kind', [
-  PhasePlanPayloadSchema, ClarificationPayloadSchema, PhaseDecompositionPayloadSchema,
+  PhasePlanPayloadSchema, ClarificationPayloadSchema, PhaseDecompositionPayloadSchema, ExecutionTurnPayloadSchema,
 ]);
 export type BusinessRequestAuditContext = z.infer<typeof BusinessRequestAuditContextSchema>;
 
@@ -84,10 +91,11 @@ export class BusinessRequestInputError extends Error {
 }
 
 /** Typed operation ownership is fixed by the caller contract, never by a model or Plugin. */
-export function businessRequestRole(owner: BusinessRequestOwner): 'ProjectManager' | 'Planner' {
+export function businessRequestRole(owner: BusinessRequestOwner): Role {
   switch (owner.kind) {
     case 'scenario-judgement': return 'ProjectManager';
     case 'project-planning-operation': return 'Planner';
+    case 'step-execution': return owner.role;
     case 'planning-operation':
       switch (owner.operation) {
         case 'clarification': return 'ProjectManager';
@@ -104,6 +112,8 @@ export function assertBusinessRequestSnapshotOwner(
 ): void {
   const scopeMatches = owner.kind === 'scenario-judgement'
     ? snapshot.context.projectId?.toLowerCase() === owner.projectId
+    : owner.kind === 'step-execution'
+      ? snapshot.context.projectId?.toLowerCase() === owner.projectId && snapshot.context.scenario === 'step-execution'
     : owner.kind === 'project-planning-operation'
       ? snapshot.context.projectId?.toLowerCase() === owner.projectId
         && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation]
@@ -133,7 +143,7 @@ export interface BusinessRequestInputAudit {
 export function validateBusinessRequestInput(raw: unknown): BusinessRequestInput {
   const parsed = BusinessRequestInputSchema.safeParse(raw);
   if (!parsed.success) throw new BusinessRequestInputError('invalid', { field: 'input' }, { cause: parsed.error });
-  assertAuditContext(parsed.data);
+  assertBusinessRequestAuditContext(parsed.data);
   return freeze(parsed.data);
 }
 
@@ -203,7 +213,7 @@ export class BusinessRequestInputs {
     if (!parsed.success) throw new BusinessRequestInputError('invalid', { field: 'capture' }, { cause: parsed.error });
     // Zod copies nested material; freeze it before any collaborator can suspend this operation.
     const captured = freeze(parsed.data);
-    assertAuditContext(captured);
+    assertBusinessRequestAuditContext(captured);
     const snapshot = await this.snapshot(captured.logicalRequestId, captured.owner, undefined, signal, captured.auditContext);
     signal?.throwIfAborted();
     const input = validateBusinessRequestInput({ ...captured, schemaVersion: 1, snapshotDigest: snapshot.digest });
@@ -278,8 +288,31 @@ export class BusinessRequestInputs {
   }
 }
 
-function assertAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId' | 'owner' | 'templateVersion' | 'outputProtocol' | 'auditContext'>): void {
-  if (input.auditContext === undefined) return;
+export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId' | 'owner' | 'templateVersion' | 'outputProtocol' | 'auditContext'>): void {
+  if (input.auditContext === undefined) {
+    if (input.owner.kind === 'step-execution') throw new BusinessRequestInputError('invalid', {
+      logicalRequestId: input.logicalRequestId, field: 'audit_context',
+    });
+    return;
+  }
+  if (input.auditContext.kind === 'step-execution-turn') {
+    const context = input.auditContext.promptContext;
+    const owner = input.owner;
+    const ticket = context.ticket;
+    const executingStepId = ticket === undefined ? undefined : workStepId(ticket);
+    if (owner.kind !== 'step-execution'
+      || context.step.id.toLowerCase() !== owner.stepId
+      || owner.role !== (context.executionRole ?? context.step.role)
+      || input.templateVersion !== input.auditContext.templateVersion
+      || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(EXECUTION_TURN_PROTOCOL)
+      || (ticket !== undefined && (ticket.id.toLowerCase() !== owner.ticketId
+        || ticket.projectId.toLowerCase() !== owner.projectId || ticket.phaseId.toLowerCase() !== owner.phaseId
+        || (executingStepId !== undefined && executingStepId.toLowerCase() !== owner.stepId)
+        || (owner.assignmentId !== undefined && ticket.activeAssignmentId?.toLowerCase() !== owner.assignmentId)))) {
+      throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });
+    }
+    return;
+  }
   let operation: PlanningOperationOwner['operation'];
   let protocol: BusinessRequestInput['outputProtocol'];
   let ownerMatches: boolean;
@@ -300,7 +333,7 @@ function assertAuditContext(input: Pick<BusinessRequestInput, 'logicalRequestId'
       ownerMatches = input.owner.kind === 'planning-operation' || input.owner.kind === 'project-planning-operation';
       break;
   }
-  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.operation !== operation
+  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'step-execution' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion
     || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(protocol)) {
     throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });

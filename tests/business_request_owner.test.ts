@@ -170,12 +170,14 @@ describe('business request operation ownership', () => {
         details: expect.objectContaining({ field: 'input_binding', logicalRequestId, providerAttemptId: operationId }) }));
   });
 
-  it('rejects a non-PM scenario attempt and does not expand into unrelated execution roles', () => {
+  it('rejects execution roles on a PM scenario binding while accepting only registered role names', () => {
     const record = createBusinessRequestInputRecord(validateBusinessRequestInput(legacyScenarioInput), captureIdentity);
     const request = attempt(record, 'ProjectManager');
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'Planner' }), record))
       .toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
-    expect(() => validateBusinessRequestAttempt({ ...request, role: 'Coder' }))
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'Coder' }), record))
+      .toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
+    expect(() => validateBusinessRequestAttempt({ ...request, role: 'UnregisteredRole' }))
       .toThrow(expect.objectContaining({ reason: 'invalid' }));
   });
 });

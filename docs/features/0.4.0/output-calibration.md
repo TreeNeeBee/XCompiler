@@ -607,3 +607,25 @@ writes or lifecycle effects. This adds no production C1 allowance or quote/escap
 The complete milestone passed core/functional integration/e2e/typecheck/lint/build, fourteen actual-
 call falsifications and 334 restored focused checks. Full 0.4 acceptance and ten P1 resource
 failures remain open; see HANDOVER for counts and limits.
+
+Executor retained-request milestone, 2026-10-15: production Run/Runner/StepExecutor now uses the
+Runtime port with canonical execution scope, the actual role and Actor provider pool. Producer
+completion and whole JSON/independent preservation proof precede the original conditional quality
+and Debugger checks. Ordinary protocol/incomplete-output refusal consumes one existing outer round;
+the previously enabled conditional validation path retains Router feedback/fallback and its bounded
+outer grace. Executor text receives no Router success credit (`scoreSuccess: false`). Permission
+decisions and Tool outcomes keep their existing later boundary.
+
+Production Executor no longer stops a stream when JSON merely looks complete and does not pass
+legacy `validate` to transports. The deliberate provider-envelope early abort is preserved as an
+incomplete error. Real Ollama NDJSON tests reproduced a callback exception swallowed by the decode
+catch; only JSON decoding is now caught, so the original abort propagates while invalid keepalive
+lines remain tolerated. This changes no completion eligibility or correction allowance.
+
+The original prompt inputs are retained before awaits. An actual-provider projection verifies the
+captured initial user text, applies the existing window renderer to that message only, and protects
+the complete projected array and capacity at dispatch. Selected Rules and all other original bytes
+remain fixed. Exact-ID recovery validates the old adopted response and context without sending,
+Tool replay, permission or lifecycle effects. No production C1 dispatch or additional quote/escape
+repair class is enabled by this milestone; the motivating ambiguous inner-quote sample remains
+unresolved. Executed checks and the deferred P1 release-resource failures are recorded in HANDOVER.

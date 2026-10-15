@@ -7,12 +7,18 @@ import { describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
 import { buildPlan } from '../../src/agents/planner.js';
 import { DomainAttemptRunner } from '../../src/application/execution/attempt_runner.js';
+import type { AttemptInput, ExecutionScope } from '../../src/application/execution/attempt_runner.js';
+import { projectExecutionPlan } from '../../src/application/execution/execution_adapter.js';
+import type { StepExecutor } from '../../src/agents/executor.js';
+import type { Tool, ToolContext } from '../../src/tools/types.js';
 import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/phase_plan_files.js';
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
+import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
 import * as projectReports from '../../src/application/reporting/project_report.js';
 import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
+import { createObjectId } from '../../src/domain/identity/object_id.js';
 import {
   deliveryDocsForIteration,
   phaseDocForIteration,
@@ -28,6 +34,7 @@ import { silentRuntimeIO } from '../../src/runtime/io.js';
 import { createSandbox } from '../../src/sandbox/factory.js';
 import type { Sandbox } from '../../src/sandbox/types.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
+import { bugContracts } from '../helpers/ticket_fixtures.js';
 
 // Provider discovery and environment installation are outside these wiring tests. Individual
 // cases below name the controlled workflow boundary; Runtime composition and file adapters remain real.
@@ -39,6 +46,119 @@ vi.mock('../../src/llm/preflight.js', () => ({
 vi.mock('../../src/sandbox/factory.js', () => ({ createSandbox: vi.fn() }));
 
 describe('Runtime initializes the configured knowledge store', () => {
+  it.each(['normal', 'debug'] as const)('composes the retained execution port and Actor model pool through real Run and %s attempt before the real Tool boundary', async mode => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-executor-')));
+    const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const previous = envKeys.map(key => process.env[key]);
+    const calls: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = [];
+    const draft = runtimePlan();
+    draft.steps[0]!.tools = ['write_file'];
+    const output = JSON.stringify({ thoughts: 'Deliver the assigned requirement artifacts through the real Tool boundary',
+      bugResolutionPlan: 'Inspect the missing owned requirement artifacts, write the accepted specifications and paired test, then verify those exact outputs.',
+      actions: draft.steps[0]!.outputs.map(artifact => ({ tool: 'write_file', args: { path: artifact,
+        content: artifact.endsWith('.py') ? 'def test_current_requirement():\n    assert 1 + 1 == 2\n' : '# Accepted requirements\nCurrent requirement evidence.\n' } })),
+      qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {}, tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
+        evidence: draft.steps[0]!.outputs, unavailableMetrics: [], gaps: [], blockedBy: [] }, done: true });
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        const parsed = body ? JSON.parse(body) as { model: string; messages?: Array<{ role: string; content: string }> } : undefined;
+        if (!parsed?.messages) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
+        calls.push({ model: parsed.model, messages: parsed.messages });
+        const reply = calls.length === 1 ? output : JSON.stringify({ ...JSON.parse(output), actions: [] });
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+        response.end('data: [DONE]\n\n');
+      });
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      process.env.XC_PATH = path.join(root, 'fallback-installation');
+      process.env.XCOMPILER_PATH = process.env.XC_PATH;
+      process.env.GIT_CONFIG_GLOBAL = path.join(root, 'empty-git-config');
+      process.env.GIT_CONFIG_NOSYSTEM = '1';
+      await fs.writeFile(process.env.GIT_CONFIG_GLOBAL, '');
+      const container = new ProjectContainer(path.join(root, 'project'));
+      const workspace = container.canonical().workspace;
+      await workspace.ensure('.');
+      const graph = compileProjectGraph({ draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-executor' });
+      const domainStep = graph.steps.find(candidate => candidate.type === 'REQUIREMENT_ANALYSIS')!;
+      const actor = graph.actors.find(candidate => candidate.role === domainStep.role)!;
+      actor.llmBinding = { providerPool: ['assigned'] };
+      const repository = new DomainObjectRepository(container.state);
+      await repository.load();
+      await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      const phase = graph.phases[0]!;
+      const ticket = mode === 'normal'
+        ? graph.tickets.find(candidate => candidate.type === 'story' && candidate.stepId === domainStep.id)!
+        : await new TicketWorkflow(repository).openBug({ creatorActorId: actor.id, failedStep: domainStep,
+          targetStep: domainStep, verificationStep: domainStep, kind: 'stage-execution', severity: 'high',
+          message: 'The owned requirement artifacts are missing before CODE.', summary: 'Missing owned requirement artifacts.',
+          category: 'contract', code: 'artifact_missing', retryable: true, switchProvider: false, correlationId: createObjectId(),
+          ...bugContracts(domainStep, domainStep, domainStep, { category: 'contract', code: 'artifact_missing',
+            artifactTargets: domainStep.outputs }) });
+      const definition = graph.roleDefinitions.find(candidate => candidate.id === actor.roleDefinitionId)!;
+      const projection = projectExecutionPlan(draft, phase, graph.steps);
+      const attempt: AttemptInput = { plan: projection.plan, executionStep: projection.byDomainStepId.get(domainStep.id)!,
+        domainStep, ticket, mode, assignee: { actor, definition } };
+      const actualRole = mode === 'debug' ? 'Debugger' : domainStep.agent;
+      const unexpectedExecution = vi.fn(async (): Promise<never> => { throw new Error('This pre-CODE wiring case must not run a sandbox process'); });
+      const sandbox: Sandbox = { kind: 'subprocess', build: vi.fn(async () => ({ rebuilt: false, reason: 'Controlled local preparation' })),
+        exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution };
+      vi.mocked(createSandbox).mockReturnValue(sandbox);
+      const stop = new Error('Stop after retained execution, before orchestration and Domain delivery');
+      const initialize = DomainAttemptRunner.prototype.initialize;
+      vi.spyOn(DomainAttemptRunner.prototype, 'initialize').mockImplementation(async function (this: DomainAttemptRunner) {
+        await initialize.call(this);
+        const internal = this as unknown as {
+          canonicalScope(): ExecutionScope;
+          buildEnvironment(scope: ExecutionScope, input: AttemptInput): Promise<{ executor: StepExecutor; tools: Tool[]; context: ToolContext; hints: string[] }>;
+        };
+        // Keep Run composition and the production environment/request invocation real. The surrounding
+        // lifecycle is stopped here because this test checks wiring, not Step delivery.
+        const environment = await internal.buildEnvironment(internal.canonicalScope(), attempt);
+        const executed = await environment.executor.run({ step: attempt.executionStep, executionRole: actualRole,
+          tools: environment.tools, ctx: environment.context, skillHints: environment.hints, baselineTestExecution: 'defer',
+          baselineTestExecutionReason: mode === 'debug' ? 'pre-code-correction' : 'initial-pre-code',
+          ...(mode === 'debug' ? { debugContext: { bugTicketId: ticket.id, reason: 'The owned requirement artifacts are missing before CODE.',
+            failureLog: 'Owned artifacts have not been written.', repairRequired: true } } : {}) });
+        expect(executed.success, JSON.stringify(executed)).toBe(true);
+        throw stop;
+      });
+      const planPath = container.control.abs('plan.P1.json');
+      await new FilePlanStore().savePlan(planPath, draft);
+      const configPath = await writeConfig(root, `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
+      const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
+      configuration.llm.providers.assigned = { ...configuration.llm.providers.local, model: 'assigned-actor-model' };
+      await fs.writeFile(configPath, YAML.stringify(configuration));
+      const result = await runExecute({ workspace: container.root, planPath, configPath,
+        debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'), io: silentRuntimeIO, recordReplayMode: 'off' });
+      expect(result).toMatchObject({ status: 'error', exitCode: 5, message: stop.message });
+      expect(calls).toHaveLength(2);
+      expect(calls.map(call => call.model)).toEqual(['assigned-actor-model', 'assigned-actor-model']);
+      expect(unexpectedExecution).not.toHaveBeenCalled();
+      for (const artifact of attempt.executionStep.outputs) expect(await workspace.exists(artifact)).toBe(true);
+      const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(line => line.trim())
+        .map(line => JSON.parse(line) as { messageId?: string; data?: Record<string, unknown> });
+      const retained = events.find(event => event.messageId === 'llm.business_request_input')?.data?.input as BusinessRequestInput;
+      expect(retained.owner).toMatchObject({ kind: 'step-execution', projectId: graph.project.id, phaseId: phase.id,
+        stepId: domainStep.id, ticketId: ticket.id, role: actualRole, actorId: actor.id, providerPool: ['assigned'] });
+      expect(events.filter(event => event.messageId === 'llm.provider_response')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ data: expect.objectContaining({ provider: 'assigned', role: actualRole }) }),
+      ]));
+      expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(true);
+      expect(calls[0]!.messages[0]!.content).toContain('rules');
+    } finally {
+      vi.restoreAllMocks();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('loads installation seeds and the container project tier through the real attempt runner', async () => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-wiki-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;

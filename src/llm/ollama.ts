@@ -67,13 +67,12 @@ export class OllamaClient implements LLMClient {
         body,
         { timeoutMs, idleTimeoutMs, maxOutputChars },
         (line) => {
-          try {
-            const obj = JSON.parse(line) as OllamaChatResponse;
-            const piece = obj.message?.content;
-            if (piece) options!.onToken!(piece);
-          } catch {
-            /* ignore non-JSON keep-alive */
-          }
+          let obj: OllamaChatResponse;
+          try { obj = JSON.parse(line) as OllamaChatResponse; }
+          catch { return; } // Non-JSON keep-alives carry no model content.
+          if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+          const piece = obj.message?.content;
+          if (typeof piece === 'string' && piece.length > 0) options!.onToken!(piece);
         },
         (aggregate) => {
           try {

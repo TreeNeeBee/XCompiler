@@ -1,6 +1,6 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-Updated 2026-10-15. This describes authored F1/R1 components, J06/P01/P02/P03 production composition
+Updated 2026-10-15. This describes authored F1/R1 components, J06/P01/P02/P03/Executor production composition
 and pre/post-graph planning identity. Initial focused checks have run; complete functional milestones are
 verified before further development and release remains last. Installed behavior is not yet
 verified. Current results are recorded in HANDOVER. The approved behavior is in
@@ -612,9 +612,38 @@ cases passing. The shared phase validator rejects duplicate IDs before P02 adopt
 checkpoint reuse, retaining existing feedback/rebuild behavior. Exact outcomes and deferred P1
 resource failures are recorded in HANDOVER.
 
+### Executor retained turn
+
+`execution-turn/1` uses the Application `ExecutionTurnRequestPort` injected by Runtime Run through
+AttemptRunner. Each runner execution fixes canonical scope, actual role, Actor/assignment and its
+provider pool; each round retains its original rendering/validation payload, Tool descriptors and
+messages under a fresh logical request ID. The `step-execution` owner and `step-execution-turn`
+context bind that same work Step/Ticket, language, actual role and pool to snapshot/attempt evidence.
+Render context supports canonical projected Steps without weakening the Domain planning schema.
+
+Required genesis, original input, actual dispatch bytes, raw producer completion, whole protocol,
+independent normalization proof, original business validation, Plugin consistency, adoption and
+required judgement precede Tool execution. Ordinary output refusal retains its existing one-outer-
+round cost; conditional quality/Debugger checks retain existing Router feedback/fallback and bounded
+grace. `scoreSuccess: false` leaves outcome scoring with its current owner. No new correction
+allowance is introduced, and compiler-local failures do not become product Bugs.
+
+P04-P14 keep their current authoring sources. The trusted provider projection verifies the captured
+initial user renderer and original protected sequence, renders that one user's existing dynamic
+window values, then protects the exact full projected message array and provider capacity. Other
+messages and selected Rule bytes remain fixed; ToolContext receives that same window. The generic
+Planner/J06 literal boundary is unchanged. Plugins cannot replace trusted projection, validation,
+identity, cancellation or scoring channels.
+
+`resumeRuntimeExecutionTurnRequest` returns one adopted original turn with pure original-context
+validation. It sends/writes nothing and cannot replay Tools, grant permission or advance execution.
+Actual Runtime-to-Runner-to-Executor-to-Tool, local HTTP/FS, recovery, rejection, scoring, Plugin and
+projection checks are recorded with their limits in HANDOVER. Production C1, expanded quote/escape
+proofs, per-source extraction and business-Rule activation remain separate work.
+
 The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
-caller-specific Rule resources and bindings; build/run caller migration, production request
-identity/recovery and full request accounting; production composition of the C1 calibration coordinator
+caller-specific Rule resources and bindings; full request accounting at remaining instruction owners;
+production composition of the C1 calibration coordinator
 and additional per-transformation preservation proofs; controlled business-Rule candidate activation; and final
 Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
 configuration and state paths above are not evidence of an installed end-to-end feature.

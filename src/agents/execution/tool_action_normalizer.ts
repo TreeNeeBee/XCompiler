@@ -7,7 +7,11 @@ export interface NormalizedActions {
   invalid: Array<{ index: number; raw: unknown; result: ToolResult & { tool: string } }>;
 }
 
-export function normalizeActions(raw: unknown, toolMap?: Map<string, Tool>): NormalizedActions {
+type ToolArgumentContract = Pick<Tool, 'name' | 'argsSchema'>;
+type ToolPromptContext = Pick<ToolContext,
+  'allowedWrites' | 'readChunkBytes' | 'preserveExistingFiles' | 'rewriteExistingFiles' | 'writeChunkBytes'>;
+
+export function normalizeActions(raw: unknown, toolMap?: ReadonlyMap<string, ToolArgumentContract>): NormalizedActions {
   if (raw === undefined || raw === null) return { actions: [], invalid: [] };
   if (!Array.isArray(raw)) {
     return {
@@ -71,7 +75,9 @@ export function normalizeActions(raw: unknown, toolMap?: Map<string, Tool>): Nor
   return { actions, invalid };
 }
 
-export function describeToolForStep(tool: Tool, context: ToolContext, step: Step): string {
+export function describeToolForStep(
+  tool: Pick<Tool, 'name' | 'description' | 'argsSchema'>, context: ToolPromptContext, step: Step,
+): string {
   const details = [tool.description];
   const inputs = compactPathCandidates(step.inputs);
   const outputs = compactPathCandidates(step.outputs);
@@ -128,7 +134,7 @@ export async function safeRunTool(tool: Tool, args: unknown, context: ToolContex
   }
 }
 
-function validateToolArgsAgainstSchema(tool: Tool, args: Record<string, unknown>): string | undefined {
+function validateToolArgsAgainstSchema(tool: ToolArgumentContract, args: Record<string, unknown>): string | undefined {
   for (const [key, rawDescriptor] of Object.entries(tool.argsSchema)) {
     if (typeof rawDescriptor !== 'string') continue;
     const token = rawDescriptor.trim().split(/\s+/, 1)[0] ?? '';
@@ -157,7 +163,7 @@ function validateToolArgsAgainstSchema(tool: Tool, args: Record<string, unknown>
   return undefined;
 }
 
-function formatToolArgError(tool: Tool, key: string, expectedType: string): string {
+function formatToolArgError(tool: ToolArgumentContract, key: string, expectedType: string): string {
   const expected = JSON.stringify(tool.argsSchema);
   if (key === 'path' && expectedType === 'string') {
     return `invalid ${tool.name} args: path must be a non-empty string; expected args=${expected}`;
@@ -201,7 +207,7 @@ function normalizeActionArgs(
  * only declared argument keys into the canonical envelope. The original response remains in the
  * executor audit, while validation and execution still use the same strict tool schema.
  */
-function actionArgsInput(item: Record<string, unknown>, tool: Tool | undefined): unknown {
+function actionArgsInput(item: Record<string, unknown>, tool: ToolArgumentContract | undefined): unknown {
   if (item.args !== undefined && item.args !== null) return item.args;
   if (!tool) return item.args;
   const flattened = Object.fromEntries(
@@ -220,7 +226,7 @@ const STRING_ARG_TOOL_KEYS: Record<string, string> = {
   read_file: 'path',
 };
 
-function compactPathCandidates(paths: string[], limit = 10): string {
+function compactPathCandidates(paths: readonly string[], limit = 10): string {
   if (paths.length === 0) return '(none declared)';
   const visible = paths.slice(0, limit);
   const omitted = paths.length - visible.length;

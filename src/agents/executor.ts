@@ -5,7 +5,7 @@ import {
 } from '../domain/quality/test_assets.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import type { ChatOptions, LLMClient } from '../llm/types.js';
+import type { LLMClient } from '../llm/types.js';
 import {
   V_MODEL_DEVELOPMENT_PHASES,
   V_MODEL_TEST_PHASES,
@@ -31,11 +31,18 @@ import type {
   ToolContext,
   ToolResult,
 } from '../tools/types.js';
-import { isContentRejectionExhausted } from '../llm/errors.js';
+import { isContentRejectionExhausted, isLLMRequestError, ResponseValidationRejection } from '../llm/errors.js';
+import type { RuleBusinessChatOptions } from '../llm/rule_business_request.js';
+import {
+  EXECUTION_TURN_TEMPLATE_VERSION, ExecutionTurnContractViolation, ExecutionTurnEnvelopeError,
+  ExecutionTurnRequestConfigurationError, ExecutionTurnRequestFailure, ExecutionTurnRoundRefusal, validateExecutionTurnPayload,
+  type ExecutionTurnPayload, type ExecutionTurnRequestPort,
+} from '../application/execution/execution_turn_request.js';
 import { AuditPersistenceError } from '../audit/errors.js';
+import { agentContentRejectionFailure, type AttemptFailure } from '../application/execution/failure_classification.js';
+import { isCancellationError } from '../util/cancellation.js';
 import { makeStreamReporter } from '../llm/stream.js';
-import { t } from '../i18n/index.js';
-import { updateOperationWindow } from '../llm/window.js';
+import { getLocale, t, tFor } from '../i18n/index.js';
 import { renderExecutionPromptPolicy } from './prompt_policy.js';
 import {
   extractChangeRequestDisposition,
@@ -116,6 +123,7 @@ const MAX_DIRECT_REPAIR_PROBE_ROUNDS = 4;
 
 export interface ExecutorOptions {
   llm: LLMClient;
+  request?: ExecutionTurnRequestPort;
   signal?: AbortSignal;
   /** Enables direct human terminal stream rendering for the CLI adapter only. */
   streamOutput?: boolean;
@@ -226,6 +234,8 @@ export interface ExecutorRunResult {
   /** Structured completion/alignment/coverage evidence evaluated by the Runtime quality gate. */
   qualityAssessment?: StageQualityAssessment;
   error?: string;
+  /** Producer-owned failure identity; presentation text must not choose defect routing. */
+  failure?: AttemptFailure;
   /** 健康度统计：用于调用方做"滑动窗口"自适应重试决策。 */
   metrics: ExecutorRunMetrics;
 }
@@ -269,6 +279,11 @@ export class StepExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
 
   async run(inp: ExecutorRunInput): Promise<ExecutorRunResult> {
+    const request = this.opts.request;
+    if (!request) throw new ExecutionTurnRequestConfigurationError();
+    this.opts.signal?.throwIfAborted();
+    const locale = getLocale();
+    const prompts = tFor(locale).prompts;
     const maxRounds = this.opts.maxRounds ?? 6;
     let roundLimit = maxRounds;
     const role = inp.executionRole ?? inp.step.role;
@@ -281,20 +296,20 @@ export class StepExecutor {
     const initialMissingOutputs = initialVerify.missing;
     const skillBlock =
       inp.skillHints && inp.skillHints.length > 0
-        ? t().prompts.executorSkillBlock(inp.skillHints)
+        ? prompts.executorSkillBlock(inp.skillHints)
         : '';
     const debugBlock = inp.debugContext
-      ? t().prompts.executorDebugBlock(inp.debugContext.reason, inp.debugContext.suggestions)
+      ? prompts.executorDebugBlock(inp.debugContext.reason, inp.debugContext.suggestions)
       : '';
     const globalBlock =
       inp.globalPrompt && inp.globalPrompt.trim()
-        ? t().prompts.executorGlobalBlock(inp.globalPrompt.trim())
+        ? prompts.executorGlobalBlock(inp.globalPrompt.trim())
         : '';
-    const roleBlock = inp.roleIdentity ? t().prompts.executorRoleBlock(inp.roleIdentity) : '';
+    const roleBlock = inp.roleIdentity ? prompts.executorRoleBlock(inp.roleIdentity) : '';
     const contextBlock = inp.layeredContext?.trim()
-      ? t().prompts.executorContextBlock(inp.layeredContext.trim())
+      ? prompts.executorContextBlock(inp.layeredContext.trim())
       : '';
-    const stepBlock = t().prompts.executorStepBlock(inp.step.systemPrompt.trim());
+    const stepBlock = prompts.executorStepBlock(inp.step.systemPrompt.trim());
     const policyBlock = renderExecutionPromptPolicy({
       debug: !!inp.debugContext,
       changeRequest: !!inp.changeRequest,
@@ -302,14 +317,14 @@ export class StepExecutor {
       // verification, and repairing it is exactly the job. Rule 9 governs ownership there.
       declarative: isDeclarativeOutputPhase(inp.step.phase) && !inp.debugContext,
     });
-    const userPrompt = renderExecutionUserPrompt(inp, toolDocs, initialMissingOutputs);
+    const userPrompt = renderExecutionUserPrompt(inp, toolDocs, initialMissingOutputs, locale);
     const profile = inp.languageProfile ?? getLanguageProfile('python');
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       {
         role: 'system',
         content:
-          t().prompts.executorSystem(profile) +
+          prompts.executorSystem(profile) +
           roleBlock +
           policyBlock +
           globalBlock +
@@ -390,6 +405,23 @@ export class StepExecutor {
     const advisoryFailureRules = this.opts.advisoryFailureRules ?? [];
     const providers = new Set<string>();
 
+    const rejectProtocolRound = async (round: number, output: string, details: Readonly<Record<string, unknown>>,
+      feedback: unknown, provider?: string): Promise<ExecutorRunResult | undefined> => {
+      actualRounds = round;
+      parseFailures++;
+      await inp.ctx.audit?.executorTurn(inp.step.id, role, round, { actions: [], done: false, raw: output, provider });
+      await inp.ctx.audit?.event('llm.error', 'Executor reply rejected by the complete-response protocol', {
+        messageId: 'audit.executor_turn_protocol_rejected', stepId: inp.step.id, role, round, provider,
+        client: request.name, ...details,
+      });
+      if (permissionAdaptationRound !== undefined && round > permissionAdaptationRound) {
+        permissionBlockedReason ??=
+          `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
+        return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
+      }
+      messages.push({ role: 'user', content: t().prompts.executorFeedbackProtocolRejected(JSON.stringify(feedback)) });
+    };
+
     const stepLabel = inp.stepName?.trim() || inp.step.id;
     for (let round = 1; round <= roundLimit; round++) {
       const testPhaseGatePendingAtRoundStart =
@@ -411,7 +443,6 @@ export class StepExecutor {
       let provider: string | undefined;
       let text: string;
       try {
-        const chatMessages = compactExecutionMessages(messages, !!inp.debugContext);
         const directRepairProbeRounds =
           directRepairProbeRoundsByGeneration.get(mutationGeneration) ?? 0;
         const allowNovelDirectRepairProbe =
@@ -437,77 +468,80 @@ export class StepExecutor {
             enforceRecoveryContract ||
             (bugResolutionPlanRequired && !bugResolutionPlan?.trim())
           );
-        const chatOptions: ChatOptions = {
-          responseFormat: 'json',
-          temperature: 0.1,
-          // `onProviderStart` recomputes this from the newly selected provider's context window, so
-          // the object handed to the client must be this one, not a snapshot taken before the call.
-          maxTokens: inp.ctx.responseTokenBudget,
-          signal: this.opts.signal,
-          scoreSuccess: false,
-          validate: validateCompletionQuality || validateDebuggerRecovery
-            ? (text) => {
-              if (validateCompletionQuality) {
-                validateExecutionTurnContract(
-                  text,
-                  inp.step,
-                  toolMap,
-                  inp.baselineTestExecution === 'defer',
-                );
-              }
-              if (validateDebuggerRecovery) {
-                validateDebuggerRecoveryTurn(text, toolMap, {
-                  enforceRecoveryContract,
-                  requireBugResolutionPlanBeforeAction:
-                    bugResolutionPlanRequired && !bugResolutionPlan?.trim(),
-                  allowNovelReadOnlyProbes:
-                    (readOnlyRecoveryMode && !directRepairMode) ||
-                    allowNovelDirectRepairProbe,
-                  seenProbeFingerprints: recoveryProbeFingerprints,
-                });
-              }
-            }
-            : undefined,
+        const payload = validateExecutionTurnPayload({
+          schemaVersion: 1, kind: 'step-execution-turn', templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
+          locale, parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
+          promptContext: {
+            step: inp.step, executionRole: role, baselineTestExecution: inp.baselineTestExecution,
+            baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: inp.contextSnippets,
+            ticket: inp.ticket, changeRequest: inp.changeRequest, enhancement: inp.enhancement, debugContext: inp.debugContext,
+            ctx: {
+              allowedWrites: inp.ctx.allowedWrites, preserveExistingFiles: inp.ctx.preserveExistingFiles,
+              rewriteExistingFiles: inp.ctx.rewriteExistingFiles,
+              contextWindowTokens: inp.ctx.contextWindowTokens, responseTokenBudget: inp.ctx.responseTokenBudget,
+              feedbackCharBudget: inp.ctx.feedbackCharBudget, readChunkBytes: inp.ctx.readChunkBytes,
+              writeChunkBytes: inp.ctx.writeChunkBytes,
+            },
+          }, initialMissingOutputs,
+          tools: inp.tools.map(tool => ({ name: tool.name, description: tool.description, argsSchema: tool.argsSchema })),
+          validation: {
+            completionQuality: validateCompletionQuality, debuggerRecovery: validateDebuggerRecovery,
+            enforceRecoveryContract, requireBugResolutionPlanBeforeAction: bugResolutionPlanRequired && !bugResolutionPlan?.trim(),
+            allowNovelReadOnlyProbes: (readOnlyRecoveryMode && !directRepairMode) || allowNovelDirectRepairProbe,
+            seenProbeFingerprints: [...recoveryProbeFingerprints], baselineExecutionDeferred: inp.baselineTestExecution === 'defer',
+          },
+        });
+        const retainedToolDocs = payload.tools.map(tool =>
+          `- ${tool.name}: ${describeToolForStep(tool, payload.promptContext.ctx, payload.promptContext.step)} args=${JSON.stringify(tool.argsSchema)}`,
+        ).join('\n');
+        messages[1]!.content = renderExecutionUserPrompt(payload.promptContext, retainedToolDocs,
+          payload.initialMissingOutputs, payload.locale);
+        const chatMessages = compactExecutionMessages(messages, !!inp.debugContext);
+        const chatOptions: RuleBusinessChatOptions = {
+          responseFormat: 'json', temperature: 0.1, maxTokens: inp.ctx.responseTokenBudget,
           onProvider: (name) => { provider = name; },
-          onProviderStart: (name, model, providerWindow) => {
+          onProviderStart: (name, model) => {
             provider = name;
             rawAggregate = '';
-            updateOperationWindow(inp.ctx, {
-              contextWindowTokens: providerWindow?.contextWindowTokens ?? inp.ctx.contextWindowTokens,
-              promptChars: chatMessages.reduce((sum, message) => sum + message.content.length, 0),
-            });
-            const refreshedToolDocs = inp.tools
-              .map((tool) =>
-                `- ${tool.name}: ${describeToolForStep(tool, inp.ctx, inp.step)} args=${JSON.stringify(tool.argsSchema)}`,
-              )
-              .join('\n');
-            if (messages[1]) {
-              messages[1].content = renderExecutionUserPrompt(inp, refreshedToolDocs, initialMissingOutputs);
-            }
-            chatOptions.maxTokens = inp.ctx.responseTokenBudget;
             rep.reset();
             rep.setModel(`${name}/${model}`);
           },
-          streamStopWhen: isCompleteTurnJson,
           onToken: (chunk) => {
-            if (rawAggregate.length < RAW_CAP) {
-              rawAggregate = (rawAggregate + chunk).slice(0, RAW_CAP);
-            }
+            if (rawAggregate.length < RAW_CAP) rawAggregate = (rawAggregate + chunk).slice(0, RAW_CAP);
             const rejectedEnvelopeKey = rejectedExecutionTurnEnvelopeKey(rawAggregate);
-            if (rejectedEnvelopeKey) {
-              throw new Error(
-                `invalid Executor response envelope: unexpected top-level key "${rejectedEnvelopeKey}"`,
-              );
-            }
+            if (rejectedEnvelopeKey) throw new ExecutionTurnEnvelopeError(rejectedEnvelopeKey, rawAggregate);
             rep.onToken(chunk);
           },
         };
-        text = await this.opts.llm.chat(chatMessages, chatOptions);
-        providers.add(provider ?? this.opts.llm.name);
+        const response = await request.send({ payload, messages: chatMessages, options: chatOptions, signal: this.opts.signal,
+          validate: (text) => { validateExecutionTurnResponse(text, payload); },
+          onWindow: (window) => { Object.assign(inp.ctx, {
+            contextWindowTokens: window.contextWindowTokens, responseTokenBudget: window.responseTokenBudget,
+            feedbackCharBudget: window.feedbackCharBudget, readChunkBytes: window.readChunkBytes,
+            writeChunkBytes: window.writeChunkBytes,
+          }); },
+        });
+        this.opts.signal?.throwIfAborted();
+        text = response.text;
+        provider = response.provider;
+        providers.add(provider);
+
       } catch (err) {
         rep.done('failed');
         // Storage loss is an infrastructure interruption, not model-output repair feedback.
-        if (err instanceof AuditPersistenceError) throw err;
+        this.opts.signal?.throwIfAborted();
+        if (err instanceof AuditPersistenceError || isCancellationError(err, this.opts.signal)) throw err;
+        if (err instanceof ExecutionTurnRoundRefusal) {
+          const terminal = await rejectProtocolRound(round, err.output, { code: err.code, stage: err.stage, ...err.details },
+            err.details.feedback ?? { stage: err.stage }, provider);
+          if (terminal) return terminal;
+          continue;
+        }
+        const candidateRejection = isContentRejectionExhausted(err) || err instanceof ExecutionTurnProtocolError
+          || err instanceof ExecutionTurnContractViolation || err instanceof ResponseValidationRejection;
+        if (!candidateRejection && !isLLMRequestError(err)) {
+          throw new ExecutionTurnRequestFailure({ stepId: inp.ctx.stepId ?? inp.step.id, role, round }, { cause: err });
+        }
         const errMsg = (err as Error).message;
         actualRounds = round;
         // Partial model output is diagnostic evidence, never a generated-project deliverable.
@@ -555,13 +589,9 @@ export class StepExecutor {
             partialBytes: rawAggregate.length,
           },
         );
-        // Structure first: the router reports whether every provider refused the model's content,
-        // which is true however the rejection happens to be worded. The prose test stays for a
-        // client called without the router, where there is no typed failure to read — it had been
-        // the only test, and it silently stopped matching: the contract says "low-quality Executor
-        // response" and the pattern allows only "low-quality response" or "low-quality debugger
-        // response", so this recovery never ran and the run aborted instead.
-        if (isContentRejectionExhausted(err) || err instanceof ExecutionTurnProtocolError || isLowQualityLLMResponseError(errMsg)) {
+        // Only producer-typed content rejection enters the existing bounded grace path.
+        if (isContentRejectionExhausted(err) || err instanceof ExecutionTurnProtocolError ||
+          err instanceof ExecutionTurnContractViolation || err instanceof ResponseValidationRejection) {
           repeatedTurns++;
           consecutiveLowQualityRejections++;
           if (permissionAdaptationRound !== undefined && round > permissionAdaptationRound) {
@@ -624,6 +654,7 @@ export class StepExecutor {
             finalThought,
             bugResolutionPlan,
             error: errMsg,
+            failure: agentContentRejectionFailure(err),
             metrics,
           };
         }
@@ -636,26 +667,10 @@ export class StepExecutor {
         turn = parseTurn(text);
       } catch (error) {
         if (!(error instanceof ExecutionTurnProtocolError)) throw error;
-        actualRounds = round;
-        parseFailures++;
-        // Reject the whole reply before automatic gate actions or permission requests can run.
-        await inp.ctx.audit?.executorTurn(inp.step.id, role, round, {
-          actions: [], done: false, raw: text, provider,
-        });
-        await inp.ctx.audit?.event('llm.error', 'Executor reply rejected by the full JSON protocol', {
-          messageId: 'audit.executor_turn_protocol_rejected', stepId: inp.step.id, role, round, provider,
-          client: this.opts.llm.name,
-          code: error.code, protocol: error.protocol, diagnostic: error.diagnostic,
-          stage: 'post-chat',
-        });
-        if (permissionAdaptationRound !== undefined && round > permissionAdaptationRound) {
-          permissionBlockedReason ??=
-            `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
-          return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
-        }
-        // This is a fresh business round within the existing allowance, not C1 correction.
-        messages.push({ role: 'user',
-          content: t().prompts.executorFeedbackProtocolRejected(JSON.stringify(error.diagnostic)) });
+        const terminal = await rejectProtocolRound(round, text,
+          { code: error.code, protocol: error.protocol, diagnostic: error.diagnostic, stage: 'post-chat' },
+          error.diagnostic, provider);
+        if (terminal) return terminal;
         continue;
       }
       finalThought = turn.thoughts;
@@ -2063,10 +2078,6 @@ function isRejectedReadOnlyRecovery(reason: string): boolean {
   return /low-quality Debugger response: read-only\/probe actions in read-only recovery mode/i.test(reason);
 }
 
-function isLowQualityLLMResponseError(message: string): boolean {
-  return /low-quality (?:debugger )?response/i.test(message) ||
-    /read-only\/probe actions in read-only recovery mode/i.test(message);
-}
 
 function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugContext']): boolean {
   if (!debugContext) return false;
@@ -2440,14 +2451,33 @@ function isOutputCompletionFailure(reason = '', failureLog = ''): boolean {
     /仍缺失[:：]/u.test(text);
 }
 
+/** Rechecks the original model-output contract without executing or resolving current Tools. */
+export function validateExecutionTurnResponse(text: string, payload: ExecutionTurnPayload): LLMTurn {
+  const turn = parseTurn(text);
+  const toolMap = new Map(payload.tools.map(tool => [tool.name, tool]));
+  const flags = payload.validation;
+  if (flags.completionQuality) {
+    validateExecutionTurnContract(text, payload.promptContext.step, toolMap, flags.baselineExecutionDeferred);
+  }
+  if (flags.debuggerRecovery) {
+    validateDebuggerRecoveryTurn(text, toolMap, {
+      enforceRecoveryContract: flags.enforceRecoveryContract,
+      requireBugResolutionPlanBeforeAction: flags.requireBugResolutionPlanBeforeAction,
+      allowNovelReadOnlyProbes: flags.allowNovelReadOnlyProbes,
+      seenProbeFingerprints: new Set(flags.seenProbeFingerprints),
+    });
+  }
+  return turn;
+}
+
 function validateExecutionTurnContract(
   text: string,
   step: Step,
-  toolMap: Map<string, Tool>,
+  toolMap: ReadonlyMap<string, Pick<Tool, 'name' | 'argsSchema'>>,
   baselineExecutionDeferred = false,
 ): void {
   if (!isCompleteTurnJson(text)) {
-    throw new Error('low-quality Executor response: incomplete or invalid JSON turn');
+    throw new ExecutionTurnContractViolation('turn-shape', 'low-quality Executor response: incomplete or invalid JSON turn');
   }
   const turn = parseTurn(text);
   const actions = normalizeActions(turn.actions, toolMap).actions;
@@ -2456,7 +2486,7 @@ function validateExecutionTurnContract(
   const rawAssessment = turn.qualityAssessment ?? turn.quality_assessment;
   const shapeIssues = qualityAssessmentShapeIssues(rawAssessment);
   if (shapeIssues.length > 0) {
-    throw new Error(
+    throw new ExecutionTurnContractViolation('quality-assessment-shape',
       'low-quality Executor response: invalid qualityAssessment shape; ' +
       `${shapeIssues.join(', ')}; use arrays such as blockedBy:["CODE owns this work"], never objects`,
     );
@@ -2466,7 +2496,7 @@ function validateExecutionTurnContract(
     baselineExecutionDeferred,
   });
   if (missing.length === 0) return;
-  throw new Error(
+  throw new ExecutionTurnContractViolation('quality-assessment-missing',
     'low-quality Executor response: done=true with actions=[] requires a complete qualityAssessment; ' +
     `missing: ${missing.join(', ')}; return the existing artifact or command evidence without rewriting outputs`,
   );
@@ -2474,7 +2504,7 @@ function validateExecutionTurnContract(
 
 function validateDebuggerRecoveryTurn(
   text: string,
-  toolMap: Map<string, Tool>,
+  toolMap: ReadonlyMap<string, Pick<Tool, 'name' | 'argsSchema'>>,
   options: {
     enforceRecoveryContract?: boolean;
     requireBugResolutionPlanBeforeAction?: boolean;
@@ -2492,13 +2522,13 @@ function validateDebuggerRecoveryTurn(
     normalized.invalid.length === 0 &&
     turn.done === undefined;
   if (emptyOrUnparsed) {
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-empty-turn',
       'low-quality Debugger response: empty or unparseable JSON turn in read-only recovery mode; ' +
       'produce valid JSON with a repair action, verification action, or concrete blocker',
     );
   }
   if (normalized.invalid.length > 0 && actions.length === 0) {
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-invalid-actions',
       'low-quality Debugger response: invalid tool actions in read-only recovery mode; ' +
       'produce valid tool arguments for a repair action, verification action, or concrete blocker',
     );
@@ -2508,7 +2538,7 @@ function validateDebuggerRecoveryTurn(
     !extractBugResolutionPlan(turn)?.trim() &&
     (allowedActions.some((action) => isRepairEvidenceTool(action.tool)) || turn.done === true)
   ) {
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-plan-required',
       'low-quality Debugger response: bugResolutionPlan is required before repair or verification actions; ' +
       'include the root-cause hypothesis, repair target, and validation command in the same JSON response',
     );
@@ -2516,14 +2546,14 @@ function validateDebuggerRecoveryTurn(
   if (!options.enforceRecoveryContract) return;
   if (actions.length === 0 && turn.done === true) return;
   if (actions.length === 0) {
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-no-actions',
       'low-quality Debugger response: no valid tool actions in read-only recovery mode; ' +
       'produce a repair action, verification action, or concrete blocker instead',
     );
   }
   if (allowedActions.length === 0) {
     const unknownTools = [...new Set(actions.map((action) => action.tool))].join(', ');
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-no-allowed-actions',
       'low-quality Debugger response: no allowed tool actions in read-only recovery mode; ' +
       `unknown or unavailable tools: ${unknownTools || 'none'}; ` +
       'produce an allowed repair action, verification action, or concrete blocker instead',
@@ -2537,7 +2567,7 @@ function validateDebuggerRecoveryTurn(
     ) {
       return;
     }
-    throw new Error(
+    throw new ExecutionTurnContractViolation('debugger-repeated-probe',
       'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
       'read a new concrete error-related path/window, produce a repair action, run verification, or provide a concrete blocker instead',
     );

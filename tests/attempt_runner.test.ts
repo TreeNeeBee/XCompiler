@@ -1,3 +1,4 @@
+import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -846,7 +847,7 @@ describe('manifest delivery', () => {
 });
 
 function contractRunner(workspace: Workspace): DomainAttemptRunner {
-  const runner = new DomainAttemptRunner({
+  const runner = new DomainAttemptRunner(withFixtureExecutionRequests({
     workspace,
     git: {
       ensureRepo: async () => {},
@@ -857,7 +858,7 @@ function contractRunner(workspace: Workspace): DomainAttemptRunner {
     },
     sandbox: {}, router: {}, repository: {}, audit: { event: async () => {} },
     plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-attempt-contract-wiki'),
-  } as never, 'typescript');
+  } as never), 'typescript');
   (runner as unknown as { recordTicketRevision: () => Promise<void> }).recordTicketRevision = async () => {};
   (runner as unknown as {
     failAttempt: (

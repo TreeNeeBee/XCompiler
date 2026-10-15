@@ -9,8 +9,8 @@ const RequestBoundarySchema = z.object({
   contextWindowTokens: z.number().int().positive(), maxTokens: z.number().int().positive(),
 }).strict();
 
-/** Checks each actual send; the caller retains attempt registration and its evidence binding. */
-export function validateRuleProviderRequest(
+/** Literal identity is checked before trusted Executor projection, without an output-capacity claim. */
+export function validateRuleProviderRequestIdentity(
   request: Parameters<NonNullable<ChatOptions['beforeProviderRequest']>>[0],
   input: {
     logicalRequestId: string;
@@ -45,6 +45,24 @@ export function validateRuleProviderRequest(
     });
     cursor = found + 1;
   }
+  return actual;
+}
+
+/** Checks each actual send; the caller retains attempt registration and its evidence binding. */
+export function validateRuleProviderRequest(
+  request: Parameters<NonNullable<ChatOptions['beforeProviderRequest']>>[0],
+  input: {
+    logicalRequestId: string;
+    messages: readonly Readonly<ChatMessage>[];
+    hasAttempt: (lowerId: string) => boolean;
+    error: (
+      reason: 'request_integrity' | 'capacity_exceeded',
+      details: Readonly<Record<string, unknown>>,
+      options?: ErrorOptions,
+    ) => Error;
+  },
+) {
+  const actual = validateRuleProviderRequestIdentity(request, input);
   const promptChars = actual.messages.reduce((sum, message) => sum + message.content.length, 0);
   const promptTokens = estimateTextTokens(promptChars);
   const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptChars });

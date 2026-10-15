@@ -1,3 +1,4 @@
+import type { SkillOperationWindow } from './window.js';
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
 import type { LLMRequestAuditBinding } from './request_binding.js';
 import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
@@ -29,6 +30,11 @@ export interface ChatOptions {
     contextWindowTokens: number;
     maxTokens: number;
   }) => void | LLMRequestAuditBinding | Promise<void | LLMRequestAuditBinding>;
+  /** Trusted Executor projection before final binding; Plugins cannot replace this channel. */
+  prepareProviderRequest?: (request: {
+    logicalRequestId: string; providerAttemptId: string; provider: string; model: string;
+    messages: readonly Readonly<ChatMessage>[]; contextWindowTokens: number;
+  }) => { messages: readonly Readonly<ChatMessage>[]; maxTokens: number; window: Readonly<SkillOperationWindow> };
   /** Transport evidence channel owned by Router; not a validation or permission hook. */
   onProviderResponse?: (response: ProviderResponseEvidence) => void;
   /** Final accepted provider candidate, after required evidence persistence. */

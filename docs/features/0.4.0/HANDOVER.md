@@ -2,7 +2,7 @@
 
 Updated: 2026-10-15
 Current development branch: `feature/0.4.0`, tracking `origin/feature/0.4.0`; this stage extends
-`a20dae0` (P01 retained PM clarification requests), with original baseline `77ff6e2`
+`29d6cca` (P03 retained decomposition), with original baseline `77ff6e2`
 Status: feature development in progress; tests follow complete functional milestones; release follows last
 
 This document is the continuation point for the 0.4.0 Rule architecture, module separation, and
@@ -1347,6 +1347,83 @@ rerun or waived. They stay in P1 after functional acceptance; the functional fil
 configuration. Next functional work is full Executor migration, remaining per-source instruction
 migration, production C1 composition/proofs and controlled business-Rule activation. P1 release
 metadata, resource/native work, reviewed Debug Rules and dependency audit remain last.
+
+## Executor retained-request milestone — 2026-10-15
+
+Continued from clean, synchronized `29d6cca`; AGENTS and project constraints were reloaded. The
+complete port/caller/recovery/test node was implemented before tests, following the user's order.
+This milestone does not extract P04-P14 into YAML or enable production C1.
+
+- Runtime Run injects an Application `ExecutionTurnRequestPortFactory` through AttemptRunner to
+  StepExecutor. A bare production Executor/Runner now fails explicitly instead of sending without
+  retention. The immutable owner includes canonical Project/Phase/work Step/Ticket, execution ID,
+  actual execution role, Actor/assignment identity and original provider pool. Bug/CR/Enhancement
+  ownership uses the Ticket's work Step, not its discovering Step. Domain owns all lifecycle state.
+- Each round pins original rendering/validation context, Tool descriptions/schema, language and
+  locale before awaits. Role definitions, i18n, global/Step prompts, execution policy, Skill hints
+  and advisory Wiki remain their existing instruction sources. Required genesis selection, request,
+  actual attempts, raw producer facts, chosen response, protocol result and required judgement are
+  linked. Low-score Rule review uses the same assigned pool as the business request.
+- Whole producer completion, JSON and independent normalization proof precede original business
+  checks, Plugin consistency and adoption. Ordinary protocol/incomplete refusal consumes one outer
+  round; previously conditional quality/Debugger validation preserves Router regeneration/fallback
+  and bounded outer grace. Text success receives no Router credit. Typed local request failures
+  preserve the cause and infrastructure classification; audit, cancellation, provider, permission
+  and Tool outcomes keep their own channels.
+- Syntax-only stream stops and provider-side `validate` are removed from this production path.
+  The deliberate known-provider-envelope abort remains an incomplete error. Real Ollama NDJSON
+  testing reproduced its swallowed callback exception; the catch now belongs only to decoding,
+  retaining ignored-frame evidence and original callback errors.
+- A trusted actual-provider projection first checks original framework/Rule bytes and the captured
+  initial user renderer. It changes only that original user's existing window-dependent fields and
+  debug snippet truncation. The projected full message array, capacity and response token/window
+  agreement are checked before transport. The same window reaches subsequent Tool operations;
+  generic J06/Planner literal guards are unchanged.
+- `resumeRuntimeExecutionTurnRequest` revalidates one adopted original response by exact ID using
+  original context. It does not read current sources, resend, replay Tools, grant permission or
+  advance Domain state. It is not an automatic interrupted-execution resumer.
+- Focused testing reproduced the planning Step schema rejecting actual projected UUIDs. The App
+  render-context schema accepts canonical execution IDs while production owner binding requires
+  the exact canonical work Step; Domain's planning schema is unchanged. Real graph compilation
+  and non-first CODE projection cover canonical dependencies. Existing partial Ticket fixtures were
+  replaced with complete Domain builders; original freshness and business gates remain enforced.
+- Real HTTP → Runner → PM verification reproduced a final typed-protocol-refusal hole: converting
+  the failure to presentation text created one generated-project Bug. Executor now produces an
+  explicit `agent_execution_stalled` failure with original cause/producer/audit facts; Runner consumes
+  it before text fallback, retaining failed `run_tests` priority. The same regression now proves no
+  Bug is created and the original Ticket/evidence follows PM's existing stall retention path.
+
+Executed with Node v24.16.0:
+
+| Check | Result |
+|---|---|
+| Initial pure request/contract/projection/failure cases | 60 passed; canonical projection expansion then 33 passed in the two affected files |
+| Existing Executor/Runner focused files | 219 passed after complete Ticket fixtures and the canonical ID correction |
+| Initial broad gates | Core 1,650 passed / 1 stale role assertion failed; functional integration 1,472 passed / 1 null-frame regression failed |
+| Ollama / review-pool regressions | Before fix 63 passed / 3 failed; after fix 66 passed; final added port-to-review pool forwarding passed |
+| Real Runtime window/Actor/audit/proof/capacity cases | Two affected files, 28 passed |
+| Typed protocol refusal through Runner/PM | Before fix created 1 wrong Bug; corrected exact test passed, preserving raw evidence and no Tool effects |
+| Actual-call falsification | 24 mutations, each caused executed assertion failures; original bytes restored after every mutation |
+| Final restored complete core | 118 files, 1,651 passed |
+| Final restored functional integration, excluding only `installation_resources.test.ts` | 65 files, 1,483 passed |
+| Final restored e2e | 2 files, 11 passed |
+| Final typecheck / lint / build | Passed; build's automatic version check uses unchanged 0.3.0 metadata |
+
+Falsified actual sites: Run factory, Runner factory, Executor send, Rule preparation, producer/protocol
+assessment, independent proof, original business validation, response adoption, required judgement,
+provider projection, original Rule guard, projected full-array guard, final capacity guard, Plugin
+projection protection, Runtime-to-Tool window, Executor-to-Tool window, Runner Actor pool, no-success-
+credit policy, recovery validator, Ollama token callback, port-to-review pool, review pool selection,
+typed content-failure producer and Runner consumer. Final complete gates cover the restored sources.
+Local reports/logs are `/private/tmp/xcompiler-executor-*` and are not committed artifacts.
+
+The standalone [review handover](2026-10-15-executor-review-handover.md) records implementation,
+current overall progress and cc review priorities against `29d6cca`. Full integration remains open
+because the ten recorded P1 resource
+failures are deferred, not waived. No external model, generated-project model scenario, package
+publication, native validation or dependency audit was performed. Next functional work is remaining
+per-source instruction migration, production C1/proofs and controlled business-Rule activation;
+release metadata/resources/Debug Rule curation remain last.
 
 ## Work not started or not complete
 
