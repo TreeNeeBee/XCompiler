@@ -16,7 +16,7 @@ import {
   pairedTestAssetPaths,
 } from '../../domain/quality/test_assets.js';
 import type { DomainLog } from '../../domain/observability/records.js';
-import type { AttemptFailure } from './failure_classification.js';
+import { failureMissingOutputs, type AttemptFailure } from './failure_classification.js';
 import { workStepId, type Ticket } from '../../domain/tickets/ticket.js';
 import {
   directCorrectionOrigin,
@@ -346,6 +346,7 @@ export function briefForAttemptFailure(log: DomainLog, phase: Step['phase']): De
     phase,
     targetPhase: phase,
     typedFailure: structuredFailureEvidence(log.data.structuredFailure),
+    missingOutputs: failureMissingOutputs(log.data.structuredFailure),
   });
 }
 
@@ -359,6 +360,7 @@ export function renderAttemptRetryFeedback(log: DomainLog, phase: Step['phase'])
     phase,
     targetPhase: phase,
     typedFailure,
+    missingOutputs: failureMissingOutputs(log.data.structuredFailure),
     maxChars: 2600,
     maxLines: 36,
   });

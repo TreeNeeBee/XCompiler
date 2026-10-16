@@ -32,6 +32,8 @@ export interface DebugBriefInput {
     /** Set by the Executor on `agent_execution_stalled`; read-only loops are tool loops. */
     stallKind?: string;
   };
+  /** Declared outputs the failure left missing, as its producer typed them; never read from the text. */
+  missingOutputs?: readonly string[];
 }
 
 const MAX_EVIDENCE = 8;
@@ -52,8 +54,9 @@ export function buildDebugBrief(input: DebugBriefInput): DebugBrief {
   const reason = oneLine(input.reason ?? '');
   const raw = `${reason}\n${input.failureLog ?? ''}`.trim();
   const sections = splitFailureSections(raw);
-  const rootSignals = extractSignals(sections.root || raw);
-  const latestSignals = sections.latest ? extractSignals(sections.latest) : undefined;
+  const missingOutputs = (input.missingOutputs?.length ?? 0) > 0;
+  const rootSignals = extractSignals(sections.root || raw, missingOutputs);
+  const latestSignals = sections.latest ? extractSignals(sections.latest, missingOutputs) : undefined;
   const chosen = choosePrimarySignals(rootSignals, latestSignals);
   const category = input.typedFailure
     ? typedFailureCategory(input.typedFailure)
@@ -120,7 +123,7 @@ export function renderDebugBriefForPrompt(brief: DebugBrief): string {
 export function compactFailureEvidence(input: DebugBriefInput & { maxChars?: number; maxLines?: number }): string {
   const maxChars = input.maxChars ?? 2400;
   const maxLines = input.maxLines ?? 50;
-  const reason = shouldSuppressReasonInEvidence(input.reason, input.failureLog)
+  const reason = shouldSuppressReasonInEvidence(input.reason, input.failureLog, (input.missingOutputs?.length ?? 0) > 0)
     ? ''
     : (input.reason ?? '');
   const raw = `${reason}\n${input.failureLog ?? ''}`.trim();
@@ -174,13 +177,13 @@ function choosePrimarySignals(root: ExtractedSignals, latest?: ExtractedSignals)
   return root.category !== 'unknown' ? root : latest;
 }
 
-function extractSignals(text: string): ExtractedSignals {
+function extractSignals(text: string, missingOutputs: boolean): ExtractedSignals {
   const lines = normalizedLines(text);
   const failedTests = extractFailedTests(text);
   const files = extractFiles(text);
   const toolFailures = extractToolFailures(lines);
   const statusCodes = extractStatusCodes(text);
-  const category = classify(text, lines, failedTests, toolFailures);
+  const category = classify(text, lines, failedTests, toolFailures, missingOutputs);
   return {
     category,
     primaryError: findPrimaryError(text, lines, category, failedTests, toolFailures),
@@ -196,18 +199,14 @@ function classify(
   lines: string[],
   failedTests: string[],
   toolFailures: string[],
+  missingOutputs: boolean,
 ): DebugFailureCategory {
   const lower = text.toLowerCase();
-  if (
-    /write\/progress actions did not reduce missing outputs|missing (?:required )?outputs?\s*[:：]/u.test(lower)
-  ) {
-    return 'missing_output';
-  }
+  if (missingOutputs) return 'missing_output';
   if (/permission denied/u.test(lower)) return 'permission_denied';
   if (/modulenotfounderror|importerror/u.test(lower)) return 'import_error';
   if (/could not find a version|no matching distribution|pip install|add_dependency/u.test(lower)) return 'dependency_error';
   if (/syntaxerror|indentationerror|taberror/u.test(lower)) return 'syntax_error';
-  if (/outputs? (?:still )?missing|missing (?:required )?outputs?|outputs? \S*缺失|仍缺失/u.test(lower)) return 'missing_output';
   // A runner that cannot find the test file is reporting unwritten work, not a failing test. Both
   // runners say so in their own words — pytest exits 4 with `file or directory not found`, vitest
   // reports `No test files found` — and both used to fall through to the `pytest exit=[1-9]` catch
@@ -420,12 +419,12 @@ function isProcessNoise(category: DebugFailureCategory): boolean {
   return ['tool_loop', 'llm_provider', 'permission_denied', 'exception'].includes(category);
 }
 
-function shouldSuppressReasonInEvidence(reason?: string, failureLog?: string): boolean {
+function shouldSuppressReasonInEvidence(reason?: string, failureLog?: string, missingOutputs = false): boolean {
   if (!reason || !failureLog?.trim()) return false;
   const lowerReason = reason.toLowerCase();
   const lowerLog = failureLog.toLowerCase();
-  const hasRootSignal =
-    /pytest exit=\s*[1-9]|tests? exit=\s*[1-9]|test gate|测试门禁|failed\s+(?:tests?|src)\/|assertionerror|syntaxerror|modulenotfounderror|importerror|network api failure|http\s+(?:401|403|404|408|409|410|422|429|5\d\d)|outputs?.*(?:missing|缺失|仍缺失)/u.test(lowerLog);
+  const hasRootSignal = missingOutputs ||
+    /pytest exit=\s*[1-9]|tests? exit=\s*[1-9]|test gate|测试门禁|failed\s+(?:tests?|src)\/|assertionerror|syntaxerror|modulenotfounderror|importerror|network api failure|http\s+(?:401|403|404|408|409|410|422|429|5\d\d)/u.test(lowerLog);
   if (!hasRootSignal) return false;
   return /script exhausted|completed phase debug finished without|repeated read-only\/probe actions|read-only recovery mode|low-quality debugger response|openai http (?:400|401|403|408|409|429|5\d\d)|rate limit exceeded|free-models-per-day|stream (?:wall-clock|idle)|request timed out|provider_call_failed|all llm providers failed/u.test(lowerReason);
 }

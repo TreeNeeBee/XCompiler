@@ -81,6 +81,7 @@ import { isCancellationError } from '../../util/cancellation.js';
 import { AuditPersistenceError } from '../../audit/errors.js';
 import {
   classifyFailure,
+  failureMissingOutputs,
   isEvidencePersistenceFailure,
   priorAttemptFailure,
   type AttemptFailure,
@@ -392,6 +393,11 @@ export class DomainAttemptRunner {
         ? renderAttemptRetryFeedback(previousAttempt, input.executionStep.phase)
         : undefined;
       const previousFailure = priorAttemptFailure(previousAttempt?.data.structuredFailure);
+      const previousMissingOutputs = failureMissingOutputs(previousAttempt?.data.structuredFailure);
+      // The Bug's opening failure and the attempt since: either one owing outputs makes this an output repair.
+      const missingOutputs = input.ticket.type === 'bug'
+        ? [...new Set([...failureMissingOutputs(input.ticket.failure), ...previousMissingOutputs])]
+        : [];
       wikiMatches = assembled.debugWikiMatches;
       if (wikiMatches.length > 0 && input.ticket.type === 'bug') {
         await this.wiki.recordUse(wikiMatches.map((match) => match.entry.id), {
@@ -472,6 +478,7 @@ export class DomainAttemptRunner {
             ? 'The previous repair attempt produced newer failure evidence. Continue from the current workspace state and that evidence; do not restart the original repair.'
             : input.ticket.failure.summary,
           ...(previousFailure ? { previousFailure } : {}),
+          ...(missingOutputs.length > 0 ? { missingOutputs } : {}),
           failureLog: prioritizeAttemptFailureEvidence(
             input.ticket.failure.message,
             retryFeedback,
@@ -482,6 +489,7 @@ export class DomainAttemptRunner {
                 failureLog: retryFeedback,
                 phase: input.executionStep.phase,
                 targetPhase: input.executionStep.phase,
+                missingOutputs: previousMissingOutputs,
               }).summary
             : debugContext?.brief.summary,
           suggestions: debugContext?.suggestions,
@@ -1229,6 +1237,7 @@ export class DomainAttemptRunner {
       phase: input.executionStep.phase,
       targetPhase: input.executionStep.phase,
       typedFailure: classified,
+      missingOutputs: failureMissingOutputs(classified),
     });
     const failureSignature = buildFailureSignature(brief, classified.code);
     // The canonical trace below records this interruption; do not retry a failed audit sink.
@@ -1449,6 +1458,7 @@ function debugBriefFor(ticket: BugTicket, step: ExecutionStep) {
     phase: step.phase,
     targetPhase: step.phase,
     typedFailure: ticket.failure,
+    missingOutputs: failureMissingOutputs(ticket.failure),
   });
 }
 

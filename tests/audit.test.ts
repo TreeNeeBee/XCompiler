@@ -26,6 +26,29 @@ describe('AuditLogger jsonl flush', () => {
     expect(phaseEnd?.data.reason).toBe('pytest exit=1');
   });
 
+  it.each(['unscoped', 'scoped required'] as const)(
+    'starts a %s event on its own line after a crash left the final line unterminated', async (mode) => {
+      const root = await fs.realpath(tmp);
+      const stateRoot = path.join(root, '.xcompiler');
+      const audit = new AuditLogger({ root, stateRoot, command: 'xcompiler_test' });
+      await audit.start({ workspace: root });
+      const auditRoot = path.join(stateRoot, 'audit');
+      const jsonlPath = path.join(auditRoot, 'audit.jsonl');
+      const before = readFileSync(jsonlPath, 'utf8');
+      // A process that died mid-append leaves a partial record without its newline.
+      await fs.appendFile(jsonlPath, '{"partial":');
+      const emit = (message: string) => mode === 'unscoped'
+        ? audit.event('note', message, {})
+        : audit.event('note', message, {}, { persistence: 'required', location: { containerRoot: root, auditRoot } });
+      await emit('after the crash');
+      await emit('and the next one');
+      const lines = readFileSync(jsonlPath, 'utf8').slice(before.length).split('\n');
+      expect(lines).toEqual(['{"partial":', expect.any(String), expect.any(String), '']);
+      expect(lines.slice(1, 3).map((line) => (JSON.parse(line) as { message: string }).message))
+        .toEqual(['after the crash', 'and the next one']);
+    },
+  );
+
   it('serialises a burst of 50 awaited events in order', async () => {
     const audit = new AuditLogger({ root: tmp, command: 'xcompiler_test' });
     await audit.start();

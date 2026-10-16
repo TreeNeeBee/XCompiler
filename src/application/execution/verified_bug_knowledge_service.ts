@@ -1,4 +1,5 @@
 import { buildDebugBrief } from './debug_brief.js';
+import { failureMissingOutputs } from './failure_classification.js';
 import type { DebugWikiPort } from '../knowledge/debug_wiki.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
@@ -47,6 +48,7 @@ export class VerifiedBugKnowledgeService {
         phase,
         targetPhase: phase,
         typedFailure: object.failure,
+        missingOutputs: failureMissingOutputs(object.failure),
       }),
       ticketId: object.id,
       stepId: target.id,

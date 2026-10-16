@@ -1,10 +1,12 @@
-import { promises as fs, appendFileSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
+import { promises as fs, closeSync, mkdirSync, existsSync, openSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { t } from '../i18n/index.js';
 import { xcEnv } from '../config/env.js';
 import { rebuildAuditSummary } from './summary.js';
 import { AuditPersistenceError, type AuditPersistenceFailure } from './errors.js';
-import { appendScopedAudit, assertScopedAuditTargets, initializeScopedAudit, type AuditWriteLocation } from './scoped_persistence.js';
+import {
+  appendJsonlRecord, appendScopedAudit, assertScopedAuditTargets, initializeScopedAudit, type AuditWriteLocation,
+} from './scoped_persistence.js';
 
 /**
  * AuditLogger 把开发流水线中的所有交互/执行动作记录到两份产物：
@@ -442,7 +444,11 @@ export class AuditLogger {
     // 同步 IO 也能保证字节落到磁盘，杜绝 "S007 整段事件丢失" 类问题。
     try {
       if (location) await appendScopedAudit(this.jsonlAbs, JSON.stringify(ev) + '\n', location);
-      else appendFileSync(this.jsonlAbs, JSON.stringify(ev) + '\n', 'utf8');
+      else {
+        const fd = openSync(this.jsonlAbs, 'a+');
+        try { appendJsonlRecord(fd, JSON.stringify(ev) + '\n'); }
+        finally { closeSync(fd); }
+      }
     } catch (err) {
       if (required) throw this.persistenceError('append-jsonl', this.jsonlAbs, ev, err);
       console.warn(t().audit.jsonlAppendFailed((err as Error).message));

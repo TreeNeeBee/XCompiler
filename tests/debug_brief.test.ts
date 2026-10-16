@@ -227,12 +227,33 @@ describe('debug brief extraction', () => {
         'missing outputs: docs/tests/unit-test-plan.md',
       ].join('\n'),
       phase: 'CODE',
+      missingOutputs: ['docs/tests/unit-test-plan.md'],
     });
 
     expect(brief.category).toBe('missing_output');
     expect(brief.primaryError).toContain('missing outputs');
     expect(brief.primaryError).toContain('docs/tests/unit-test-plan.md');
     expect(brief.debugDemand).toContain('Create or repair the declared output files');
+  });
+
+  // The category follows the producer's typed fact; the runtime's own wording is not a channel.
+  it.each([
+    'write/progress actions did not reduce missing outputs for 3 rounds; missing outputs: src/a.py',
+    'max rounds exceeded without satisfying outputs; missing outputs: src/a.py',
+    'outputs still missing: src/a.py',
+    'outputs 仍缺失：src/a.py',
+  ])('does not read missing outputs from the wording %s', (reason) => {
+    expect(buildDebugBrief({ reason, failureLog: reason, phase: 'CODE' }).category).not.toBe('missing_output');
+    expect(buildDebugBrief({ reason: 'stopped', failureLog: 'stopped', phase: 'CODE', missingOutputs: ['src/a.py'] }).category)
+      .toBe('missing_output');
+  });
+
+  it('drops a process-noise reason from compact evidence only when the failure owes outputs or names a root signal', () => {
+    const reason = 'repeated read-only/probe actions without progress for 3 rounds';
+    const failureLog = 'outputs still missing: docs/05-unit-test.md\nwrite_file FAIL target denied';
+    expect(compactFailureEvidence({ reason, failureLog, phase: 'CODE' })).toContain('repeated read-only/probe actions');
+    expect(compactFailureEvidence({ reason, failureLog, phase: 'CODE', missingOutputs: ['docs/05-unit-test.md'] }))
+      .not.toContain('repeated read-only/probe actions');
   });
 });
 

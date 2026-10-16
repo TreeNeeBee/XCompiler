@@ -4397,6 +4397,8 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.success).toBe(false);
     expect(r.error).toContain('write/progress actions did not reduce missing outputs');
     expect(r.error).toContain('src/b.py');
+    // Not a stall: the Step-failure route is unchanged, and the outputs still owed are a typed fact.
+    expect(r.failure).toMatchObject({ code: 'unclassified_execution_failure', details: { missingOutputs: ['src/b.py'] } });
     expect(llm.calls).toBe(4);
     expect(llm.sawOutputWarning).toBe(true);
   });
@@ -5060,13 +5062,80 @@ describe('StepExecutor system prompt assembly', () => {
       tools: [readFileTool, writeFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/'] },
       debugContext: {
-        reason: 'max rounds exceeded without satisfying outputs',
+        reason: 'The previous attempt stopped.',
+        missingOutputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'],
         failureLog:
           'previous Debugger retry wrote docs/02-high-level-design.md and docs/tests/module-test-plan.md but did not return done=true',
         repairRequired: true,
       },
     });
     expect(r.success).toBe(true);
+  });
+
+  // Output-completion recovery follows the typed fact. Wording that names missing outputs is not one.
+  it('does not accept output-completion recovery from failure wording alone', async () => {
+    class ConfirmOutputsLLM implements LLMClient {
+      readonly name = 'confirm-outputs';
+      async chat(): Promise<string> {
+        return JSON.stringify({ thoughts: 'all required outputs exist', actions: [], done: true });
+      }
+    }
+    await ws.writeFile('docs/02-high-level-design.md', '# HLD\n');
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new ConfirmOutputsLLM(), maxRounds: 1 }));
+    const r = await exec.run({
+      step: { ...baseStep, phase: 'HIGH_LEVEL_DESIGN', tools: ['read_file', 'write_file'],
+        outputs: ['docs/02-high-level-design.md'] },
+      work: 'repair.debug',
+      tools: [readFileTool, writeFileTool],
+      ctx: { ...ctx, allowedWrites: ['docs/'] },
+      debugContext: {
+        reason: 'max rounds exceeded without satisfying outputs; missing outputs: docs/02-high-level-design.md',
+        failureLog: 'outputs still missing: docs/02-high-level-design.md\noutputs 仍缺失：docs/02-high-level-design.md',
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toContain('DEBUG retry ended without repair evidence');
+  });
+
+  it.each([
+    ['the typed missing outputs', ['src/x.py'], 4],
+    ['failure wording alone', undefined, 6],
+  ] as const)('treats a Debugger retry as a direct repair from %s', async (_name, missingOutputs, reads) => {
+    class ProbeThenWriteLLM implements LLMClient {
+      readonly name = 'probe-then-write';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            thoughts: 'inspect every module first',
+            actions: [1, 2, 3, 4, 5, 6].map((n) => ({ tool: 'read_file', args: { path: `src/m${n}.py` } })),
+            done: false,
+          });
+        }
+        return JSON.stringify({
+          thoughts: 'repair', actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 2\n' } }], done: true,
+        });
+      }
+    }
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    for (const n of [1, 2, 3, 4, 5, 6]) await ws.writeFile(`src/m${n}.py`, `m = ${n}\n`);
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new ProbeThenWriteLLM(), maxRounds: 3 }));
+    const r = await exec.run({
+      step: baseStep,
+      work: 'repair.debug',
+      tools: [readFileTool, writeFileTool],
+      ctx,
+      debugContext: {
+        reason: 'max rounds exceeded without satisfying outputs; missing outputs: src/x.py',
+        failureLog: 'outputs still missing: src/x.py',
+        ...(missingOutputs ? { missingOutputs } : {}),
+        repairRequired: true,
+      },
+    });
+    expect(r.success).toBe(true);
+    expect(r.toolCalls.filter((call) => call.tool === 'read_file')).toHaveLength(reads);
   });
 
   it('allows output-completion recovery despite untargeted malformed write noise', async () => {
@@ -5090,7 +5159,8 @@ describe('StepExecutor system prompt assembly', () => {
       ctx,
       debugContext: {
         bugTicketId: 'BUG-1',
-        reason: 'max rounds exceeded without satisfying outputs',
+        reason: 'The previous attempt stopped.',
+        missingOutputs: ['src/x.py'],
         failureLog: 'previous Debugger retry wrote src/x.py but did not return done=true',
         repairRequired: true,
       },

@@ -12,7 +12,9 @@ import {
   type AttemptRunnerOptions,
 } from '../src/application/execution/attempt_runner.js';
 import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
-import { agentExecutionStallFailure, permissionBlockedFailure, type ExecutionStallKind } from '../src/application/execution/failure_classification.js';
+import {
+  agentExecutionStallFailure, missingOutputsFailure, permissionBlockedFailure, type ExecutionStallKind,
+} from '../src/application/execution/failure_classification.js';
 import { projectExecutionPlan } from '../src/application/execution/execution_adapter.js';
 import type { DebugWikiEntry } from '../src/application/knowledge/debug_wiki.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
@@ -254,6 +256,73 @@ describe('Debug Wiki through an attempt', () => {
       .toEqual({ code: 'agent_execution_stalled', stallKind: 'read-only-loop' });
   });
 
+  it('gives a Debug attempt the outputs its Bug still owes as a typed fact', async () => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
+    await setup.runner.initialize();
+    const owed = { ...setup.bug, failure: { ...setup.bug.failure,
+      category: 'internal' as const, code: 'unclassified_execution_failure',
+      message: 'write/progress actions stopped\nTypeError: boom in src/parser.ts\nmissing outputs: src/owed.ts',
+      details: { missingOutputs: ['src/owed.ts'] } } };
+
+    await setup.runner.run({ ...setup.input, ticket: owed });
+
+    const debugContext = execute.mock.calls[0]![0].debugContext;
+    expect(debugContext?.missingOutputs).toEqual(['src/owed.ts']);
+    // The brief names the outputs rather than the incidental error beside them.
+    expect(debugContext?.debugBrief).toContain('missing outputs: src/owed.ts');
+  });
+
+  it.each([
+    ['its own failure', (failure: ExecutorRunResult['failure']) => ({ ...outputStall(), failure })],
+    ['a failed test command wrapping it', (failure: ExecutorRunResult['failure']) => ({
+      ...outputStall(), failure, toolCalls: [...outputStall().toolCalls, ...failedExecution().toolCalls] })],
+  ])('hands the outputs the previous attempt still owed to the next Debug attempt through %s', async (_name, result) => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(result(missingOutputsFailure('stopped', ['src/a.ts'])))
+      .mockResolvedValueOnce(failedExecution());
+    await setup.runner.initialize();
+
+    await setup.runner.run(setup.input);
+    const refreshed = BugTicketSchema.parse(await setup.repository.read(setup.bug.id));
+    await setup.runner.run({ ...setup.input, ticket: refreshed });
+
+    expect(execute.mock.calls[0]![0].debugContext?.missingOutputs).toBeUndefined();
+    const debugContext = execute.mock.calls[1]![0].debugContext;
+    expect(debugContext?.missingOutputs).toEqual(['src/a.ts']);
+    expect(debugContext?.debugBrief).toMatch(/^missing_output\b/u);
+    expect(debugContext?.failureLog).toMatch(/- primaryError: missing outputs[^\n]*src\/a\.ts/u);
+  });
+
+  // Recurrence is judged by the signature, so it must key on the outputs owed, not on which incidental
+  // tool failure happened to come first.
+  it('gives an output stall one failure signature whatever order its incidental tool failures came in', async () => {
+    const setup = await fixture();
+    const denied = (tool: string) => ({ tool, ok: false, error: `${tool} denied`, summary: `${tool} denied`, args: { path: '../x' } });
+    const stall = (order: 'read-first' | 'write-first') => {
+      const base = outputStall();
+      const incidental = order === 'read-first'
+        ? [denied('read_file'), denied('write_file')]
+        : [denied('write_file'), denied('read_file')];
+      return { ...base, failure: missingOutputsFailure(base.error!, ['src/a.ts']), toolCalls: incidental };
+    };
+    vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(stall('read-first'))
+      .mockResolvedValueOnce(stall('write-first'));
+    await setup.runner.initialize();
+
+    await setup.runner.run(setup.input);
+    const refreshed = BugTicketSchema.parse(await setup.repository.read(setup.bug.id));
+    await setup.runner.run({ ...setup.input, ticket: refreshed });
+
+    const logs = (await setup.repository.list({ objectType: 'log', projectId: setup.graph.project.id }))
+      .filter((log) => log.objectType === 'log' && log.level === 'error' && log.subject.id === setup.bug.id);
+    const signatures = logs.map((log) => (log.data as { failureSignature?: string }).failureSignature);
+    expect(signatures).toHaveLength(2);
+    expect(signatures[0]).toEqual(signatures[1]);
+  });
+
   it('gives the role the contract revisions this Phase has accepted', async () => {
     const setup = await fixture();
     const list = setup.repository.list.bind(setup.repository);
@@ -387,6 +456,22 @@ describe('verified Bug publication through the attempt runner', () => {
     expect(await fs.readFile(path.join(setup.installationWiki, 'log.md'), 'utf8')).toBe(firstLog);
     expect(await fs.readdir(path.join(setup.installationWiki, 'wiki', 'external'))).toEqual([]);
   });
+
+  it('records a verified output repair under the outputs its Bug owed', async () => {
+    const setup = await fixture();
+    const bug = await persistBugState(setup, 'closed', 'verified', {
+      category: 'internal', code: 'unclassified_execution_failure',
+      message: 'write/progress actions stopped\nTypeError: boom in src/parser.ts\nmissing outputs: src/owed.ts',
+      details: { missingOutputs: ['src/owed.ts'] },
+    });
+    await setup.runner.initialize();
+    await setup.runner.recordVerifiedBugResolution(bug.id);
+
+    const persisted = BugTicketSchema.parse(await setup.repository.read(bug.id));
+    const entryId = persisted.debugWikiResolutionEntryIds[0]!;
+    expect(await fs.readFile(path.join(setup.projectWiki, 'wiki', 'project', `${entryId}.md`), 'utf8'))
+      .toContain('- primaryError: missing outputs: src/owed.ts');
+  });
 });
 
 async function fixture() {
@@ -464,6 +549,7 @@ async function persistBugState(
   setup: Awaited<ReturnType<typeof fixture>>,
   state: BugTicket['state'],
   solutionStatus: NonNullable<BugTicket['solution']>['status'] | undefined,
+  failure: Partial<BugTicket['failure']> = {},
 ): Promise<BugTicket> {
   const now = new Date().toISOString();
   // These persisted snapshots exercise the publication guard, including inconsistent imported
@@ -471,6 +557,7 @@ async function persistBugState(
   const bug = BugTicketSchema.parse({
     ...setup.bug,
     ...reviseObjectEnvelope(setup.bug),
+    failure: { ...setup.bug.failure, ...failure },
     state,
     solution: solutionStatus && {
       status: solutionStatus,
@@ -532,6 +619,20 @@ function stalledExecution(
     toolCalls,
     metrics: {
       rounds: 1, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 0,
+      progressRatio: 0, healthScore: 0, providers: [],
+    },
+  };
+}
+
+/** An Executor that gave up owing `src/a.ts`, beside an incidental program failure. */
+function outputStall(): ExecutorRunResult {
+  return {
+    success: false,
+    rounds: 3,
+    error: 'write/progress actions did not reduce missing outputs for 3 rounds; missing outputs: src/a.ts.',
+    toolCalls: [{ tool: 'run_program', ok: false, error: 'TypeError: boom', summary: 'TypeError: boom', args: { args: [] } }],
+    metrics: {
+      rounds: 3, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 1,
       progressRatio: 0, healthScore: 0, providers: [],
     },
   };

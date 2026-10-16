@@ -1,5 +1,6 @@
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
 import type { LanguageProfile } from '../application/execution/language_support.js';
+import type { ResponseRepairHint } from '../llm/errors.js';
 
 /**
  * Locale code (ISO 639-1 lowercase). Currently only 'en' (default) and 'zh'.
@@ -14,7 +15,7 @@ export interface Messages {
     invalidBaseUrl: (raw: string, fallback: string) => string;
     providerValidationFailed: (role: string, model: string) => string;
     providerValidationRetry: (role: string, model: string) => string;
-    providerValidationRepairPrompt: (error: string, rejectedOutput: string) => string;
+    providerValidationRepairPrompt: (error: string, rejectedOutput: string, hint?: ResponseRepairHint) => string;
     providerCallFailed: (role: string, model: string) => string;
     scoreReadFailed: (path: string, message: string) => string;
     scoreChanged: (provider: string, score: string, previous: string) => string;

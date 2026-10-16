@@ -71,7 +71,7 @@ Wiki 排除条件；最后一次测试判断；Runner 传入 previousFailure；E
   - `hasActionableDebuggerFailure`、`debug_brief` 的正文类别：输入是生成工程的失败日志，属于证据提取。
   - `isOutputCompletionFailure`：同时匹配运行时自己写的 "max rounds exceeded without satisfying outputs" 和日志里的缺失产出
     描述。**后续应改为读取 `previousFailure.stallKind === 'max-rounds'` 加 `details.missingOutputs`**，本轮未改，
-    以免改变 Debug 修复判定的现有行为。
+    以免改变 Debug 修复判定的现有行为。（2026-10-17 已改为类型化，见末节"产出缺失改为类型化"。）
 - 缺失产出停滞（`write/progress actions did not reduce missing outputs`）、测试门禁次数上限、重复验证无修改、
   重复修改无进展、CR 修改缺失等出口原本就不属于停滞，保持未分类（会按 Step 执行失败开 Bug），未改变。
 
@@ -587,3 +587,137 @@ P1 包资源问题仍延后；不启用外部付费模型。
 - HANDOVER 提到的"审阅后的 Debug Rule"不在变更清单的 P1 范围内（D-1 最小集），0.4 的 Debug 段保持为空。
 - 没有提交，也没有打 tag。发版时运行 `npm run release:local -- v0.4.0`：它要求工作区干净，会提交并创建本地 tag。
 - D-20 真实项目验证还没做，需要确认范围与花费。
+
+
+## 已知遗留修复（2026-10-17，`e6876df` 之后，未提交）
+
+### 已修复
+- **审计半行**（[scoped_persistence.ts](../../../src/audit/scoped_persistence.ts) `appendJsonlRecord`）：
+  - 追加前读文件最后一个字节；如果文件非空且不以换行结尾（崩溃留下的半行），换行和事件在同一次写入中写出，新事件独占一行。
+  - 普通追加和带作用域的必需追加都走这个函数；带作用域的追加改为以读写模式打开文件。
+  - 半行本身保留，恢复读取器的严格校验仍会报告它（现有合同不变）。修复的作用是新事件不再被拼坏而丢失。
+- **修复提示按类型码选择**：
+  - `ResponseValidationRejection` 新增可选字段 `repairHint`，可选值目前只有 `'execution-turn-fields'`。
+  - 执行端口在违约原因为 `turn-shape`（唯一抛出点：JSON turn 不完整）时设置它；Router 把它传给 `providerValidationRepairPrompt`；
+    en/zh 改为按 `hint` 选择补充说明，不再匹配错误文本。
+- **死字段**：删除 `LanguageProfile.executorPromptOverride`（两种语言都是空串）。
+
+### 测试与证伪
+- 新增 `tests/audit.test.ts` 2 项：分别覆盖普通追加和带作用域的必需追加。
+- 新增 `runtime_execution_turn_request.test.ts` 2 项：
+  - `turn-shape` 违约，消息文本任意 → 补充说明出现；
+  - 其他原因的违约，消息文本恰好含旧的匹配短语 → 补充说明不出现。
+- 证伪 5 项全部按预期失败：两条追加路径去掉防护；Router 不传提示码；端口不设提示码；i18n 恢复按文本匹配。
+  其中第一次写的普通追加突变用了 ESM 中不存在的 `require`，失败原因不是断言，因此不算证伪；改用 `writeFileSync` 直接追加后，按断言失败。
+- 门禁：typecheck、lint、build 通过；core 120/1,750，integration 66/1,499（完整），e2e 2/11。
+
+### 当时发现、需要决定的两项（结果见下两节）
+- **`isOutputCompletionFailure` 与"产出缺失"的文本判断**（用户选择 0.4 内改为类型化，已完成）：除它之外，`hasActionableDebuggerFailure` 和 `debug_brief.ts` 中还有三处同类匹配。
+  原因文本的生产方有 Executor 的 no-progress、max-rounds 出口和 `v_model_policy.renderIncompleteTestPhaseFailure`，
+  经由 Bug ticket 的 `failure.summary/message` 进入 `debugContext`；`previousFailure` 中没有对应的类型化字段。
+  要改为类型化，需要把"缺失的产出"作为字段从各生产方一路带进 Bug 的失败记录（会改 Domain schema），再替换这几处判断。
+- **单轮 `plannerSystem` 提示**（用户选择先核对再定，核对结果见末节，待用户决定）：生产没有调用方，但 `prompt_language.test.ts` 有 5 个用例在断言它的内容。
+  尝试改为指向生产使用的两级规划提示时，"TypeScript / Node.js only"、旧阶段名禁令、`projectType`、`complexityAssessment` 等断言失败。
+  说明这些指导只存在于未使用的提示中。可以删除这段提示和这些测试，也可以把指导迁入两级规划提示；后者会改变模型看到的内容。
+
+## 产出缺失改为类型化（2026-10-17，与上节一起提交）
+
+**与提问时描述的差异**
+- 提问时说要改 Domain schema、有三个生产方。核对后：
+  - Bug 的失败记录已有 `details`，开 Bug 时失败的 `details` 原样写入（`corrective_workflow_service` 的 `openBug`）。
+    沿用 `stallKind` 的做法，把事实放在 `details.missingOutputs`，**没有改 Domain schema**。
+  - no-progress、max-rounds 出口原本就在 `details.missingOutputs` 里带这个事实。
+    缺的是"写操作不再减少缺失产出"出口：它原本不带类型化失败，由兜底分类成 `unclassified_execution_failure`。
+  - `v_model_policy.renderIncompleteTestPhaseFailure` 没有调用方，不是生产方，未改。
+
+**变更**
+- `failure_classification.ts`：
+  - `missingOutputsFailure(message, missingOutputs)`：code、category、retryable、switchProvider 与原兜底分类完全相同，路由不变，只增加 `details.missingOutputs`。
+  - `failureMissingOutputs(failure)`：读取 `details.missingOutputs`；测试失败包裹执行器失败时（`test_command_failed` 的 `details.executorFailure`），也从包裹里读。
+- Executor：
+  - 上述出口返回 `missingOutputsFailure`。
+  - `debugContext` 新增 `missingOutputs`。
+  - `canAcceptOutputCompletionRecovery` 改读该字段；删除 `isOutputCompletionFailure`。
+  - `hasActionableDebuggerFailure` 删除四条缺失产出正文匹配，改读该字段。
+- Runner 组装 `debugContext.missingOutputs`：取 Bug 原始失败与最近一次尝试的并集，与原先文本来源（`reason` 加 `failureLog`）的范围一致。
+- 执行请求载荷的严格 `debugContext` schema 增加可选 `missingOutputs`。漏加会让带该字段的请求在输入校验处失败（见证伪 F16）。
+- `debug_brief.ts`：
+  - `DebugBriefInput.missingOutputs` 取代 `classify` 中两条缺失产出正文匹配，也取代 `shouldSuppressReasonInEvidence` 中的一条。
+  - 传入方共 6 处：失败记录、Bug 简报、重试简报、`briefForAttemptFailure`、重试反馈的压缩证据、已验证 Bug 的 Wiki 简报。
+  - 有类型化失败时，类别仍由 `typedFailureCategory` 决定（未改）。该字段只影响无类型化失败时的类别，以及 `primaryError` 选哪一行；后者进入失败签名和 Wiki 条目。
+  - 保留对外部测试运行器输出的正文识别（`pytest exit=4`、`No test files found`），那是生成工程的证据。
+
+**不再读取的措辞**
+运行时自己写的 `missing outputs:`、`outputs still missing`、`outputs 仍缺失`、`max rounds exceeded without satisfying outputs`。
+模型 `finalThought`、Debug Wiki 建议里碰巧出现的同类措辞，也不再触发。
+
+**保留的正文判断（范围外，未改）**
+- `hasActionableDebuggerFailure` 的其余条款：
+  - `content must be a string`、`invalid write_file args` 是运行时工具自己的错误文本；
+  - TS/Python 错误、测试失败属于生成工程的证据。
+- `debug_brief` 的 `tool_loop`、provider 文本类别。
+
+**测试**
+- `executor.test.ts`：
+  - 停滞出口带类型化失败；
+  - 输出补齐恢复只认类型化字段：原有 2 项改为提供字段；新增 1 项，只有旧措辞时不接受；
+  - 直接修复模式：类型化字段收紧探查动作，只有措辞时不收紧（it.each 2 项）。
+- `debug_wiki_wiring.test.ts`（Runner 调用点）：
+  - Bug 欠产出 → `debugContext.missingOutputs` 与简报；
+  - 上一次尝试欠产出：直接或被测试失败包裹两种情况 → 字段、重试简报类别、重试反馈 `primaryError`；
+  - 失败签名不随附带工具失败的先后变化；
+  - 已验证 Bug 的 Wiki 条目以缺失产出为 `primaryError`。
+- `debug_brief.test.ts`：原有 1 项改为提供字段；新增 4 种旧措辞不再判为缺失产出；新增类型化字段决定压缩证据是否省略原因。
+- `attempt_runner.test.ts`：重试反馈的压缩证据调用点。
+
+**证伪（17 项，全部按预期失败后恢复）**
+- 出口不带类型化失败；直接修复不读字段；恢复判定恒为假；恢复判定退回措辞。
+- Runner 不传字段；Runner 漏掉 Bug 来源；Runner 漏掉上次尝试来源；重试简报不传字段。
+- 失败记录简报不传字段；Bug 简报不传字段；`briefForAttemptFailure` 不传字段；压缩证据不传字段；Wiki 简报不传字段。
+- 读取函数忽略包裹；`classify` 不读字段；省略判断不读字段；载荷 schema 不声明字段。
+- 失败记录简报一项第一次仍通过：测试里的两条附带失败只有一条会被抽取为工具失败，先后顺序不影响结果。
+  把两条都改为可抽取的拒绝后，按断言失败。
+
+**门禁**：typecheck、lint、build 通过；core 120/1,764，integration 66/1,499（完整），e2e 2/11。
+
+## 单轮 plannerSystem 核对（2026-10-17，只读，未改代码，待用户决定）
+
+对比对象：
+- 未使用的 `PYTHON_PLANNER_SYSTEM`、`TYPESCRIPT_PLANNER_SYSTEM`（en/zh）；
+- 生产的 `plannerPhasePlanSystem`、`plannerPhaseDecomposeSystem`；
+- 计划校准（`calibration.ts`）、计划检查（`plan_lint.ts`）、schema。
+
+**已由代码强制，或已在两级提示中**（从单轮提示中删除不损失约束）：
+- 旧阶段名：Step 类型枚举只含 8 个规范阶段。
+- 阶段文档路径、P2+ 迭代路径、配对测试计划文档、FUNCTIONAL_TEST 文档包、`docs/topic.md` 不得作为输出：
+  `calibrateDocPaths` 自动补齐，`plan_lint` 检查。
+- 依赖顺序与无环、阶段先后：`plan_lint` 加 `calibrateVModelDependencies`。
+- CODE 必须有配对 UNIT_TEST、输出路径全局唯一、`systemPrompt` 最短长度、subTasks 最多两层：`plan_lint`。
+- Step id 规范化：`calibrateStepIds`。
+- `package.json` 只由 HIGH_LEVEL_DESIGN 产出：`plan_lint` 加 `calibrateLanguageStepOwnership`。
+- `requirements.txt` 不得作为输出：`plan_lint`。Python 依赖强制含 `pytest`：`calibratePythonRequirements`。
+- 每个 architectureModule 至少一个 `testPaths`：schema `min(1)`。
+- `projectType`、`complexityAssessment` 与阶段数规则：第一遍提示加 `plan_lint`。
+- Vitest-only、设计阶段职责、同步测试设计、输出归属、architectureModules 路径规则：第二遍提示。
+- 时间相关测试冻结时钟：Executor 提示。
+
+**只存在于未使用提示中的指导（两级提示和代码都没有）**
+1. **TypeScript 的 `allowImportingTsExtensions: true`**：
+   - Executor 提示要求本地导入写显式 `.ts` 后缀，但 tsconfig 由 HIGH_LEVEL_DESIGN Step 编写，Runtime 不生成。
+   - 只有未使用提示要求打开该选项。不打开时，`tsc --noEmit` 会拒绝 `.ts` 后缀导入。
+2. **"只有 `--help` 不算功能验收"、至少一个真实用户场景**：
+   - 第一遍提示要求 deliveryGate 带具体命令，但 `DeliveryGateSchema.scenarios` 默认 `[]`，规划阶段没有检查。
+   - 没有场景时，交付门禁回退到 `--help` 探测。
+3. **第三方库必须对应真实 API**：要求 HIGH_LEVEL_DESIGN 写出所选库的具体入口函数/类或验证依据。
+4. **入口要求**：
+   - application/mixed 需要可直接运行的 `src/main.(py|ts)`；
+   - library 需要 `src/index.ts` 或等价公共 API。
+   - 代码只在交付门禁回退时探测入口候选；library 的 `api-guide` 已由 `plan_lint` 检查。
+5. **不要臆造包名**：Python 有已知幻觉包名的校准改写，TypeScript 没有。
+6. 次要：`package.json` 建议含 `lint` 脚本。
+
+**可选处理**
+- 删除单轮提示和断言它的 5 个测试，不迁移。最小改动，但第 1–4 项在生产中继续缺失。
+- 删除单轮提示和测试，同时把第 1–4 项（或其中部分）迁入两级提示，并给两级提示补测试。
+  会改变模型看到的内容，效果应在 D-20 真实项目验证中观察。
+- 保持现状。

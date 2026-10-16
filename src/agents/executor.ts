@@ -39,7 +39,7 @@ import {
 } from '../application/execution/execution_turn_request.js';
 import { AuditPersistenceError } from '../audit/errors.js';
 import {
-  agentContentRejectionFailure, agentExecutionStallFailure, permissionBlockedFailure,
+  agentContentRejectionFailure, agentExecutionStallFailure, missingOutputsFailure, permissionBlockedFailure,
   type AttemptFailure, type PriorAttemptFailure,
 } from '../application/execution/failure_classification.js';
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
@@ -179,6 +179,8 @@ export interface ExecutorRunInput {
     reason: string;
     /** Typed facts of this Ticket's previous failed attempt; recovery modes branch on these, not on text. */
     previousFailure?: PriorAttemptFailure;
+    /** Declared outputs the failure being repaired still owed, as the recording Executor typed them. */
+    missingOutputs?: readonly string[];
     failureLog: string;
     debugBrief?: string;
     suggestions?: string;
@@ -1743,7 +1745,8 @@ export class StepExecutor {
           missingOutputStallRounds,
           missingOutputs: verify.missing,
         });
-        return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics };
+        return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics,
+          failure: missingOutputsFailure(error, verify.missing) };
       }
       const readOnlyRecoveryViolation = readOnlyRecoveryMode && readOnlyRecoveryRounds >= 2;
       const readOnlyRoundLimit = directRepairMode ? 2 : 3;
@@ -2100,6 +2103,7 @@ function recoveryProbeActionFingerprints(action: LLMAction): string[] {
 
 function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugContext']): boolean {
   if (!debugContext) return false;
+  if ((debugContext.missingOutputs?.length ?? 0) > 0) return true;
   const text = [
     debugContext.reason,
     debugContext.failureLog,
@@ -2110,11 +2114,7 @@ function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugConte
     /\berror\s+TS\d{4}\b/i.test(text) ||
     /\b(?:SyntaxError|TypeError|ReferenceError|AssertionError)\b/u.test(text) ||
     /\b(?:pytest|vitest|npm test|tsc|typecheck|build)\b[^\n]*(?:exit[=\s]\d+|failed)/i.test(text) ||
-    /\b(?:tests?|test suites?)\s+failed\b/i.test(text) ||
-    /outputs?\s+(?:still\s+missing|missing)/i.test(text) ||
-    /missing\s+(?:required\s+)?outputs?/i.test(text) ||
-    /outputs?\s*(?:仍缺失|缺失)/u.test(text) ||
-    /仍缺失[:：]/u.test(text);
+    /\b(?:tests?|test suites?)\s+failed\b/i.test(text);
 }
 
 function resolveDirectRepairProbeRoundBudget(
@@ -2153,7 +2153,7 @@ function canAcceptOutputCompletionRecovery(inp: ExecutorRunInput, initialMissing
   if ((inp.work ?? stepWork(inp.step.phase)) !== 'repair.debug') return false;
   if (inp.debugContext?.repairRequired !== true) return false;
   if (initialMissing !== 0) return false;
-  return isOutputCompletionFailure(inp.debugContext.reason, inp.debugContext.failureLog);
+  return (inp.debugContext.missingOutputs?.length ?? 0) > 0;
 }
 
 function currentStepAffectedArtifacts(input: ExecutorRunInput): string[] {
@@ -2459,15 +2459,6 @@ function normalizeDeferredVerificationAssessment(
     },
     evidence: [...new Set([...assessment.evidence, note])],
   };
-}
-
-function isOutputCompletionFailure(reason = '', failureLog = ''): boolean {
-  const text = `${reason}\n${failureLog}`;
-  return /max rounds exceeded without satisfying outputs/i.test(text) ||
-    /outputs?\s+(?:still\s+)?missing/i.test(text) ||
-    /missing\s+(?:required\s+)?outputs?/i.test(text) ||
-    /outputs?\s*仍缺失/u.test(text) ||
-    /仍缺失[:：]/u.test(text);
 }
 
 /** Rechecks the original model-output contract without executing or resolving current Tools. */

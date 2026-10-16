@@ -347,16 +347,16 @@ Do not output Steps for future planned phases. Do not output requirements.txt. D
 }
 
 function buildExecutorSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM) + profile.executorPromptOverride;
+  return profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM;
 }
 const messages: Messages = {
   llm: {
     invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); configure a valid HTTP(S) URL (default: ${fallback})`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} failed output contract validation`,
     providerValidationRetry: (role, model) => `[${role}] retrying provider ${model} with contract feedback before fallback`,
-    providerValidationRepairPrompt: (error, rejectedOutput) =>
+    providerValidationRepairPrompt: (error, rejectedOutput, hint) =>
       `Your previous candidate failed the caller contract before any action was parsed, authorized, executed, or persisted: ${error.slice(0, 1800)}\n` +
-      (error.includes('Executor response: incomplete or invalid JSON turn')
+      (hint === 'execution-turn-fields'
         ? 'This is Executor JSON: the top level must contain both an actions array and a boolean done field, even when reporting only an assessment or finding. To handle an assigned Ticket, actions must submit the actual handling operation instead of repeating the problem statement.\n'
         : '') +
       'Nothing claimed by that candidate changed the workspace. Treat only explicit tool results in the original conversation as executed state. ' +

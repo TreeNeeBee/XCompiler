@@ -813,7 +813,8 @@ class FallbackClient implements LLMClient {
                 ...messages,
                 {
                   role: 'user',
-                  content: t().llm.providerValidationRepairPrompt(validationError, rejectedOutput),
+                  content: t().llm.providerValidationRepairPrompt(validationError, rejectedOutput,
+                    vErr instanceof ResponseValidationRejection ? vErr.repairHint : undefined),
                 },
               ];
               await auditEvent(

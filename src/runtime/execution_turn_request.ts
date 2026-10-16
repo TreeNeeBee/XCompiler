@@ -71,7 +71,9 @@ export function createRuntimeExecutionTurnRequestPort(input: {
           if (isCancellationError(cause, signal) || !(cause instanceof ExecutionTurnContractViolation)) throw cause;
           // These checks are enabled only by the caller's original quality/debug conditions.
           if (!candidateValidationEnabled) throw cause;
-          throw new ResponseValidationRejection('business', cause);
+          // An incomplete turn needs the regeneration prompt to restate the required root fields.
+          throw new ResponseValidationRejection('business', cause,
+            cause.reason === 'turn-shape' ? 'execution-turn-fields' : undefined);
         }
         signal?.throwIfAborted();
       };

@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, constants, fstatSync, openSync, promises as fs, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, constants, fstatSync, openSync, promises as fs, readSync, writeFileSync } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { assertArtifactRoot } from '../infrastructure/persistence/immutable_json_artifact.js';
@@ -72,10 +72,28 @@ function initializeHeader(target: string, heading: string): void {
 /** Recheck ancestors, then reject links/non-files at the actual append handle. */
 export async function appendScopedAudit(target: string, text: string, location: AuditWriteLocation): Promise<void> {
   await checkTarget(target, location);
+  // Read access lets the writer see whether a crash left the final line without its newline.
   const handle = await fs.open(target,
-    constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
   // Keep each event's actual append synchronous, as in the existing JSONL writer.
-  await withFile(handle, target, () => appendFileSync(handle.fd, text, 'utf8'));
+  await withFile(handle, target, () => appendJsonlRecord(handle.fd, text));
+}
+
+/**
+ * Append one JSONL record so it always starts on its own line. A process that died mid-append can
+ * leave a final line without its newline; the next record would otherwise be glued onto it and
+ * lost to every reader. The partial line itself is kept for inspection, and the separator and the
+ * record go out in one write. The descriptor must be open for reading and appending.
+ */
+export function appendJsonlRecord(fd: number, record: string): void {
+  const { size } = fstatSync(fd);
+  let separator = '';
+  if (size > 0) {
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    if (last[0] !== 0x0a) separator = '\n';
+  }
+  appendFileSync(fd, separator + record, 'utf8');
 }
 
 async function checkTarget(target: string, location: AuditWriteLocation): Promise<void> {

@@ -107,10 +107,10 @@
 ## 6. 已知遗留
 
 - 生产流程没有接入重启恢复入口：`resumeRuntime*` 只有测试调用。
-- `AuditLogger` 追加时假定文件以换行结尾；崩溃留下不带换行的半行时，下一条事件会和它拼在同一行，恢复时读不出来。
-- `providerValidationRepairPrompt`（i18n）按错误文本选择反馈内容，违反"按类型码分支"；`isOutputCompletionFailure` 同类。
+- ~~`AuditLogger` 半行~~、~~`providerValidationRepairPrompt` 按错误文本分支~~：已于 2026-10-17 修复（见审计日志末节）。
+- ~~`isOutputCompletionFailure` 等"产出缺失"的文本判断~~：已于 2026-10-17 改为读取 `details.missingOutputs`（见审计日志"产出缺失改为类型化"）。
 - `assertBusinessRequestAttemptRecord` 对"记录与请求不一致"仍报 `audit_mismatch`，属于历史命名。
-- 死字段与未使用文本：`LanguageProfile.executorPromptOverride`（两种语言都是空串）、单轮 `plannerSystem`。
+- ~~`LanguageProfile.executorPromptOverride`~~ 已删除；单轮 `plannerSystem` 未使用，但有测试断言其内容；已只读核对，有 4 项指导只存在于其中（见审计日志"单轮 plannerSystem 核对"），待决定迁入或删除。
 - 默认 `redacted` 审计下，含凭据的请求重启后无法精确恢复（原有行为，现在只影响恢复）。
 - 0.4 的 Debug 段（`0x0300-0x0FFF`）为空；HANDOVER 提到的"审阅后的 Debug Rule"不在清单的 P1 范围内。
 

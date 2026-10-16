@@ -39,6 +39,35 @@ export function agentContentRejectionFailure(cause: unknown): AttemptFailure {
   });
 }
 
+/**
+ * Write actions stopped reducing the declared outputs. Not a stall: it keeps the unclassified
+ * Step-failure route and only adds the outputs still owed as a typed fact.
+ */
+export function missingOutputsFailure(message: string, missingOutputs: readonly string[]): AttemptFailure {
+  return {
+    kind: 'execution', category: 'internal', code: 'unclassified_execution_failure', message,
+    retryable: true, switchProvider: false, details: { missingOutputs: [...missingOutputs] },
+  };
+}
+
+/**
+ * The declared outputs a recorded failure still owed, as the Executor set them. A failed test
+ * command wraps the Executor's own failure, so the fact is read from there as well.
+ */
+export function failureMissingOutputs(failure: unknown): string[] {
+  const details = recordField(failure, 'details');
+  const own = details?.missingOutputs;
+  const wrapped = recordField(details?.executorFailure, 'details')?.missingOutputs;
+  return [...new Set([own, wrapped].flatMap((value) =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length > 0) : []))];
+}
+
+function recordField(value: unknown, key: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return field && typeof field === 'object' && !Array.isArray(field) ? field as Record<string, unknown> : undefined;
+}
+
 /** Runtime permission outcome; PM defers the Ticket instead of opening a defect. */
 export function permissionBlockedFailure(message: string): AttemptFailure {
   return {

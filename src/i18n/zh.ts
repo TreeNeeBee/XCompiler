@@ -342,7 +342,7 @@ architectureModules 只能描述当前 phase 的产品/业务源码模块：
 }
 
 function buildExecutorSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM) + profile.executorPromptOverride;
+  return profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM;
 }
 
 const messages: Messages = {
@@ -350,9 +350,9 @@ const messages: Messages = {
     invalidBaseUrl: (raw, fallback) => `[xcompiler] base_url 无效（${raw}）；请配置有效的 HTTP(S) URL（默认值：${fallback}）`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} 输出契约校验失败`,
     providerValidationRetry: (role, model) => `[${role}] provider ${model} 在切换前携带契约错误原模型纠错重试`,
-    providerValidationRepairPrompt: (error, rejectedOutput) =>
+    providerValidationRepairPrompt: (error, rejectedOutput, hint) =>
       `上一次候选输出在任何 action 被解析、授权、执行或持久化之前就未通过调用方契约校验：${error.slice(0, 1800)}\n` +
-      (error.includes('Executor response: incomplete or invalid JSON turn')
+      (hint === 'execution-turn-fields'
         ? '这是 Executor JSON：顶层必须同时包含 actions 数组和 done 布尔值；即使只报告质量评估或 finding 也不能省略。若要处理已分配 Ticket，actions 必须提交实际处理动作，不能只重复问题描述。\n'
         : '') +
       '该候选输出声称的工作区变更均未发生；只有原始对话中明确返回的工具结果才属于已执行状态。' +

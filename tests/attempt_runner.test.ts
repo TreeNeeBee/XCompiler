@@ -462,6 +462,21 @@ describe('attempt retry feedback', () => {
     expect(evidence).toContain('## original bug context');
   });
 
+  it('drops a process-noise reason from the retry evidence when the recorded failure owes outputs', () => {
+    const log = (details: Record<string, unknown>) => ({
+      message: 'repeated read-only/probe actions without progress for 3 rounds',
+      data: {
+        structuredFailure: { kind: 'execution', category: 'internal', code: 'unclassified_execution_failure', details },
+        failureLog: 'write_file: denied target docs/x.md',
+      },
+    }) as unknown as DomainLog;
+    const evidence = (feedback: string) => feedback.slice(feedback.indexOf('## compact failure evidence'));
+
+    expect(evidence(renderAttemptRetryFeedback(log({}), 'CODE'))).toContain('repeated read-only/probe actions');
+    expect(evidence(renderAttemptRetryFeedback(log({ missingOutputs: ['docs/x.md'] }), 'CODE')))
+      .not.toContain('repeated read-only/probe actions');
+  });
+
   it('uses the persisted failure category instead of reclassifying provider wording', () => {
     const feedback = renderAttemptRetryFeedback({
       message: 'all LLM providers failed after a low-quality response',

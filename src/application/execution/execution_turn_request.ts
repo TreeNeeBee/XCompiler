@@ -53,6 +53,7 @@ const DebugContextSchema = z.object({
   deferredVerificationScope: z.object({ stepId: z.string(), phase: StepSchema.shape.phase }).strict().optional(),
   phaseDeliveryVerification: z.object({ phaseId: z.string(), findingCode: z.string() }).strict().optional(),
   previousFailure: PriorAttemptFailureSchema.optional(),
+  missingOutputs: z.array(z.string()).readonly().optional(),
 }).strict();
 
 // Domain projection replaces the draft display ID before the production attempt is executed.

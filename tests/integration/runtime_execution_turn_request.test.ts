@@ -428,6 +428,30 @@ describe('Runtime retained Executor requests', () => {
     expect(current.decay).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { reason: 'turn-shape' as const, message: 'The turn lacks its root fields.', hinted: true },
+    // Wording that once selected the hint must not select it without the typed reason.
+    { reason: 'debugger-plan-required' as const, message: 'Executor response: incomplete or invalid JSON turn', hinted: false },
+  ])('restates the turn root fields in regeneration only for a $reason refusal', async ({ reason, message, hinted }) => {
+    const server = await endpoint();
+    const current = await fixture(server.url, { currentScope: { ...scope, work: 'repair.debug' } });
+    const original = request();
+    const payload = { ...original.payload, promptContext: { ...original.payload.promptContext, work: 'repair.debug' as const },
+      validation: { ...original.payload.validation, debuggerRecovery: true } };
+    const docs = payload.tools.map(tool => `- ${tool.name}: ${describeToolForStep(tool, payload.promptContext.ctx, payload.promptContext.step)} args=${JSON.stringify(tool.argsSchema)}`).join('\n');
+    const messages = [original.messages[0]!, { role: 'user' as const,
+      content: renderExecutionUserPrompt(payload.promptContext, docs, payload.initialMissingOutputs, payload.locale) }];
+    let called = 0;
+    const validate = vi.fn((text: string) => {
+      if (++called === 1) throw new ExecutionTurnContractViolation(reason, message);
+      validateExecutionTurnResponse(text, payload);
+    });
+    await current.port.send({ ...original, payload, messages, validate });
+    expect(server.calls).toHaveLength(2);
+    expect(server.calls[1]!.messages.at(-1)!.content.includes('the top level must contain both an actions array and a boolean done field'))
+      .toBe(hinted);
+  });
+
   it('preserves an ordinary consumer exception with no retry, score or adopted result', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);

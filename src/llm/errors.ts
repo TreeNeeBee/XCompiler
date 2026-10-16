@@ -57,11 +57,14 @@ export function isLLMRequestError(error: unknown): error is LLMRequestError {
   return error instanceof LLMRequestError;
 }
 
+/** Extra guidance a caller asks the regeneration prompt to give, chosen by a typed code. */
+export type ResponseRepairHint = 'execution-turn-fields';
+
 /** Explicit candidate refusal; all other response-validator errors remain control/infrastructure failures. */
 export class ResponseValidationRejection extends Error {
   readonly code = 'response_validation_rejected';
 
-  constructor(readonly kind: 'protocol' | 'business', cause: unknown) {
+  constructor(readonly kind: 'protocol' | 'business', cause: unknown, readonly repairHint?: ResponseRepairHint) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
     this.name = 'ResponseValidationRejection';
   }

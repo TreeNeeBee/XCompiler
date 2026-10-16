@@ -32,8 +32,6 @@ export interface LanguageProfile extends LanguageContract {
   /** 把依赖列表渲染为 manifest 文件内容（仅当 seedManifestFromDeps=true 时使用）。 */
   renderManifest(deps: string[]): string;
 
-  /** 追加到 Executor system prompt 末尾的语言专属覆盖块（python 为空串）。 */
-  readonly executorPromptOverride: string;
 
   /** 测试/DEBUG 前置：确保测试可解析到源码（python 写 conftest.py；ts 无需）。 */
   ensureTestBootstrap?(ws: Workspace, audit: AuditLogger): Promise<void>;
@@ -49,7 +47,6 @@ const pythonProfile: LanguageProfile = {
   renderManifest(deps) {
     return [...new Set(deps.map((d) => d.trim()).filter(Boolean))].sort().join('\n') + '\n';
   },
-  executorPromptOverride: '',
   async ensureTestBootstrap(ws, audit) {
     await ensurePyTestBootstrap(ws, audit);
   },
@@ -89,7 +86,6 @@ const typescriptProfile: LanguageProfile = {
     };
     return JSON.stringify(pkg, null, 2) + '\n';
   },
-  executorPromptOverride: '',
   async autoFixImports(ws, audit) {
     return autoFixTypeScriptTypeOnlyImports(ws, audit);
   },
