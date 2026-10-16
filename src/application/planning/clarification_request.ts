@@ -5,12 +5,13 @@ import type { RuleBusinessChatOptions } from '../../llm/rule_business_request.js
 import type { ChatMessage } from '../../llm/types.js';
 
 export const CLARIFICATION_TEMPLATE_VERSION = 'planning-clarification/1' as const;
+// Version 2 permits one model escape-insertion correction (D-3).
 const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = [
-  'json-fence', 'trailing-comma', 'raw-string-control',
+  'json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion',
 ];
 Object.freeze(PROTOCOL_TRANSFORMATIONS);
 export const CLARIFICATION_PROTOCOL: JsonOutputProtocol = Object.freeze({
-  id: 'planning-clarification', version: '1', root: 'any', transformations: PROTOCOL_TRANSFORMATIONS,
+  id: 'planning-clarification', version: '2', root: 'any', transformations: PROTOCOL_TRANSFORMATIONS,
 });
 
 const ParseContextSchema = z.object({

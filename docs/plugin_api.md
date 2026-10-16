@@ -6,7 +6,7 @@ XCompiler 的插件层位于核心流程与扩展能力之间。既支持直接�
 
 设计参考 [VS Code Extension Manifest](https://code.visualstudio.com/api/references/extension-manifest)：插件元数据与可执行入口分离，唯一 ID、插件 SemVer 和宿主兼容声明都是必填项。XCompiler 使用可序列化的 `manifest`；`loadPluginSources()` 会先读取并检查全部 manifest，全部通过后才 import 任一模块，因此 registry / marketplace 可在不执行插件代码的前提下索引和预检。
 
-XCompiler 核心版本和 Plugin API 版本独立演进：核心使用 package SemVer，Plugin API 使用整数主版本（当前 `3`）。API 3 不兼容旧的内存 Skill 对象，所有 Skill 必须使用 Agent Skills Specification 目录。每个插件清单必须声明：
+XCompiler 核心版本和 Plugin API 版本独立演进：核心使用 package SemVer，Plugin API 使用整数主版本（当前 `4`）。API 3 起不兼容旧的内存 Skill 对象，所有 Skill 必须使用 Agent Skills Specification 目录。API 4（XCompiler 0.4）随角色/工作拆分做了不兼容修改：`step.attempt.before/after` 的 `role` 改为角色 ID（如 `python-developer`），并新增 `work`（如 `code.implement`、`repair.debug`，取代原 Debugger 角色）；Hook 上下文中的 `Plan`/`Step` 不再含 `role`、`agent` 字段；`llm.*` Hook 的 `role` 是发起调用的角色 ID 或内部操作标签（如 `protocol-correction`）。每个插件清单必须声明：
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
@@ -66,7 +66,7 @@ export const policyPlugin: XCompilerPlugin = {
     description: 'Enforces organization plan policies.',
     version: '1.0.0',
     apiVersion: XCOMPILER_PLUGIN_API_VERSION,
-    minXCompilerVersion: '0.3.0',
+    minXCompilerVersion: '0.4.0',
     license: 'Apache-2.0',
     keywords: ['policy', 'compliance'],
     skills: ['skills'],

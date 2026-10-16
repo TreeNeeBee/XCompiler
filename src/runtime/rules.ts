@@ -11,6 +11,7 @@ import { RuleVectorRetriever } from '../application/rules/rule_vector_retriever.
 import { RuleDecorator } from '../application/rules/rule_decorator.js';
 import { RuleSelector } from '../application/rules/rule_selector.js';
 import { createRuleSelectionDraft } from '../application/rules/rule_request_snapshot.js';
+import { requiredRuleBindings, type RuleBindingRequest } from '../application/rules/rule_binding.js';
 import { RuleRetrievalProfileSchema, type RuleContext } from '../domain/rules/selection.js';
 import type { RuleCatalogue } from '../domain/rules/catalogue.js';
 import type { LLMRouter } from '../llm/router.js';
@@ -18,8 +19,6 @@ import { LLMRuleSelectionReviewer } from '../llm/rule_selection_reviewer.js';
 import { CONTAINER_STATE_DIR, ProjectContainer } from '../workspace/project_container.js';
 import type { RecordReplayController } from '../application/record_replay/controller.js';
 import { RecordReplayRuleEmbeddingClient } from '../infrastructure/rules/record_replay_rule_embedding_client.js';
-import { FileRuleReviewAuditReader } from '../infrastructure/rules/file_rule_review_audit_reader.js';
-import { LLMRuleReviewEvidenceVerifier } from '../llm/rule_review_evidence.js';
 import { installedCompilerRulesRoot } from '../config/installation_root.js';
 import { loadCompilerRuleCatalogue } from '../infrastructure/rules/compiler_rule_catalogue.js';
 import { LLMRuleBusinessRequest, type RuleBusinessChatOptions } from '../llm/rule_business_request.js';
@@ -30,7 +29,8 @@ export class RuntimeRuleConfigurationError extends Error {
   readonly code = 'runtime_rule_configuration_failed';
 
   constructor(
-    readonly reason: 'embedding_not_configured' | 'invalid_state_root' | 'review_role_missing' | 'business_role_missing',
+    readonly reason: 'embedding_not_configured' | 'invalid_state_root' | 'review_role_missing' | 'business_role_missing'
+      | 'binding_context_mismatch',
     readonly details: Readonly<Record<string, unknown>> = {},
     options?: ErrorOptions,
   ) {
@@ -97,7 +97,10 @@ export async function prepareRuntimeRuleRequest(input: {
   modelPool?: ModelPoolBinding;
   logicalRequestId: string;
   context: RuleContext;
-  required: readonly { ruleId: string; version: string }[];
+  /** Runtime's binding computation (D-14): language, role and work Rules this request must carry. */
+  bind?: RuleBindingRequest;
+  /** Further explicit bindings; production callers use `bind`. */
+  required?: readonly { ruleId: string; version: string }[];
   taskSummary: string;
   errorSummary?: string;
   /** Internal composition only, not SDK configuration. Recovery never reloads current sources. */
@@ -105,6 +108,11 @@ export async function prepareRuntimeRuleRequest(input: {
   signal?: AbortSignal;
 }) {
   input.signal?.throwIfAborted();
+  const bind = input.bind;
+  if (bind && (bind.role !== input.context.role || bind.work !== input.context.work
+    || bind.language !== input.context.language)) {
+    throw new RuntimeRuleConfigurationError('binding_context_mismatch', { logicalRequestId: input.logicalRequestId });
+  }
   const infrastructure = createRuntimeRuleInfrastructure(input.config, input.container, input.recordReplay);
   const coordinator = new RuleRequestCoordinator(infrastructure.requestStateStore, {
     review: async (review) => {
@@ -115,9 +123,7 @@ export async function prepareRuntimeRuleRequest(input: {
       const client = input.router.forPool(input.modelPool ?? roleProfile(role).defaultPool, { label: role });
       return new LLMRuleSelectionReviewer(client, new RuleDecorator()).review(review);
     },
-  }, new LLMRuleReviewEvidenceVerifier(
-    new FileRuleReviewAuditReader(input.container.state.abs('audit'), input.container.root),
-  ));
+  });
   return coordinator.prepare({
     logicalRequestId: input.logicalRequestId, requestKind: 'business', signal: input.signal,
     prepareSelection: async () => {
@@ -126,7 +132,8 @@ export async function prepareRuntimeRuleRequest(input: {
         : await loadCompilerRuleCatalogue(installedCompilerRulesRoot());
       const selector = new RuleSelector(catalogue);
       input.signal?.throwIfAborted();
-      const request = { requestKind: 'business' as const, context: input.context, required: input.required };
+      const required = [...(input.required ?? []), ...(bind ? requiredRuleBindings(catalogue, bind) : [])];
+      const request = { requestKind: 'business' as const, context: input.context, required };
       const prepared = selector.prepare(request);
       const profile = RuleRetrievalProfileSchema.parse(input.config.retrieval);
       // The required-only path has no vector operation and therefore requires no embedding config.

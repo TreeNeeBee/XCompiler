@@ -9,6 +9,26 @@ export const RULE_CATEGORIES = ['general', 'framework', 'scenario', 'business'] 
 const Text = z.string().refine((value) => value.trim().length > 0, 'Text must not be blank');
 const Version = Text;
 
+/** Prompt locales a Rule instruction can be rendered in. */
+export const RULE_LOCALES = ['en', 'zh'] as const;
+export type RuleLocale = (typeof RULE_LOCALES)[number];
+export const RuleLocaleSchema = z.enum(RULE_LOCALES);
+
+/**
+ * One text for every locale, or one variant per locale (D-18). The variants are one Rule identity
+ * and version, so the definition digest covers all of them; a request renders only its own.
+ */
+export const RuleInstructionSchema = z.union([
+  Text,
+  z.object({ en: Text, zh: Text }).strict(),
+]);
+export type RuleInstruction = z.infer<typeof RuleInstructionSchema>;
+
+/** The text a request in `locale` sees; a single text is locale-neutral. */
+export function ruleInstructionText(instruction: RuleInstruction, locale: RuleLocale = 'en'): string {
+  return typeof instruction === 'string' ? instruction : instruction[locale];
+}
+
 export const RuleApplicabilitySchema = z.object({
   projectIds: z.array(z.uuid()).min(1).optional(),
   languages: z.array(z.enum(LANGUAGES)).min(1).optional(),
@@ -21,7 +41,7 @@ export const RuleDefinitionSchema = z.object({
   version: Version,
   category: z.enum(RULE_CATEGORIES),
   level: z.enum(RULE_LEVELS),
-  instruction: Text,
+  instruction: RuleInstructionSchema,
   retrievalDescription: Text,
   applicability: RuleApplicabilitySchema.default({}),
   conflicts: z.array(z.object({

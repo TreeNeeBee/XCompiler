@@ -1,0 +1,20 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "8d89e817-e289-51c4-ad89-edcd88290e5f"
+version: "1.0.0"
+title: "Applying a Change Request to a Step"
+slot: "0x0243"
+applicability:
+  works: [change.apply]
+rules:
+  - id: "2a88a24d-751a-5b02-bb06-0e256ed10ddf"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Apply only the active change request delta"
+    instruction:
+      en: |-
+        CR mode: treat existing outputs as the accepted baseline. Apply only the active change request delta, preserve unrelated behavior, and produce focused change or verification evidence. Never regenerate the whole phase or project.
+      zh: |-
+        CR 模式：已有产物是已验收基线，只实施当前变更请求的增量差异，保留无关行为，并提供聚焦的变更或验证证据；禁止重新生成整个阶段或工程。

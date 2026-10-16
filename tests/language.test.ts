@@ -6,6 +6,7 @@ import { Workspace } from '../src/workspace/workspace.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { inspectLanguageProjectContract } from '../src/application/execution/language_project_contract.js';
+import { boundRuleBlock } from './support/compiler_rules.js';
 
 describe('TypeScript language profile', () => {
   it('splits known third-party type-only imports before entry probes', async () => {
@@ -54,15 +55,15 @@ describe('test file naming reaches the planner', () => {
     }
   });
 
-  it('states the naming rule in the planner prompt, since the planner declares the outputs', () => {
-    const profile = getLanguageProfile('typescript');
-    expect(profile.plannerPromptOverride).toContain('.test.ts');
-    expect(profile.plannerPromptOverride).toContain('.spec.ts');
+  it('states the naming rule to the planner through the TypeScript Rule, since the planner declares the outputs', async () => {
+    const { content } = await boundRuleBlock({ role: 'planner', work: 'plan.decompose', language: 'typescript' });
+    expect(content).toContain('.test.ts');
+    expect(content).toContain('.spec.ts');
     // The counter-example is the mistake actually observed in a live run.
-    expect(profile.plannerPromptOverride).toContain('tests/test_service.ts');
-    // Python is unaffected: pytest collects `test_*.py`, so its profile needs no override.
+    expect(content).toContain('tests/test_service.ts');
+    // Python is unaffected: pytest collects `test_*.py`, so it binds no naming Rule.
     expect(getLanguageProfile('python').testFileFor('src/x.py', 'S004')).toMatch(/^tests\/test_.*\.py$/u);
-    expect(getLanguageProfile('python').plannerPromptOverride).toBe('');
+    expect((await boundRuleBlock({ role: 'planner', work: 'plan.decompose', language: 'python' })).content).not.toContain('.spec.ts');
   });
 });
 

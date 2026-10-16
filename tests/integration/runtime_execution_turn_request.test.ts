@@ -66,7 +66,7 @@ afterEach(async () => {
 });
 
 type WireRequest = { model: string; messages: ChatMessage[]; stream?: boolean; max_tokens?: number };
-async function endpoint(reply: (call: number) => { output: string; finish?: string; status?: number } = () => ({ output: valid })) {
+async function endpoint(reply: (call: number) => { output: string; finish?: string; status?: number; model?: string } = () => ({ output: valid })) {
   const calls: WireRequest[] = [];
   const server = createServer((request, response) => {
     if (request.method === 'GET') { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
@@ -81,14 +81,14 @@ async function endpoint(reply: (call: number) => { output: string; finish?: stri
         response.end('{"error":{"message":"Controlled provider failure"}}');
       } else if (input.stream) {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.write(`data: ${JSON.stringify({ model: `${input.model}-actual`, choices: [{ index: 0,
+        response.write(`data: ${JSON.stringify({ model: next.model ?? `${input.model}-actual`, choices: [{ index: 0,
           delta: { content: next.output }, finish_reason: null }] })}\n\n`);
-        response.write(`data: ${JSON.stringify({ model: `${input.model}-actual`, choices: [{ index: 0,
+        response.write(`data: ${JSON.stringify({ model: next.model ?? `${input.model}-actual`, choices: [{ index: 0,
           delta: {}, finish_reason: next.finish ?? 'stop' }] })}\n\n`);
         response.end('data: [DONE]\n\n');
       } else {
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ model: `${input.model}-actual`, choices: [{ index: 0,
+        response.end(JSON.stringify({ model: next.model ?? `${input.model}-actual`, choices: [{ index: 0,
           message: { content: next.output }, finish_reason: next.finish ?? 'stop' }] }));
       }
     });
@@ -140,7 +140,7 @@ async function fixture(url: string, options: { plugins?: PluginHost; currentScop
   const forPool = vi.spyOn(router, 'forPool');
   const port = createRuntimeExecutionTurnRequestPort({ config: config.rules, container, recordReplay, router, audit, scope: currentScope });
   const ctx: ToolContext = { ws, sandbox: undefined as never, audit, allowedWrites: ['src/'], stepId: scope.stepId };
-  return { container, ws, config, audit, boost, decay, router, forPool, port, ctx,
+  return { container, ws, config, audit, boost, decay, router, forPool, port, ctx, recordReplay,
     events: async (): Promise<AuditEvent[]> => (await container.state.readFile('audit/audit.jsonl')).split('\n')
       .filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
   };
@@ -199,6 +199,144 @@ describe('Runtime retained Executor requests', () => {
       .toBeLessThan(events.findIndex(event => event.kind === 'tool.call'));
     const restored = await resumeRuntimeExecutionTurnRequest({ container: current.container, audit: current.audit, logicalRequestId: input.logicalRequestId });
     expect(restored).toMatchObject({ status: 'recovered', owner: input.owner, turn: { done: true } });
+  });
+
+  it('selects Rules once per execution: later rounds reuse the pinned snapshot, another execution selects anew', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    await current.port.send(request());
+    // From here on the current Rule sources are unavailable: only a reused selection can proceed.
+    const sources = vi.spyOn(installationRoots, 'installedCompilerRulesRoot')
+      .mockImplementation(() => { throw new Error('A later round must not select Rules again'); });
+    await current.port.send(request({ round: 2 }));
+    const inputs = (await current.events()).filter(event => event.messageId === 'llm.business_request_input')
+      .map(event => event.data!.input as unknown as BusinessRequestInput);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0]!.logicalRequestId).not.toBe(inputs[1]!.logicalRequestId);
+    expect(inputs[1]!.snapshotDigest).toBe(inputs[0]!.snapshotDigest);
+    const other = createRuntimeExecutionTurnRequestPort({ config: current.config.rules, container: current.container,
+      recordReplay: current.recordReplay, router: current.router, audit: current.audit,
+      scope: { ...scope, executionId: randomUUID() } });
+    await expect(other.send(request())).rejects.toThrow(/must not select Rules again/u);
+    sources.mockRestore();
+    expect(server.calls).toHaveLength(2);
+  });
+
+  it('sends the Rules Runtime binds to this execution: its role, its work and its mode, in its locale', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    await current.port.send(request());
+    const sent = server.calls[0]!.messages[0]!.content;
+    expect(sent).toContain('You are an experienced Python backend developer');
+    expect(sent).toContain('You implement the design and repair defects found against it.');
+    expect(sent).toContain('Real fixes: repair the implementation');
+    expect(sent).not.toContain('bugResolutionPlan');
+    expect(sent).not.toContain('Vitest');
+    // The framework message no longer speaks for the worker: who it is lives in the Rules only.
+    expect(server.calls[0]!.messages.slice(1).map(message => message.content).join('\n')).not.toContain('You are an experienced');
+
+    const repairScope = { ...scope, executionId: randomUUID(), work: 'repair.debug' as const };
+    const repair = await fixture(server.url, { currentScope: repairScope });
+    const original = request();
+    await repair.port.send(request({ locale: 'zh', promptContext: { ...original.payload.promptContext, work: 'repair.debug' } }));
+    const repaired = server.calls[1]!.messages[0]!.content;
+    expect(repaired).toContain('你是一名经验丰富的 Python 后端开发工程师');
+    expect(repaired).toContain('DEBUG 模式');
+    expect(repaired).toContain('你负责实现设计，并修复对照设计发现的缺陷。');
+    expect(repaired).not.toContain('You are an experienced');
+
+    // When fact: a design Step whose paired baseline execution is deferred learns why its tests fail.
+    const designStep = { ...step, phase: 'DETAILED_DESIGN' as const };
+    const architect = { role: 'system-architect' as const, roleVersion: roleProfile('system-architect').version };
+    for (const deferred of [true, false]) {
+      const designScope = { ...scope, ...architect, executionId: randomUUID(), work: 'design.detailed' as const };
+      const design = await fixture(server.url, { currentScope: designScope });
+      await design.port.send(request({
+        promptContext: { ...original.payload.promptContext, step: designStep, work: 'design.detailed', role: 'system-architect' },
+        validation: { ...original.payload.validation, baselineExecutionDeferred: deferred },
+      }));
+      const rules = server.calls.at(-1)!.messages[0]!.content;
+      expect(rules).toContain('You are an experienced system architect');
+      expect(rules.includes('Do not record that deferral as a quality gap'), String(deferred)).toBe(deferred);
+    }
+  });
+
+  describe('one protocol correction per logical request (D-3, E3)', () => {
+    // The reply that motivated D-3: raw newlines and unescaped inner quotes inside a code string.
+    const corrected = JSON.stringify({ thoughts: 'Deliver the current output', actions: [
+      { tool: 'write_file', args: { path: 'src/accepted.py', content: 'print("x")\nprint("y")\n' } },
+    ], done: true });
+    const broken = corrected.replaceAll('\\"', '"').replaceAll('\\n', '\n');
+    // A correction is answered by the original's actual producing model.
+    const correction = (output: string) => ({ output, model: 'primary-model-actual' });
+
+    it('corrects the reply once, validates it as a turn, adopts it and restores it on recovery', async () => {
+      const server = await endpoint(call => (call === 1 ? { output: broken } : correction(corrected)));
+      const current = await fixture(server.url);
+      expect((await current.port.send(request())).text).toBe(corrected);
+      expect(server.calls).toHaveLength(2);
+      expect(server.calls[1]!.messages[0]!.content).toContain('escape-insertion');
+      const judgement = (await current.events()).find(event => event.messageId === 'llm.execution_turn_judgement')!;
+      expect(judgement.data).toMatchObject({ protocolCorrection: {
+        claimId: expect.any(String), correctionRequestId: expect.any(String), candidateDigest: expect.stringMatching(/^sha256:/u),
+      } });
+      const restored = await resumeRuntimeExecutionTurnRequest({ container: current.container, audit: current.audit,
+        logicalRequestId: judgement.data!.logicalRequestId as string });
+      expect(restored).toMatchObject({ status: 'recovered', text: corrected });
+      expect(current.boost).not.toHaveBeenCalled();
+    });
+
+    it('lets the original business contract reject the corrected reply', async () => {
+      const server = await endpoint(call => (call === 1 ? { output: broken } : correction(corrected)));
+      const current = await fixture(server.url);
+      const refusal = new ExecutionTurnContractViolation('turn-shape', 'The corrected turn still breaks the contract.');
+      const validate = vi.fn(() => { throw refusal; });
+      await expect(current.port.send({ ...request(), validate })).rejects.toBe(refusal);
+      expect(validate).toHaveBeenCalledExactlyOnceWith(corrected);
+      expect(server.calls).toHaveLength(2);
+      expect((await current.events()).some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(false);
+    });
+
+    it('keeps the original protocol refusal when the model returns the reply unchanged', async () => {
+      const server = await endpoint(call => (call === 1 ? { output: broken } : correction(broken)));
+      const current = await fixture(server.url);
+      await expect(current.port.send(request())).rejects.toBeInstanceOf(ExecutionTurnRoundRefusal);
+      expect(server.calls).toHaveLength(2);
+    });
+
+    it('never asks a model to correct a truncated reply', async () => {
+      const server = await endpoint(() => ({ output: broken.slice(0, broken.indexOf('print("x")') + 'print('.length) }));
+      const current = await fixture(server.url);
+      await expect(current.port.send(request())).rejects.toBeInstanceOf(ExecutionTurnRoundRefusal);
+      expect(server.calls).toHaveLength(1);
+    });
+
+    it('records a failed correction send and keeps the original protocol refusal', async () => {
+      const server = await endpoint(call => (call === 1 ? { output: broken } : { output: '', status: 500 }));
+      const current = await fixture(server.url);
+      await expect(current.port.send(request())).rejects.toBeInstanceOf(ExecutionTurnRoundRefusal);
+      expect(server.calls.length).toBeGreaterThanOrEqual(2);
+      expect((await current.events()).find(event => event.messageId === 'llm.protocol_correction_unavailable')?.data)
+        .toMatchObject({ failure: expect.any(String) });
+    });
+  });
+
+  it('runs live rounds past a damaged audit line, which stops only restart recovery', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    // A crash can leave a partial line. Live requests append audit evidence but never read it back.
+    const broken = '{"partial-line-from-a-crash":';
+    await fs.appendFile(current.container.state.abs('audit', 'audit.jsonl'), `${broken}\n`);
+    expect((await current.port.send(request())).text).toBe(valid);
+    expect((await current.port.send(request({ round: 2 }))).text).toBe(valid);
+    expect(server.calls).toHaveLength(2);
+    const lines = (await current.container.state.readFile('audit/audit.jsonl')).split('\n')
+      .filter(line => line.trim() && line !== broken);
+    const input = retainedInput(lines.map(line => JSON.parse(line) as AuditEvent));
+    await expect(resumeRuntimeExecutionTurnRequest({ container: current.container, audit: current.audit,
+      logicalRequestId: input.logicalRequestId })).rejects.toMatchObject({
+      code: 'evidence_persistence_failed', failure: { operation: 'validate-jsonl' },
+    });
   });
 
   it('pins original context before suspension and restores it without current sources, sends, writes or Tool replay', async () => {
@@ -509,7 +647,7 @@ describe('Runtime retained Executor requests', () => {
     const validate = vi.fn();
     await expect(current.port.send({ ...original, validate, messages: [...original.messages,
       { role: 'user', content: 'Retain the complete original execution evidence. '.repeat(10000) }],
-    })).rejects.toMatchObject({ code: 'rule_business_request_failed', reason: 'capacity_exceeded' });
+    })).rejects.toMatchObject({ code: 'provider_capacity_exhausted', shortfalls: [expect.objectContaining({ provider: expect.any(String) })] });
     expect(server.calls).toHaveLength(0);
     expect(validate).not.toHaveBeenCalled();
     expect(await current.ws.exists('src/accepted.py')).toBe(false);

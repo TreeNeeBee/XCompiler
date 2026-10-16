@@ -1,0 +1,90 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "17f60a19-e45d-5961-86cf-a4f1c2c07302"
+version: "1.0.0"
+title: "Runtime execution policy shared by every Step work"
+slot: "0x0240"
+applicability:
+  works: [analyze.requirements, design.high-level, design.detailed, code.implement, verify.unit, verify.integration, verify.module, verify.functional, repair.debug, change.apply]
+rules:
+  - id: "ce645440-2b30-58e0-a535-1118d420a022"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Workspace-relative file paths within the current scope"
+    instruction:
+      en: |-
+        File paths: every file action must provide a concrete workspace-relative path from the current readable/writable scope. Never omit a required path or access outside the workspace.
+      zh: |-
+        文件路径：每个文件操作都必须提供当前读写范围内、明确的 workspace 相对路径；不得省略必填路径或访问工程外部。
+  - id: "c3a105d9-a631-5993-80ab-e2e13b4a2e9c"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Repair the actual defect; never weaken gates"
+    instruction:
+      en: |-
+        Real fixes: repair the implementation, contract, dependency, fixture, or test that is actually wrong. Never weaken assertions, skip/delete failing tests, or add fake production fallbacks to make a gate pass.
+      zh: |-
+        真实修复：修正真正错误的实现、契约、依赖、fixture 或测试；禁止削弱断言、跳过/删除失败测试，或在生产代码中增加伪造 fallback 来绕过门禁。
+  - id: "88496afe-0751-5f42-8ec5-376493b1a656"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Use real dependencies selected by design"
+    instruction:
+      en: |-
+        Dependencies: use add_dependency for the real package selected by design. TypeScript accepts package@version and dev=true for test/build tooling. Do not emulate a missing dependency with fake modules, empty classes/functions, or ImportError fallbacks in product source.
+      zh: |-
+        依赖：使用 add_dependency 添加设计选定的真实包；TypeScript 支持 package@version，测试/构建工具需设置 dev=true；禁止用假 module、空 class/function 或 ImportError fallback 模拟缺失依赖。
+  - id: "ecc466ca-775a-58c5-8790-0c97a088660f"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Change fixtures only on evidence of a fixture defect"
+    instruction:
+      en: |-
+        Fixtures: change a fixture only when evidence shows it is missing, malformed, or itself fails parsing. Behavioural assertion failures require diagnosis of source, contract, or assertion semantics.
+      zh: |-
+        Fixture：只有证据明确表明 fixture 缺失、格式错误或自身解析失败时才修改；行为断言失败应检查源码、契约和断言语义。
+  - id: "d8700fea-e51d-5452-8be4-1dc96e6636d6"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Bounded network probes judged against the accepted contract"
+    instruction:
+      en: |-
+        Network APIs: after a failed endpoint, perform at most two focused probes and reject empty/unusable 2xx responses. Compare the evidence with the accepted contract: fix and verify the integration when the contract remains viable, or emit a change-request finding when satisfying the expectation requires the accepted capability/contract to change. Never infer that choice from a status code alone. Live user-entrypoint verification belongs to the Phase delivery gate.
+      zh: |-
+        网络 API：接口失败后最多进行两次有目标的探测；HTTP 2xx 但内容为空或不可用不算成功。将证据与已接受契约对照：契约仍可行时修复并验证真实集成，满足预期必须调整已接受能力或契约时提交 change-request finding；禁止仅根据状态码选择处理方式。真实用户入口验证只属于 Phase 交付门禁。
+  - id: "43916ad4-8b14-59a2-80ae-611b89be987d"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Tests execute real production code with injected I/O seams"
+    instruction:
+      en: |-
+        Tests: execute the real production function, module, orchestration, or entry boundary under test. Mock only external I/O collaborators through an existing injection seam; never mock the function or module under test. Never reproduce production loops, retries, fallback/error policy, parsing, aggregation, or rendering inside a test. If no usable seam exists, repair the product API with dependency injection while preserving its default behavior, then test the real implementation. Tests covering external HTTP/API/URL access must be deterministic by default: use controlled fixtures through dependency injection, a preload hook, a local stub, or a configured replay endpoint. Never make unit, integration, module, or functional gates repeatedly call live public services; a separately declared live probe does not replace deterministic acceptance.
+      zh: |-
+        测试：必须执行真实的被测产品函数、模块、编排或入口边界，只能通过已有依赖注入点 mock 外部 I/O 协作者；禁止 mock 被测函数或被测模块。禁止在测试内重写生产代码的循环、重试、fallback/错误策略、解析、聚合或渲染；如果产品没有可用测试接缝，应在保留默认行为的前提下为产品 API 增加依赖注入，再测试真实实现。涉及外部 HTTP/API/URL 的测试默认必须可确定性离线执行：通过依赖注入、preload hook、本地 stub 或已配置 replay endpoint 提供受控 fixture。单元、集成、模块和功能门禁禁止反复访问实时公共服务；单独声明的 live probe 不能替代确定性验收门禁。
+  - id: "31ea49d5-f853-5cf4-b2ad-2dbf71c9c395"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Subprocess tests use the installed runtime and surface child evidence"
+    instruction:
+      en: |-
+        Subprocess tests: invoke the workspace's already-installed runtime directly instead of resolving tools through a package manager. For TypeScript, spawn process.execPath with --import tsx (or use a declared npm script); for Python, use sys.executable. Do not use npx inside tests: package resolution, downloads, and helper IPC can fail before the product entrypoint runs and hide the real evidence. Failed child-process assertions must surface the captured stdout, stderr, exit status or signal, and timeout state; never reduce a child failure to an unexplained exit code.
+      zh: |-
+        子进程测试：直接调用工作区已经安装的本地运行时，不得经包管理器临时解析工具。TypeScript 使用 process.execPath 配合 --import tsx（或调用已声明的 npm script）；Python 使用 sys.executable。禁止在测试内使用 npx，避免包解析、下载或辅助 IPC 在产品入口运行前失败并掩盖真实证据。子进程断言失败时必须暴露捕获的 stdout、stderr、退出状态或 signal 以及 timeout 状态；禁止只保留一个无法诊断的退出码。
+  - id: "9c667c3e-0837-5382-8907-7d90aa40a4f0"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "Completion evidence and quality findings per Step"
+    instruction:
+      en: |-
+        Completion evidence: done=true requires all declared outputs plus successful mutation/verification evidence appropriate to this Step. A right-side V-model Step first inspects its paired baseline and performs risk analysis. It may add focused tests only under the Runtime-declared verification supplement root, then freezes and executes the complete baseline plus supplement set. It must never rewrite baseline tests or product source. Do not diagnose from historical failure text or write reports/documentation until the current frozen run_tests result is returned in a later round. Put each independent defect or shortfall in qualityAssessment.findings so Runtime can route one Ticket per finding. Give every finding a stable machine code: reuse the code when the same problem recurs and use a different code for an independent problem. Use product-defect when the accepted contract remains valid and its implementation is wrong; use change-request when satisfying the expectation requires an accepted requirement, capability, interface, dependency, data source, or design premise to change. A status code, timeout, exception, or empty result is evidence only and never selects between them. Include affectedArtifacts with the exact workspace paths that finding permits a correction to modify; dependency findings remain separate from product/test defects.
+      zh: |-
+        完成证据：done=true 前必须完成全部声明产物，并取得与当前 Step 匹配的成功修改或验证证据。V 模型右侧 Step 先独立检查配对基线并做风险分析，只能在 Runtime 声明的 verification supplement root 下追加聚焦测试，随后冻结并执行完整的“基线 + 补充”集合；禁止改写基线测试或产品源码。在下一轮收到当前冻结集合的 run_tests 结果前，禁止依据历史失败文本诊断，也禁止写入报告/文档。每个独立缺陷或短板必须分别写入 qualityAssessment.findings，由 Runtime 逐项建票。每个 finding 必须提供稳定的机器 code：同一问题重现时复用，独立问题使用不同 code。已接受契约仍有效但实现错误时使用 product-defect；满足预期必须调整已接受的需求、能力、接口、依赖、数据源或设计前提时使用 change-request。状态码、超时、异常和空结果只作为证据，不能直接决定二者。affectedArtifacts 必须填写该 finding 允许修复的精确工作区路径；依赖 finding 继续独立于产品/测试缺陷路由。

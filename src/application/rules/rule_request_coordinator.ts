@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
-import type { RuleReviewEvidenceVerifier } from './rule_review_evidence.js';
 import {
   finalizeRuleSelectionDraft, validateRuleRequestSnapshot, validateRuleSelectionDraft,
   type RuleRequestSnapshot, type RuleRequestSnapshotStore, type RuleSelectionDraft,
@@ -51,12 +50,14 @@ export interface RuleSelectionReviewer {
   >;
 }
 
-/** Pins selection before review and consumes its allowance before any model dispatch. */
+/**
+ * Pins selection before review and consumes its allowance before any model dispatch. The state
+ * store is the live authority; a review's raw audit evidence is checked only by restart recovery.
+ */
 export class RuleRequestCoordinator {
   constructor(
     private readonly store: RuleRequestStateStore,
     private readonly reviewer: RuleSelectionReviewer,
-    private readonly evidence: RuleReviewEvidenceVerifier,
   ) {}
 
   async prepare(input: {
@@ -75,8 +76,6 @@ export class RuleRequestCoordinator {
     if (snapshot) {
       const restored = validateRuleRequestSnapshot(snapshot, id);
       this.assertKind(restored.requestKind, input.requestKind, id);
-      if (restored.review) await this.evidence.verify(restored, input.signal);
-      input.signal?.throwIfAborted();
       return restored;
     }
     let draft = await this.store.readDraft(id);
@@ -125,8 +124,8 @@ export class RuleRequestCoordinator {
     });
     if (!parsed.success) throw new RuleRequestError('invalid', { logicalRequestId: id }, { cause: parsed.error });
     this.validateResult(parsed.data, claim, draft);
-    // Validate membership/conflicts and raw evidence before publishing a successful review outcome.
-    await this.evidence.verify(finalizeRuleSelectionDraft(draft, reviewReference(parsed.data)), input.signal);
+    // Validate membership/conflicts before publishing a successful review outcome.
+    finalizeRuleSelectionDraft(draft, reviewReference(parsed.data));
     input.signal?.throwIfAborted();
     result = await this.store.completeReview(parsed.data);
     return this.finish(draft, claim, result, input.signal);
@@ -137,7 +136,6 @@ export class RuleRequestCoordinator {
     this.validateClaim(claim, draft);
     this.validateResult(result, claim, draft);
     const snapshot = finalizeRuleSelectionDraft(draft, reviewReference(result));
-    await this.evidence.verify(snapshot, signal);
     signal?.throwIfAborted();
     return this.store.create(snapshot);
   }

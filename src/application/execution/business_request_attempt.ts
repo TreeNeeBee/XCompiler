@@ -45,10 +45,9 @@ export interface BusinessRequestAttemptStore {
   create(record: BusinessRequestAttemptRecord): Promise<BusinessRequestAttemptRecord>;
 }
 export interface BusinessRequestAttemptAudit {
+  /** Required trace evidence. Live requests never read it back: the store record is their authority. */
   write(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt, signal?: AbortSignal): Promise<void>;
-  verify(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt, signal?: AbortSignal): Promise<void>;
-  verifyResponse(record: BusinessRequestAttemptRecord, request: BusinessRequestAttempt,
-    response: RoutedResponseEvidence, signal?: AbortSignal): Promise<void>;
+  /** Restart recovery only. */
   recover(record: BusinessRequestAttemptRecord, signal?: AbortSignal): Promise<BusinessRequestAttemptRecovery>;
 }
 

@@ -3,7 +3,7 @@ import { protectAuditContent } from '../audit/audit.js';
 import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 import {
   assertBusinessRequestInputRecord, validateBusinessRequestInput, validateBusinessRequestInputRecord,
-  assertBusinessRequestSnapshotOwner, businessRequestRole,
+  assertBusinessRequestSnapshotOwner, businessRequestRole, businessRequestSelectionId,
   type BusinessRequestInput, type BusinessRequestInputRecord,
 } from '../application/execution/business_request_input.js';
 import {
@@ -44,7 +44,7 @@ const Messages = z.array(z.object({
 export class RuleBusinessRequestError extends Error {
   readonly code = 'rule_business_request_failed';
   constructor(
-    readonly reason: 'invalid_input' | 'request_integrity' | 'capacity_exceeded' | 'response_evidence_invalid',
+    readonly reason: 'invalid_input' | 'request_integrity' | 'response_evidence_invalid',
     readonly details: Readonly<Record<string, unknown>> = {},
     options?: ErrorOptions,
   ) {
@@ -127,7 +127,8 @@ export class LLMRuleBusinessRequest {
     if (original.owner.kind === 'step-execution' && !projection) throw new RuleBusinessRequestError('invalid_input', { field: 'execution-projection' });
     const record = validateBusinessRequestInputRecord(input.record, original.logicalRequestId);
     assertBusinessRequestInputRecord(record, original);
-    const snapshot = validateRuleRequestSnapshot(input.snapshot, original.logicalRequestId);
+    // An Executor round reads its execution's shared selection; the round keeps its own request ID.
+    const snapshot = validateRuleRequestSnapshot(input.snapshot, businessRequestSelectionId(original));
     if (snapshot.digest !== record.snapshotDigest) {
       throw new RuleBusinessRequestError('invalid_input', { logicalRequestId: original.logicalRequestId, field: 'input_snapshot' });
     }
@@ -150,7 +151,8 @@ export class LLMRuleBusinessRequest {
     if (!validator && Object.hasOwn(input, 'validateResponse')) throw new RuleBusinessRequestError('invalid_input', { field: 'validateResponse' });
     let snapshot: RuleRequestSnapshot;
     let messages: readonly Readonly<ChatMessage>[];
-    const options = snapshotRuleBusinessChatOptions(input.options, input.snapshot?.logicalRequestId);
+    const requestId = retained?.original.logicalRequestId ?? input.snapshot?.logicalRequestId;
+    const options = snapshotRuleBusinessChatOptions(input.options, requestId);
     if (validator && options?.streamStopWhen !== undefined) throw new RuleBusinessRequestError('invalid_input', { field: 'streamStopWhen' });
     try {
       snapshot = validateRuleRequestSnapshot(input.snapshot, input.snapshot.logicalRequestId);
@@ -166,7 +168,7 @@ export class LLMRuleBusinessRequest {
         logicalRequestId: input.snapshot?.logicalRequestId, stage: 'prepare-business-send',
       }, { cause });
     }
-    const logicalRequestId = snapshot.logicalRequestId;
+    const logicalRequestId = retained?.original.logicalRequestId ?? snapshot.logicalRequestId;
     type Attempt = { provider: string; model: string; binding: RuleBusinessResponse['binding'];
       retainedAttempt?: RuleBusinessResponse['retainedAttempt'] };
     const attempts = new Map<string, Attempt>();
@@ -221,9 +223,8 @@ export class LLMRuleBusinessRequest {
         assertBusinessRequestAttemptInput(record, retained.record);
         await retained.audit.write(record, prepared, input.signal);
         input.signal?.throwIfAborted();
+        // The store rejects a different record under this attempt; the audit is trace, not read back.
         const stored = await retained.store.create(record);
-        input.signal?.throwIfAborted();
-        await retained.audit.verify(stored, prepared, input.signal);
         input.signal?.throwIfAborted();
         attempt.retainedAttempt = Object.freeze({ request: prepared, record: stored });
       }

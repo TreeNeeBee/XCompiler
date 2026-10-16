@@ -32,8 +32,6 @@ export interface LanguageProfile extends LanguageContract {
   /** 把依赖列表渲染为 manifest 文件内容（仅当 seedManifestFromDeps=true 时使用）。 */
   renderManifest(deps: string[]): string;
 
-  /** 追加到 Planner system prompt 末尾的语言专属覆盖块（python 为空串）。 */
-  readonly plannerPromptOverride: string;
   /** 追加到 Executor system prompt 末尾的语言专属覆盖块（python 为空串）。 */
   readonly executorPromptOverride: string;
 
@@ -51,7 +49,6 @@ const pythonProfile: LanguageProfile = {
   renderManifest(deps) {
     return [...new Set(deps.map((d) => d.trim()).filter(Boolean))].sort().join('\n') + '\n';
   },
-  plannerPromptOverride: '',
   executorPromptOverride: '',
   async ensureTestBootstrap(ws, audit) {
     await ensurePyTestBootstrap(ws, audit);
@@ -92,13 +89,6 @@ const typescriptProfile: LanguageProfile = {
     };
     return JSON.stringify(pkg, null, 2) + '\n';
   },
-  // `vitest run` discovers only `**/*.{test,spec}.?(c|m)[jt]s?(x)`. A planner carrying Python habits
-  // declares `tests/test_thing.ts`, which vitest silently does not collect: the gate then fails with
-  // "No test files found" and no role can repair it, because the name came from the Step's declared
-  // outputs rather than from anything the executor chose.
-  plannerPromptOverride: '\n\nTypeScript test files must be named `<name>.test.ts` or `<name>.spec.ts` ' +
-    '(for example `tests/modules/service.test.ts`). `vitest run` collects no other name, so a Step ' +
-    'declaring `tests/test_service.ts` produces a suite that can never run.',
   executorPromptOverride: '',
   async autoFixImports(ws, audit) {
     return autoFixTypeScriptTypeOnlyImports(ws, audit);

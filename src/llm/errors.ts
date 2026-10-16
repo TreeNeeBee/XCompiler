@@ -75,6 +75,42 @@ export class ResponseValidationRejection extends Error {
  * be fed back to the model, and treating it as infrastructure stopped a live run twice with every
  * provider healthy.
  */
+/** The measured capacity facts of one provider that cannot hold a request's required content. */
+export interface ProviderCapacityFacts {
+  readonly logicalRequestId: string;
+  readonly providerAttemptId: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly contextWindowTokens: number;
+  readonly promptTokens: number;
+  readonly safetyTokens: number;
+  readonly maxTokens: number;
+}
+
+/**
+ * One provider's window cannot hold the required request. Required content is never trimmed, so
+ * Router tries the next provider of the same pool instead; this is not a provider-quality fault.
+ */
+export class ProviderCapacityShortfall extends Error {
+  readonly code = 'provider_capacity_shortfall';
+  constructor(readonly facts: ProviderCapacityFacts) {
+    super(`Provider ${facts.provider} (${facts.model}) cannot hold the request: ` +
+      `${facts.promptTokens}+${facts.safetyTokens}+${facts.maxTokens} > ${facts.contextWindowTokens} tokens`);
+    this.name = 'ProviderCapacityShortfall';
+  }
+}
+
+/** No provider of the pool can hold the required request; the caller must shrink it or widen the pool. */
+export class ProviderCapacityExhausted extends Error {
+  readonly code = 'provider_capacity_exhausted';
+  constructor(readonly shortfalls: readonly ProviderCapacityFacts[], options?: ErrorOptions) {
+    super(`No provider can hold the required request: ${shortfalls.map((entry) =>
+      `${entry.provider}=${entry.promptTokens + entry.safetyTokens + entry.maxTokens}/${entry.contextWindowTokens}`).join(', ')}`,
+    options);
+    this.name = 'ProviderCapacityExhausted';
+  }
+}
+
 export function isContentRejectionExhausted(error: unknown): error is LLMRequestError {
   return isLLMRequestError(error) &&
     error.failure.code === 'all_providers_failed' &&

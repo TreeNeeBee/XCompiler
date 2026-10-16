@@ -43,8 +43,33 @@ msg() {
   node "$ROOT/scripts/script_i18n.mjs" "$@"
 }
 
-# Compiler rules are required release sources, never optional attachments.
-REQUIRED_RULE_SOURCES=(rules/genesis.yaml rules/scenario-outcome.yaml)
+# Compiler rules are required release sources, never optional attachments. This list must equal
+# COMPILER_RULE_MANIFEST (src/infrastructure/rules/compiler_rule_catalogue.ts); a test guards it.
+REQUIRED_RULE_SOURCES=(
+  rules/genesis.yaml
+  rules/language-typescript.yaml
+  rules/role-project-manager.yaml
+  rules/role-planner.yaml
+  rules/role-requirements-analyst.yaml
+  rules/role-system-architect.yaml
+  rules/role-python-developer.yaml
+  rules/role-typescript-developer.yaml
+  rules/role-test-engineer.yaml
+  rules/role-integration-test-engineer.yaml
+  rules/work-execution-common.yaml
+  rules/work-design-baseline-deferred.yaml
+  rules/work-repair-debug.yaml
+  rules/work-change-apply.yaml
+  rules/work-analyze-requirements.yaml
+  rules/work-design-high-level.yaml
+  rules/work-design-detailed.yaml
+  rules/work-code-implement.yaml
+  rules/work-verify-unit.yaml
+  rules/work-verify-integration.yaml
+  rules/work-verify-module.yaml
+  rules/work-verify-functional.yaml
+  rules/scenario-outcome.yaml
+)
 for rule_source in "${REQUIRED_RULE_SOURCES[@]}"; do
   if [[ ! -f "$ROOT/$rule_source" ]]; then
     msg package.required_asset_missing "$rule_source" >&2

@@ -8,12 +8,13 @@ import type { ChatMessage } from '../../llm/types.js';
 import { PhasePlanPayloadSchema } from './phase_plan_request.js';
 
 export const PHASE_DECOMPOSITION_TEMPLATE_VERSION = 'planning-phase-decomposition/1' as const;
+// Version 2 permits one model escape-insertion correction (D-3).
 const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = [
-  'json-fence', 'trailing-comma', 'raw-string-control',
+  'json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion',
 ];
 Object.freeze(PROTOCOL_TRANSFORMATIONS);
 export const PHASE_DECOMPOSITION_PROTOCOL: JsonOutputProtocol = Object.freeze({
-  id: 'planning-phase-decomposition', version: '1', root: 'object', transformations: PROTOCOL_TRANSFORMATIONS,
+  id: 'planning-phase-decomposition', version: '2', root: 'object', transformations: PROTOCOL_TRANSFORMATIONS,
 });
 
 const DraftPhasePlanSchema = z.object({

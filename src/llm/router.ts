@@ -22,7 +22,10 @@ import {
   normalizeContextWindowTokens,
   resolveSkillOperationWindow,
 } from './window.js';
-import { isLLMRequestError, LLMRequestError, ResponseValidationRejection } from './errors.js';
+import {
+  isLLMRequestError, LLMRequestError, ProviderCapacityExhausted, ProviderCapacityShortfall, ResponseValidationRejection,
+  type ProviderCapacityFacts,
+} from './errors.js';
 import type { RecordReplayController } from '../application/record_replay/controller.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { z } from 'zod';
@@ -435,7 +438,9 @@ class FallbackClient implements LLMClient {
     // refused by the caller's own contract. A run must not stop because every provider returned a
     // turn the contract rejected: that is a round the Step can still be told to correct, and it
     // reached the orchestrator as an infrastructure failure that aborted the whole run.
-    const failureKinds: ('content' | 'transport')[] = [];
+    const failureKinds: ('content' | 'transport' | 'capacity')[] = [];
+    // Providers whose window cannot hold the required request; only these, never trimmed content.
+    const capacityShortfalls: ProviderCapacityFacts[] = [];
     for (let i = 0; i < this.chain.length; i++) {
       if (responseValidator) options?.signal?.throwIfAborted();
       const c = this.chain[i]!;
@@ -551,10 +556,26 @@ class FallbackClient implements LLMClient {
         const attemptMessages = projectedMessages.map((message) => Object.freeze({ ...message }));
         Object.freeze(attemptMessages);
         // Guard failures are request/evidence failures, outside all provider retry and score paths.
-        const rawBinding = await options?.beforeProviderRequest?.({
-          logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
-          messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
-        });
+        // A window too small for the required request is the one exception: the same request may fit
+        // the next provider of the pool. It is not provider quality and is never retried on this one.
+        // Protocol correction is pinned to its original producer and must not move.
+        let rawBinding: unknown;
+        try {
+          rawBinding = await options?.beforeProviderRequest?.({
+            logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
+            messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,
+          });
+        } catch (error) {
+          if (!(error instanceof ProviderCapacityShortfall) || this.protocolCorrection) throw error;
+          capacityShortfalls.push(error.facts);
+          failures.push(`${c.name}/${c.client.name}: ${error.message}`);
+          failureKinds.push('capacity');
+          lastErr = error;
+          await auditEvent('note', `${this.role} skipped ${c.client.name}: the request exceeds its context window`, {
+            messageId: 'llm.provider_capacity_skipped', ...error.facts, switched: isSwitch,
+          });
+          break;
+        }
         let requestBinding: LLMRequestAuditBinding | undefined;
         if (this.protocolCorrection) {
           const binding = ProtocolCorrectionAuditBindingSchema.safeParse(rawBinding);
@@ -856,6 +877,9 @@ class FallbackClient implements LLMClient {
         ? { ...lastErr.failure, switchProvider: false }
         : { code: 'request_failed', mode: 'router', retryable: false, switchProvider: false,
           provider: this.chain[0]!.name, model: this.chain[0]!.client.name }, { cause: lastErr });
+    }
+    if (failureKinds.length > 0 && failureKinds.every((kind) => kind === 'capacity')) {
+      throw new ProviderCapacityExhausted(capacityShortfalls, { cause: lastErr });
     }
     if (failures.length > 0) {
       throw new LLMRequestError(

@@ -13,9 +13,6 @@ import {
   type RuleSelectionDraft,
 } from '../../src/application/rules/rule_request_snapshot.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
-import {
-  RuleReviewEvidenceError, type RuleReviewEvidenceVerifier,
-} from '../../src/application/rules/rule_review_evidence.js';
 import { RuleVectorRetriever, type RuleEmbeddingPort } from '../../src/application/rules/rule_vector_retriever.js';
 import { RuleCatalogue } from '../../src/domain/rules/catalogue.js';
 import type { RuleEmbeddingIdentity } from '../../src/domain/rules/vector_index.js';
@@ -100,9 +97,6 @@ function reply(input: ReviewInput): ReviewOutput {
 function reviewer(run: (input: ReviewInput) => Promise<ReviewOutput> = async (input) => reply(input)) {
   return { review: vi.fn(run) };
 }
-function evidenceVerifier(run: RuleReviewEvidenceVerifier['verify'] = async () => {}) {
-  return { verify: vi.fn(run) };
-}
 function prepare(coordinator: RuleRequestCoordinator, selected: ReturnType<typeof preparation>) {
   return coordinator.prepare({
     logicalRequestId: selected.id, requestKind: selected.requestKind, prepareSelection: selected.prepareSelection,
@@ -134,98 +128,43 @@ function expectUnused(selected: ReturnType<typeof preparation>, reviews: ReturnT
 }
 
 describe('Rule logical-request recovery and persistent review allowance', () => {
-  it('does not require review evidence for a direct selection or its recovered snapshot', async () => {
-    const evidence = evidenceVerifier(async () => { throw new Error('Direct selection has no review evidence'); });
+  it('reuses a direct selection snapshot without preparing or reviewing again', async () => {
     const reviews = reviewer();
     const selected = preparation({ lowScore: false });
-    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews, evidence), selected);
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews), selected);
     expect(snapshot.review).toBeUndefined();
     const newer = preparation({ version: '2.0.0' });
-    expect(await prepare(new RuleRequestCoordinator(store(), reviews, evidence), newer)).toEqual(snapshot);
+    expect(await prepare(new RuleRequestCoordinator(store(), reviews), newer)).toEqual(snapshot);
     expectUnused(newer, reviews);
-    expect(evidence.verify).not.toHaveBeenCalled();
   });
 
-  it('retains the consumed claim and publishes no result or snapshot when raw review evidence fails', async () => {
-    const failure = new RuleReviewEvidenceError('missing', { providerAttemptId: uuid(901) });
-    const evidence = evidenceVerifier(async (snapshot) => {
-      expect(snapshot.review).toMatchObject({
-        providerAttemptId: uuid(901), provider: 'offline-reviewer', model: 'deterministic-reviewer',
-        protocolVersion, requestDigest, selectedRuleIds: [uuid(21)],
-      });
-      expect(await store().readReviewClaim(requestId)).toMatchObject({
-        reviewRequestId: snapshot.review!.logicalRequestId,
-      });
-      expect(await store().readReviewResult(requestId)).toBeUndefined();
-      expect(await store().read(requestId)).toBeUndefined();
-      throw failure;
-    });
-    const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidence), preparation())).rejects.toBe(failure);
-    expect(reviews.review).toHaveBeenCalledTimes(1);
-    expect(evidence.verify).toHaveBeenCalledTimes(1);
-    const claim = await store().readReviewClaim(requestId);
-    expect(claim).toBeDefined();
-    expect(await store().readReviewResult(requestId)).toBeUndefined();
-    expect(await store().read(requestId)).toBeUndefined();
-
-    const restartedReviews = reviewer();
-    const restart = preparation({ version: '2.0.0' });
-    await expect(prepare(new RuleRequestCoordinator(store(), restartedReviews, evidence), restart)).rejects.toMatchObject({
-      code: 'rule_request_failed', reason: 'review_incomplete', details: { claimId: claim!.claimId },
-    });
-    expectUnused(restart, restartedReviews);
-    expect(evidence.verify).toHaveBeenCalledTimes(1);
-    expect(await store().readReviewClaim(requestId)).toEqual(claim);
-  });
-
-  it('checks raw evidence before returning a recovered reviewed snapshot without loading current material', async () => {
-    const original = await prepare(new RuleRequestCoordinator(store(), reviewer(), evidenceVerifier()), preparation());
+  it('returns a stored reviewed snapshot from the state store without loading current material', async () => {
+    const original = await prepare(new RuleRequestCoordinator(store(), reviewer()), preparation());
+    expect(original.review).toBeDefined();
     const bytes = await fs.readFile(stateFile('snapshots'), 'utf8');
-    const failure = new RuleReviewEvidenceError('mismatch', { logicalRequestId: original.review!.logicalRequestId });
-    const evidence = evidenceVerifier(async (snapshot) => {
-      expect(snapshot).toEqual(original);
-      throw failure;
-    });
     const reviews = reviewer();
     const newer = preparation({ version: '2.0.0' });
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidence), newer)).rejects.toBe(failure);
-    expect(evidence.verify).toHaveBeenCalledTimes(1);
+    expect(await prepare(new RuleRequestCoordinator(store(), reviews), newer)).toEqual(original);
     expectUnused(newer, reviews);
     expect(await fs.readFile(stateFile('snapshots'), 'utf8')).toBe(bytes);
   });
 
-  it('checks raw evidence on persisted result recovery before publishing the snapshot and preserves recoverable state', async () => {
+  it('publishes the snapshot of a persisted review result without reviewing or preparing again', async () => {
     const draft = await preparation().prepareSelection();
     const claim = claimFor(draft);
     const result = resultFor(claim);
     await store().createDraft(draft);
     await store().claimReview(claim);
     await store().completeReview(result);
-    const resultBytes = await fs.readFile(stateFile('review-results'), 'utf8');
-    const failure = new RuleReviewEvidenceError('invalid', { providerAttemptId: result.providerAttemptId });
-    const evidence = evidenceVerifier(async (snapshot) => {
-      expect(snapshot.review).toEqual({
-        logicalRequestId: result.reviewRequestId, providerAttemptId: result.providerAttemptId,
-        provider: result.provider, model: result.model, selectedRuleIds: result.selectedRuleIds,
-        protocolVersion: result.protocolVersion, requestDigest: result.requestDigest,
-      });
-      expect(snapshot.consideredRules).toEqual(draft.consideredRules);
-      throw failure;
-    });
     const reviews = reviewer();
     const newer = preparation({ version: '2.0.0' });
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidence), newer)).rejects.toBe(failure);
-    expect(evidence.verify).toHaveBeenCalledTimes(1);
-    expectUnused(newer, reviews);
-    expect(await store().read(requestId)).toBeUndefined();
-    expect(await store().readReviewClaim(requestId)).toEqual(claim);
-    expect(await fs.readFile(stateFile('review-results'), 'utf8')).toBe(resultBytes);
-
-    const availableEvidence = evidenceVerifier();
-    const restored = await prepare(new RuleRequestCoordinator(store(), reviews, availableEvidence), newer);
-    expect(availableEvidence.verify).toHaveBeenCalledTimes(1);
-    expect(availableEvidence.verify).toHaveBeenCalledWith(restored, undefined);
+    const restored = await prepare(new RuleRequestCoordinator(store(), reviews), newer);
+    expect(restored.review).toEqual({
+      logicalRequestId: result.reviewRequestId, providerAttemptId: result.providerAttemptId,
+      provider: result.provider, model: result.model, selectedRuleIds: result.selectedRuleIds,
+      protocolVersion: result.protocolVersion, requestDigest: result.requestDigest,
+    });
+    expect(restored.consideredRules).toEqual(draft.consideredRules);
     expectUnused(newer, reviews);
     expect(await store().read(requestId)).toEqual(restored);
   });
@@ -233,7 +172,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
   it('prefers the old snapshot over a newer catalogue and even an unreadable leftover draft', async () => {
     const original = preparation({ lowScore: false });
     const initialReviewer = reviewer();
-    const snapshot = await prepare(new RuleRequestCoordinator(store(), initialReviewer, evidenceVerifier()), original);
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), initialReviewer), original);
     expect(original.prepareSelection).toHaveBeenCalledTimes(1);
     expect(original.embed).toHaveBeenCalledTimes(2);
     expect(initialReviewer.review).not.toHaveBeenCalled();
@@ -241,7 +180,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
 
     const newer = preparation({ version: '2.0.0' });
     const resumedReviewer = reviewer();
-    const restored = await prepare(new RuleRequestCoordinator(store(), resumedReviewer, evidenceVerifier()), newer);
+    const restored = await prepare(new RuleRequestCoordinator(store(), resumedReviewer), newer);
     expect(restored).toEqual(snapshot);
     expect(restored.rules.find((rule) => rule.ruleId === uuid(21))).toMatchObject({
       ruleVersion: '1.0.0', instruction: 'Retained instruction from version 1.0.0.',
@@ -259,7 +198,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
       expect(input.draft).toEqual(draft);
       return reply(input);
     });
-    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), newer);
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews), newer);
     expect(snapshot.createdAt).toBe(createdAt);
     expect(snapshot.consideredRules).toEqual(draft.consideredRules);
     expect(snapshot.rules.find((rule) => rule.ruleId === uuid(21))?.instruction).toBe('Retained instruction from version 1.0.0.');
@@ -284,7 +223,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
       expect(await freshStore.read(requestId)).toBeUndefined();
       return reply(input);
     });
-    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), selected);
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviews), selected);
     expect(reviews.review).toHaveBeenCalledTimes(1);
     expect(await store().readReviewResult(requestId)).toMatchObject({
       logicalRequestId: requestId, draftDigest: persistedClaim!.draftDigest,
@@ -302,7 +241,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     const cause = new Error('Synthetic review failed after dispatch');
     const reviews = reviewer(async () => { throw cause; });
     const selected = preparation();
-    const coordinator = new RuleRequestCoordinator(store(), reviews, evidenceVerifier());
+    const coordinator = new RuleRequestCoordinator(store(), reviews);
     await expect(prepare(coordinator, selected)).rejects.toBe(cause);
     const claim = await store().readReviewClaim(requestId);
     expect(claim).toBeDefined();
@@ -314,7 +253,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     });
     const restart = preparation({ version: '3.0.0' });
     const restartedReviewer = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), restartedReviewer, evidenceVerifier()), restart)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), restartedReviewer), restart)).rejects.toMatchObject({
       code: 'rule_request_failed', reason: 'review_incomplete', details: { reviewRequestId: claim!.reviewRequestId },
     });
     expect(reviews.review).toHaveBeenCalledTimes(1);
@@ -342,8 +281,8 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
       (reason: unknown) => ({ status: 'rejected' as const, reason }),
     );
     const attempts = [
-      settle(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), a)),
-      settle(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), b)),
+      settle(prepare(new RuleRequestCoordinator(store(), reviews), a)),
+      settle(prepare(new RuleRequestCoordinator(store(), reviews), b)),
     ];
     try {
       await started;
@@ -371,7 +310,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
       await fs.mkdir(stateFile('snapshots'), { recursive: true });
       return reply(input);
     });
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), preparation())).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), preparation())).rejects.toMatchObject({
       code: 'rule_snapshot_failed', reason: 'write_failed', cause: expect.any(Error),
     });
     expect(reviews.review).toHaveBeenCalledTimes(1);
@@ -383,7 +322,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
 
     const newer = preparation({ version: '2.0.0' });
     const restoredReviewer = reviewer();
-    const snapshot = await prepare(new RuleRequestCoordinator(store(), restoredReviewer, evidenceVerifier()), newer);
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), restoredReviewer), newer);
     expect(snapshot.consideredRules).toEqual(draft!.consideredRules);
     expect(snapshot.review).toMatchObject({ logicalRequestId: result!.reviewRequestId, providerAttemptId: result!.providerAttemptId });
     expectUnused(newer, restoredReviewer);
@@ -417,7 +356,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     const before = await fs.readFile(stateFile(entry.section), 'utf8');
     const fresh = preparation({ version: '2.0.0' });
     const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), fresh)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), fresh)).rejects.toMatchObject({
       code: 'rule_request_failed', reason: 'invalid',
     });
     expectUnused(fresh, reviews);
@@ -430,7 +369,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     await writeState('drafts', foreign);
     const fresh = preparation();
     const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), fresh)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), fresh)).rejects.toMatchObject({
       code: 'rule_snapshot_failed', reason: 'invalid',
     });
     expectUnused(fresh, reviews);
@@ -440,7 +379,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     await store().createDraft(await preparation({ requestKind: 'rule-selection' }).prepareSelection());
     const fresh = preparation({ requestKind: 'business' });
     const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), fresh)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), fresh)).rejects.toMatchObject({
       code: 'rule_request_failed', reason: 'identity_conflict', details: { actual: 'rule-selection', expected: 'business' },
     });
     expectUnused(fresh, reviews);
@@ -448,14 +387,14 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
 
   it('rejects a reviewer response bound to another review request and retains the consumed claim', async () => {
     const reviews = reviewer(async (input) => ({ ...reply(input), logicalRequestId: uuid(999) }));
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), preparation())).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), preparation())).rejects.toMatchObject({
       code: 'rule_request_failed', reason: 'invalid', details: { reason: 'review-result-mismatch' },
     });
     expect(await store().readReviewClaim(requestId)).toBeDefined();
     expect(await store().readReviewResult(requestId)).toBeUndefined();
     const restart = preparation();
     const secondReviewer = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), secondReviewer, evidenceVerifier()), restart)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), secondReviewer), restart)).rejects.toMatchObject({
       code: 'rule_request_failed', reason: 'review_incomplete',
     });
     expectUnused(restart, secondReviewer);
@@ -467,7 +406,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     await fs.writeFile(stateFile(section), '{broken', 'utf8');
     const fresh = preparation();
     const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), fresh)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), fresh)).rejects.toMatchObject({
       code: section === 'snapshots' ? 'rule_snapshot_failed' : 'rule_request_failed',
       reason: 'read_failed', cause: expect.any(SyntaxError),
     });
@@ -479,7 +418,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     await fs.writeFile(stateRoot(), 'Unrelated existing file.', 'utf8');
     const fresh = preparation();
     const reviews = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), reviews, evidenceVerifier()), fresh)).rejects.toMatchObject({
+    await expect(prepare(new RuleRequestCoordinator(store(), reviews), fresh)).rejects.toMatchObject({
       code: 'rule_snapshot_failed', reason: 'read_failed', cause: expect.any(Error),
     });
     expectUnused(fresh, reviews);
@@ -489,7 +428,7 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
   it('does not claim or review when persisting the freshly prepared draft fails', async () => {
     const selected = preparation();
     const reviews = reviewer();
-    const coordinator = new RuleRequestCoordinator(store(), reviews, evidenceVerifier());
+    const coordinator = new RuleRequestCoordinator(store(), reviews);
     await expect(coordinator.prepare({
       logicalRequestId: requestId, requestKind: 'business',
       prepareSelection: async () => {

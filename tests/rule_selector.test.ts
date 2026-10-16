@@ -171,12 +171,12 @@ describe('Rule selection and instruction aggregation', () => {
   });
 
   it('looks up and selects individual referenced Rules without promoting their slots or applicability', () => {
-    const reference = list(2, 0x0101, [rule(11), rule(12)], { applicability: { languages: ['python'] } });
-    const parent = list(1, 0x0201, [rule(10)], {
+    const reference = list(2, 0x02c0, [rule(11), rule(12)], { applicability: { languages: ['python'] } });
+    const parent = list(1, 0x02c1, [rule(10)], {
       references: [{ ruleListId: listId(2), version: '1' }],
     });
     const source = catalogue(parent, reference);
-    expect(source.findRule(id(11).toUpperCase())?.list.definition.slot).toBe(0x0101);
+    expect(source.findRule(id(11).toUpperCase())?.list.definition.slot).toBe(0x02c0);
     expect(source.referencedLists(listId(1))[0]?.definition.applicability).toEqual({ languages: ['python'] });
     const selector = new RuleSelector(source);
     const required = [{ ruleId: id(10), version: '1' }];
@@ -190,8 +190,35 @@ describe('Rule selection and instruction aggregation', () => {
       prepared, query: [1, 0], vectors: [{ ruleId: id(11), vector: [1, 0] }, { ruleId: id(12), vector: [-1, 0] }],
     });
     expect(rendered(selector.finish({ prepared, ranked })).rules.map((entry) => [entry.ruleId, entry.slot])).toEqual([
-      [id(0), '0x0000'], [id(11), '0x0101'], [id(10), '0x0201'],
+      [id(0), '0x0000'], [id(11), '0x02c0'], [id(10), '0x02c1'],
     ]);
+  });
+
+  it('never offers a language, role or work list to retrieval; it enters only as a required binding', () => {
+    const selector = new RuleSelector(catalogue(
+      list(1, 0x0101, [rule(1)]), list(2, 0x0205, [rule(2)]), list(3, 0x0253, [rule(3)]), list(4, 0x02c0, [rule(4)]),
+    ));
+    const open = selector.prepare({ requestKind: 'business', context: {}, required: [] });
+    expect(open.optional.map((entry) => entry.rule.id)).toEqual([id(4)]);
+    expect(open.required.map((entry) => entry.rule.id)).toEqual([id(0)]);
+    const bound = selector.prepare({ requestKind: 'business', context: {},
+      required: [{ ruleId: id(2), version: '1' }, { ruleId: id(3), version: '1' }] });
+    expect(bound.required.map((entry) => entry.rule.id)).toEqual([id(0), id(2), id(3)]);
+    expect(bound.optional.map((entry) => entry.rule.id)).toEqual([id(4)]);
+  });
+
+  it('renders a localized instruction in the request locale and keeps single-text Rules unchanged', () => {
+    const variant = rule(1, { instruction: { en: 'Use the English text.', zh: '使用中文文本。' } });
+    const selector = new RuleSelector(catalogue(list(1, 0x02c0, [variant, rule(2, { instruction: 'Neutral text.' })])));
+    const required = [{ ruleId: id(1), version: '1' }, { ruleId: id(2), version: '1' }];
+    const instructions = (locale?: 'en' | 'zh') => {
+      const prepared = selector.prepare({ requestKind: 'business', context: locale ? { locale } : {}, required });
+      return rendered(selector.finish({ prepared, ranked: selector.rank({ prepared, query: [], vectors: [] }) }))
+        .rules.slice(1).map((entry) => entry.instruction);
+    };
+    expect(instructions('zh')).toEqual(['使用中文文本。', 'Neutral text.']);
+    expect(instructions('en')).toEqual(['Use the English text.', 'Neutral text.']);
+    expect(instructions()).toEqual(['Use the English text.', 'Neutral text.']);
   });
 
   it('uses normalized cosine and includes the 0.8 boundary in direct selection', () => {
@@ -309,7 +336,7 @@ describe('Rule selection and instruction aggregation', () => {
     const sibling = rule(2, { instruction: 'Retain the independent requirement.' });
     const selector = new RuleSelector(catalogue(
       list(1, 0x1001, [overridden, sibling]),
-      list(2, 0x0101, [preferred]),
+      list(2, 0x02c0, [preferred]),
     ));
     const prepared = selector.prepare({
       requestKind: 'business', context: {}, required: [{ ruleId: id(1), version: '1' }, { ruleId: id(2), version: '1' }],
@@ -318,12 +345,12 @@ describe('Rule selection and instruction aggregation', () => {
     const selected = selector.finish({ prepared, ranked });
     expect(selected.overrides).toEqual([{
       key: 'code.indent',
-      winner: { ruleId: id(20), ruleListId: listId(2), slot: 0x0101, value: 2 },
+      winner: { ruleId: id(20), ruleListId: listId(2), slot: 0x02c0, value: 2 },
       overridden: { ruleId: id(1), ruleListId: listId(1), slot: 0x1001, value: 4 },
     }]);
     const output = rendered(selected);
     expect(output.rules.map((entry) => [entry.ruleId, entry.slot])).toEqual([
-      [id(0), '0x0000'], [id(20), '0x0101'], [id(2), '0x1001'],
+      [id(0), '0x0000'], [id(20), '0x02c0'], [id(2), '0x1001'],
     ]);
     expect(output.content).not.toContain(overridden.instruction);
     expect(output.rules.map((entry) => entry.instruction)).toContain(sibling.instruction);

@@ -44,11 +44,10 @@ import {
 } from '../application/execution/failure_classification.js';
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
 import type { RoleId } from '../domain/workflow/role.js';
-import { stepWork, type WorkId } from '../domain/workflow/work.js';
+import { isDeclarativeOutputWork, stepWork, type WorkId } from '../domain/workflow/work.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { makeStreamReporter } from '../llm/stream.js';
 import { getLocale, t, tFor } from '../i18n/index.js';
-import { renderExecutionPromptPolicy } from './prompt_policy.js';
 import {
   extractChangeRequestDisposition,
   extractBugResolutionPlan,
@@ -200,15 +199,6 @@ export interface ExecutorRunInput {
     };
   };
   /**
-   * Who is executing, taken from the assignee's Role Definition. Identity only — the Role holds no
-   * project, ticket, or workspace state, all of which reach the model through the blocks below.
-   */
-  roleIdentity?: {
-    rolePrompt: string;
-    capabilityPrompt: string;
-    prohibitions: readonly string[];
-  };
-  /**
    * The layered Project → Phase → Step → Ticket-chain context assembled for this execution. Already
    * budgeted by the assembler, so it is injected as-is.
    */
@@ -325,21 +315,10 @@ export class StepExecutor {
     const contractChangeBlock = inp.acceptedContractChanges && inp.acceptedContractChanges.length > 0
       ? prompts.executorAcceptedContractChangesBlock(inp.acceptedContractChanges)
       : '';
-    const roleBlock = inp.roleIdentity ? prompts.executorRoleBlock(inp.roleIdentity) : '';
     const contextBlock = inp.layeredContext?.trim()
       ? prompts.executorContextBlock(inp.layeredContext.trim())
       : '';
     const stepBlock = prompts.executorStepBlock(inp.step.systemPrompt.trim());
-    const policyBlock = renderExecutionPromptPolicy({
-      debug: !!inp.debugContext,
-      changeRequest: !!inp.changeRequest,
-      // Not in Debug: a Bug routed to a design Step was opened deliberately by its paired
-      // verification, and repairing it is exactly the job. Rule 9 governs ownership there.
-      // Only while the resolved baseline policy defers execution: a post-CODE correction of a
-      // design Step executes its baseline here, so telling it otherwise contradicts its gate.
-      declarative: isDeclarativeOutputPhase(inp.step.phase) && !inp.debugContext &&
-        inp.baselineTestExecution === 'defer',
-    });
     const userPrompt = renderExecutionUserPrompt({ ...inp, work }, toolDocs, initialMissingOutputs, locale);
     const profile = inp.languageProfile ?? getLanguageProfile('python');
 
@@ -347,9 +326,9 @@ export class StepExecutor {
       {
         role: 'system',
         content:
+          // Who, the work and its mode fragments (D-17) are the Rule block Runtime prepends; this
+          // message carries the framework protocol and this execution's When/Where/Why facts.
           prompts.executorSystem(profile) +
-          roleBlock +
-          policyBlock +
           globalBlock +
           contractChangeBlock +
           contextBlock +
@@ -2743,9 +2722,7 @@ function shouldTrackRepeatedMutationFailure(result: ToolResult): boolean {
 }
 
 function isDeclarativeOutputPhase(phase: Step['phase']): boolean {
-  return phase === 'REQUIREMENT_ANALYSIS' ||
-    phase === 'HIGH_LEVEL_DESIGN' ||
-    phase === 'DETAILED_DESIGN';
+  return isDeclarativeOutputWork(stepWork(phase));
 }
 
 const COMPLETION_VERIFICATION_TOOLS = new Set([

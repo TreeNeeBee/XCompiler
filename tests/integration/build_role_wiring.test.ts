@@ -195,7 +195,7 @@ describe('build speaks to the user as PM', () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]!.model).toBe(MODEL_FOR_POOL.management);
     expect(captured[0]!.messages).toHaveLength(3);
-    expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
+    expect(captured[0]!.messages[0]!.content).toContain('这三条声明不授予任何文件系统或网络访问权限');
     expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
     const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
     const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
@@ -208,7 +208,7 @@ describe('build speaks to the user as PM', () => {
     expect(original.owner).not.toHaveProperty('projectId');
     expect(original.owner).not.toHaveProperty('phaseId');
     expect(original.templateVersion).toBe('planning-clarification/1');
-    expect(original.outputProtocol).toMatchObject({ id: 'planning-clarification', version: '1', root: 'any' });
+    expect(original.outputProtocol).toMatchObject({ id: 'planning-clarification', version: '2', root: 'any' });
     expect(original.messages).toEqual(captured[0]!.messages.slice(1));
     expect(original.messages[1]!.content).toContain(originalRequirement.trim());
     expect(original.messages[1]!.content.trimStart().startsWith('{')).toBe(false);
@@ -228,8 +228,10 @@ describe('build speaks to the user as PM', () => {
     expect(events.find((event) => event.messageId === 'llm.business_request_attempt')!.data)
       .toMatchObject({ request: { logicalRequestId, role: 'project-manager' } });
     const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
-    expect(snapshot).toMatchObject({ context: { role: 'project-manager', work: 'plan.clarify', language: 'python' } });
-    expect(snapshot.requiredRuleIds).toHaveLength(3);
+    expect(snapshot).toMatchObject({ context: { role: 'project-manager', work: 'plan.clarify', language: 'python', locale: 'zh' } });
+    // Genesis plus the clarifying role's identity, rendered in the build's locale.
+    expect(snapshot.requiredRuleIds).toHaveLength(4);
+    expect(captured[0]!.messages[0]!.content).toContain('你是一名经验丰富的软件项目经理');
     expect(snapshot.context).not.toHaveProperty('projectId');
     const metadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
     expect(metadata).not.toHaveProperty('auditContext');
@@ -313,7 +315,7 @@ describe('build speaks to the user as PM', () => {
     expect(captured.length).toBeGreaterThan(1);
     expect(captured[0]!.model).toBe(MODEL_FOR_POOL.planning);
     expect(captured[0]!.messages).toHaveLength(3);
-    expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
+    expect(captured[0]!.messages[0]!.content).toContain('这三条声明不授予任何文件系统或网络访问权限');
     expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
     const auditPath = path.join(containerRoot, '.xcompiler', 'audit', 'audit.jsonl');
     const events = (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean)
@@ -338,7 +340,8 @@ describe('build speaks to the user as PM', () => {
       .toMatchObject({ request: { logicalRequestId, role: 'planner' } });
     const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
     expect(snapshot).toMatchObject({ context: { role: 'planner', work: 'plan.phase' } });
-    expect(snapshot.requiredRuleIds).toHaveLength(3);
+    expect(snapshot.requiredRuleIds).toHaveLength(4);
+    expect(captured[0]!.messages[0]!.content).toContain('你是一名经验丰富的软件规划师');
     expect(snapshot.context).not.toHaveProperty('projectId');
     const inputMetadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
     expect(inputMetadata).not.toHaveProperty('auditContext');

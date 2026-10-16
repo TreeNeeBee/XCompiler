@@ -7,7 +7,7 @@ import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { RuleVectorRetriever } from '../../src/application/rules/rule_vector_retriever.js';
 import { SCENARIO_OUTCOME_RULE } from '../../src/application/execution/scenario_outcome_judge.js';
-import { RuleListDefinitionSchema, type RuleListDefinition } from '../../src/domain/rules/catalogue.js';
+import { RuleListDefinitionSchema, ruleInstructionText, type RuleListDefinition } from '../../src/domain/rules/catalogue.js';
 import { parseRuleSlot } from '../../src/domain/rules/slots.js';
 import {
   COMPILER_RULE_MANIFEST,
@@ -33,6 +33,12 @@ beforeEach(async () => {
   await fs.writeFile(genesisPath, genesisSource);
   scenarioSource = await fs.readFile(path.join(repositoryRoot, 'rules', 'scenario-outcome.yaml'), 'utf8');
   await fs.writeFile(path.join(rulesRoot, 'scenario-outcome.yaml'), scenarioSource);
+  // The language, role and work lists are installed alongside; these tests vary the two above.
+  for (const { relativePath } of COMPILER_RULE_MANIFEST) {
+    if (!releasedSources.includes(relativePath as typeof releasedSources[number])) {
+      await fs.copyFile(path.join(repositoryRoot, 'rules', relativePath), path.join(rulesRoot, relativePath));
+    }
+  }
 });
 
 afterEach(async () => { await fs.rm(temporaryRoot, { recursive: true, force: true }); });
@@ -46,7 +52,7 @@ describe('installed compiler Rule catalogue', () => {
     'loads the released genesis declarations into %s prompts without retrieval',
     async (requestKind) => {
       const catalogue = await loadCompilerRuleCatalogue(rulesRoot);
-      expect(catalogue.lists).toHaveLength(2);
+      expect(catalogue.lists).toHaveLength(COMPILER_RULE_MANIFEST.length);
       const genesis = catalogue.lists[0]!;
       expect(genesis.source).toEqual({ owner: { kind: 'compiler' }, location: await fs.realpath(genesisPath) });
       expect(genesis.definition.slot).toBe(0);
@@ -67,12 +73,8 @@ describe('installed compiler Rule catalogue', () => {
       });
       expect(selection.prepared.required).toHaveLength(3);
       expect(selection.prepared.optional).toEqual([]);
-      expect(selection.prepared.excluded).toEqual([{
-        ruleId: SCENARIO_OUTCOME_RULE.ruleId,
-        issues: [
-          { source: 'list', dimension: 'work', reason: 'missing-context' },
-        ],
-      }]);
+      // Language, role and work lists (the rubric among them) are bound by Runtime, never offered.
+      expect(selection.prepared.excluded).toEqual([]);
       expect(selection.ranked.decision).toBe('no-candidates');
       expect(selection.retrieval).toBeUndefined();
       expect(embed).not.toHaveBeenCalled();
@@ -88,7 +90,7 @@ describe('installed compiler Rule catalogue', () => {
       for (const entry of payload.rules) {
         expect(entry.slot).toBe('0x0000');
         expect(entry.level).toBe('announce');
-        expect(entry.instruction).toBe(catalogue.findRule(entry.ruleId)!.rule.instruction);
+        expect(entry.instruction).toBe(ruleInstructionText(catalogue.findRule(entry.ruleId)!.rule.instruction, 'en'));
         expect(Object.keys(entry).sort()).toEqual([
           'instruction', 'level', 'ruleId', 'ruleListId', 'ruleListVersion', 'ruleVersion', 'slot',
         ]);
@@ -113,7 +115,8 @@ describe('installed compiler Rule catalogue', () => {
     expect(rubric.list.definition.applicability).toEqual({
       works: ['judge.scenario'],
     });
-    expect(rubric.rule.instruction).toContain('If evidence is insufficient to prove a contract change, choose bug/code.');
+    expect(ruleInstructionText(rubric.rule.instruction, 'en')).toContain('If evidence is insufficient to prove a contract change, choose bug/code.');
+    expect(ruleInstructionText(rubric.rule.instruction, 'zh')).toContain('如果证据不足以证明需要契约变更，选择 bug/code。');
     const embed = vi.fn(async () => { throw new Error('Required scenario rubric must not request embedding'); });
     const read = vi.fn(async () => { throw new Error('Required scenario rubric must not read an index'); });
     const create = vi.fn(async () => { throw new Error('Required scenario rubric must not create an index'); });
@@ -142,7 +145,7 @@ describe('installed compiler Rule catalogue', () => {
     const selected = payload.rules.filter((entry) => entry.ruleId === SCENARIO_OUTCOME_RULE.ruleId);
     expect(selected).toHaveLength(1);
     expect(selected[0]).toMatchObject({
-      ruleId: SCENARIO_OUTCOME_RULE.ruleId, slot: '0x02a0', instruction: rubric.rule.instruction,
+      ruleId: SCENARIO_OUTCOME_RULE.ruleId, slot: '0x02a0', instruction: ruleInstructionText(rubric.rule.instruction, 'en'),
     });
     expect(payload.rules.map((entry) => entry.slot)).toEqual(['0x0000', '0x0000', '0x0000', '0x02a0']);
     expect(prompt).not.toContain('Compiler-maintained scenario rubric');
@@ -154,22 +157,21 @@ describe('installed compiler Rule catalogue', () => {
     { role: 'project-manager' as const },
     { role: 'python-developer' as const, work: 'code.implement' as const },
     { role: 'project-manager' as const, work: 'code.implement' as const },
-  ])('keeps the rubric out of unrelated optional selection for $role / $work', async (context) => {
+  ])('keeps the rubric out of unrelated selection for $role / $work', async (context) => {
     const selector = new RuleSelector(await loadCompilerRuleCatalogue(rulesRoot));
     const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
     expect(prepared.required).toHaveLength(3);
     expect(prepared.optional).toEqual([]);
-    expect(prepared.excluded.map((entry) => entry.ruleId)).toEqual([SCENARIO_OUTCOME_RULE.ruleId]);
     expect(() => selector.prepare({ requestKind: 'business', context, required: [SCENARIO_OUTCOME_RULE] }))
       .toThrow(expect.objectContaining({ code: 'rule_selection_failed', reason: 'required_inapplicable' }));
   });
 
-  it('binds the judgement rubric to its work independently of the speaking role', async () => {
+  it('binds the judgement rubric to its work independently of the speaking role, and only when bound', async () => {
     const selector = new RuleSelector(await loadCompilerRuleCatalogue(rulesRoot));
     const context = { role: 'python-developer' as const, work: 'judge.scenario' as const };
-    const optional = selector.prepare({ requestKind: 'business', context, required: [] });
-    expect(optional.optional.map(rule => rule.rule.id)).toEqual([SCENARIO_OUTCOME_RULE.ruleId]);
-    expect(optional.excluded).toEqual([]);
+    const unbound = selector.prepare({ requestKind: 'business', context, required: [] });
+    expect(unbound.optional).toEqual([]);
+    expect(unbound.required.map(rule => rule.rule.id)).not.toContain(SCENARIO_OUTCOME_RULE.ruleId);
     const required = selector.prepare({ requestKind: 'business', context, required: [SCENARIO_OUTCOME_RULE] });
     expect(required.required.map(rule => rule.rule.id)).toContain(SCENARIO_OUTCOME_RULE.ruleId);
   });
@@ -193,7 +195,7 @@ describe('installed compiler Rule catalogue', () => {
     await fs.writeFile(path.join(rulesRoot, 'invalid-extra.yaml'), 'not: [valid YAML');
     await fs.writeFile(path.join(rulesRoot, 'manifest.yaml'), YAML.stringify({ sources: ['extra.yaml'] }));
     const catalogue = await loadCompilerRuleCatalogue(rulesRoot);
-    expect(catalogue.lists).toHaveLength(2);
+    expect(catalogue.lists).toHaveLength(COMPILER_RULE_MANIFEST.length);
     expect(catalogue.findList(additional.id)).toBeUndefined();
     expect(catalogue.findRule(additional.rules[0]!.id)).toBeUndefined();
     expect(await fs.readdir(rulesRoot)).toEqual(expect.arrayContaining([
@@ -205,7 +207,12 @@ describe('installed compiler Rule catalogue', () => {
     { name: 'list identity', change: (list) => { list.id = '484bf2fc-6bd0-4d17-87df-05e31909980e'; } },
     { name: 'list version', change: (list) => { list.version = '9.0.0'; } },
     { name: 'list slot', change: (list) => { list.slot = parseRuleSlot(1); } },
-    { name: 'same-version instruction', change: (list) => { list.rules[0]!.instruction += '\nChanged declaration.'; } },
+    // The digest covers every locale variant (D-18): changing only the zh text is a change.
+    { name: 'same-version instruction', change: (list) => {
+      const instruction = list.rules[0]!.instruction;
+      if (typeof instruction === 'string') throw new Error('Compiler Rules carry locale variants');
+      list.rules[0]!.instruction = { ...instruction, zh: `${instruction.zh}\n已更改的声明。` };
+    } },
     { name: 'Rule identity', change: (list) => { list.rules[0]!.id = '3603a4d7-af71-4ed3-b0d6-ac791c01d87f'; } },
     { name: 'Rule version', change: (list) => { list.rules[0]!.version = '9.0.0'; } },
     { name: 'retrieval description', change: (list) => { list.rules[0]!.retrievalDescription += ' Changed.'; } },
@@ -229,6 +236,16 @@ describe('installed compiler Rule catalogue', () => {
       });
     },
   );
+
+  it('rejects a compiler Rule that offers one text instead of an en and a zh variant', async () => {
+    const changed = definition('genesis.yaml');
+    changed.rules[0]!.instruction = 'Declaration only: one text for every locale.';
+    await fs.writeFile(genesisPath, YAML.stringify(changed));
+    await expect(loadCompilerRuleCatalogue(rulesRoot)).rejects.toMatchObject({
+      code: 'compiler_rule_source_failed', reason: 'locale_variant_missing',
+      details: { ruleId: changed.rules[0]!.id },
+    });
+  });
 
   it.each([
     { name: 'malformed YAML', contents: 'rules: [unterminated', code: 'rule_yaml_load_failed', reason: 'invalid_yaml' },

@@ -47,8 +47,12 @@ strings participate; source paths, YAML comments and equivalent formatting do no
 symlinks observed by its checks fail. Errors retain root/source context, actual/expected identities
 or the original filesystem/parser/schema cause.
 
-The initial resource is [`rules/genesis.yaml`](../../../rules/genesis.yaml): one RuleList, three
-`general`/`announce` Rules at `0x0000`. Its declarations grant no capability, do not override
+The released resources are 23 RuleLists (M-D): [`rules/genesis.yaml`](../../../rules/genesis.yaml)
+at `0x0000`, the TypeScript runtime/test contract at `0x0101` (`language-typescript.yaml`), eight role
+identities at `0x0201–0x0208` (`role-*.yaml`), the shared and mode fragments at `0x0240–0x0243`
+(`work-execution-common`, `work-design-baseline-deferred`, `work-repair-debug`, `work-change-apply`),
+the eight Step works at `0x0250–0x0257` (`work-*.yaml`) and J06 at `0x02A0`. Python's `0x0102` is
+empty. Genesis is one RuleList with three `general`/`announce` Rules at `0x0000`. Its declarations grant no capability, do not override
 cancellation or host constraints and do not establish passing gates. Manual instruction changes
 require updating affected Rule/list versions, regenerating the normalized definition digest and
 reviewing the compiled manifest together. No Runtime/Plugin/model or derived-project update entry
@@ -59,10 +63,10 @@ packaging before build and before staging publication. All associated tests rema
 child-process pkg resolver simulation does not substitute for the native package gate.
 
 The J06 resource is [`rules/scenario-outcome.yaml`](../../../rules/scenario-outcome.yaml): one
-`scenario`/`required` Rule in work-segment slot `0x02A0`, list and Rule version `2.0.0`. The list
-declares `works: [judge.scenario]`; role eligibility belongs to business code, not this rubric.
-Runtime explicitly binds Rule
-`a707ec22-a5d2-45da-83b3-823d96d18f20`; its instruction level alone does not load it. The existing
+`scenario`/`required` Rule in work-segment slot `0x02A0`, list and Rule version `2.1.0` (2.1.0 adds the
+zh variant; the en text is unchanged). The list declares `works: [judge.scenario]`; role eligibility
+belongs to business code, not this rubric. Runtime binds it through the `judge.scenario` work and
+J06 checks Rule `a707ec22-a5d2-45da-83b3-823d96d18f20` is pinned; its level alone does not load it. The existing
 expectation/evidence and Bug/CR rubric is authored here once. It excludes unrelated work and
 does not create an embedding dependency for required-only J06. Its compiled manifest pins this
 version and the normalized definition digest.
@@ -72,7 +76,7 @@ version and the normalized definition digest.
 | Object | Required fields | Optional fields and defaults |
 |---|---|---|
 | RuleList | `schemaVersion: "1"`, UUID `id`, nonblank `version` and `title`, `slot`, nonempty `rules` | `applicability: {}`, `references: []` |
-| Rule | UUID `id`, nonblank `version`, `category`, `level`, `instruction`, `retrievalDescription` | `applicability: {}`, `conflicts: []` |
+| Rule | UUID `id`, nonblank `version`, `category`, `level`, `instruction` (one nonblank text, or `{ en, zh }`), `retrievalDescription` | `applicability: {}`, `conflicts: []` |
 | Reference | `ruleListId`, exact `version` | None |
 | Conflict claim | nonblank `key`, scalar `value` (string, boolean or finite number) | None |
 | Applicability | No required dimensions | `projectIds`, `languages`, `roles`, `works`; each declared list must be nonempty |
@@ -91,8 +95,24 @@ Rules at genesis `0x0000` must be declarations (`announce`).
 
 The approved allocation puts Role lists at `0x0201–0x023F`, shared/mode work at `0x0240–0x024F`,
 Step work at `0x0250–0x027F`, planning/management reservations at `0x0280–0x029F`, and judgement
-work at `0x02A0–0x02BF`. J06 already uses `0x02A0`; the remaining Role/work text extraction belongs
-to M-D. Debug lists retain `0x0300–0x0FFF`. See the [slot contract](2026-10-15-review-change-list.md#18-rulechain-槽位分配d-13).
+work at `0x02A0–0x02BF`. Debug lists retain `0x0300–0x0FFF`. See the [slot contract](2026-10-15-review-change-list.md#18-rulechain-槽位分配d-13).
+
+Language (`0x0101–0x01FF`), role and work (`0x0201–0x02BF`) lists are **bound only** (D-14): they
+are never retrieval candidates and enter a request only through Runtime's binding computation
+([`rule_binding.ts`](../../../src/application/rules/rule_binding.ts)). For (role, work, project
+language, mode) it binds genesis, the language list when one exists, the role list, and for Step
+work `execution.common`, the mode fragment (`repair.debug`, `change.apply`, or
+`design.baseline-deferred` for a declarative Step whose baseline execution is deferred and which is
+not repairing a Bug) and the base Step work. Planning binds language and role; J06 binds role and
+`judge.scenario`. A work list's `works` names the request works it may be bound under (a Step work
+list also accepts `repair.debug` and `change.apply`); the required-binding applicability check still
+rejects a binding outside it. A snapshot recording a bound-segment Rule as optional is invalid.
+
+An instruction is either one text for every locale or an `{ en, zh }` pair of variants of the same Rule
+identity and version (D-18). The definition digest covers every variant. The request context carries
+the prompt `locale` (not an applicability dimension); selection pins the rendered text of that locale
+in the snapshot. Every installed compiler Rule must provide both variants, or loading fails with
+`locale_variant_missing`.
 
 This is a YAML-format illustration for a declared compiler source, not a shipped rule or an
 additional CLI configuration:

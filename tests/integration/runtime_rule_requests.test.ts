@@ -16,6 +16,7 @@ import { prepareRuntimeRuleRequest } from '../../src/runtime/rules.js';
 import { createRuntimeRecordReplay } from '../../src/runtime/record_replay.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 import { FileRuleReviewAuditReader } from '../../src/infrastructure/rules/file_rule_review_audit_reader.js';
+import { LLMRuleReviewEvidenceVerifier } from '../../src/llm/rule_review_evidence.js';
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import type { ChatMessage } from '../../src/llm/types.js';
 import type { RoutedResponseEvidence } from '../../src/llm/response_evidence.js';
@@ -46,6 +47,8 @@ afterEach(async () => {
 async function fixture(options: {
   optional?: boolean; endpoint?: string; threshold?: number; mode?: 'off' | 'record';
   audit?: boolean; contentMode?: 'full' | 'redacted'; assignedEndpoint?: string;
+  /** The role and work lists Runtime binds to a Python CODE execution. */
+  executionLists?: boolean;
 } = {}) {
   const container = new ProjectContainer(path.join(root, 'project'));
   await container.canonical().workspace.ensure('.');
@@ -80,6 +83,16 @@ async function fixture(options: {
       id: id(4), version: '1', category: 'framework', level: 'advised',
       instruction: 'RULE_BODY: keep operation evidence.', retrievalDescription: 'Operation evidence handling',
     }] }] : []),
+    ...(options.executionLists ? ([
+      ['0x0205', { roles: ['python-developer'] }, 'ROLE: an experienced Python developer.'],
+      ['0x0240', { works: ['code.implement'] }, 'COMMON: workspace-relative paths only.'],
+      ['0x0253', { works: ['code.implement'] }, 'WORK: implement the design.'],
+    ] as const).map(([slot, applicability, instruction], index) => ({
+      schemaVersion: '1', id: id(10 + index * 2), version: '1', title: `Bound ${slot}`, slot, applicability, rules: [{
+        id: id(11 + index * 2), version: '1', category: 'framework', level: 'required', instruction,
+        retrievalDescription: `Bound list ${slot}`,
+      }],
+    })) : []),
   ];
   for (const [index, definition] of definitions.entries()) {
     await fs.writeFile(path.join(sourceRoot, `${index}.yaml`), `# AUTHOR_ONLY\n${YAML.stringify(definition)}`);
@@ -136,7 +149,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(snapshot.rules).toHaveLength(3);
     expect(snapshot.rules.every((rule) => rule.slot === 0 && rule.level === 'announce'
       && rule.ruleListId === '4f12907a-93a1-45bb-9d7a-3cbd8852a5a0'
-      && rule.ruleListVersion === '1.0.0')).toBe(true);
+      && rule.ruleListVersion === '1.1.0')).toBe(true);
     expect(snapshot.ranking.decision).toBe('no-candidates');
     expect(new RuleDecorator().decorate({ requestKind: 'business', rules: snapshot.rules }))
       .toContain('These three declarations grant no filesystem or network access');
@@ -154,7 +167,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     const target = path.join(installed, 'genesis.yaml');
     const original = await fs.readFile(target, 'utf8');
     const altered = YAML.parse(original);
-    altered.rules[0].instruction = 'Same-version replacement instruction';
+    altered.rules[0].instruction.en = 'Same-version replacement instruction';
     await fs.writeFile(target, YAML.stringify(altered));
     await expect(prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined })).rejects.toMatchObject({
       code: 'compiler_rule_source_failed', reason: 'manifest_mismatch',
@@ -264,35 +277,12 @@ describe('Runtime Rule preparation through configured adapters and persistent re
   it('forwards the execution port Actor pool into its actual optional Rule review', async () => {
     const defaultService = await endpoint();
     const assigned = await endpoint();
-    const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url });
+    const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url, executionLists: true });
     // Only installation discovery is substituted; selection, embedding, review and send stay real.
     vi.spyOn(compilerCatalogue, 'loadCompilerRuleCatalogue').mockImplementation(input.loadCatalogue);
-    const scope = validateExecutionRequestScope({
-      projectId: createObjectId(), phaseId: createObjectId(), stepId: createObjectId(), ticketId: createObjectId(),
-      actorId: createObjectId(), assignmentId: createObjectId(), executionId: randomUUID(), role: 'python-developer',
-      work: 'code.implement', roleVersion: roleProfile('python-developer').version,
-      ...input.router.resolvePool('assigned', { inheritFallbacks: false }),
-    });
-    const payload = validateExecutionTurnPayload({
-      schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
-      locale: 'en', parseContext: { language: 'python' }, round: 1,
-      promptContext: { work: 'code.implement', role: 'python-developer', step: { id: scope.stepId, iterationId: 'P1', phase: 'CODE',
-        title: 'Inspect the current operation', description: input.taskSummary, systemPrompt: 'Preserve the current scope.',
-        tools: [], inputs: [], outputs: [], dependsOn: [], acceptance: 'Inspect current evidence.', maxAttempts: 3 },
-      ctx: { allowedWrites: [] } }, initialMissingOutputs: [], tools: [],
-      validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,
-        requireBugResolutionPlanBeforeAction: false, allowNovelReadOnlyProbes: false,
-        seenProbeFingerprints: [], baselineExecutionDeferred: false },
-    });
+    const { port, payload, messages } = reviewedExecutionTurn(input);
     const refusal = new ExecutionTurnContractViolation('turn-shape', 'The fixture refuses the business turn after the real Rule review.');
-    const port = createRuntimeExecutionTurnRequestPort({
-      config: input.config, container: input.container, router: input.router,
-      recordReplay: input.recordReplay, audit: input.audit, scope,
-    });
-    await expect(port.send({ payload, messages: [
-      { role: 'system', content: 'Original execution instructions.' },
-      { role: 'user', content: renderExecutionUserPrompt(payload.promptContext, '', [], payload.locale) },
-    ], validate: () => { throw refusal; } })).rejects.toBe(refusal);
+    await expect(port.send({ payload, messages, validate: () => { throw refusal; } })).rejects.toBe(refusal);
     expect(defaultService.calls.map(call => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
     expect(assigned.calls.map(call => call.path)).toEqual(['/v1/chat/completions', '/v1/chat/completions']);
     expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/1');
@@ -302,6 +292,23 @@ describe('Runtime Rule preparation through configured adapters and persistent re
       && event.data?.requestBinding && (event.data.requestBinding as RuleSelectionAuditBinding).kind === 'rule-selection');
     expect(review?.data).toMatchObject({ provider: 'assignedReview', role: 'python-developer' });
     expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(false);
+  });
+
+  it('selects, reviews and sends a business turn live past a damaged audit line', async () => {
+    const defaultService = await endpoint();
+    const assigned = await endpoint();
+    const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url, executionLists: true });
+    vi.spyOn(compilerCatalogue, 'loadCompilerRuleCatalogue').mockImplementation(input.loadCatalogue);
+    // A crash can leave a partial line. Selection, review and send append evidence but never read it back.
+    await fs.appendFile(input.container.state.abs('audit/audit.jsonl'), '{"partial-line-from-a-crash":\n');
+    const { port, payload, messages, scope } = reviewedExecutionTurn(input);
+    expect((await port.send({ payload, messages, validate: () => {} })).text).toBe(JSON.stringify({ selectedRuleIds: [id(4)] }));
+    expect(assigned.calls.map(call => call.path)).toEqual(['/v1/chat/completions', '/v1/chat/completions']);
+    const snapshot = await new FileRuleRequestStateStore(input.container.state.abs('rules/requests')).read(scope.executionId);
+    expect(snapshot?.review).toBeDefined();
+    await expect(recoveryEvidence(input).verify(snapshot!)).rejects.toMatchObject({
+      code: 'evidence_persistence_failed', failure: { operation: 'validate-jsonl' },
+    });
   });
 
   it('keeps a failed review consumed after restart and performs no new retrieval', async () => {
@@ -414,6 +421,36 @@ type ReviewAuditData = {
   requestBinding: RuleSelectionAuditBinding;
 };
 
+/** An Executor turn port whose real optional Rule selection requires the assigned role's review. */
+function reviewedExecutionTurn(input: Awaited<ReturnType<typeof fixture>>) {
+  const scope = validateExecutionRequestScope({
+    projectId: createObjectId(), phaseId: createObjectId(), stepId: createObjectId(), ticketId: createObjectId(),
+    actorId: createObjectId(), assignmentId: createObjectId(), executionId: randomUUID(), role: 'python-developer',
+    work: 'code.implement', roleVersion: roleProfile('python-developer').version,
+    ...input.router.resolvePool('assigned', { inheritFallbacks: false }),
+  });
+  const payload = validateExecutionTurnPayload({
+    schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
+    locale: 'en', parseContext: { language: 'python' }, round: 1,
+    promptContext: { work: 'code.implement', role: 'python-developer', step: { id: scope.stepId, iterationId: 'P1', phase: 'CODE',
+      title: 'Inspect the current operation', description: input.taskSummary, systemPrompt: 'Preserve the current scope.',
+      tools: [], inputs: [], outputs: [], dependsOn: [], acceptance: 'Inspect current evidence.', maxAttempts: 3 },
+    ctx: { allowedWrites: [] } }, initialMissingOutputs: [], tools: [],
+    validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,
+      requireBugResolutionPlanBeforeAction: false, allowNovelReadOnlyProbes: false,
+      seenProbeFingerprints: [], baselineExecutionDeferred: false },
+  });
+  const port = createRuntimeExecutionTurnRequestPort({
+    config: input.config, container: input.container, router: input.router,
+    recordReplay: input.recordReplay, audit: input.audit, scope,
+  });
+  const messages = [
+    { role: 'system' as const, content: 'Original execution instructions.' },
+    { role: 'user' as const, content: renderExecutionUserPrompt(payload.promptContext, '', [], payload.locale) },
+  ];
+  return { port, payload, messages, scope };
+}
+
 async function ledger(input: Awaited<ReturnType<typeof fixture>>) {
   const target = input.container.state.abs('audit/audit.jsonl');
   const bytes = await fs.readFile(target, 'utf8');
@@ -422,7 +459,12 @@ async function ledger(input: Awaited<ReturnType<typeof fixture>>) {
   return { target, bytes, events, event, data: event.data as ReviewAuditData };
 }
 
-describe('Runtime review evidence before publication and recovery', () => {
+/** The raw review evidence check that restart recovery applies to a retained snapshot. */
+function recoveryEvidence(input: Awaited<ReturnType<typeof fixture>>) {
+  return new LLMRuleReviewEvidenceVerifier(new FileRuleReviewAuditReader(input.container.state.abs('audit'), input.container.root));
+}
+
+describe('Runtime review evidence: live reuse trusts the state store, recovery checks the audit', () => {
   it('requires Router audit before review transport and keeps the consumed allowance on failure', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url, audit: false });
@@ -435,16 +477,17 @@ describe('Runtime review evidence before publication and recovery', () => {
     expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
   });
 
-  it.each(['missing', 'duplicate'] as const)('rejects a %s raw record on snapshot recovery without repeating work', async (change) => {
+  it.each(['missing', 'duplicate'] as const)('reuses the snapshot live but rejects a %s raw record on recovery', async (change) => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
-    await prepareRuntimeRuleRequest(input);
+    const snapshot = await prepareRuntimeRuleRequest(input);
     const saved = await ledger(input);
     const modified = change === 'missing' ? saved.events.filter((event) => event !== saved.event) : [...saved.events, saved.event];
     await fs.writeFile(saved.target, modified.map((event) => JSON.stringify(event)).join('\n') + '\n');
     const snapshotBytes = await input.container.state.readFile(`rules/requests/snapshots/${input.logicalRequestId}.json`);
     input.loadCatalogue.mockRejectedValue(new Error('Recovery must not load a current catalogue'));
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({
+    expect(await prepareRuntimeRuleRequest(input)).toEqual(snapshot);
+    await expect(recoveryEvidence(input).verify(snapshot)).rejects.toMatchObject({
       code: 'rule_review_evidence_failed', reason: change === 'missing' ? 'missing' : 'ambiguous',
     });
     expect(server.calls).toHaveLength(3);
@@ -472,19 +515,20 @@ describe('Runtime review evidence before publication and recovery', () => {
     { name: 'selection digest binding', change: (data) => { data.requestBinding.draftDigest = `sha256:${'0'.repeat(64)}`; } },
     { name: 'protocol version binding', change: (data) => { data.requestBinding.protocolVersion = 'foreign-protocol/1'; } },
   ];
-  it.each(changedEvidence)('rejects changed $name in raw evidence while retaining the original snapshot', async ({ change }) => {
+  it.each(changedEvidence)('recovery rejects changed $name in raw evidence while live reuse keeps the snapshot', async ({ change }) => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
-    await prepareRuntimeRuleRequest(input);
+    const snapshot = await prepareRuntimeRuleRequest(input);
     const saved = await ledger(input);
     change(saved.data);
     await fs.writeFile(saved.target, saved.events.map((event) => JSON.stringify(event)).join('\n') + '\n');
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'mismatch' });
+    expect(await prepareRuntimeRuleRequest(input)).toEqual(snapshot);
+    await expect(recoveryEvidence(input).verify(snapshot)).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'mismatch' });
     expect(server.calls).toHaveLength(3);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
   });
 
-  it('checks persisted result evidence before recovering a failed snapshot publication', async () => {
+  it('publishes a persisted review result after a failed snapshot publication without reading the audit', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
     const failure = new Error('Controlled interruption at final snapshot publication');
@@ -495,27 +539,26 @@ describe('Runtime review evidence before publication and recovery', () => {
     expect(result).toBeDefined();
     const saved = await ledger(input);
     await fs.writeFile(saved.target, saved.events.filter((event) => event !== saved.event).map((event) => JSON.stringify(event)).join('\n') + '\n');
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ reason: 'missing' });
-    expect(await state.read(input.logicalRequestId)).toBeUndefined();
-    expect(await state.readReviewResult(input.logicalRequestId)).toEqual(result);
-    await fs.writeFile(saved.target, saved.bytes);
-    expect((await prepareRuntimeRuleRequest(input)).review?.providerAttemptId).toBe(result!.providerAttemptId);
+    const published = await prepareRuntimeRuleRequest(input);
+    expect(published.review?.providerAttemptId).toBe(result!.providerAttemptId);
+    expect(await state.read(input.logicalRequestId)).toEqual(published);
+    await expect(recoveryEvidence(input).verify(published)).rejects.toMatchObject({ reason: 'missing' });
     expect(server.calls).toHaveLength(3);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a raw response without the required selection binding', async () => {
+  it('recovery rejects a raw response without the required selection binding', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
-    await prepareRuntimeRuleRequest(input);
+    const snapshot = await prepareRuntimeRuleRequest(input);
     const saved = await ledger(input);
     delete saved.event.data!.requestBinding;
     await fs.writeFile(saved.target, saved.events.map((event) => JSON.stringify(event)).join('\n') + '\n');
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'invalid' });
+    await expect(recoveryEvidence(input).verify(snapshot)).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'invalid' });
     expect(server.calls).toHaveLength(3);
   });
 
-  it('rejects rehashed replacement Rule material paired with another selection’s valid review evidence', async () => {
+  it('recovery rejects rehashed replacement Rule material paired with another selection’s valid review evidence', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
     const retained = structuredClone(await prepareRuntimeRuleRequest(input));
@@ -525,7 +568,7 @@ describe('Runtime review evidence before publication and recovery', () => {
     const forged = { ...body, digest: ruleEvidenceDigest(body) };
     const target = input.container.state.abs(`rules/requests/snapshots/${input.logicalRequestId}.json`);
     await fs.writeFile(target, JSON.stringify(forged));
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({
+    await expect(recoveryEvidence(input).verify(forged)).rejects.toMatchObject({
       code: 'rule_review_evidence_failed', reason: 'mismatch', details: { field: 'selectionBinding' },
     });
     expect(server.calls).toHaveLength(3);
@@ -544,13 +587,14 @@ describe('Runtime review evidence before publication and recovery', () => {
     vi.spyOn(RuleDecorator.prototype, 'decorate').mockImplementation(() => { throw new Error('Current template must not rebuild a retained request'); });
     input.loadCatalogue.mockRejectedValue(new Error('Current catalogue must not be loaded'));
     expect(await prepareRuntimeRuleRequest(input)).toEqual(snapshot);
+    await expect(recoveryEvidence(input).verify(snapshot)).resolves.toBeUndefined();
     expect(server.calls).toHaveLength(3);
   });
 
-  it.each(['missing-file', 'invalid-json', 'directory-link', 'file-link'] as const)('preserves %s audit failure without a live fallback', async (failure) => {
+  it.each(['missing-file', 'invalid-json', 'directory-link', 'file-link'] as const)('recovery preserves %s audit failure; live reuse never reads it', async (failure) => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
-    await prepareRuntimeRuleRequest(input);
+    const snapshot = await prepareRuntimeRuleRequest(input);
     const saved = await ledger(input);
     if (failure === 'missing-file') await fs.unlink(saved.target);
     if (failure === 'invalid-json') await fs.appendFile(saved.target, '{broken-json\n');
@@ -565,7 +609,8 @@ describe('Runtime review evidence before publication and recovery', () => {
       await fs.rename(saved.target, elsewhere);
       await fs.symlink(elsewhere, saved.target, 'file');
     }
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({
+    expect(await prepareRuntimeRuleRequest(input)).toEqual(snapshot);
+    await expect(recoveryEvidence(input).verify(snapshot)).rejects.toMatchObject({
       code: 'evidence_persistence_failed',
       failure: { operation: failure === 'invalid-json' ? 'validate-jsonl' : 'read-jsonl', target: saved.target },
       cause: expect.any(Error),
@@ -576,7 +621,7 @@ describe('Runtime review evidence before publication and recovery', () => {
   it('retains caller cancellation after reading stored audit evidence', async () => {
     const server = await endpoint();
     const input = await fixture({ optional: true, endpoint: server.url });
-    await prepareRuntimeRuleRequest(input);
+    const snapshot = await prepareRuntimeRuleRequest(input);
     const abort = new AbortController();
     const reason = new Error('Caller cancelled audit recovery');
     const read = FileRuleReviewAuditReader.prototype.read;
@@ -585,7 +630,7 @@ describe('Runtime review evidence before publication and recovery', () => {
       abort.abort(reason);
       return result;
     });
-    await expect(prepareRuntimeRuleRequest({ ...input, signal: abort.signal })).rejects.toBe(reason);
+    await expect(recoveryEvidence(input).verify(snapshot, abort.signal)).rejects.toBe(reason);
     expect(server.calls).toHaveLength(3);
   });
 

@@ -200,7 +200,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 - **Debug wiki**: Bug Ticket repairs retrieve LLM-wiki style prior fixes by compact `DebugBrief`. The wiki is a layered Markdown knowledge base: bundled `wiki/system` policy pages, bundled `wiki/agent` calibration pages, and local `wiki/external` resolved-Bug knowledge. Runtime regenerates `index.md` for review and `index.json` for retrieval, while `log.md` remains local append-only operational history. By default it is copied to the XCompiler path (`$XC_PATH/.xcompiler/debug-wiki` when `XC_PATH` is set, otherwise the package/repo root); use `--debug-wiki-path <dir>` to share a different root. A Bug closes only after its `bugResolutionPlan` and evidence are persisted; failed reused fixes are marked `needs_review`.
 - **Security gates**: internal project operations are governed by Step outputs, tool allowlists, EditGuard, Ticket, sandbox, and Git gates without repeated external prompts. External resources are authorized once per Runtime task with `permissions.mode: request|auto|deny`; paths outside the project container are always denied, including in `auto` mode.
 - **Record/replay**: external HTTP, LLM, and tool data support `off`, `record`, `replay`, `auto`, and `refresh`. Current project code, builds, and tests always execute; Replay supplies their external fixtures rather than reusing an old process exit code. S1-S4 may capture controlled data for baseline tests; S5-S8 use Record/Replay for deterministic supplements and frozen execution. The Phase delivery gate alone disables Replay for declared real-user scenarios. Fixture inspection validates hash chains and redaction and fails explicitly on missing, ambiguous, or corrupt records.
-- **Agent Skills**: bundled file, web, test, debug, Record/Replay, Debug Wiki, dependency, review, security, profiling, CR, and delivery workflows follow the Agent Skills Specification. Planner sees metadata only; Run loads instructions and resources only for selected Skills. Plugin API 3 can add standard Skill directories without bypassing Runtime gates.
+- **Agent Skills**: bundled file, web, test, debug, Record/Replay, Debug Wiki, dependency, review, security, profiling, CR, and delivery workflows follow the Agent Skills Specification. Planner sees metadata only; Run loads instructions and resources only for selected Skills. Plugin API 4 can add standard Skill directories without bypassing Runtime gates.
 
 ---
 
@@ -237,7 +237,7 @@ LLM routing is configured under `config.yaml -> llm.*`.
 |---|---|
 | [docs/openrouter.md](docs/openrouter.md) | OpenRouter Free-mode setup and OpenAI-compatible provider notes |
 | [docs/acp.md](docs/acp.md) | ACP code-agent adapter protocol notes |
-| [docs/agent_skills.md](docs/agent_skills.md) | Agent Skills contract, built-in catalog, security boundaries, and Plugin API 3 |
+| [docs/agent_skills.md](docs/agent_skills.md) | Agent Skills contract, built-in catalog, security boundaries, and Plugin API 4 |
 | [docs/XCompiler_design.md](docs/XCompiler_design.md) | Core design and V-model concepts |
 | [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | Architecture, ownership, lifecycle, and layout constraints the project must preserve |
 | [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | Current architecture, PM/Ticket lifecycle, workspace, and release constraints |

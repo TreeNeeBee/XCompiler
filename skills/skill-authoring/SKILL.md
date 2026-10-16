@@ -2,7 +2,7 @@
 name: skill-authoring
 description: Create or revise XCompiler Agent Skills that conform to the Agent Skills Specification and preserve Runtime security and lifecycle boundaries.
 license: Apache-2.0
-compatibility: XCompiler Plugin API 3 and Agent Skills Specification
+compatibility: XCompiler Plugin API 4 and Agent Skills Specification
 metadata:
   xcompiler.category: skills
   xcompiler.version: "1"

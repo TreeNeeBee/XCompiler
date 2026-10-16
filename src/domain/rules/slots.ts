@@ -8,14 +8,15 @@ export const RULE_SLOTS = Object.freeze({
   typeScript: 0x0101,
   python: 0x0102,
   frameworkIndex: 0x0200,
-  planner: 0x0201,
-  architect: 0x0202,
-  coder: 0x0203,
-  tester: 0x0204,
-  debugger: 0x0205,
-  projectManager: 0x0206,
   businessIndex: 0x1000,
 } as const);
+
+/** One language per RuleList (D-13). */
+export const LANGUAGE_RULE_SLOT_RANGE = Object.freeze({ start: 0x0101, end: 0x01ff } as const);
+/** Role segment: who the worker is, one RuleList per role (D-13). */
+export const ROLE_RULE_SLOT_RANGE = Object.freeze({ start: 0x0201, end: 0x023f } as const);
+/** Work segment: shared and mode fragments, Step works, planning, and judgements (D-13). */
+export const WORK_RULE_SLOT_RANGE = Object.freeze({ start: 0x0240, end: 0x02bf } as const);
 
 /** Each slot holds one RuleList; this range does not limit Rules within a list. */
 export const DEBUG_RULE_SLOT_RANGE = Object.freeze({
@@ -87,6 +88,16 @@ export function compareRuleSlots(left: number, right: number): number {
 
 export function isProtectedRuleSlot(slot: number): boolean {
   return parseRuleSlot(slot) <= 0x00ff;
+}
+
+/**
+ * Lists in the language, role and work segments enter a request only through Runtime's binding
+ * computation (D-14): code decides who works and which of their Rules apply, never retrieval.
+ */
+export function isBoundRuleSlot(slot: number): boolean {
+  const value = parseRuleSlot(slot);
+  return (value >= LANGUAGE_RULE_SLOT_RANGE.start && value <= LANGUAGE_RULE_SLOT_RANGE.end)
+    || (value >= ROLE_RULE_SLOT_RANGE.start && value <= WORK_RULE_SLOT_RANGE.end);
 }
 
 export function isDebugRuleSlot(slot: number): boolean {

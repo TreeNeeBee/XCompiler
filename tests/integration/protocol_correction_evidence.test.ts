@@ -19,7 +19,9 @@ const originalId = 'abababab-abab-4bab-8bab-abababababab';
 const originalAttempt = 'abababab-abab-4bab-8bab-abababababac';
 const candidateAttempt = 'abababab-abab-4bab-8bab-abababababad';
 const unrelatedId = 'abababab-abab-4bab-8bab-abababababaf';
-const protocol: JsonOutputProtocol = { id: 'json-actions', version: '1', root: 'object', transformations: ['trailing-comma'] };
+// Model correction is offered only an E1-admitted original (D-3): an unescaped inner quote here.
+const protocol: JsonOutputProtocol = { id: 'json-actions', version: '2', root: 'object',
+  transformations: ['trailing-comma', 'raw-string-control', 'escape-insertion'] };
 let container: string;
 let auditRoot: string;
 let auditPath: string;
@@ -31,7 +33,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await fs.rm(container, { recursive: true, force: true }); });
 
-function response(output = '{"x":1,}', changes: Partial<RoutedResponseEvidence> = {},
+function response(output = '{"x":"a"b"}', changes: Partial<RoutedResponseEvidence> = {},
   facts: Partial<ProviderResponseEvidence> = {}): RoutedResponseEvidence {
   return validateProtocolCorrectionResponse({
     logicalRequestId: originalId, providerAttemptId: originalAttempt, provider: 'primary', model: 'openai:alias', output,
@@ -71,7 +73,7 @@ function adapters() {
   return { evidence, store, ledger: new ProtocolCorrectionLedger(store, evidence) };
 }
 
-async function fixture(output = '{"x":1,}', contentMode: 'full' | 'redacted' = 'redacted') {
+async function fixture(output = '{"x":"a"b"}', contentMode: 'full' | 'redacted' = 'redacted') {
   const logger = new AuditLogger({ root: container, stateRoot: path.join(container, '.xcompiler'), command: 'test', contentMode });
   const original = response(output);
   await appendResponse(logger, original);
@@ -83,7 +85,7 @@ async function fixture(output = '{"x":1,}', contentMode: 'full' | 'redacted' = '
       if (begun.status !== 'acquired') throw new Error(`Expected acquired, received ${begun.status}`);
       return begun.claim;
     },
-    async publishCandidate(claim: ProtocolCorrectionClaim, corrected = '{"x":1}', facts: Partial<ProviderResponseEvidence> = {}) {
+    async publishCandidate(claim: ProtocolCorrectionClaim, corrected = '{"x":"a\\"b"}', facts: Partial<ProviderResponseEvidence> = {}) {
       const candidate = response(corrected, {
         logicalRequestId: claim.correctionRequestId, providerAttemptId: candidateAttempt, model: 'openai:actual-model',
       }, { requestedModel: 'actual-model', ...facts });
@@ -110,13 +112,15 @@ async function editClaim(changes: Record<string, unknown>) {
   await fs.writeFile(target, JSON.stringify({ ...claim, ...changes }));
 }
 const failed = (reason: string) => ({ code: 'protocol_correction_evidence_failed', reason });
+/** Restart recovery: a fresh Ledger restores the original and candidate from the audit by request ID. */
+const recover = () => adapters().ledger.resume({ logicalRequestId: originalId });
 
 // Real AuditLogger, JSONL reader and immutable state store. Provider dispatch is tested separately.
-describe('protocol correction requires original and candidate raw audit evidence', () => {
+describe('live correction trusts memory and the store; recovery requires original and candidate raw audit evidence', () => {
   it('accepts captured responses and restores exact original values through a fresh Ledger', async () => {
-    const current = await fixture('{"x":"a\\r\\nb","large":9007199254740993,}');
+    const current = await fixture('{"x":"a\\r\\nb "q"","large":9007199254740993}');
     const claim = await current.acquire();
-    const candidate = await current.publishCandidate(claim, '{"x":"a\\r\\nb","large":9007199254740993}');
+    const candidate = await current.publishCandidate(claim, '{"x":"a\\r\\nb \\"q\\"","large":9007199254740993}');
     const result = await current.ledger.complete({ claim, original: current.original, candidate });
     expect(result.result.outcome).toBe('preserved');
     const resumed = adapters();
@@ -151,9 +155,10 @@ describe('protocol correction requires original and candidate raw audit evidence
       }
     });
     expect((await current.ledger.complete({ claim, original: current.original, candidate })).result.outcome).toBe('preserved');
+    expect(await recover()).toMatchObject({ status: 'recovered', result: { outcome: 'preserved' } });
   });
 
-  it.each(['original', 'candidate'] as const)('rejects duplicate %s events even when each event agrees', async stage => {
+  it.each(['original', 'candidate'] as const)('recovery rejects duplicate %s events even when each event agrees', async stage => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
@@ -161,24 +166,26 @@ describe('protocol correction requires original and candidate raw audit evidence
     const line = (await fs.readFile(auditPath, 'utf8')).trim().split('\n')
       .find(text => (JSON.parse(text) as AuditRow).data.logicalRequestId === requestId)!;
     await fs.appendFile(auditPath, `${line}\n`);
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('ambiguous'));
-    expect(await current.store.readResult(originalId)).toBeUndefined();
+    expect((await current.ledger.complete({ claim, original: current.original, candidate })).result.outcome).toBe('preserved');
+    await expect(recover()).rejects.toMatchObject(failed('ambiguous'));
   });
 
-  it.each(['original', 'candidate'] as const)('rejects a missing %s event', async stage => {
+  it.each(['original', 'candidate'] as const)('recovery rejects a missing %s event', async stage => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
     await editEvent(stage === 'original' ? originalId : claim.correctionRequestId, event => { event.data.logicalRequestId = unrelatedId; });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('missing'));
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('missing'));
   });
 
-  it.each(['original', 'candidate'] as const)('rejects %s provider evidence inconsistent with its event', async stage => {
+  it.each(['original', 'candidate'] as const)('recovery rejects %s provider evidence inconsistent with its event', async stage => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
     await editEvent(stage === 'original' ? originalId : claim.correctionRequestId, event => { event.data.provider = 'another-provider'; });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('mismatch'));
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('mismatch'));
   });
 
   it.each([
@@ -193,15 +200,16 @@ describe('protocol correction requires original and candidate raw audit evidence
     }, 'mismatch'],
     ['extra-evidence-field', (event: AuditRow) => { event.data.responseEvidence = { ...(event.data.responseEvidence as object), invented: true }; }, 'invalid'],
     ['missing-capture', (event: AuditRow) => { event.data.responseEvidence = { ...(event.data.responseEvidence as object), capture: undefined }; }, 'invalid'],
-  ] as const)('rejects %s candidate audit alteration', async (_name, edit, reason) => {
+  ] as const)('recovery rejects %s candidate audit alteration', async (_name, edit, reason) => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
     await editEvent(claim.correctionRequestId, edit);
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed(reason));
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed(reason));
   });
 
-  it.each(['added-rule', 'changed-original', 'missing-messages'] as const)('rejects %s in the actual final correction messages', async alteration => {
+  it.each(['added-rule', 'changed-original', 'missing-messages'] as const)('recovery rejects %s in the actual final correction messages', async alteration => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
@@ -211,14 +219,15 @@ describe('protocol correction requires original and candidate raw audit evidence
       if (alteration === 'changed-original') messages[1]!.content = '{}';
       if (alteration === 'missing-messages') delete event.data.requestMessages;
     });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(
       failed(alteration === 'missing-messages' ? 'invalid' : 'mismatch'));
   });
 
   it.each([
     'logicalRequestId', 'originalProviderAttemptId', 'correctionRequestId', 'claimId', 'claimDigest',
     'originalDigest', 'protocolId', 'protocolVersion', 'templateVersion', 'proofVersion', 'requestDigest',
-  ])('rejects another %s in the actual correction binding', async field => {
+  ])('recovery rejects another %s in the actual correction binding', async field => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
@@ -226,10 +235,11 @@ describe('protocol correction requires original and candidate raw audit evidence
       const raw = event.data.requestBinding as Record<string, unknown>;
       raw[field] = field.endsWith('Digest') ? `sha256:${'0'.repeat(64)}` : field.endsWith('Id') && field !== 'protocolId' ? unrelatedId : 'changed';
     });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('mismatch'));
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('mismatch'));
   });
 
-  it.each(['missing', 'extra', 'wrong-kind'] as const)('rejects %s correction binding', async alteration => {
+  it.each(['missing', 'extra', 'wrong-kind'] as const)('recovery rejects %s correction binding', async alteration => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
@@ -237,7 +247,8 @@ describe('protocol correction requires original and candidate raw audit evidence
       if (alteration === 'missing') delete event.data.requestBinding;
       else (event.data.requestBinding as Record<string, unknown>)[alteration === 'extra' ? 'extra' : 'kind'] = 'not-correction';
     });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('invalid'));
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('invalid'));
   });
 
   it.each([
@@ -247,64 +258,51 @@ describe('protocol correction requires original and candidate raw audit evidence
   ] as [string, Partial<ProviderResponseEvidence>][])('retains a real %s candidate as an ineligible outcome', async (_name, facts) => {
     const current = await fixture();
     const claim = await current.acquire();
-    const candidate = await current.publishCandidate(claim, '{"x":1}', facts);
+    const candidate = await current.publishCandidate(claim, undefined, facts);
     expect((await current.ledger.complete({ claim, original: current.original, candidate })).result.outcome).toBe('ineligible');
     expect(await adapters().ledger.begin({ original: current.original, protocol })).toMatchObject({ status: 'recovered', result: { outcome: 'ineligible' } });
   });
 
-  it('rejects redacted original evidence without consuming an allowance', async () => {
-    const current = await fixture('{"x":"Bearer synthetic-test-token",}');
-    await expect(current.acquire()).rejects.toMatchObject(failed('mismatch'));
-    expect(await current.store.readClaim(originalId)).toBeUndefined();
+  it('consumes the allowance live but recovery refuses redacted original evidence', async () => {
+    const current = await fixture('{"x":"say "Bearer synthetic-test-token""}');
+    const claim = await current.acquire();
+    await expect(recover()).rejects.toMatchObject({ ...failed('mismatch'), details: { field: 'responseEvidenceDigest' } });
+    expect(await current.store.readClaim(originalId)).toEqual(claim);
   });
 
-  it('rejects a caller presenting the redacted stored response as a new original', async () => {
-    const current = await fixture('{"x":"Bearer synthetic-test-token",}');
-    const events = await new FileLLMResponseAuditReader(auditRoot, container).read({
-      logicalRequestId: originalId, providerAttemptId: originalAttempt,
-    });
-    const stored = events[0] as AuditRow;
-    const redacted = validateProtocolCorrectionResponse(stored.data.responseEvidence);
-    expect(redacted.output).not.toBe(current.original.output);
-    expect(protocolCorrectionDigest(redacted)).not.toBe(stored.data.responseEvidenceDigest);
-    await expect(current.ledger.begin({ original: redacted, protocol })).rejects.toMatchObject({
-      ...failed('mismatch'), details: { field: 'responseEvidenceDigest' },
-    });
-    expect(await current.store.readClaim(originalId)).toBeUndefined();
-  });
-
-  it('rejects an original event without a producer digest before assigning an allowance', async () => {
+  it('recovery rejects an original event without a producer digest', async () => {
     const current = await fixture();
     await editEvent(originalId, event => { delete event.data.responseEvidenceDigest; });
-    await expect(current.acquire()).rejects.toMatchObject(failed('invalid'));
-    expect(await current.store.readClaim(originalId)).toBeUndefined();
+    const claim = await current.acquire();
+    await expect(recover()).rejects.toMatchObject(failed('invalid'));
+    expect(await current.store.readClaim(originalId)).toEqual(claim);
   });
 
-  it('rejects a candidate event without a producer digest before persisting a result', async () => {
+  it('recovery rejects a candidate event without a producer digest', async () => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim);
     await editEvent(claim.correctionRequestId, event => { delete event.data.responseEvidenceDigest; });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('invalid'));
-    expect(await current.store.readResult(originalId)).toBeUndefined();
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('invalid'));
   });
 
   it('uses exact synthetic values when the configured audit policy retains them', async () => {
-    const current = await fixture('{"x":"Bearer synthetic-test-token",}', 'full');
+    const current = await fixture('{"x":"say "Bearer synthetic-test-token""}', 'full');
     const claim = await current.acquire();
-    const candidate = await current.publishCandidate(claim, '{"x":"Bearer synthetic-test-token"}');
+    const candidate = await current.publishCandidate(claim, '{"x":"say \\"Bearer synthetic-test-token\\""}');
     expect((await current.ledger.complete({ claim, original: current.original, candidate })).result.outcome).toBe('preserved');
     expect(await adapters().ledger.begin({ original: current.original, protocol })).toMatchObject({
       status: 'recovered', assessment: { candidate: candidate.output },
     });
   });
 
-  it('rejects redacted candidate evidence and cannot recover it as the real candidate', async () => {
+  it('recovery rejects redacted candidate evidence and cannot restore it as the real candidate', async () => {
     const current = await fixture();
     const claim = await current.acquire();
     const candidate = await current.publishCandidate(claim, '{"x":"Bearer synthetic-test-token"}');
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('mismatch'));
-    expect(await current.store.readResult(originalId)).toBeUndefined();
+    await current.ledger.complete({ claim, original: current.original, candidate });
+    await expect(recover()).rejects.toMatchObject(failed('mismatch'));
     await expect(current.evidence.recoverCandidate(claim, {
       schemaVersion: 1, logicalRequestId: originalId, claimId: claim.claimId, correctionRequestId: claim.correctionRequestId,
       providerAttemptId: candidateAttempt, candidateDigest: protocolCorrectionDigest(candidate),
@@ -313,9 +311,9 @@ describe('protocol correction requires original and candidate raw audit evidence
   });
 
   it('does not classify ordinary placeholder text as a credential or redaction outcome', async () => {
-    const current = await fixture('{"x":"[REDACTED]",}');
+    const current = await fixture('{"x":"say "[REDACTED]""}');
     const claim = await current.acquire();
-    const candidate = await current.publishCandidate(claim, '{"x":"[REDACTED]"}');
+    const candidate = await current.publishCandidate(claim, '{"x":"say \\"[REDACTED]\\""}');
     expect((await current.ledger.complete({ claim, original: current.original, candidate })).result.outcome).toBe('preserved');
   });
 
@@ -325,7 +323,7 @@ describe('protocol correction requires original and candidate raw audit evidence
     const candidate = await current.publishCandidate(claim);
     const completed = await current.ledger.complete({ claim, original: current.original, candidate });
     await editEvent(claim.correctionRequestId, event => {
-      const replacement = response('{"x":2}', { logicalRequestId: claim.correctionRequestId, providerAttemptId: candidateAttempt,
+      const replacement = response('{"x":"a\\"c"}', { logicalRequestId: claim.correctionRequestId, providerAttemptId: candidateAttempt,
         model: 'openai:actual-model' }, { requestedModel: 'actual-model' });
       event.data.output = replacement.output;
       event.data.responseEvidence = replacement;
@@ -338,8 +336,11 @@ describe('protocol correction requires original and candidate raw audit evidence
   it('rejects a different requested model even if the provider returned the original model', async () => {
     const current = await fixture();
     const claim = await current.acquire();
-    const candidate = await current.publishCandidate(claim, '{"x":1}', { requestedModel: 'alias' });
-    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject(failed('mismatch'));
+    const candidate = await current.publishCandidate(claim, undefined, { requestedModel: 'alias' });
+    await expect(current.ledger.complete({ claim, original: current.original, candidate })).rejects.toMatchObject({
+      code: 'protocol_correction_state_failed', reason: 'identity_conflict', details: { record: 'candidate-producer' },
+    });
+    expect(await current.store.readResult(originalId)).toBeUndefined();
   });
 
   it.each(['templateVersion', 'proofVersion'] as const)('does not reinterpret an unsupported %s', async field => {
@@ -352,7 +353,7 @@ describe('protocol correction requires original and candidate raw audit evidence
 
 describe('original audit recovery from the persisted correction claim', () => {
   it('restores an incomplete attempt by request ID without accepting replacement original text', async () => {
-    const current = await fixture('{"x":"pinned\\r\\noriginal",}');
+    const current = await fixture('{"x":"pinned\\r\\n"original"}');
     const claim = await current.acquire();
     const resumed = await adapters().ledger.resume({ logicalRequestId: originalId });
     expect(resumed).toEqual({ status: 'incomplete', claim });
@@ -373,7 +374,7 @@ describe('original audit recovery from the persisted correction claim', () => {
     const current = await fixture();
     const claim = await current.acquire();
     await editEvent(originalId, event => {
-      const replacement = response('{"x":2,}');
+      const replacement = response('{"x":"c"d"}');
       event.data.output = replacement.output;
       event.data.responseEvidence = replacement;
       event.data.responseEvidenceDigest = protocolCorrectionDigest(replacement);
@@ -395,7 +396,7 @@ describe('original audit recovery from the persisted correction claim', () => {
   });
 
   it('fails recovery when audit protection has irreversibly removed original values', async () => {
-    const current = await fixture('{"x":"Bearer synthetic-test-token",}', 'full');
+    const current = await fixture('{"x":"say "Bearer synthetic-test-token""}', 'full');
     const claim = await current.acquire();
     await editEvent(originalId, event => { event.data = protectAuditContent(event.data, 'redacted') as Record<string, unknown>; });
     await expect(adapters().ledger.resume({ logicalRequestId: originalId })).rejects.toMatchObject({
@@ -431,7 +432,8 @@ describe('original audit recovery from the persisted correction claim', () => {
   it('rechecks the pinned output protocol when restoring the original', async () => {
     const current = await fixture();
     await current.acquire();
-    await editClaim({ outputProtocol: { ...protocol, root: 'array' } });
+    // Without escape insertion in the pinned protocol, the original is no longer admitted.
+    await editClaim({ outputProtocol: { ...protocol, transformations: ['trailing-comma', 'raw-string-control'] } });
     await expect(adapters().ledger.resume({ logicalRequestId: originalId })).rejects.toMatchObject({
       ...failed('invalid'), details: { field: 'original-eligibility' },
     });
@@ -440,10 +442,11 @@ describe('original audit recovery from the persisted correction claim', () => {
 });
 
 describe('complete confined raw LLM audit reads', () => {
-  it('preserves an invalid unrelated later line as an audit failure', async () => {
+  it('acquires live past an invalid unrelated later line; recovery preserves it as an audit failure', async () => {
     const current = await fixture();
     await fs.appendFile(auditPath, '{broken-unrelated-event\n');
-    await expect(current.acquire()).rejects.toMatchObject({
+    await current.acquire();
+    await expect(recover()).rejects.toMatchObject({
       ...failed('invalid'), cause: { code: 'evidence_persistence_failed',
         failure: { operation: 'validate-jsonl', target: auditPath, logicalRequestId: originalId, providerAttemptId: originalAttempt },
         record: { line: 2 }, cause: expect.any(SyntaxError),

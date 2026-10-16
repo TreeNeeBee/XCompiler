@@ -58,7 +58,7 @@ function afterPlugin(after: (event: HookContextMap['llm.after']) => void | Promi
   }] });
 }
 
-async function endpoint(output = verdictText, finishReason = 'stop', status = 200) {
+async function endpoint(output: string | ((call: number) => string) = verdictText, finishReason = 'stop', status = 200) {
   const calls: Array<{ url: string; input: Record<string, unknown> & { messages: ChatMessage[] } }> = [];
   const server = createServer((request, response) => {
     let body = '';
@@ -67,7 +67,7 @@ async function endpoint(output = verdictText, finishReason = 'stop', status = 20
       calls.push({ url: request.url!, input: JSON.parse(body) });
       response.writeHead(status, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ model: 'actual-model', choices: [{ index: 0,
-        message: { content: output }, finish_reason: finishReason }] }));
+        message: { content: typeof output === 'string' ? output : output(calls.length) }, finish_reason: finishReason }] }));
     });
   });
   servers.push(server);
@@ -124,8 +124,9 @@ describe('Runtime scenario outcome through retained current Rule and response ev
       .read(logicalRequestId);
     expect(snapshot).toMatchObject({ requestKind: 'business', context: { projectId, role: 'project-manager',
       work: 'judge.scenario' }, requiredRuleIds: expect.arrayContaining([SCENARIO_OUTCOME_RULE.ruleId]) });
-    expect(snapshot?.requiredRuleIds).toHaveLength(4);
-    expect(snapshot?.rules).toHaveLength(4);
+    // Genesis, the PM identity and the judgement rubric bound through its work.
+    expect(snapshot?.requiredRuleIds).toHaveLength(5);
+    expect(snapshot?.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0201, 0x02a0]);
     expect(snapshot?.rules.filter(rule => rule.ruleId === SCENARIO_OUTCOME_RULE.ruleId)).toHaveLength(1);
     expect(snapshot?.rules.filter(rule => rule.slot === 0)).toHaveLength(3);
     const outbound = server.calls[0]!.input.messages;
@@ -247,6 +248,21 @@ describe('Runtime scenario outcome through retained current Rule and response ev
     expect(role).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(1);
     expect(await current.events()).toEqual(events);
+  });
+
+  it('corrects unescaped inner quotes once and judges the correction by the same routing checks (D-3)', async () => {
+    const strict = '{"ok":false,"reason":"The \\"summary\\" section is empty.","ticketType":"bug","target":"code"}';
+    const output = strict.replaceAll('\\"', '"');
+    const server = await endpoint(call => (call === 1 ? output : strict));
+    const current = await fixture(server.url);
+    expect(await judgeRuntimeScenarioOutcome(current.input)).toMatchObject({
+      ok: false, reason: 'The "summary" section is empty.', ticketType: 'bug', target: 'code' });
+    expect(server.calls).toHaveLength(2);
+    const judgement = (await current.events()).find(event => event.messageId === 'llm.scenario_outcome_judgement')!;
+    expect(judgement.data).toMatchObject({ protocolCorrection: { claimId: expect.any(String) } });
+    expect(await resumeRuntimeScenarioOutcome({ container: current.container, audit: current.audit,
+      logicalRequestId: judgement.data!.logicalRequestId as string }))
+      .toMatchObject({ status: 'recovered', verdict: { reason: 'The "summary" section is empty.' } });
   });
 
   it('uses the whole proven JSON envelope after allowed fence and trailing-comma normalization', async () => {

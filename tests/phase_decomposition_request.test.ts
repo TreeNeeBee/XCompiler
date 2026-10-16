@@ -288,7 +288,7 @@ describe('Phase decomposition ownership and audit binding', () => {
       const create = vi.fn();
       const verify = vi.fn();
       const inputs = new BusinessRequestInputs(
-        { read: vi.fn(), create }, { write, verify: vi.fn(), recover: vi.fn() },
+        { read: vi.fn(), create }, { write, recover: vi.fn() },
         { read: async () => snapshot({ ...context, ...change }) }, { verify },
       );
       const { schemaVersion: _version, snapshotDigest: _snapshot, ...capture } = source;
@@ -301,15 +301,15 @@ describe('Phase decomposition ownership and audit binding', () => {
     }
   });
 
-  it.each([false, true])('captures the matching frozen P03 ownership and original audit input, postGraph=%s', async postGraph => {
+  it.each([false, true])('captures the matching frozen P03 ownership and writes its original audit input, postGraph=%s', async postGraph => {
     const source = input(postGraph);
     const pinned = snapshot({ role: 'planner', language: 'python', work: 'plan.decompose',
       ...(postGraph ? { projectId: projectId(20) } : {}) });
     const write = vi.fn(async () => {});
-    const verify = vi.fn(async () => {});
+    const recover = vi.fn();
     const inputs = new BusinessRequestInputs(
       { read: async () => undefined, create: async record => record },
-      { write, verify, recover: vi.fn() }, { read: async () => pinned }, { verify: async () => {} },
+      { write, recover }, { read: async () => pinned }, { verify: async () => {} },
     );
     const { schemaVersion: _version, snapshotDigest: _snapshot, ...capture } = source;
     const retained = await inputs.capture(capture);
@@ -319,7 +319,8 @@ describe('Phase decomposition ownership and audit binding', () => {
     expect(retained.input.snapshotDigest).toBe(pinned.digest);
     expect(retained.record).not.toHaveProperty('auditContext');
     expect(write).toHaveBeenCalledWith(retained.record, retained.input, undefined);
-    expect(verify).toHaveBeenCalledWith(retained.record, retained.input, undefined);
+    // A live capture never reads its audit back.
+    expect(recover).not.toHaveBeenCalled();
   });
 
   it('does not permit the project-scoped owner to borrow P01 or P02 audit material', () => {

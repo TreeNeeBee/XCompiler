@@ -4,7 +4,7 @@ import type { JsonOutputProtocol } from '../../src/llm/protocol_json.js';
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from '../../src/llm/response_evidence.js';
 
 const protocol: JsonOutputProtocol = {
-  id: 'correction-boundary-json', version: '1', root: 'object', transformations: ['trailing-comma'],
+  id: 'correction-boundary-json', version: '2', root: 'object', transformations: ['trailing-comma', 'escape-insertion'],
 };
 const originalRequestId = 'abababab-abab-4bab-8bab-abababababab';
 const correctionRequestId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
@@ -33,11 +33,11 @@ function response(
 }
 
 function original(facts: Partial<ProviderResponseEvidence> = {}) {
-  return response('{"x":1,}', 'original', facts);
+  return response('{"x":"a"b"}', 'original', facts);
 }
 
 function candidate(facts: Partial<ProviderResponseEvidence> = {}) {
-  return response('{"x":1}', 'candidate', facts);
+  return response('{"x":"a\\"b"}', 'candidate', facts);
 }
 
 describe('C1 correction response acceptance', () => {
@@ -46,7 +46,7 @@ describe('C1 correction response acceptance', () => {
       status: 'assessed',
       completion: { eligibleForProtocolCalibration: true, logicalRequestId: originalRequestId },
       candidateCompletion: { eligibleForProtocolCalibration: true, logicalRequestId: correctionRequestId },
-      result: { status: 'preserved', original: '{"x":1,}', candidate: '{"x":1}' },
+      result: { status: 'preserved', original: '{"x":"a"b"}', candidate: '{"x":"a\\"b"}' },
     });
   });
 
@@ -88,8 +88,8 @@ describe('C1 correction response acceptance', () => {
   });
 
   it.each(['original', 'candidate'] as const)('does not trust mismatched captured output for the %s', (stage) => {
-    const first = stage === 'original' ? original({ output: '{"x":2,}' }) : original();
-    const second = stage === 'candidate' ? candidate({ output: '{"x":2}' }) : candidate();
+    const first = stage === 'original' ? original({ output: '{"x":"c"d"}' }) : original();
+    const second = stage === 'candidate' ? candidate({ output: '{"x":"c\\"d"}' }) : candidate();
     const result = assessJsonProtocolCorrection(first, second, protocol, correctionRequestId);
     expect(result).toMatchObject({
       status: 'ineligible', stage, reason: 'completion-ineligible',
@@ -236,7 +236,7 @@ describe('C1 correction response acceptance', () => {
   });
 
   it('still rejects changed values after both producer and completion checks succeed', () => {
-    expect(assessJsonProtocolCorrection(original(), response('{"x":2}', 'candidate'), protocol, correctionRequestId))
+    expect(assessJsonProtocolCorrection(original(), response('{"x":"a\\"c"}', 'candidate'), protocol, correctionRequestId))
       .toMatchObject({ status: 'assessed', result: { status: 'unresolved', diagnostic: { code: 'values_changed' } } });
   });
 

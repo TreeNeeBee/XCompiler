@@ -395,11 +395,6 @@ export interface Messages {
     executorGlobalBlock: (globalPrompt: string) => string;
     executorAcceptedContractChangesBlock: (changes: readonly AcceptedContractChange[]) => string;
     executorContextBlock: (context: string) => string;
-    executorRoleBlock: (identity: {
-      rolePrompt: string;
-      capabilityPrompt: string;
-      prohibitions: readonly string[];
-    }) => string;
     executorStepBlock: (stepSystemPrompt: string) => string;
     executorSkillBlock: (hints: string[]) => string;
     executorUserPromptOutro: string;

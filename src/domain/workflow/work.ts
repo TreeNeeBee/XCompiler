@@ -98,6 +98,14 @@ export function operationRole(work: keyof typeof OPERATION_ROLE): RoleId {
   return OPERATION_ROLE[work];
 }
 
+/**
+ * Left-side V-model work whose deliverable is a specification plus the tests paired with it. Those
+ * tests describe behaviour a later Step implements, so they cannot pass while this work runs.
+ */
+export function isDeclarativeOutputWork(work: StepWorkId): boolean {
+  return work === 'analyze.requirements' || work === 'design.high-level' || work === 'design.detailed';
+}
+
 /** Whether a work must be done by a role specialised in the project's programming language. */
 export function workRequiresLanguage(work: WorkId, type?: StepType): boolean {
   return work === 'code.implement' || ((work === 'repair.debug' || work === 'change.apply') && type === 'CODE');

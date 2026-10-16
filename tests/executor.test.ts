@@ -1,7 +1,7 @@
 import { fixtureAcceptedContractSource } from './support/accepted_contract_fixture.js';
 import { executorBugTicketFixture, executorChangeRequestFixture } from './helpers/executor_ticket_fixtures.js';
 import { withFixtureExecutionRequest } from './support/execution_request_fixture.js';
-import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
+import { boundRuleBlock } from './support/compiler_rules.js';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -18,7 +18,6 @@ import type { Tool, ToolContext, ToolExecutionEvent } from '../src/tools/types.j
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
 import { runTestsTool } from '../src/tools/sandbox.js';
-import { stepWorkGuidance } from '../src/domain/workflow/work_guidance.js';
 import { ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
 
 class CapturingLLM implements LLMClient {
@@ -142,27 +141,6 @@ describe('StepExecutor system prompt assembly', () => {
     expect(events.every((event) => event.stepName === 'P1-S004')).toBe(true);
   });
 
-  it('injects the Step work guidance into the system message', async () => {
-    const llm = new CapturingLLM();
-    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
-    const guidance = stepWorkGuidance('code.implement');
-    const r = await exec.run({
-      step: baseStep,
-      tools: [writeFileTool],
-      ctx,
-      roleIdentity: {
-        rolePrompt: guidance.role,
-        capabilityPrompt: guidance.capability,
-        prohibitions: [...guidance.prohibitions],
-      },
-    });
-    expect(r.success).toBe(true);
-    expect(llm.lastSystem).toContain('## Your role');
-    expect(llm.lastSystem).toContain(guidance.role);
-    expect(llm.lastSystem).toContain(guidance.capability);
-    for (const rule of guidance.prohibitions) expect(llm.lastSystem).toContain(rule);
-  });
-
   it('injects the assembled layered context, and nothing when there is none', async () => {
     const llm = new CapturingLLM();
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
@@ -182,11 +160,13 @@ describe('StepExecutor system prompt assembly', () => {
     expect(bare.lastSystem.length).toBeLessThan(llm.lastSystem.length);
   });
 
-  it('omits the role block when no actor identity is supplied', async () => {
+  it('leaves who, the work and the policy to the bound Rules: the framework message carries none of them', async () => {
     const llm = new CapturingLLM();
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
-    await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
-    expect(llm.lastSystem).not.toContain('## Your role');
+    await exec.run({ step: baseStep, tools: [writeFileTool], ctx, debugContext: { reason: 'tests failed', failureLog: 'assertion failed' } });
+    expect(llm.lastSystem).not.toMatch(/You are|## Your role|Runtime execution policy|DEBUG retry mode/u);
+    // The debug block keeps only this execution's facts.
+    expect(llm.lastSystem).toContain('Previous failure reason: tests failed');
   });
 
   it('injects globalPrompt + step.systemPrompt into system message', async () => {
@@ -5567,31 +5547,7 @@ describe('glob outputs', () => {
   });
 });
 
-describe('design-phase policy', () => {
-  const capture = async (
-    phase: Step['phase'],
-    baselineTestExecution: 'execute' | 'defer' = 'defer',
-  ): Promise<string> => {
-    const llm = new CapturingLLM();
-    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }))
-      .run({ step: { ...baseStep, phase, outputs: ['src/x.py'] }, tools: [writeFileTool], ctx, baselineTestExecution });
-    return llm.lastSystem;
-  };
-
-  it('tells a design Step its paired tests are run elsewhere and fail by construction', async () => {
-    // Without this, REQUIREMENT_ANALYSIS runs the acceptance tests it just authored, reads their
-    // failure as a defect, and spends every attempt implementing product code owned by CODE.
-    for (const phase of ['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN'] as const) {
-      const system = await capture(phase);
-      expect(system, phase).toContain('Design Step');
-      expect(system, phase).toContain('paired verification Step');
-      // Rule D tells the Step the deferral is expected; without this it reports that expectation as
-      // a quality gap, and the gate fails the Step for every gap it reports — punishing it for
-      // being accurate.
-      expect(system, phase).toContain('Do not record that deferral as a quality gap');
-    }
-  });
-
+describe('accepted contract changes in the framework message', () => {
   it('shows contract revisions accepted after the project constraints were planned', async () => {
     const llm = new CapturingLLM();
     const options = withFixtureExecutionRequest({ llm, maxRounds: 1 });
@@ -5609,34 +5565,6 @@ describe('design-phase policy', () => {
       { source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['Read articles from the archive API.'] },
     ]);
     expect(llm.lastSystem.indexOf('Use the archive API')).toBeGreaterThan(llm.lastSystem.indexOf('Read the news feed API.'));
-  });
-
-  it('withholds the deferral rule when the resolved baseline policy executes here', async () => {
-    // A post-CODE correction of a design Step runs its baseline before redelivering. The phase name
-    // alone said "tests run elsewhere" to exactly that attempt, contradicting its gate (I06).
-    for (const phase of ['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN'] as const) {
-      expect(await capture(phase, 'execute'), phase).not.toContain('Design Step');
-    }
-  });
-
-  it('says nothing of the sort to an implementation or verification Step', async () => {
-    for (const phase of ['CODE', 'UNIT_TEST', 'FUNCTIONAL_TEST'] as const) {
-      expect(await capture(phase), phase).not.toContain('Design Step');
-    }
-  });
-
-  it('withdraws the rule in Debug, where repairing the design is the whole point', async () => {
-    // A Bug reaches a design Step only because its paired verification opened one. Telling that
-    // attempt not to repair failing assertions would suppress the repair it exists to make.
-    const llm = new CapturingLLM();
-    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
-      step: { ...baseStep, phase: 'DETAILED_DESIGN', outputs: ['src/x.py'] },
-      tools: [writeFileTool],
-      ctx,
-      debugContext: { reason: 'integration gate failed', failureLog: 'contract mismatch' },
-    });
-    expect(llm.lastSystem).not.toContain('Design Step');
-    expect(llm.lastSystem).toContain('DEBUG mode');
   });
 });
 
@@ -5770,11 +5698,11 @@ describe('repeat-verification ticket carries the owed outputs', () => {
 });
 
 describe('debug prompt completion contract', () => {
-  it('states the completion evidence rule inside the DEBUG block', () => {
+  it('states the completion evidence rule in the repair Rules bound to a Bug', async () => {
     // The contract rejects done=true with actions=[] and no qualityAssessment, but the DEBUG block
     // never said so: a live run lost 36 Debugger turns across two models to that omission, each one
     // declaring the repair finished and being refused, so the Bug could never propagate.
-    const debugBlock = renderExecutionPromptPolicy({ debug: true, changeRequest: false });
+    const debugBlock = (await boundRuleBlock({ role: 'python-developer', work: 'repair.debug', stepWork: 'code.implement', language: 'python' })).content;
     expect(debugBlock).toMatch(/DEBUG mode/u);
     expect(debugBlock).toMatch(/done=true with actions=\[\] is rejected unless[\s\S]*qualityAssessment/u);
   });

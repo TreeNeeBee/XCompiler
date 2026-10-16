@@ -181,7 +181,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 - **Audit**：每次运行写入人类可读日志，并持久化带 correlation/causation ID 的领域 AuditEvent 和 Log 对象。
 - **Debug wiki**：Debugger 处理 Bug Ticket 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 Bug 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用；`log.md` 则保留为本地追加式操作流水，不由索引或摘要重建。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。Bug 的全部 CR 验证通过后才把 `bugResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
 - **Record/Replay**：针对 HTTP、LLM 和 Tool 的外部数据提供记录与重放；当前工程的代码、构建和测试始终真实执行，Replay 只提供外部 fixture，不复用旧进程退出码。Phase 交付门禁中的真实用户场景会关闭 Replay。
-- **Agent Skills**：内置文件、Web、测试、Debug、Record/Replay、Debug Wiki、依赖、评审、安全、性能、CR 和交付工作流。Planner 只读取 `name + description`，Run 只激活所选 Skill 的正文与按需资源；Plugin API 3 可引入标准 Skill 目录，但不能绕过 Runtime 权限、路径、Ticket 或门禁。
+- **Agent Skills**：内置文件、Web、测试、Debug、Record/Replay、Debug Wiki、依赖、评审、安全、性能、CR 和交付工作流。Planner 只读取 `name + description`，Run 只激活所选 Skill 的正文与按需资源；Plugin API 4 可引入标准 Skill 目录，但不能绕过 Runtime 权限、路径、Ticket 或门禁。
 - **安全门禁**：项目文件访问受控，写工具限制在 Step 声明 outputs 内，每个敏感操作都必须经过 Adapter 的明确权限策略；缺少授权处理器时默认拒绝。
 
 ---
@@ -221,7 +221,7 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 |---|---|
 | [docs/openrouter.md](docs/openrouter.md) | OpenRouter Free mode 与 OpenAI-compatible provider 配置 |
 | [docs/acp.md](docs/acp.md) | ACP Code Agent Adapter 协议说明 |
-| [docs/agent_skills.md](docs/agent_skills.md) | Agent Skills 标准、内置目录、安全边界与 Plugin API 3 |
+| [docs/agent_skills.md](docs/agent_skills.md) | Agent Skills 标准、内置目录、安全边界与 Plugin API 4 |
 | [docs/XCompiler_design.md](docs/XCompiler_design.md) | 核心设计与 V 模型概念 |
 | [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | 架构、归属、生命周期与目录布局等必须保持的工程约束 |
 | [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | 当前架构、PM/Ticket 生命周期、工作区与发布约束 |

@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "2c94ad78-ea25-5283-9904-9b873108da44"
+version: "1.0.0"
+title: "Module verification"
+slot: "0x0256"
+applicability:
+  works: [verify.module, repair.debug, change.apply]
+rules:
+  - id: "f2f41426-35e3-5fde-a2be-0d4282621d14"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Module verification: what this work delivers"
+    instruction:
+      en: |-
+        You verify delivered work against its acceptance criteria and report evidence.
+      zh: |-
+        你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: "43d0aeec-a231-566d-9be8-aea9ec30167e"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Module verification: how this work is done"
+    instruction:
+      en: |-
+        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: |-
+        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: "b80a9880-0075-5f62-ae96-2cae078d360a"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "Module verification: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not rewrite source to make a test pass.
+      zh: |-
+        不要为了让测试通过而改写源码。

@@ -13,8 +13,8 @@ describe('execution turn whole-response protocol', () => {
   it('keeps a complete turn unchanged and freezes the declared representation policy', () => {
     expect(parseTurn(text)).toEqual(turn);
     expect(isCompleteTurnJson(text)).toBe(true);
-    expect(EXECUTION_TURN_PROTOCOL).toEqual({ id: 'execution-turn', version: '1', root: 'object',
-      transformations: ['json-fence', 'trailing-comma', 'raw-string-control'] });
+    expect(EXECUTION_TURN_PROTOCOL).toEqual({ id: 'execution-turn', version: '2', root: 'object',
+      transformations: ['json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion'] });
     expect(Object.isFrozen(EXECUTION_TURN_PROTOCOL)).toBe(true);
     expect(Object.isFrozen(EXECUTION_TURN_PROTOCOL.transformations)).toBe(true);
     expect(Reflect.set(EXECUTION_TURN_PROTOCOL.transformations, '0', 'different-policy')).toBe(false);

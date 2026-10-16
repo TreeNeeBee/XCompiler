@@ -1,10 +1,12 @@
 import { z } from 'zod';
-import { RuleApplicabilitySchema, RuleDefinitionSchema, RuleSourceSchema, RULE_CATEGORIES } from '../../domain/rules/catalogue.js';
+import {
+  RuleApplicabilitySchema, RuleDefinitionSchema, RuleSourceSchema, RULE_CATEGORIES, ruleInstructionText,
+} from '../../domain/rules/catalogue.js';
 import {
   compareRuleIds, normalizedCosine, resolveRuleConflicts, ruleApplicability,
   RuleContextSchema, RuleRetrievalProfileSchema, type RuleSelectionEntry,
 } from '../../domain/rules/selection.js';
-import { assertRuleListSlotConsistency, isRuleListSlot, parseRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
+import { assertRuleListSlotConsistency, isBoundRuleSlot, isRuleListSlot, parseRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
 import { RuleDigestSchema, RuleEmbeddingIdentitySchema, RULE_VECTOR_INPUT_VERSION } from '../../domain/rules/vector_index.js';
 import { RulePromptEntrySchema } from './rule_decorator.js';
 import { canonicalRuleJson, ruleEvidenceDigest } from './rule_evidence_encoding.js';
@@ -140,7 +142,8 @@ export function finalizeRuleSelectionDraft(raw: RuleSelectionDraft, review?: Rul
     ...material,
     rules: resolved.rules.map(({ rule, list }) => ({
       ruleId: rule.id, ruleVersion: rule.version, ruleListId: list.definition.id,
-      ruleListVersion: list.definition.version, slot: list.definition.slot, level: rule.level, instruction: rule.instruction,
+      ruleListVersion: list.definition.version, slot: list.definition.slot, level: rule.level,
+      instruction: ruleInstructionText(rule.instruction, draft.context.locale),
     })),
     sources: resolved.rules.map(({ rule, list }) => ({
       ruleId: rule.id, category: rule.category, source: list.source, ruleApplicability: rule.applicability,
@@ -229,11 +232,13 @@ export function validateRuleRequestSnapshot(raw: unknown, logicalRequestId: stri
     }
     for (const rule of snapshot.rules) {
       const original = considered.get(rule.ruleId.toLowerCase());
-      if (!original || original.rule.version !== rule.ruleVersion || original.rule.instruction !== rule.instruction
+      if (!original || original.rule.version !== rule.ruleVersion
+        || ruleInstructionText(original.rule.instruction, snapshot.context.locale) !== rule.instruction
         || original.rule.level !== rule.level || original.slot !== rule.slot
         || original.ruleListId.toLowerCase() !== rule.ruleListId.toLowerCase()
         || original.ruleListVersion !== rule.ruleListVersion) throw new Error('Effective Rule content differs from considered material');
       if (rule.slot <= 0x00ff && !required.has(rule.ruleId.toLowerCase())) throw new Error('Protected Rule cannot be optional');
+      if (isBoundRuleSlot(rule.slot) && !required.has(rule.ruleId.toLowerCase())) throw new Error('Bound Rule cannot be optional');
       const key = rule.ruleListId.toLowerCase();
       if (listVersions.has(key) && listVersions.get(key) !== rule.ruleListVersion) throw new Error('Mixed RuleList versions');
       listVersions.set(key, rule.ruleListVersion);

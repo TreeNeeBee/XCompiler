@@ -505,9 +505,8 @@ export function buildPlan(
   );
   const mapped = calibrateArchitectureStepMappings(shaped, architectureModules);
   const contracted = injectArchitectureContractPrompts(mapped, architectureModules);
-  const languageContracted = injectLanguageContractPrompts(contracted, language);
   // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
-  const steps = calibratePlanCoverage(languageContracted, language).map(withDefaultQualityGate);
+  const steps = calibratePlanCoverage(contracted, language).map(withDefaultQualityGate);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
     language === 'python'
@@ -530,23 +529,6 @@ export function buildPlan(
     createdAt: new Date().toISOString(),
     steps,
   };
-}
-
-function injectLanguageContractPrompts(steps: Step[], language: Language): Step[] {
-  if (language !== 'typescript') return steps;
-  const contractBlock =
-    '\n\nTypeScript runtime/test contract（强制，覆盖本 Step 其它相反描述）：\n' +
-    '- 测试框架必须使用 Vitest：测试文件从 `vitest` 导入 `describe/it/expect/vi`，禁止 Jest API、`jest.fn`、`jest.spyOn`、`jest.mock`。\n' +
-    '- `package.json` 必须使用 `"test": "vitest run"`，`"build": "tsc --noEmit"`，并包含 `type: "module"`。\n' +
-    '- `tsconfig.json` 必须启用 `allowImportingTsExtensions: true`，并将产品 build/typecheck 的 include 限定为 `src/**/*.ts`、`src/**/*.tsx`；各阶段测试只由对应 Vitest 门禁执行，不得把未来阶段 tests 全量并入产品 build。\n' +
-    '- greenfield 项目的 HIGH_LEVEL_DESIGN 必须输出 `package.json`、`tsconfig.json` 与模块测试；CODE 阶段输出产品源码、单元测试计划与可执行单元测试，不再补写基础工程配置。\n' +
-    '- `devDependencies` 使用 `typescript`、`tsx`、`vitest`、`@vitest/coverage-v8`、`@types/node`，Vitest 与 coverage provider 使用兼容版本；禁止新增或要求 `jest`、`ts-jest`、`@types/jest`、`ts-node`、`nodemon`。\n' +
-    '- 本地源码导入必须使用显式 `.ts` ESM specifier，代码需兼容 Node 原生 TypeScript type stripping。\n' +
-    '- 时间相关测试必须冻结系统时钟或从当前时钟推导预期值；禁止一边调用 `new Date()` 一边硬编码年份。';
-  return steps.map((step) => {
-    if (step.systemPrompt.includes('TypeScript runtime/test contract')) return step;
-    return { ...step, systemPrompt: `${step.systemPrompt}${contractBlock}` };
-  });
 }
 
 function injectArchitectureContractPrompts(

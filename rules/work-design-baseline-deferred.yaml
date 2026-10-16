@@ -1,0 +1,20 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "7392536a-a097-5853-9d97-217c39397fd6"
+version: "1.0.0"
+title: "Declarative Step while its paired baseline execution is deferred"
+slot: "0x0241"
+applicability:
+  works: [analyze.requirements, design.high-level, design.detailed, change.apply]
+rules:
+  - id: "9fd05d19-a56e-574e-a505-9409dd9ed4df"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Paired baseline tests of a declarative Step are expected to fail until a later Step implements them"
+    instruction:
+      en: |-
+        Design Step: your deliverable is the specification and the tests paired with it. Those tests describe behaviour a later Step implements, so they are expected to fail now and are executed by your paired verification Step, not here. Run them only to check that they load and parse; a failing assertion is not a defect to repair, and implementing the product code to make them pass is another Step's work. Do not record that deferral as a quality gap: a gap is work this Step owed and did not deliver, and the gate fails the Step for every gap you report.
+      zh: |-
+        设计类 Step：交付物是规格说明及其配对测试。这些测试描述的是后续 Step 才会实现的行为，因此现在必然失败，并且由配对的验证 Step 执行，而不是在这里执行。只能用于检查测试能否加载和解析；断言失败不是需要修复的缺陷，为了让它们通过而实现产品代码属于其它 Step 的职责。不要把这种延后执行写成质量缺口：缺口指的是本 Step 应交付而未交付的工作，而门禁会因为你报告的每一条缺口判定本 Step 失败。

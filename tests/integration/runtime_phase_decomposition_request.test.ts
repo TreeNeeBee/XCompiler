@@ -93,7 +93,7 @@ function stepPlan(phaseId = 'P1', skill = 'old-skill') {
     sourcePaths: ['src/main.py'], testPaths: [testPath('MODULE_TEST')], dependencies: [] }], steps };
 }
 type WireRequest = { model: string; stream?: boolean; messages: ChatMessage[] };
-async function endpoint(reply: (call: number) => { output: string; finishReason?: string } = () => ({ output: JSON.stringify(stepPlan()) })) {
+async function endpoint(reply: (call: number) => { output: string; finishReason?: string; model?: string } = () => ({ output: JSON.stringify(stepPlan()) })) {
   const calls: WireRequest[] = [];
   const server = createServer((req, res) => {
     if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"data":[]}'); return; }
@@ -103,7 +103,7 @@ async function endpoint(reply: (call: number) => { output: string; finishReason?
       const request = JSON.parse(body) as WireRequest;
       calls.push(request);
       const next = reply(calls.length);
-      const model = { model: `${request.model}-actual` };
+      const model = { model: next.model ?? `${request.model}-actual` };
       if (request.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.write(`data: ${JSON.stringify({ ...model, choices: [{ index: 0, delta: { content: next.output }, finish_reason: null }] })}\n\n`);
@@ -206,7 +206,8 @@ describe('P03 retained Phase decomposition through Runtime', () => {
       expect(server.calls[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
       const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
       expect(snapshot).toMatchObject({ context: { role: 'planner', language: 'python', work: 'plan.decompose', ...(scope ? { projectId: scope } : {}) } });
-      expect(snapshot!.requiredRuleIds).toHaveLength(3);
+      expect(snapshot!.requiredRuleIds).toHaveLength(4);
+      expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software planner');
       if (!scope) expect(snapshot!.context).not.toHaveProperty('projectId');
       await expect(fs.stat(current.container.state.abs('rules', 'indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(records.filter(event => event.messageId === 'llm.phase_decomposition_judgement')).toHaveLength(1);
@@ -214,6 +215,22 @@ describe('P03 retained Phase decomposition through Runtime', () => {
       expect(current.boost).toHaveBeenCalledExactlyOnceWith('planner', 'success in role planner');
     },
   );
+
+  it('corrects unescaped inner quotes once, validates the Steps and restores the correction (D-3)', async () => {
+    const plan = stepPlan('P1');
+    plan.steps[0]!.description = 'Analyse the "format" command.';
+    const strict = JSON.stringify(plan);
+    const output = strict.replace('\\"format\\"', '"format"');
+    const server = await endpoint(call => (call === 1 ? { output } : { output: strict, model: 'planner-model-actual' }));
+    const current = await fixture(server.url);
+    const result = await current.decompose({ ...plannerInput, intent: 'greenfield' }, phasePlan('P1'));
+    expect(result.steps[0]!.description).toBe('Analyse the "format" command.');
+    expect(server.calls).toHaveLength(2);
+    const records = await current.events();
+    expect(records.find(event => event.messageId === 'llm.phase_decomposition_judgement')!.data)
+      .toMatchObject({ protocolCorrection: { claimId: expect.any(String) } });
+    expect(await current.resume(capturedInputs(records)[0]!.logicalRequestId)).toMatchObject({ status: 'recovered', text: strict });
+  });
 
   it('checks captured Skill names in the existing candidate-feedback loop before adoption', async () => {
     const server = await endpoint(call => ({ output: JSON.stringify(stepPlan('P1', call === 1 ? 'unknown-skill' : 'old-skill')) }));

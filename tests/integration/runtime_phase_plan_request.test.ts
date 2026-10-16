@@ -87,7 +87,7 @@ function phasePlan() {
   };
 }
 const accepted = () => JSON.stringify(phasePlan());
-type WireReply = { output: string; finishReason?: string; reportedModel?: boolean };
+type WireReply = { output: string; finishReason?: string; reportedModel?: boolean; model?: string };
 type WireRequest = { model: string; stream?: boolean; messages: ChatMessage[] };
 async function endpoint(reply: (call: number) => WireReply = () => ({ output: accepted() })) {
   const calls: WireRequest[] = [];
@@ -103,7 +103,7 @@ async function endpoint(reply: (call: number) => WireReply = () => ({ output: ac
       const request = JSON.parse(body) as WireRequest;
       calls.push(request);
       const next = reply(calls.length);
-      const model = next.reportedModel === false ? {} : { model: `${request.model}-actual` };
+      const model = next.reportedModel === false ? {} : { model: next.model ?? `${request.model}-actual` };
       const finish = next.finishReason ?? 'stop';
       if (request.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -224,9 +224,10 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
     expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'planner', work: PLANNING_REQUEST_CONTEXTS['phase-plan'], language: 'python' } });
     expect(snapshot!.context).not.toHaveProperty('projectId');
-    expect(snapshot!.requiredRuleIds).toHaveLength(3);
-    expect(snapshot!.rules).toHaveLength(3);
-    expect(snapshot!.rules.every(rule => rule.slot === 0)).toBe(true);
+    // Runtime binds genesis and the planner's identity; a Python project has no language list.
+    expect(snapshot!.requiredRuleIds).toHaveLength(4);
+    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0202]);
+    expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software planner');
     const metadata = JSON.parse(await fs.readFile(path.join(current.ledger, 'requests', `${original.logicalRequestId}.json`), 'utf8')) as BusinessRequestInputRecord;
     expect(metadata.inputDigest).toBe(businessRequestInputDigest(original));
     expect(metadata).not.toHaveProperty('auditContext');
@@ -236,6 +237,26 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
     await expect(fs.stat(current.container.state.abs('rules', 'indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(current.boost).toHaveBeenCalledExactlyOnceWith('planner', 'success in role planner');
     expect(current.decay).not.toHaveBeenCalled();
+  });
+
+  it('corrects unescaped inner quotes once and passes the correction to the original business parser (D-3)', async () => {
+    const plan = phasePlan();
+    plan.requirementDigest = 'Print the "hello" greeting.';
+    const strict = JSON.stringify(plan);
+    const output = strict.replace('\\"hello\\"', '"hello"');
+    const server = await endpoint(call => (call === 1 ? { output } : { output: strict, model: 'planner-model-actual' }));
+    const current = await fixture(server.url);
+    const material = requestMaterial();
+    const business = vi.fn((text: string) => { parsePhasePlanResponse(text, material.payload.parseContext); });
+    const result = await current.port.send({ operationId: randomUUID(), ...material, validate: business });
+    expect(result.text).toBe(strict);
+    expect(business).toHaveBeenCalledExactlyOnceWith(strict);
+    expect(server.calls).toHaveLength(2);
+    expect((await current.events()).find(event => event.messageId === 'llm.phase_plan_judgement')!.data)
+      .toMatchObject({ protocolCorrection: { claimId: expect.any(String) } });
+    const original = inputEvents(await current.events())[0]!;
+    expect(await current.resume(original.logicalRequestId)).toMatchObject({ status: 'recovered', text: strict,
+      phasePlan: { requirementDigest: 'Print the "hello" greeting.' } });
   });
 
   it.each(['json-fence', 'trailing-comma', 'raw-string-control'] as const)('proves %s value preservation before passing normalized text to the original business parser', async (transform) => {

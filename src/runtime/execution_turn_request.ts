@@ -23,6 +23,10 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeExecutionBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import { stepWork } from '../domain/workflow/work.js';
+import {
+  correctRuntimeProtocolResponse, protocolCorrectionReference, recoverAdoptedProtocolText, type RuntimeProtocolCorrection,
+} from './protocol_correction.js';
 
 export class ExecutionTurnResponseProtocolError extends Error {
   readonly code = 'execution_turn_response_protocol_invalid';
@@ -59,12 +63,31 @@ export function createRuntimeExecutionTurnRequestPort(input: {
       assertBusinessRequestAuditContext({ logicalRequestId, owner, templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
         outputProtocol: EXECUTION_TURN_PROTOCOL, auditContext: payload });
       const candidateValidationEnabled = payload.validation.completionQuality || payload.validation.debuggerRecovery;
+      // A corrected reply passes the same business contract as an original one.
+      const validateTurn = async (text: string) => {
+        signal?.throwIfAborted();
+        try { await validate(text); }
+        catch (cause) {
+          if (isCancellationError(cause, signal) || !(cause instanceof ExecutionTurnContractViolation)) throw cause;
+          // These checks are enabled only by the caller's original quality/debug conditions.
+          if (!candidateValidationEnabled) throw cause;
+          throw new ResponseValidationRejection('business', cause);
+        }
+        signal?.throwIfAborted();
+      };
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
+      // One selection per execution (D-6): the first round selects and pins it under the execution
+      // ID; later rounds read that snapshot, so retrieval and low-score review run once.
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool,
-        logicalRequestId, context: { role: scope.role, language: payload.parseContext.language,
-          work: scope.work, projectId: scope.projectId }, required: [],
+        logicalRequestId: scope.executionId, context: { role: scope.role, language: payload.parseContext.language,
+          work: scope.work, projectId: scope.projectId, locale: payload.locale },
+        bind: { role: scope.role, language: payload.parseContext.language, work: scope.work,
+          stepWork: stepWork(payload.promptContext.step.phase),
+          baselineDeferred: payload.validation.baselineExecutionDeferred },
         taskSummary: payload.promptContext.step.description, errorSummary: payload.promptContext.debugContext?.reason, signal });
       signal?.throwIfAborted();
+      // At most one correction per logical request; keyed by the attempt whose reply it corrected.
+      const corrections = new Map<string, RuntimeProtocolCorrection>();
       const sent = await sendRuntimeExecutionBusinessRequest({ container, audit, router, options,
         request: { logicalRequestId, owner,
           templateVersion: EXECUTION_TURN_TEMPLATE_VERSION, outputProtocol: EXECUTION_TURN_PROTOCOL,
@@ -81,31 +104,31 @@ export function createRuntimeExecutionTurnRequestPort(input: {
           try { text = executionProtocolText(response); }
           catch (cause) {
             if (!(cause instanceof ExecutionTurnResponseProtocolError)) throw cause;
+            const corrected = await correctRuntimeProtocolResponse({ container, router, audit, response,
+              protocol: EXECUTION_TURN_PROTOCOL, signal });
+            if (corrected) {
+              corrections.set(response.providerAttemptId.toLowerCase(), corrected);
+              return validateTurn(corrected.text);
+            }
             if (candidateValidationEnabled) throw new ResponseValidationRejection('protocol', cause);
             throw new ExecutionTurnRoundRefusal(cause.assessment.status === 'assessed' ? 'protocol' : 'completion',
               cause.output, { assessment: cause.assessment, feedback: cause.assessment.status === 'assessed'
                 ? { stage: 'protocol', result: cause.assessment.result }
                 : { stage: 'completion', reason: cause.assessment.reason } }, { cause });
           }
-          signal?.throwIfAborted();
-          try { await validate(text); }
-          catch (cause) {
-            if (isCancellationError(cause, signal) || !(cause instanceof ExecutionTurnContractViolation)) throw cause;
-            // These checks are enabled only by the caller's original quality/debug conditions.
-            if (!candidateValidationEnabled) throw cause;
-            throw new ResponseValidationRejection('business', cause);
-          }
-          signal?.throwIfAborted();
+          return validateTurn(text);
         },
       });
       signal?.throwIfAborted();
       const processed = await recovery.process(sent.source, signal);
       signal?.throwIfAborted();
-      const text = executionProtocolText(sent.source.response);
+      const correction = corrections.get(sent.source.response.providerAttemptId.toLowerCase());
+      const text = correction?.text ?? executionProtocolText(sent.source.response);
       await audit.event('llm.response', 'Execution candidate passed its original turn contract', {
         messageId: 'llm.execution_turn_judgement', logicalRequestId, owner, round: payload.round,
         responseRecordId: processed.record.responseRecordId, responseRecordDigest: processed.record.digest,
         protocolResultId: processed.result.resultRecordId, protocolResultDigest: processed.result.digest,
+        ...(correction ? { protocolCorrection: protocolCorrectionReference(correction) } : {}),
       }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } });
       signal?.throwIfAborted();
       return Object.freeze({ text, provider: sent.source.response.provider });
@@ -129,7 +152,8 @@ export async function resumeRuntimeExecutionTurnRequest(input: {
   }
   const payload = validateExecutionTurnPayload(original.auditContext);
   validateExecutionTurnRequestMessages(original.messages);
-  const text = executionProtocolText(restored.source.response);
+  const text = await recoverAdoptedProtocolText({ container, response: restored.source.response, signal,
+    read: executionProtocolText, protocolError: ExecutionTurnResponseProtocolError });
   const turn = validateExecutionTurnResponse(text, payload);
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,

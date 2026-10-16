@@ -8,7 +8,7 @@ import {
   validateProtocolCorrectionResult,
   type ProtocolCorrectionClaim, type ProtocolCorrectionEvidence, type ProtocolCorrectionResult,
 } from './protocol_correction_state.js';
-import { JSON_PROOF_VERSION } from './protocol_json.js';
+import { admitsEscapeInsertion, JSON_PROOF_VERSION } from './protocol_json.js';
 import { ProtocolCorrectionAuditBindingSchema } from './request_binding.js';
 import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
 
@@ -147,7 +147,7 @@ export class LLMProtocolCorrectionEvidence implements ProtocolCorrectionEvidence
       throw this.mismatch(claim, 'original');
     }
     const inspection = assessJsonProtocolResponse(original, claim.outputProtocol);
-    if (inspection.status !== 'assessed' || inspection.result.status !== 'repairable') {
+    if (inspection.status !== 'assessed' || !admitsEscapeInsertion(inspection.result)) {
       throw new ProtocolCorrectionEvidenceError('invalid', { logicalRequestId: claim.logicalRequestId, field: 'original-eligibility' });
     }
     const prompt = createJsonProtocolCorrectionPrompt(original.output, claim.outputProtocol);

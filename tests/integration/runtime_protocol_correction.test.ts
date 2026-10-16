@@ -11,7 +11,7 @@ import { createJsonProtocolCorrectionPrompt } from '../../src/llm/protocol_corre
 import type { JsonOutputProtocol } from '../../src/llm/protocol_json.js';
 import type { RoutedResponseEvidence } from '../../src/llm/response_evidence.js';
 import { LLMRouter } from '../../src/llm/router.js';
-import { createRuntimeProtocolCorrection } from '../../src/runtime/protocol_correction.js';
+import { createRuntimeProtocolCorrection, recoverRuntimeProtocolCorrection } from '../../src/runtime/protocol_correction.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 
 let root: string;
@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 const protocol: JsonOutputProtocol = {
-  id: 'fixture-object', version: '1', root: 'object', transformations: ['trailing-comma'],
+  id: 'fixture-object', version: '2', root: 'object', transformations: ['trailing-comma', 'escape-insertion'],
 };
 type Request = { model: string; messages: { role: string; content: string }[] };
 
@@ -60,7 +60,7 @@ async function endpoint(outputs: readonly string[]) {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, requests };
 }
 
-async function fixture(outputs: readonly string[] = ['{"count":1,}', '{"count":1}']) {
+async function fixture(outputs: readonly string[] = ['{"note":"a"b"}', '{"note":"a\\"b"}']) {
   const wire = await endpoint(outputs);
   const container = new ProjectContainer(path.join(root, 'project'));
   await container.canonical().workspace.ensure('.');
@@ -128,6 +128,16 @@ describe('Runtime protocol correction state ownership and recovery', () => {
     ]) await expect(fs.stat(unexpected)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('recovers an adopted correction only for the reply it corrected', async () => {
+    const f = await fixture();
+    await f.correction.correctOnce({ original: f.original, protocol });
+    const container = new ProjectContainer(f.container.root);
+    expect(await recoverRuntimeProtocolCorrection({ container, logicalRequestId: f.original.logicalRequestId,
+      originalProviderAttemptId: f.original.providerAttemptId })).toMatchObject({ text: '{"note":"a\\"b"}' });
+    expect(await recoverRuntimeProtocolCorrection({ container, logicalRequestId: f.original.logicalRequestId,
+      originalProviderAttemptId: randomUUID() })).toBeUndefined();
+  });
+
   it('reports not-started without requiring audit, creating state or constructing a transport', async () => {
     const container = new ProjectContainer(path.join(root, 'empty-project'));
     await fs.mkdir(container.root);
@@ -154,7 +164,7 @@ describe('Runtime protocol correction state ownership and recovery', () => {
   });
 
   it.each(['missing', 'changed', 'redacted'] as const)('fails recovery when original raw evidence is %s', async (change) => {
-    const f = await fixture(['{"note":"Bearer fixture-value-only",}', '{"note":"Bearer fixture-value-only"}']);
+    const f = await fixture(['{"note":"say "Bearer fixture-value-only""}', '{"note":"say \\"Bearer fixture-value-only\\""}']);
     const completed = await f.correction.correctOnce({ original: f.original, protocol });
     expect(completed.status).toBe('completed');
     const before = await fs.readFile(f.claimPath, 'utf8');
@@ -168,7 +178,7 @@ describe('Runtime protocol correction state ownership and recovery', () => {
       const data = retained[originalIndex]!.data!;
       const response = data.responseEvidence as RoutedResponseEvidence;
       if (response.capture.status !== 'recorded') throw new Error('Expected recorded evidence');
-      const output = '{"note":"changed value",}';
+      const output = '{"note":"changed "value"}';
       data.output = output;
       data.responseEvidence = { ...response, output,
         capture: { ...response.capture, response: { ...response.capture.response, output } },

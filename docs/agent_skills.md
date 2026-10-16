@@ -65,7 +65,7 @@ Selecting a Skill does not grant unrestricted access:
   EditGuard still constrain every Tool call.
 - Skill resources are available only while that Skill is active and cannot traverse or follow a
   symbolic link outside the Skill directory.
-- Plugin Skill metadata is validated before plugin module import. Plugin API 3 rejects conflicting
+- Plugin Skill metadata is validated before plugin module import. The Plugin API (since version 3) rejects conflicting
   names instead of overriding a built-in or earlier Plugin Skill.
 
 Skills do not replace PM planning, Ticket routing, V-model transitions, Git ChangeSets, or delivery
@@ -96,7 +96,7 @@ gates. Those remain deterministic Runtime and Domain responsibilities.
 | `code-review` | Review correctness, architecture, security, and missing tests |
 | `security-boundary-review` | Review paths, permissions, subprocess, network, plugin, and secret boundaries |
 | `verification-before-delivery` | Require fresh evidence before delivery claims |
-| `skill-authoring` | Create and validate Agent Skills for XCompiler Plugin API 3 |
+| `skill-authoring` | Create and validate Agent Skills for XCompiler Plugin API 4 |
 
 Record/Replay and Debug Wiki use hybrid designs. Their Skills teach the Agent how to prepare,
 evaluate, and route evidence; Runtime controllers retain mode selection, persistence, redaction,
@@ -120,7 +120,7 @@ Generic planning, worktree management, Git operations, permissions, and Ticket r
 Agent catalogs are intentionally not imported as Skills: XCompiler already owns those operations in
 PM, Runtime, Domain policies, and guarded application services.
 
-## Plugin API 3
+## Plugin API 4
 
 A plugin declares Skill roots relative to its plugin root:
 
@@ -128,8 +128,8 @@ A plugin declares Skill roots relative to its plugin root:
 {
   "id": "example.checks",
   "version": "1.0.0",
-  "apiVersion": 3,
-  "minXCompilerVersion": "0.3.0",
+  "apiVersion": 4,
+  "minXCompilerVersion": "0.4.0",
   "skills": ["skills"]
 }
 ```

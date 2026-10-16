@@ -10,7 +10,7 @@ import type { ChatMessage } from '../src/llm/types.js';
 
 /** A protocol boundary returning the chosen reply with complete producer evidence. */
 function sendReturning(answer: string, observe?: (messages: readonly ChatMessage[]) => void) {
-  return async (messages: readonly ChatMessage[]): Promise<BusinessProtocolAssessment> => {
+  return async (messages: readonly ChatMessage[]): Promise<{ assessment: BusinessProtocolAssessment }> => {
     observe?.(messages);
     const inspection = assessJsonProtocolResponse({
       logicalRequestId: 'abababab-abab-4bab-8bab-abababababab',
@@ -24,8 +24,8 @@ function sendReturning(answer: string, observe?: (messages: readonly ChatMessage
           value: { content: answer } }] },
       } },
     }, SCENARIO_OUTCOME_PROTOCOL);
-    return { outcome: inspection.status === 'ineligible' ? 'ineligible'
-      : inspection.result.status === 'valid' ? 'valid' : 'unresolved', inspection };
+    return { assessment: { outcome: inspection.status === 'ineligible' ? 'ineligible'
+      : inspection.result.status === 'valid' ? 'valid' : 'unresolved', inspection } };
   };
 }
 

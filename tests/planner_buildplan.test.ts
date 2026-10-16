@@ -5,6 +5,7 @@ import { lintPlan } from '../src/domain/planning/plan_lint.js';
 import { PlanSchema } from '../src/domain/planning/execution_plan.js';
 import { renderPlanMarkdown } from '../src/application/planning/plan_renderer.js';
 import type { Step } from '../src/domain/planning/execution_plan.js';
+import { boundRuleBlock } from './support/compiler_rules.js';
 
 const baseStep = (over: Partial<Step>): Step =>
   ({
@@ -89,7 +90,7 @@ describe('buildPlan — Step id 规整', () => {
     expect(plan.steps[0]?.outputs).toContain('tests/unit_s001.test.ts');
   });
 
-  it('校准 TypeScript greenfield 的 package.json 与测试文件产物归属', () => {
+  it('校准 TypeScript greenfield 的 package.json 与测试文件产物归属', async () => {
     const draft = {
       requirementDigest: 'TypeScript CLI report tool',
       globalPrompt: 'Read configured sources, generate a markdown report, and expose a CLI.',
@@ -151,10 +152,14 @@ describe('buildPlan — Step id 规整', () => {
 
     expect(hld?.outputs).toContain('package.json');
     expect(hld?.outputs).toContain('tsconfig.json');
-    expect(hld?.systemPrompt).toContain('TypeScript runtime/test contract');
-    expect(hld?.systemPrompt).toContain('"test": "vitest run"');
-    expect(hld?.systemPrompt).toContain('`tsconfig.json`');
-    expect(hld?.systemPrompt).toContain('禁止新增或要求 `jest`');
+    // The runtime/test contract is the TypeScript RuleList (0x0101) bound to every TS execution;
+    // the plan no longer copies it into each Step.
+    expect(hld?.systemPrompt).not.toContain('TypeScript runtime/test contract');
+    const contract = (await boundRuleBlock({ role: 'system-architect', work: 'design.high-level',
+      stepWork: 'design.high-level', language: 'typescript' }, 'zh')).content;
+    expect(contract).toContain('"test\\": \\"vitest run\\"');
+    expect(contract).toContain('`tsconfig.json`');
+    expect(contract).toContain('禁止新增或要求 `jest`');
     expect(code?.outputs).not.toContain('package.json');
     expect(code?.outputs).not.toContain('tsconfig.json');
     expect(code?.outputs).not.toContain('tests/record-reader.test.ts');

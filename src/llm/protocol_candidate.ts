@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { assessResponseCompletion } from './completion_eligibility.js';
-import { inspectJsonProtocol, proveJsonProtocolCorrection, type JsonOutputProtocol } from './protocol_json.js';
+import { inspectJsonProtocol, proveJsonEscapeInsertion, type JsonOutputProtocol } from './protocol_json.js';
 import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
 
 /** Internal C1 entry: provider facts precede parsing or representation repair. No caller validation. */
@@ -63,6 +63,8 @@ export function assessJsonProtocolCorrection(
     || target.requestedModel !== producingModel || target.reportedModels[0] !== producingModel) {
     return rejectBinding('producer-mismatch');
   }
+  // Model correction exists only for E1-admitted originals, so its candidate needs the
+  // escape-insertion proof; deterministic normalization keeps the value-correspondence proof.
   return Object.freeze({ ...base, status: 'assessed' as const,
-    result: proveJsonProtocolCorrection(original.data.output, corrected.data.output, protocol) });
+    result: proveJsonEscapeInsertion(original.data.output, corrected.data.output, protocol) });
 }

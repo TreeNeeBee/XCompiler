@@ -14,10 +14,11 @@ import { ModelPoolBindingSchema, type ChatMessage } from '../../llm/types.js';
 import type { SkillOperationWindow } from '../../llm/window.js';
 
 export const EXECUTION_TURN_TEMPLATE_VERSION = 'execution-turn/1' as const;
-const TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
+// Version 2 permits one model escape-insertion correction (D-3).
+const TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion'];
 Object.freeze(TRANSFORMATIONS);
 export const EXECUTION_TURN_PROTOCOL: JsonOutputProtocol = Object.freeze({
-  id: 'execution-turn', version: '1', root: 'object', transformations: TRANSFORMATIONS,
+  id: 'execution-turn', version: '2', root: 'object', transformations: TRANSFORMATIONS,
 });
 
 const ObjectId = ObjectIdSchema.transform(value => ObjectIdSchema.parse(value.toLowerCase()));

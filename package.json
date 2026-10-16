@@ -1,6 +1,6 @@
 {
   "name": "@xcompiler/cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "XCompiler — AI Software Factory: V-model driven, multi-LLM orchestrated software development agent.",
   "license": "Apache-2.0",
   "type": "module",
@@ -94,8 +94,8 @@
     "commander": "^15.0.0",
     "dotenv": "^17.4.2",
     "ora": "^9.4.1",
-    "simple-git": "^3.27.0",
-    "undici": "^7.29.0",
+    "simple-git": "^4.0.2",
+    "undici": "^7.30.1",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -118,6 +118,6 @@
     "node": ">=24"
   },
   "xcompiler": {
-    "pluginApiVersion": 3
+    "pluginApiVersion": 4
   }
 }

@@ -263,6 +263,27 @@ describe('Runtime recovery of the original business response', () => {
     expect(server.calls).toHaveLength(1);
   });
 
+  it.each(['logical-id', 'attempt-id', 'provider', 'model', 'output', 'unavailable'] as const)(
+    'refuses to adopt a live response with a changed %s before retaining anything', async change => {
+      const server = await endpoint();
+      const current = await fixture({ endpoint: server.url });
+      const sent = await current.send();
+      const response = structuredClone(sent.source.response);
+      if (change === 'logical-id') response.logicalRequestId = randomUUID();
+      if (change === 'attempt-id') response.providerAttemptId = randomUUID();
+      if (change === 'provider') response.provider = 'another-provider';
+      if (change === 'model') response.model = 'another-model';
+      if (change === 'output') response.output = '{"changed":true}';
+      const changed = change === 'unavailable'
+        ? { ...response, capture: { status: 'unavailable' as const, reason: 'missing' as const, observations: [] } } : response;
+      await expect(current.recovery.process({ ...sent.source, response: changed })).rejects.toMatchObject({
+        code: 'business_response_failed', reason: change === 'unavailable' ? 'response_unavailable' : 'identity_conflict',
+      });
+      await absent(current.responsePath);
+      await absent(current.resultPath);
+    },
+  );
+
   it('does not recreate missing input authority from the live source before processing', async () => {
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
@@ -277,7 +298,7 @@ describe('Runtime recovery of the original business response', () => {
     expect(server.calls).toHaveLength(1);
   });
 
-  it.each(['input-audit', 'provider-response'] as const)('checks the persisted %s before adopting or processing a live reply', async damage => {
+  it.each(['input-audit', 'provider-response'] as const)('adopts a live reply without reading a damaged %s, which recovery then rejects', async damage => {
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
     const sent = await current.send();
@@ -288,12 +309,11 @@ describe('Runtime recovery of the original business response', () => {
       input.messages[1]!.content = 'Altered current observation';
     } else events.find(item => item.messageId === 'llm.provider_response')!.data!.output = 'Altered wire reply';
     await writeEvents(current.auditPath, events);
-    await expect(current.recovery.process(sent.source)).rejects.toMatchObject({
+    expect(await current.recovery.process(sent.source)).toMatchObject({ status: 'processed' });
+    await expect(current.resume()).rejects.toMatchObject({
       code: damage === 'input-audit' ? 'business_request_input_failed' : 'business_request_attempt_failed',
       reason: 'audit_mismatch',
     });
-    await absent(current.responsePath);
-    await absent(current.resultPath);
     expect(server.calls).toHaveLength(1);
   });
 
@@ -358,7 +378,7 @@ describe('Runtime recovery of the original business response', () => {
     expect(server.calls).toHaveLength(1);
   });
 
-  it.each(['response', 'result'] as const)('rejects changed %s audit written at the actual publication boundary', async kind => {
+  it.each(['response', 'result'] as const)('publishes live past a changed %s audit, which recovery then rejects', async kind => {
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
     const sent = await current.send();
@@ -374,8 +394,7 @@ describe('Runtime recovery of the original business response', () => {
       }
       return original(eventKind, message, data, options);
     });
-    await expect(current.recovery.process(sent.source)).rejects.toMatchObject({ code: 'business_response_failed', reason: 'audit_mismatch' });
-    if (kind === 'response') await absent(current.resultPath);
+    expect(await current.recovery.process(sent.source)).toMatchObject({ status: 'processed' });
     await expect(current.resume()).rejects.toMatchObject({ code: 'business_response_failed', reason: 'audit_mismatch' });
     expect(server.calls).toHaveLength(1);
   });

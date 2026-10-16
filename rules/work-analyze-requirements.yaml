@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "adf92e3c-3880-5b25-acee-e21dacffa571"
+version: "1.0.0"
+title: "Requirement analysis"
+slot: "0x0250"
+applicability:
+  works: [analyze.requirements, repair.debug, change.apply]
+rules:
+  - id: "5589ad7d-1229-5301-9e11-042e4d50f07d"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Requirement analysis: what this work delivers"
+    instruction:
+      en: |-
+        You turn a request into verifiable requirements and own the functional baseline tests paired with acceptance.
+      zh: |-
+        你负责把请求转化为可验证的需求，并负责与验收配对的功能基线测试。
+  - id: "9b94d91a-8e95-5fe9-8565-d6de1c161e0b"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Requirement analysis: how this work is done"
+    instruction:
+      en: |-
+        State observable behaviour and author executable functional baseline cases from it.
+      zh: |-
+        描述可观察的行为，并据此编写可执行的功能基线用例。
+  - id: "5796b963-2703-5f4f-b790-e03a4d5768ae"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "Requirement analysis: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not implement the solution.
+      zh: |-
+        不要实现解决方案。

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { build, type Options } from 'tsup';
 import { describe, expect, it } from 'vitest';
-import { loadCompilerRuleCatalogue } from '../../src/infrastructure/rules/compiler_rule_catalogue.js';
+import { COMPILER_RULE_MANIFEST, loadCompilerRuleCatalogue } from '../../src/infrastructure/rules/compiler_rule_catalogue.js';
 import npmBuildConfig from '../../tsup.config.js';
 import standaloneBuildConfig from '../../tsup.pkg.config.js';
 
@@ -13,9 +13,10 @@ const execute = promisify(execFile);
 const repositoryRoot = path.resolve(__dirname, '..', '..');
 const npmLayouts = Array.isArray(npmBuildConfig) ? npmBuildConfig : [npmBuildConfig];
 const layouts = [...npmLayouts, standaloneBuildConfig] as Options[];
-const requiredRuleSources = ['genesis.yaml', 'scenario-outcome.yaml'] as const;
+// Every compiler RuleList the loader requires is a required release source.
+const requiredRuleSources = COMPILER_RULE_MANIFEST.map((entry) => entry.relativePath);
 
-describe('installed knowledge, role and compiler rule resources', () => {
+describe('installed knowledge and compiler rule resources', () => {
   for (const layout of layouts) {
     it(`loads the installation's resources from ${layout.outDir} without trusting cwd or environment rules`, async () => {
       const temporaryRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-installed-resources-')));
@@ -36,7 +37,7 @@ describe('installed knowledge, role and compiler rule resources', () => {
         // Neither a directory scan nor an environment override may grant this file authority.
         await fs.writeFile(path.join(installedRules, 'unexpected.yaml'), 'unregistered rule: [');
         const sourceCatalogue = await loadCompilerRuleCatalogue(path.join(repositoryRoot, 'rules'));
-        expect(sourceCatalogue.lists).toHaveLength(2);
+        expect(sourceCatalogue.lists).toHaveLength(requiredRuleSources.length);
         const expectedRules = sourceCatalogue.lists.map(({ definition }) => ({
           id: definition.id,
           version: definition.version,
@@ -50,15 +51,10 @@ describe('installed knowledge, role and compiler rule resources', () => {
             { recursive: true },
           );
         }
-        const roleDirectory = path.join(installationRoot, '.xcompiler', 'roles');
-        await fs.mkdir(roleDirectory, { recursive: true });
-        const rolePrompt = 'Use the role instructions from this installation.';
-        await fs.writeFile(path.join(roleDirectory, 'developer.json'), JSON.stringify({ rolePrompt }));
 
         const entry = path.join(temporaryRoot, 'probe.ts');
         await fs.writeFile(entry, `
 import { FileDebugWiki, defaultDebugWikiPath, bundledDebugWikiPath } from ${JSON.stringify(path.join(repositoryRoot, 'src/infrastructure/knowledge/file_debug_wiki.ts'))};
-import { defaultRoleTemplatePath, loadRoleTemplates } from ${JSON.stringify(path.join(repositoryRoot, 'src/infrastructure/roles/role_template_store.ts'))};
 import { installedCompilerRulesRoot } from ${JSON.stringify(path.join(repositoryRoot, 'src/config/installation_root.ts'))};
 import { loadCompilerRuleCatalogue } from ${JSON.stringify(path.join(repositoryRoot, 'src/infrastructure/rules/compiler_rule_catalogue.ts'))};
 async function main() {
@@ -81,12 +77,9 @@ async function main() {
   }
   const wiki = new FileDebugWiki(defaultDebugWikiPath());
   await wiki.load();
-  const roles = await loadRoleTemplates(defaultRoleTemplatePath());
   process.stdout.write(JSON.stringify({
     wikiRoot: wiki.rootPath,
     bundledRoot: bundledDebugWikiPath(),
-    roleRoot: defaultRoleTemplatePath(),
-    rolePrompt: roles.developer?.rolePrompt,
     ruleRoot,
     rules,
   }));
@@ -96,7 +89,12 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
         expect(layout.outDir).toBeTypeOf('string');
         const outDir = path.join(installationRoot, layout.outDir!);
         // Keep the real output layout, format and shims. Inline this probe's dependencies so it
-        // can execute outside the checkout without borrowing the repository's node_modules.
+        // can execute outside the checkout without borrowing the repository's node_modules. The
+        // real ESM layouts keep dependencies external, where Node loads CommonJS packages itself;
+        // once inlined into ESM, those packages need a real `require` to load builtins such as
+        // `process`, so the probe (only) supplies one.
+        const esm = [layout.format].flat().includes('esm');
+        const banner = (layout.banner && typeof layout.banner === 'object' ? layout.banner.js : undefined) ?? '';
         await build({
           ...layout,
           entry: { probe: entry },
@@ -105,6 +103,8 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
           dts: false,
           silent: true,
           noExternal: [/^(?!node:).*/],
+          ...(esm ? { banner: { js: [banner, "import { createRequire as __probeRequire } from 'node:module';",
+            'const require = __probeRequire(import.meta.url);'].filter(Boolean).join('\n') } } : {}),
         });
         const outputs = (await fs.readdir(outDir)).filter((file) => /^probe\.(?:js|mjs|cjs)$/u.test(file));
         expect(outputs.length).toBeGreaterThan(0);
@@ -117,8 +117,6 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
           expect(JSON.parse(stdout)).toEqual({
             wikiRoot: path.join(installationRoot, '.xcompiler', 'debug-wiki'),
             bundledRoot: path.join(installationRoot, 'debug-wiki'),
-            roleRoot: roleDirectory,
-            rolePrompt,
             ruleRoot: installedRules,
             rules: expectedRules,
           });
@@ -165,7 +163,7 @@ main().catch((error) => { console.error(error); process.exitCode = 1; });
 });
 
 describe('compiler rule release attachments', () => {
-  it('includes both released compiler Rule sources in the npm package file list', async () => {
+  it('includes every released compiler Rule source in the npm package file list', async () => {
     const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-npm-resources-'));
     try {
       const { stdout } = await execute(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
@@ -181,11 +179,19 @@ describe('compiler rule release attachments', () => {
     }
   }, 40_000);
 
+  it('lists exactly the compiler Rule manifest as required standalone release sources', async () => {
+    const script = await fs.readFile(path.join(repositoryRoot, 'scripts', 'package.sh'), 'utf8');
+    const listed = /REQUIRED_RULE_SOURCES=\(([^)]*)\)/u.exec(script)?.[1]?.split(/\s+/u).filter(Boolean);
+    expect(listed).toEqual(requiredRuleSources.map((source) => `rules/${source}`));
+  });
+
+  const allExcept = (missing: string) => requiredRuleSources.filter((source) => source !== missing);
   it.each([
-    { layout: 'absent directory', missing: 'genesis.yaml', installed: [] },
-    { layout: 'empty directory', missing: 'genesis.yaml', installed: [] },
-    { layout: 'missing genesis', missing: 'genesis.yaml', installed: ['scenario-outcome.yaml'] },
-    { layout: 'missing scenario rubric', missing: 'scenario-outcome.yaml', installed: ['genesis.yaml'] },
+    { layout: 'absent directory', missing: 'genesis.yaml', installed: [] as string[] },
+    { layout: 'empty directory', missing: 'genesis.yaml', installed: [] as string[] },
+    { layout: 'missing genesis', missing: 'genesis.yaml', installed: allExcept('genesis.yaml') },
+    { layout: 'missing a role list', missing: 'role-planner.yaml', installed: allExcept('role-planner.yaml') },
+    { layout: 'missing scenario rubric', missing: 'scenario-outcome.yaml', installed: allExcept('scenario-outcome.yaml') },
   ])(
     'stops standalone packaging before building with $layout',
     async ({ layout, missing, installed }) => {
@@ -213,7 +219,7 @@ describe('compiler rule release attachments', () => {
     },
   );
 
-  it.each(requiredRuleSources)('rejects staging publication when %s disappears after source preflight', async (missing) => {
+  it.each(['genesis.yaml', 'work-code-implement.yaml', 'scenario-outcome.yaml'])('rejects staging publication when %s disappears after source preflight', async (missing) => {
     const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-missing-staged-rule-'));
     try {
       const scripts = path.join(temporaryRoot, 'scripts');

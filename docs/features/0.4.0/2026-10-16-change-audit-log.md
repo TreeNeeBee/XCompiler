@@ -169,9 +169,8 @@ Runner 传入变更；Executor 渲染块；`run.ts` 传给 J06；Runtime 判定�
 
 ## 未开始的里程碑
 
-按清单顺序：M-C（容量跳过 provider、审计区间读取、按执行固定 Rule 选择）→ M-D（Rule schema 的 locale 变体、TS 规则 `0x0101`、
-角色段 8 个新写角色文本、工作段迁入文本并删除 `work_guidance.ts`/`prompt_policy.ts` 原文、绑定计算）→ M-E（C1 `escape-insertion`）→ G1 → 真实项目验证（需确认花费）→ P1。
-另需在收尾时更新 HANDOVER 的状态表（D-9），以及 rule-artifacts/RuleChain 设计中受 M-R 影响的段落。
+M-C、M-D、M-E、G1、P1 已完成（见文末）。剩余：D-20 真实项目验证（需确认范围与花费）。原顺序：G1 → 真实项目验证（需确认花费）→ P1。
+HANDOVER 状态表和 rule-artifacts/RuleChain 设计已随 M-D 更新。
 
 ## 其他遗留（审计中发现，未处理）
 - `src/i18n/zh.ts`/`en.ts` 的 `providerValidationRepairPrompt` 根据 `error.includes('Executor response: incomplete or invalid JSON turn')` 选择反馈内容，属于正文控制流。
@@ -243,3 +242,348 @@ P1 包资源问题仍延后；不启用外部付费模型。
 恢复后统一重跑受影响的 9 个文件、298 项，全部通过。临时证伪脚本和原始日志保留于本次会话的 `/private/tmp/xcompiler-mr-*`，不进入产品源码。
 
 未运行：P1 包资源/发布门禁、正式打包、安全审计、外部模型或付费真实派生工程验证。下一节点按计划是 M-C。
+
+
+## M-C 请求基础设施（CC，2026-10-16）
+
+基于 Codex `e2d0330` 继续。开工前独立复跑门禁，结果与 Codex 交接一致（core 118/1696、integration 66/1499、e2e 2/11，typecheck、lint 通过）。
+
+### C1 容量不足跳过 provider（D-5）
+
+**变更**
+- `src/llm/errors.ts` 新增 `ProviderCapacityShortfall`（单个 provider，`code=provider_capacity_shortfall`，携带窗口、提示、安全余量、输出上限）
+  和 `ProviderCapacityExhausted`（`code=provider_capacity_exhausted`，列出每个 provider 的 shortfall）。
+- `rule_request_guard.ts` 的容量分支改为抛 `ProviderCapacityShortfall`；守卫错误的 reason 只剩 `request_integrity`。
+  `rule_selection_reviewer.ts`、`rule_business_request.ts` 中不再可能出现的 `capacity_exceeded` 分支删除
+  （协议校准 `protocol_correction_request.ts` 保留自己的容量错误，因为 C1 校准固定原生产方，不跳过）。
+- `router.ts`：`beforeProviderRequest` 抛 `ProviderCapacityShortfall` 且不是协议校准时，写 `llm.provider_capacity_skipped` 审计，
+  不扣分，换下一个 provider。所有失败都是容量不足时抛 `ProviderCapacityExhausted`（cause 为最后一个错误）；
+  混合失败仍是 `all_providers_failed`，失败明细保留容量项。
+
+**测试**：`runtime_rule_business_request.test.ts` 新增"首个 provider 放不下时由更大窗口的 provider 原样接收"和
+"整个池都放不下"；混合传输失败与容量不足的用例改为期望 `all_providers_failed` 且只对传输失败扣分。
+`runtime_execution_turn_request.test.ts` 的容量用例改为期望 `provider_capacity_exhausted`。
+
+**证伪（3）**：Router 跳过分支、类型化耗尽错误、守卫抛出的类型化错误。均按预期失败后恢复。
+
+### C3 每次执行一份 Rule 快照（D-6）
+
+**变更**
+- `business_request_input.ts` 新增 `businessRequestSelectionId`：Step 执行请求以 `executionId` 为快照 id，其他请求仍用 `logicalRequestId`。
+  capture、resume、verifyCaptured 都用它定位快照。
+- `rule_business_request.ts`：留存发送用该 id 核验快照；首轮以外的请求 id 取原请求的 `logicalRequestId`。
+- `runtime/execution_turn_request.ts`：`prepareRuntimeRuleRequest` 以 `scope.executionId` 为选择 id。
+
+**测试**：`runtime_execution_turn_request.test.ts` 新增"每次执行只选一次 Rule"：第二轮在 Rule 源不可用时仍成功并引用同一快照摘要；
+另一个 executionId 会重新选择。
+
+**证伪（3）**：端口选择 id、捕获选择 id、发送方请求 id。
+
+### C2 正常路径不读审计（D-21，替代 D-4）
+
+**决策过程**
+- 原方案（D-4）是按字节区间读取审计。实施时发现：Router 写入 `provider_response` 的偏移量需要穿过证据 schema，
+  并且需要按作用域串行追加审计，改动面大。合成基准（每轮历史增长约 3KB 的假设）：600 轮约 58MB，单次全量扫描约 29ms。
+- 进一步排查后发现，扫描的主要来源是正常路径上的**写后回读核验**：每个业务请求至少全文件扫描 5 次，
+  分别是输入捕获、每个 provider 尝试、采用时重核输入、核对尝试响应、核对响应记录和协议结果。
+  Rule 复核和协议校准还有额外的回读。
+- 用户决定：审计只用于追溯检查和崩溃/重启恢复，正常业务不应直接读取；LLM 回复的业务结果放在对应 Ticket 或业务场景中，
+  上下文直接使用业务数据。恢复来源的选择上，用户选了"审计作恢复源"（另两个选项是"业务存储存全文"和"写进 Ticket/执行对象"）。
+  记为 D-21，变更清单 C2 已改写。
+- 核对过：组装上下文本来就不读审计。Executor 的多轮历史在内存中，规划结果写入业务对象。
+
+**变更（只删正常路径上的读取，审计写入保持 required）**
+- `BusinessRequestInputs`：capture 和 verifyCaptured 不再回读输入审计；快照加载不再核验 Rule 复核证据。
+  复核证据只在 `resume` 时核验。`BusinessRequestInputAudit.verify` 删除（适配器同步删除）。
+- `rule_business_request.ts`：尝试记录写入后不再回读；状态存储对同一尝试的不同记录会抛 `identity_conflict`。
+  `BusinessRequestAttemptAudit.verify/verifyResponse` 删除。
+- `BusinessRequestRecovery`：`retain` 和 `process` 不再回读响应和结果审计；`resume` 保留核验。
+- `runtime/business_request_recovery.ts` 的正常采用核验：只核对输入记录、快照和尝试记录摘要（状态存储）。
+  响应身份已由 `validateBusinessResponseSource` 核对。
+- `RuleRequestCoordinator`：去掉 `RuleReviewEvidenceVerifier` 依赖。复用快照、首次复核后、从持久结果发布快照这三处都不再读审计。
+  `runtime/rules.ts` 同步。
+- `ProtocolCorrectionLedger`：`begin`（新认领、已有认领、竞争失败）和 `complete` 不再调用 `verifyOriginal/verifyCandidate`。
+  `resume`，以及从已完成结果恢复候选的 `recover`，仍然读审计。
+  原 `verifyCandidate` 里不依赖审计的生产方身份核对（provider、协议、请求的模型），改为账本内的 `assertCandidateProducer`，留在正常路径。
+- 曾新增 `assertBusinessRequestAttemptResponse` 作为正常采用的响应核对，证伪（W2）显示它与 `validateBusinessResponseSource` 完全重复，已删除。
+
+**测试**
+- 新增回归测试：审计里有一行坏数据（模拟崩溃留下的半行）时，Executor 两轮请求照常完成，`resumeRuntimeExecutionTurnRequest` 报 `validate-jsonl`；
+  带低分复核的业务请求（选择、复核、发送）同样照常完成，恢复核验报错；
+  协议校准在坏行之后仍能认领，恢复报错。
+- 新增调用点测试：正常采用时，响应的 logical id、attempt id、provider、model、output 不一致或 capture 不可用，都拒绝采用且不留存。
+- 改写既有测试，覆盖约 135 个用例：原先断言"正常路径因审计篡改而失败"的，改为"正常路径完成，恢复路径失败"；
+  原先直接调用已删方法（`audit.verify`、`verifyResponse`）的，改用 `recover`。
+  `rule_request_coordinator.test.ts` 删除依赖证据核验的 1 个用例，改写 2 个。
+- 删除 `tests/integration/business_response_live_evidence.test.ts`：它的主题是"正常路径以审计为准"，已经不存在。
+  恢复侧的同类断言在 `business_request_attempt_audit.test.ts` 中，正常侧的核对移到 `runtime_business_request_recovery.test.ts` 的调用点测试。
+  该文件为跟踪文件，只在工作区删除，未暂存。
+- 删除 `protocol_correction_evidence.test.ts` 的"把审计中的脱敏副本当作新原文"用例和 `protocol_correction_request.test.ts` 的
+  `retained-redacted` 变体：这种输入只能从审计取得，正常路径不再读审计，该场景不再成立。
+
+**证伪（19 项，逐一加回或去掉单个调用点，跑目标测试，要求失败，再逐字节恢复）**
+- M1–M7 业务请求：输入捕获回读、verifyCaptured 回读、快照加载核验复核证据、尝试回读、采用时读尝试审计、retain 回读、process 回读。
+- M8–M10 Rule 协调器：快照复用、首次复核后、持久结果发布。
+- M11–M15 协议校准账本：begin（已有认领、新认领、竞争失败）、complete 核验原文、complete 核验候选。
+- W1：去掉 `assertCandidateProducer` 调用后，"请求模型不同"用例失败。
+- W3：去掉 `resume` 中的复核证据核验后，两个恢复用例失败。
+- W2：第一次证伪显示新函数是重复检查，已删除。之后同时去掉 `retain` 和 `businessResponseMaterial` 中的两处
+  `validateBusinessResponseSource`，新调用点测试 6 项失败。只去掉一处时仍通过，原因是第二处兜底。
+- 全部按预期失败。脚本 `falsify2.py` 和 mutation 定义保存在本次会话 scratchpad 中，不进入源码。
+
+**偏差与遗留**
+- 正常路径信任状态存储。状态存储被篡改（重算摘要）时，只有重启恢复才能发现。这是 D-21 的取舍，已写入变更清单第 4 节。
+- 生产流程还没有接入重启恢复入口（`resumeRuntimeExecutionTurnRequest` 等只有测试调用）。恢复仍做全量扫描，只在重启时发生。G1 记录审计体积。
+- `AuditLogger` 追加时假定文件以换行结尾。崩溃留下不带换行的半行时，下一条事件会和它拼在同一行，恢复时这条事件无法解析。未处理。
+- `assertBusinessRequestAttemptRecord` 对"记录与请求不一致"仍报 `audit_mismatch`，这是历史命名，正常路径上会被包装成 `BusinessResponseError`。未改名。
+- 默认 `redacted` 审计下，含凭据的请求重启后无法精确恢复（摘要不一致）。这是原有行为，现在只影响恢复。
+
+### M-C 完整门禁
+
+- `npm run typecheck`、`npm run lint` 通过；`git diff --check` 通过。
+- core：118 文件、1,696 项通过。
+- integration（排除 `installation_resources.test.ts`，P1 已知问题）：65 文件、1,467 项通过。
+  与 M-R 后的 66/1,499 相比：少一个文件，是删除的 `business_response_live_evidence.test.ts`；
+  用例数差额来自删除的正常路径审计用例，以及新增的回归测试和调用点测试。
+- e2e：2 文件、11 项通过。
+- 未运行：build、P1 包资源门禁、外部或付费模型调用。
+
+
+## M-D Rule 抽取与提示组装（CC，2026-10-16）
+
+### 变更
+
+**D0 schema 与 locale（D-18）**
+- `catalogue.ts`：`instruction` 可以是一段文本，也可以是 `{ en, zh }` 变体；新增 `ruleInstructionText`。
+- `RuleContext` 新增 `locale`（不是适用性维度）。选择时按 locale 取文本：`RuleSelector.finish`、`finalizeRuleSelectionDraft`、复核提示。
+  快照固定的就是渲染后的文本，快照校验也按 locale 比对。Decorator 不变。
+- 编译器 Rule 必须同时提供 en 和 zh，否则加载失败（`locale_variant_missing`）；测试自建的 catalogue 不受此限制。
+
+**段划分与只绑定（D-13、D-14）**
+- `slots.ts`：删除六个旧角色槽常量；新增语言、角色、工作三段的范围，以及 `isBoundRuleSlot`。
+- `RuleSelector.prepare`：这三段的列表不进入检索候选。快照中这三段的 Rule 若为可选，判无效。
+
+**D1–D3 Rule 内容**：`rules/` 从 2 个文件增至 23 个，`COMPILER_RULE_MANIFEST` 同步更新，23 项全部匹配。
+- `0x0101` TypeScript：9 条 mandatory。来源是原 `injectLanguageContractPrompts` 的中文合同块（补写英文）和
+  `plannerPromptOverride` 的命名规则（补写中文）。首条声明"覆盖 Step 中任何相反描述"。
+- `0x0201–0x0208`：8 个新写的角色身份（en/zh，announce），只写身份、专长、风格。
+- `0x0240` `execution.common`：原 `prompt_policy` 第 1–8 条，脚本逐字搬运 en/zh。
+- `0x0241` 设计片段：原 D 条。
+- `0x0242` `repair.debug`：原第 9–12 条，加上原 DEBUG 块的固定说明句。
+- `0x0243` `change.apply`：原 CR 条。
+- `0x0250–0x0257` 8 个 Step 工作：原 `work_guidance` 的工作说明、能力、禁止事项（en 原文，补写 zh）。
+- genesis 升到 1.1.0，J06 升到 2.1.0：都只是补 zh 变体，en 文本不变。`SCENARIO_OUTCOME_RULE` 同步。
+
+**D4 绑定计算**
+- 新增 `application/rules/rule_binding.ts`：槽位表，`ruleBindingSlots`、`requiredRuleBindings`。
+- `prepareRuntimeRuleRequest` 新增 `bind`，并检查 bind 与 context 一致（`binding_context_mismatch`）。
+- 5 个调用方改为传 `bind` 和 `locale`：
+  - Executor：语言、角色、`execution.common`、模式片段、基础工作；
+  - P01–P03：语言、角色；
+  - J06：角色、`judge.scenario`，不再显式传 `SCENARIO_OUTCOME_RULE`。
+- "声明式产出工作"收为 `work.ts` 的 `isDeclarativeOutputWork`，Executor 和绑定计算共用这一个判定点。
+
+**D5 提示组装（删除被取代的原文）**
+- Executor 系统消息去掉身份句、`roleBlock` 和 `policyBlock`。DEBUG 块只保留"上一轮失败原因"和建议这两项事实。
+- 删除 `src/agents/prompt_policy.ts`、`src/domain/workflow/work_guidance.ts`。
+- 删除 `ExecutorRunInput.roleIdentity`、runner 的 `workGuidanceBlock`、i18n 的 `executorRoleBlock`。
+- 规划系统提示（P01–P03，以及未使用的单轮 planner 提示）删除身份句。
+- TS 合同块不再注入 Step.systemPrompt；`LanguageProfile.plannerPromptOverride` 删除。
+
+### 测试
+- 新增 `tests/rule_binding.test.ts`（21 项），覆盖：
+  - 各请求类型的绑定组合；
+  - 只有 TS、只有 Python 的项目；
+  - 每种模式片段，设计片段只在 `defer` 下出现，Debug 下不出现；
+  - en/zh 两种渲染；
+  - 安装的 YAML 与槽位常量一致；
+  - J06 经工作绑定且版本一致；
+  - 原文删除后，`src/` 中没有第二份来源。
+- 新增调用点测试：
+  - Executor 端口真实发出的请求带角色、工作、模式和 locale，设计 Step 在 defer / 非 defer 下的差别；
+  - 快照拒绝把只绑定段的 Rule 记成可选；
+  - 编译器 Rule 缺少某个 locale 时拒绝加载；
+  - 选择器不把三段的列表放进检索；locale 渲染。
+- 改写既有测试：
+  - P01/P02/P03/J06/Build 的快照 Rule 数和槽位按新绑定断言。Build 运行在 zh 下，断言中文文本。
+  - `compiler_rule_catalogue` 的安装夹具复制全部 23 个文件；"同版本改文本"改为只改 zh 变体，以证明摘要覆盖所有变体。
+  - `runtime_rule_requests` 的端口用例补充最小的绑定列表。
+  - 原先依赖 `prompt_policy`、`work_guidance` 的 Executor、Skill、提示语言测试，改为通过 `tests/support/compiler_rules.ts`
+    渲染真实安装的 Rule。Executor 中设计片段的 4 个用例移到绑定测试。
+- 必需内容超出容量：沿用 M-C 的容量测试，以及"保留全部 Rule 与历史字节的窗口投影 / 显式容量失败"用例，都已通过。
+
+### 证伪（19 项，逐一修改单个调用点，跑目标测试，要求失败，再逐字节恢复）
+- 各调用方的绑定点：
+  - Executor 端口的 bind、Step 工作推导、defer 事实、locale；
+  - P01、P02、P03、J06 的 bind；
+  - P01、P02 的 locale。
+- 绑定计算：Rule 准备丢弃 bind 结果；绑定漏掉模式片段。
+- 选择与渲染：选择器把三段放进检索；快照固定文本忽略 locale；选择器渲染忽略 locale；快照接受可选的只绑定 Rule；
+  编译器 Rule 可以缺少 locale 变体。
+- 提示原文：Executor 消息恢复身份句、DEBUG 块恢复固定说明句。这两项第一次选错了测试：端口测试自己构造消息，
+  不经过 Executor 的 i18n 提示。改用 core Executor 测试后失败。
+- 全部按预期失败。
+
+### 完整门禁
+- typecheck、lint、build 通过；`git diff --check` 通过。
+- core：119 文件、1,728 项通过。
+- integration（排除 `installation_resources.test.ts`）：65 文件、1,470 项通过。
+- e2e：2 文件、11 项通过。
+- 未运行：P1 包资源门禁（`installation_resources.test.ts` 的 rules 打包断言可能需要随 23 个文件更新，留给 P1），以及外部或付费模型调用。
+
+### 行为变化（需在 D-20 真实项目验证中关注）
+- 模型看到的内容：Rule 块现在包含角色身份、工作说明、执行策略和模式片段，按条目以 JSON 列出；
+  Executor 系统消息不再包含身份、角色块和策略。zh 下原先在中文标题下显示英文的工作说明，现在显示中文。
+- P01 澄清的身份从"需求分析师"改为项目经理角色（按 1.4，`plan.clarify` 由 project-manager 负责）。
+- TS 合同现在同时出现在规划和执行中（原来只在执行的 Step 提示里）；命名规则原来只给规划，现在执行也能看到。
+- 设计片段沿用现有条件：包括需求分析 Step，CR 模式下也绑定（清单 1.4 写的是"设计 Step"，这里以现有代码行为为准，已在清单中注明）。
+
+### 偏差与遗留
+- `installation_resources.test.ts`（P1）没有运行。新增的 21 个 rules 文件随 `package.json` 的 `files: ["rules"]` 发布；
+  独立打包是否需要逐个列出文件，到 P1 再核对。
+- `LanguageProfile.executorPromptOverride` 两种语言都是空串，属于死字段，未处理。
+
+
+## M-E C1 校准接通（CC，2026-10-16，D-3）
+
+### 变更
+- **E1 准入与证明**（`protocol_json.ts`）
+  - 新增变换 `escape-insertion`：检查阶段不会自动应用它，只能由模型提出，并且必须附带证明。
+  - `admitsEscapeInsertion` 是唯一的准入判定点，四个条件同时满足才准入：
+    - 协议声明了该变换；
+    - 原文 `unresolved`；
+    - 诊断码是 `unexpected_token` 或 `invalid_escape`；
+    - `withinRoot === true`。
+  - `withinRoot` 改为通用的结构事实：扫描器按容器深度判断失败位置在不在根内。因此根前说明、根后内容、第二个根都不准入。
+  - `proveJsonEscapeInsertion` 要求两点：
+    - 候选能完整严格解析；
+    - 候选去掉插入的反斜杠（以及允许时还原 CR/LF/tab 转义）后，与原文逐字符相等。反斜杠只能插在 `"` 或 `\` 之前；连续反斜杠的所有对齐方式都会考虑。
+  - 证明版本升到 `json-representation-proof/2`。
+- **E2 账本与提示**
+  - `begin` 和 `assertOriginal`、证据类 `original()` 都改用同一个准入函数。`repairable` 原文不再进入模型路径。
+  - `begin` 遇到同一逻辑请求中另一个尝试的认领时，返回 `exhausted`。
+  - 候选评估改用 escape-insertion 证明。
+  - 校准提示模板升到 `json-protocol-correction/2`，加入 escape-insertion 的说明。
+- **E3 生产接线**（`runtime/protocol_correction.ts`）
+  - 新增 `correctRuntimeProtocolResponse`、`recoverRuntimeProtocolCorrection`、`recoverAdoptedProtocolText`、
+    `protocolCorrectionReference`，以及无 Router 的恢复账本 `createRuntimeProtocolCorrectionLedger`。
+  - 五个生产协议（Executor turn、P01、P02、P03、J06）升到版本 2，并声明 `escape-insertion`。
+  - 协议拒绝时先校准一次：
+    - Executor 和 P01–P03 在响应校验器里调用；
+    - J06 在采用 `unresolved` 回复之后调用，`send` 改为返回 `{ assessment, corrected? }`。
+  - 校准结果仍要通过原业务校验：Executor 的 turn 合同、Planner 的解析器、J06 的路由检查。
+  - 采用的回复在判定审计中带 `protocolCorrection` 关联。恢复路径也读取同一份校准结果。
+  - 校准请求发送失败（`LLMRequestError`、容量不足）时，记 `llm.protocol_correction_unavailable` 并回到原协议拒绝路径。
+    完整性错误继续上抛。
+  - Runtime 辅助函数里原来有一处与账本重复的准入预检，已删除，只保留一个判定点。
+- **E4 真实样例**：历史上"原始换行 + 未转义的 `print("x")`"回复，紧凑版和带缩进的原始排版版都能准入；保持排版的校准可以得到证明；
+  Executor 端口能完成校准、校验、采用和恢复。如果把排版改成紧凑格式，证明不通过。
+
+### 测试
+- 新增 `tests/protocol_escape_insertion.test.ts`（19 项），覆盖：
+  - 准入和不准入的各种情况；
+  - E4 样例（紧凑版和带缩进的原始排版版）；
+  - 插入、删除或替换了其他字符的候选；
+  - 反斜杠只能插在引号或反斜杠前；
+  - 非法转义和连续反斜杠；
+  - `raw-string-control` 需要协议允许；
+  - 模型原样返回、候选不能严格解析、根形状不对；
+  - 截断原文；
+  - 有歧义的原文：两种读法都能证明，证明不替调用方选择。
+- 新增端口测试：
+  - Executor 5 项：校准后采用并恢复、业务校验拒绝校准结果、原样返回、截断不调用模型、校准发送失败；
+  - P01、P02、P03、J06 各 1 项：校准、采用、恢复；
+  - J06 core 测试 1 项：校准结果仍过路由检查，可读回复不能被替换；
+  - 账本额度耗尽 1 项；
+  - 恢复只认被采用回复自己的校准 1 项。
+- 改写的既有测试：
+  - 校准相关的四个集成测试文件（evidence、ledger、request、runtime），夹具从 `repairable` 原文（尾逗号）改为准入的内引号原文。
+    其中旧用例"引号边界无法证明的原文不准入"按 D-3 改为"确定性可修复原文 / 根前说明文字 / 截断不准入"；
+    "另一个尝试的原文"从 `identity_conflict` 改为 `exhausted`。
+  - J06 测试的 `send` 改为新的返回结构；协议版本断言改为 2。
+
+### 证伪（20 项，逐一修改单个调用点或判断，跑目标测试，要求失败，再逐字节恢复）
+- 准入：
+  - 忽略出错位置；
+  - 忽略诊断码：第一次没有失败。原因是当时 `withinRoot` 只在这两个码上设置，码的判断成了重复检查。
+    把 `withinRoot` 改为通用结构事实后，重跑失败。
+  - 忽略协议声明。
+- 账本：`begin` 退回旧的 `repairable` 准入；忘记"另一个尝试已用掉额度"。
+- 证明：候选评估改用旧的值对应证明；对齐时去掉 raw-control 分支。
+- Executor：从不校准、采用未校准文本、恢复时忽略校准、跳过对校准结果的业务校验。
+- P01、P02、P03：从不校准；P01 恢复时忽略校准。
+- J06：从不校准、恢复时忽略校准、校准结果跳过路由检查。
+- 恢复接受另一个尝试的校准；校准发送失败时直接上抛。
+- 全部按预期失败。
+
+### 完整门禁
+- typecheck、lint、build 通过；`git diff --check` 通过。
+- core：120 文件、1,748 项通过。
+- integration（排除 `installation_resources.test.ts`）：65 文件、1,482 项通过。
+- e2e：2 文件、11 项通过。
+- 未运行：P1 包资源门禁，以及外部或付费模型调用（真实 provider 能否按模板给出保持排版的校准，留到 D-20 验证）。
+
+### 偏差与遗留
+- 规格没有写协议是否必须声明 `escape-insertion`。这里按现有"协议声明允许的变换"合同，要求声明，并把五个生产协议升到版本 2。
+- 规格写的外层包装错误不准入，用结构事实 `withinRoot` 落实，没有按诊断文本判断。
+- 候选必须保留原文排版。真实模型可能重排空白，这种情况证明会失败，回到原拒绝路径。这是"逐字符相等"规格的直接结果，需要在 D-20 观察实际命中率。
+- 校准后的业务回复成功时，Router 对原业务请求的计分不变；校准请求本身不计成功分。
+
+
+## G1 汇总门禁（2026-10-16，M-E 之后的同一次运行）
+
+- typecheck、lint、build 通过；`git diff --check` 通过。
+- core：120 文件、1,748 项通过。
+- integration（排除 `installation_resources.test.ts`，P1 已知的发布资源问题）：65 文件、1,482 项通过。
+- e2e：2 文件、11 项通过。
+- M-A、M-B、M-R、M-C、M-D、M-E 的调用点证伪各自在里程碑内完成，记录见上文。
+- 原清单写着 G1 要记录长运行的审计体积。D-21 之后，正常路径已不读审计，体积只影响磁盘占用和重启恢复时的扫描，
+  合成基准对此说明不了多少，改为在 D-20 真实运行中记录实际审计体积。
+- 下一步：D-20 小规模真实项目验证，需要先确认范围和花费；然后是 P1。
+
+
+## P1 发布准备（2026-10-16，用户选择先于 D-20 进行）
+
+### 已记录的发布资源失败（10 项）及新发现的问题
+- **6 个独立打包守卫用例**：根因是产品脚本缺陷。`scripts/script_i18n.mjs` 用 `import.meta.url === path.resolve(argv[1])`
+  判断自己是不是被直接运行。Node 加载主模块时会解析符号链接，所以经由符号链接目录调用（macOS 临时目录 `/var` → `/private/var`）时，
+  两边路径对不上，脚本什么都不输出，打包错误信息全部丢失。改为与 `realpathSync(argv[1])` 比较。
+  修复前这 6 个用例失败，修复后通过，这就是证伪。同类写法在其他脚本中没有第二处。
+- **4 个 ESM 资源探测**（`Dynamic require of "process"`）：是测试夹具问题，不是产品问题。
+  探针为了脱离仓库的 `node_modules` 运行，把全部依赖内联进 ESM 产物；被内联的 CJS 依赖在 ESM 中拿不到真正的 `require`。
+  正式的 npm ESM 产物把依赖保留在外部，由 Node 原生加载 CJS。修法是只在探针的 ESM 构建中注入 `createRequire`，
+  正式产物的布局、格式和 shim 都不变。
+- **随 M-R/M-D 过时的断言**：探针还在引用已删除的角色覆盖层 `role_template_store.ts`；Rule 文件数断言还是 2。
+  改为从 `COMPILER_RULE_MANIFEST` 推导，删掉角色模板部分。
+- **独立打包的必需 Rule 列表**：`scripts/package.sh` 原来只列了 2 个文件，现在列出清单中的全部 23 个，
+  并新增测试保证该列表与 `COMPILER_RULE_MANIFEST` 完全一致。打包预检必须能在没有 `src` 和构建工具的环境下运行，所以列表留在脚本里。
+  守卫用例补充了"缺角色列表""staging 阶段缺工作列表"两种情况。
+
+### 版本（用户确认）
+- 核心版本 0.3.0 → 0.4.0（`npm run version:set -- 0.4.0`，同步 package.json、lock、`src/version.ts`），未提交、未打 tag。
+- Plugin API 3 → 4。按 `docs/versioning.md` 的规则，以下属于不兼容变化：
+  - `step.attempt.*` 的 `role` 改为角色 ID，并新增 `work`；
+  - Hook 上下文里的 `Plan`/`Step` 去掉了 `role` 和 `agent`；
+  - `llm.*` Hook 的 `role` 改为角色 ID 或内部操作标签。
+- 同步的文档：`plugin_api.md`、`versioning.md`（新增"升级到 0.4"：配置迁移、旧工作区、删除的角色覆盖层、插件）、`agent_skills.md`、
+  README/README.CN、`skills/skill-authoring/SKILL.md` 的兼容声明；一个测试名。
+
+### 依赖审计（用户确认修复）
+- `npm audit --omit=dev` 原来查出 3 项：`simple-git` ≤4.0.1（严重，可借未拦截参数执行命令）、`@simple-git/argv-parser`（严重）、`undici` 7.0–7.29（高危）。
+- 升级为 `simple-git@^4.0.2`（大版本）和 `undici@^7.30.1`；之后生产依赖审计为 0 项。
+- simple-git 4 的兼容性：typecheck 通过；git 相关的 core（61 项）和 integration（27 项）测试通过；代码中没有用到 v4 默认拦截的不安全参数。
+
+### 门禁（按 `release:local` 的本地门禁顺序，只检查，不提交）
+- `version:check`：core=0.4.0、plugin-api=4，一致。
+- `npm audit --omit=dev`：0 项。
+- typecheck、lint、build 通过；`git diff --check` 通过。
+- core：120 文件、1,748 项通过。
+- integration：**完整运行，不再排除**，66 文件、1,497 项通过（含 `installation_resources.test.ts` 15 项）。
+- e2e：2 文件、11 项通过。
+- `npm pack --dry-run`：98 个文件，7.9 MB，包含全部 23 个 Rule 文件。
+
+### 未运行或未做
+- `npm run package:all`（4 个平台的原生 pkg 二进制，需要下载 Node 运行时并签名）和原生二进制验证，留给 release workflow。
+- HANDOVER 提到的"审阅后的 Debug Rule"不在变更清单的 P1 范围内（D-1 最小集），0.4 的 Debug 段保持为空。
+- 没有提交，也没有打 tag。发版时运行 `npm run release:local -- v0.4.0`：它要求工作区干净，会提交并创建本地 tag。
+- D-20 真实项目验证还没做，需要确认范围与花费。

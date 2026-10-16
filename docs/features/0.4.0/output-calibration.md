@@ -254,6 +254,8 @@ identity. These checks establish consistency of supplied facts, not audit authen
 to dispatch. Durable allowance and raw evidence verification remain coordinator responsibilities.
 These functions neither invoke a model nor establish business validity.
 
+(Superseded by D-3, implemented in M-E below: the escape-insertion proof now accepts this sample
+through one model correction; the paragraph that follows records the earlier position.)
 The existing Executor sample combining raw newlines with unescaped internal quotes remains
 unresolved. In a multi-field response an apparent inner quote can also close a string, producing
 different full value structures; selecting the first parse, fewest edits or the model's proposed
@@ -264,6 +266,46 @@ historical missing-quote incident.
 Focused proof/entry tests and real provider-loopback completion tests are authored, unrun. G1 must
 also remove the actual completion/inspection/proof calls to falsify their wiring. No production
 caller, legacy salvage path or retry policy has been migrated by this foundation.
+
+## M-E production calibration: 2026-10-16 (D-3)
+
+**Admission (E1).** `admitsEscapeInsertion` in [protocol_json.ts](../../../src/llm/protocol_json.ts) is the
+single decision point. An original is admitted when its protocol declares `escape-insertion`, it is
+unresolved, its first failure is `unexpected_token` or `invalid_escape`, and the scanner's structural
+`withinRoot` fact places that failure inside an opened root container. Truncation (`unexpected_end`),
+duplicate keys, root shape, envelope failures, prose before the root and content after it are never
+admitted. A valid or deterministically repairable original keeps its deterministic path and never
+reaches a model; the Ledger's `begin` applies the same function before any claim.
+
+**Proof.** `proveJsonEscapeInsertion` accepts a candidate only if it parses strictly as a whole (with
+the protocol's root) and removing its inserted backslashes, plus undoing raw CR/LF/tab escapes when
+`raw-string-control` is permitted, restores the original character for character. A backslash may be
+inserted only before an original `"` or `\`; every alignment of backslash runs is considered. The
+proof version is `json-representation-proof/2` and the fixed prompt template is
+`json-protocol-correction/2`. The proof shows no character was added, removed or reordered; it does
+not choose quote boundaries. An ambiguous original can have more than one provable correction, and the
+caller's original business validation decides (D-3). Reformatting the layout is not an escape
+insertion.
+
+**Ledger (E2).** One logical request owns one correction. A claim made for another provider attempt
+of the same logical request returns `exhausted` without a model call. Live `begin`/`complete` read no
+raw audit (D-21); recovery does.
+
+**Production wiring (E3).** The five production protocols (Executor turn, P01, P02, P03, J06) are
+version 2 and declare `escape-insertion`. On a protocol rejection, Executor and P01–P03 call
+`correctRuntimeProtocolResponse` inside their response validator; J06 calls it after adopting an
+unresolved reply. A preserved correction is then validated by the caller's original business contract
+(Executor turn contract, Planner parsers, J06 routing checks); a rejected correction is a business
+rejection and the allowance stays spent. The adopted reply's judgement audit carries
+`protocolCorrection` (claim, correction request and candidate digest). Recovery reads the reply's own
+protocol text or, when it was unresolved, the correction pinned for that same reply
+(`recoverAdoptedProtocolText`). A failed correction send (`LLMRequestError`, capacity) is recorded as
+`llm.protocol_correction_unavailable` and the original protocol rejection stands; integrity and
+evidence failures propagate. The correction request uses `scoreSuccess: false`.
+
+**Real sample (E4).** The motivating Executor reply (raw newlines and unescaped `print("x")` in a code
+string), both compact and in its historical pretty-printed layout, is admitted, and a layout-keeping
+correction is proven; the Executor port test corrects, validates, adopts and recovers it.
 
 ## Authored fixed prompt boundary: 2026-10-06
 

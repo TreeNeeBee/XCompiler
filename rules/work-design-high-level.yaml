@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "94c876d5-7ffe-5aa9-979c-9866c1752fe5"
+version: "1.0.0"
+title: "High-level design"
+slot: "0x0251"
+applicability:
+  works: [design.high-level, repair.debug, change.apply]
+rules:
+  - id: "f6d3471c-92de-5b78-ac06-a2086254b75f"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "High-level design: what this work delivers"
+    instruction:
+      en: |-
+        You design the system and its modules, and the tests paired with each design level.
+      zh: |-
+        你负责设计系统及其模块，以及与每个设计层级配对的测试。
+  - id: "18966757-3be2-50ec-8d04-453f91195285"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "High-level design: how this work is done"
+    instruction:
+      en: |-
+        Define interfaces, dependencies, and the contracts downstream work must satisfy.
+      zh: |-
+        定义接口、依赖，以及下游工作必须满足的契约。
+  - id: "13e3c2b9-bf37-5170-8b38-d83c1cd72642"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "High-level design: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not weaken a contract to make an implementation easier.
+      zh: |-
+        不要为了让实现更容易而削弱契约。

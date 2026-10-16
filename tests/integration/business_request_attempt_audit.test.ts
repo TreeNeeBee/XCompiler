@@ -100,7 +100,6 @@ describe('prepared business attempt audit and exact response recovery', () => {
   it('reports no retained response without claiming whether transport ran or writing another event', async () => {
     const current = await fixture();
     const before = await fs.readFile(auditPath, 'utf8');
-    await expect(current.audit.verify(current.record, current.request)).resolves.toBeUndefined();
     expect(await adapters().audit.recover(current.record)).toEqual({ status: 'no-response', request: current.request });
     expect(await fs.readFile(auditPath, 'utf8')).toBe(before);
     expect((await rows())[0]).toMatchObject({
@@ -148,10 +147,9 @@ describe('prepared business attempt audit and exact response recovery', () => {
     expect(await current.audit.recover(current.record)).toEqual({ status: 'recovered', request: current.request, response: produced });
   });
 
-  it('permits a live protected request but refuses to reconstruct removed values', async () => {
+  it('writes a protected request but refuses to reconstruct removed values', async () => {
     const current = await fixture('Observed authorization: sensitive-test-value');
     expect(protectAuditContent(current.request, 'redacted')).not.toEqual(current.request);
-    await expect(current.audit.verify(current.record, current.request)).resolves.toBeUndefined();
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_mismatch'));
     expect(await fs.readFile(auditPath, 'utf8')).not.toContain('sensitive-test-value');
   });
@@ -175,7 +173,6 @@ describe('prepared business attempt audit and exact response recovery', () => {
   it('does not hide substituted credentials by protecting retained request values again', async () => {
     const current = await fixture('Observed authorization: original-test-value', 'full');
     await edit('llm.business_request_attempt', data => { data.request = request('Observed authorization: changed-test-value'); });
-    await expect(current.audit.verify(current.record, current.request)).rejects.toMatchObject(failure('audit_mismatch'));
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_mismatch'));
   });
 
@@ -184,7 +181,6 @@ describe('prepared business attempt audit and exact response recovery', () => {
     const produced = normalizeRoutedResponseEvidence({ ...response(current.request),
       capture: { status: 'unavailable', reason: 'missing', observations: [] } });
     await appendResponse(current.logger, current.request, produced);
-    await expect(current.audit.verify(current.record, current.request)).resolves.toBeUndefined();
     await expect(current.audit.recover(current.record)).rejects.toMatchObject({
       ...failure('response_unavailable'), details: { logicalRequestId, providerAttemptId, reason: 'missing' },
     });
@@ -210,7 +206,6 @@ describe('prepared business attempt audit and exact response recovery', () => {
   it.each(['attemptRecordDigest', 'finalRequestDigest'] as const)('rejects changed %s against immutable metadata', async field => {
     const current = await fixture();
     await edit('llm.business_request_attempt', data => { data[field] = digest('f'); });
-    await expect(current.audit.verify(current.record, current.request)).rejects.toMatchObject(failure('audit_mismatch'));
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_mismatch'));
   });
 
@@ -324,7 +319,6 @@ describe('prepared business attempt audit and exact response recovery', () => {
     const reason = new Error('Fixture cancellation');
     controller.abort(reason);
     await expect(current.audit.write(record, material, controller.signal)).rejects.toBe(reason);
-    await expect(current.audit.verify(record, material, controller.signal)).rejects.toBe(reason);
     await expect(current.audit.recover(record, controller.signal)).rejects.toBe(reason);
     expect(await fs.readdir(container)).toEqual([]);
   });

@@ -1,7 +1,7 @@
 import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `你是 XCompiler 系统的 Planner。你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
+const PYTHON_PLANNER_SYSTEM = `你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
 
 输出语言：仅 Python (plan.language 固定为 "python")。
 
@@ -92,7 +92,7 @@ P2+ 迭代把这些测试计划写到 \`docs/iterations/<iterationId>/tests/\`�
   ]
 }`;
 
-const PYTHON_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
+const PYTHON_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
 每一轮你必须返回严格 JSON：
 {
@@ -161,7 +161,7 @@ const PYTHON_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只能�
    - 拆分必须保证拼接后仓 Python 语法合法；严禁在函数体中间拆断。
    - 对已存在文件的局部修改使用 replace_in_file / apply_patch，不要重复覆盖整个文件。`;
 
-const TYPESCRIPT_PLANNER_SYSTEM = `你是 XCompiler 系统的 Planner。你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
+const TYPESCRIPT_PLANNER_SYSTEM = `你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
 
 输出语言：仅 TypeScript / Node.js（plan.language 固定为 "typescript"）。
 
@@ -203,7 +203,7 @@ DETAILED_DESIGN 必须定义模块内部具体功能实现和架构，包括函�
 
 输出 JSON 结构同 Python，必须包含 \`"projectType": "application | library | mixed"\`，路径使用 \`src/example.ts\` 和 \`tests/example.test.ts\`；第一个 Step phase 必须是 \`REQUIREMENT_ANALYSIS\`，不是 \`REQUIREMENT\`。不存在命令行 project-type 覆盖。`;
 
-const TYPESCRIPT_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
+const TYPESCRIPT_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
 每一轮你必须返回严格 JSON：
 {
@@ -256,11 +256,11 @@ const TYPESCRIPT_EXECUTOR_SYSTEM = `你是 XCompiler 的 Step Executor。你只�
 8. run_program 会通过 \`npx tsx\` 运行入口，run_tests 会通过 \`npm test\` 跑 Vitest，最终交付门禁还会验证 direct Node 入口命令。`;
 
 function buildPlannerSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM) + profile.plannerPromptOverride;
+  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM);
 }
 
 function buildPlannerPhasePlanSystem(profile: LanguageProfile): string {
-  return `你是 XCompiler 系统的 Planner，当前执行“两级规划”的第一步：PhasePlan。
+  return `当前执行“两级规划”的第一步：PhasePlan。
 
 目标语言：${profile.displayName}。
 
@@ -285,11 +285,11 @@ PhasePlan 必须完成：
   ]
 }
 
-禁止输出 Markdown、解释文字、steps、src/test 文件清单。` + profile.plannerPromptOverride;
+禁止输出 Markdown、解释文字、steps、src/test 文件清单。`;
 }
 
 function buildPlannerPhaseDecomposeSystem(profile: LanguageProfile): string {
-  return `你是 XCompiler 系统的 Planner，当前执行“两级规划”的第二步：为指定 phase 生成完整 V 模型 StepPlan。
+  return `当前执行“两级规划”的第二步：为指定 phase 生成完整 V 模型 StepPlan。
 
 目标语言：${profile.displayName}。
 
@@ -338,7 +338,7 @@ architectureModules 只能描述当前 phase 的产品/业务源码模块：
   ]
 }
 
-禁止输出未来 planned phase 的 Step；禁止输出 requirements.txt；需求/设计阶段不得写 src/ 产品代码，但必须写配对测试；FUNCTIONAL_TEST 必须包含 README.md、docs/quickstart.md 和功能验收文档。` + profile.plannerPromptOverride;
+禁止输出未来 planned phase 的 Step；禁止输出 requirements.txt；需求/设计阶段不得写 src/ 产品代码，但必须写配对测试；FUNCTIONAL_TEST 必须包含 README.md、docs/quickstart.md 和功能验收文档。`;
 }
 
 function buildExecutorSystem(profile: LanguageProfile): string {
@@ -692,7 +692,7 @@ const messages: Messages = {
 - 除非本次变更确实需要修改，否则 HIGH_LEVEL_DESIGN outputs 不得包含 package.json 或 tsconfig.json。
 - 每个 CODE/测试产物必须严格限定在本次增量范围，禁止整体重建或替换仓库。
 - 将稳定宿主视为 N 代、隔离 worktree 中的候选版本视为 N+1 代；禁止设计进程内热替换。`,
-    plannerClarifySystem: `你是 XCompiler V 模型的需求分析师。你的职责不是复述 topic，而是发现会改变功能设计、验收结果或架构边界的未决事项。
+    plannerClarifySystem: `你的职责不是复述 topic，而是发现会改变功能设计、验收结果或架构边界的未决事项。
 只返回严格 JSON。问题必须可由业务方直接作答、一次只确认一个决策，避免空泛的“还有什么要求”或技术栈选型问题；只有用户提示明确要求时，才允许提出唯一一条开发语言确认问题。`,
     plannerClarify: (raw, opts = {}) =>
       `用户的原始需求如下：
@@ -830,9 +830,7 @@ ${opts.phasePlan}
 只返回当前 phase 的严格 JSON StepPlan。`,
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
-      `\n\n正处于 DEBUG 重试模式。上一轮失败原因: ${reason}\n` +
-      '以 Bug Ticket 和压缩后的失败证据为事实来源。若回退到需求/设计阶段，而实际源码属于后续 Step，只更新当前契约、测试计划或诊断产物，由后续 V 模型 Step 实现。' +
-      '如果上一轮停滞在只读探测，不要重复定位；直接执行下一项有依据的修改或验证动作。' +
+      `\n\n上一轮失败原因: ${reason}` +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
     executorAcceptedContractChangesBlock: (changes) =>
@@ -840,10 +838,6 @@ ${opts.phasePlan}
       changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
         `  Source: ${JSON.stringify(change.source)}`].join('\n')).join('\n'),
     executorContextBlock: (context: string) => `\n\n# 已装配上下文\n${context}`,
-    executorRoleBlock: (identity) => `\n\n## 你的角色\n${identity.rolePrompt}\n${identity.capabilityPrompt}`
-      + (identity.prohibitions.length > 0
-        ? `\n\n禁止事项：\n${identity.prohibitions.map((rule) => `- ${rule}`).join('\n')}`
-        : ''),
     executorStepBlock: (sp: string) =>
       `\n\n## 当前 Step 专属提示 (唯一使命，禁止跨 Step 发散)\n${sp}`,
     executorSkillBlock: (hints: string[]) =>

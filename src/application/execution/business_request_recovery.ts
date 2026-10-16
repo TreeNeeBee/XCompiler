@@ -10,7 +10,10 @@ import {
   type BusinessProtocolAssessment,
 } from './business_request_response.js';
 
-/** Caller-adopted response and deterministic protocol facts, never a business verdict or send budget. */
+/**
+ * Caller-adopted response and deterministic protocol facts, never a business verdict or send budget.
+ * Live adoption writes trace evidence and trusts the store records; only resume reads the audit.
+ */
 export class BusinessRequestRecovery {
   constructor(private readonly store: BusinessResponseStore, private readonly audit: BusinessResponseAudit,
     private readonly evidence: BusinessResponseEvidence) {}
@@ -36,8 +39,6 @@ export class BusinessRequestRecovery {
       signal?.throwIfAborted();
       assertBusinessResponseSource(record, source);
     }
-    await this.audit.verifyResponse(record, signal);
-    signal?.throwIfAborted();
     return Object.freeze({ record, source });
   }
 
@@ -62,8 +63,6 @@ export class BusinessRequestRecovery {
       signal?.throwIfAborted();
     }
     assertResult(result, retained.record, assessment);
-    await this.audit.verifyResult(result, assessment, signal);
-    signal?.throwIfAborted();
     return Object.freeze({ status: 'processed' as const, ...retained, result, assessment });
   }
 

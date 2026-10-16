@@ -7,6 +7,7 @@ import {
   validateRuleSelectionDraft,
   type RuleSelectionDraft,
 } from '../application/rules/rule_request_snapshot.js';
+import { ruleInstructionText } from '../domain/rules/catalogue.js';
 import { resolveRuleConflicts, RuleContextSchema } from '../domain/rules/selection.js';
 import { isProtectedRuleSlot } from '../domain/rules/slots.js';
 import { RULE_VECTOR_INPUT_VERSION } from '../domain/rules/vector_index.js';
@@ -42,7 +43,7 @@ export class RuleSelectionReviewError extends Error {
   readonly code = 'rule_selection_review_failed';
   constructor(
     readonly reason: 'invalid_input' | 'review_not_required' | 'request_integrity'
-      | 'capacity_exceeded' | 'response_evidence_invalid' | 'invalid_output',
+      | 'response_evidence_invalid' | 'invalid_output',
     readonly details: Readonly<Record<string, unknown>> = {},
     options?: ErrorOptions,
   ) {
@@ -160,7 +161,7 @@ function prepareReview(input: { draft: RuleSelectionDraft; reviewRequestId: stri
       requestKind: 'rule-selection',
       rules: base.rules.map(({ rule, list }) => ({
         ruleId: rule.id, ruleVersion: rule.version, ruleListId: list.definition.id, ruleListVersion: list.definition.version,
-        slot: list.definition.slot, level: rule.level, instruction: rule.instruction,
+        slot: list.definition.slot, level: rule.level, instruction: ruleInstructionText(rule.instruction, draft.context.locale),
       })),
     });
     const messages: ChatMessage[] = [

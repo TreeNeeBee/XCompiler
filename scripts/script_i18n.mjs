@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -100,6 +101,8 @@ export function scriptMessage(id, ...args) {
   return renderer(args);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+// Node resolves symlinks for the main module, so compare real paths: a script reached through a
+// symlinked directory (macOS /var -> /private/var) must still print its message.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(path.resolve(process.argv[1]))) {
   console.log(scriptMessage(process.argv[2], ...process.argv.slice(3)));
 }

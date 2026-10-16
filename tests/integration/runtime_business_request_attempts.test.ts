@@ -383,7 +383,7 @@ describe('Runtime business input dispatch and explicit attempt recovery', () => 
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('rejects a successfully written but altered attempt audit before any provider request', async () => {
+  it('sends live past an altered attempt audit, while exact recovery rejects the altered record', async () => {
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
     const original = current.audit.event.bind(current.audit);
@@ -395,16 +395,17 @@ describe('Runtime business input dispatch and explicit attempt recovery', () => 
       }
       return original(kind, message, data, options);
     });
-    await expect(current.send()).rejects.toMatchObject({ code: 'business_request_attempt_failed',
-      reason: 'audit_mismatch', details: { field: 'request' } });
-    expect(server.calls).toHaveLength(0);
+    const result = await current.send();
+    expect(server.calls).toHaveLength(1);
     const event = (await current.events()).find(item => item.messageId === 'llm.business_request_attempt')!;
     expect(event.data?.request).toMatchObject({ messages: [
       expect.any(Object), { role: 'system', content: 'Changed retained framework message' }, messages[1],
     ] });
-    const attemptId = event.data!.providerAttemptId as string;
-    expect(await current.attemptStore.read(logicalRequestId, attemptId)).toMatchObject({
+    expect(await current.attemptStore.read(logicalRequestId, result.response.providerAttemptId)).toMatchObject({
       digest: event.data!.attemptRecordDigest, finalRequestDigest: event.data!.finalRequestDigest,
+    });
+    await expect(current.resume(result.response.providerAttemptId)).rejects.toMatchObject({
+      code: 'business_request_attempt_failed', reason: 'audit_mismatch', details: { field: 'request' },
     });
   });
 

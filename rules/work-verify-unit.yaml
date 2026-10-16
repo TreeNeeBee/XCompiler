@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "727e302f-32c8-5413-9b45-94993894a0f9"
+version: "1.0.0"
+title: "Unit verification"
+slot: "0x0254"
+applicability:
+  works: [verify.unit, repair.debug, change.apply]
+rules:
+  - id: "0b63d236-37b1-5df4-a644-eed4b66a547f"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Unit verification: what this work delivers"
+    instruction:
+      en: |-
+        You verify delivered work against its acceptance criteria and report evidence.
+      zh: |-
+        你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: "dca329b3-3f73-5846-afbe-c4f9af5da0a7"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Unit verification: how this work is done"
+    instruction:
+      en: |-
+        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: |-
+        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: "2af9c62e-6ba2-5ad2-b163-a092373ee28a"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "Unit verification: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not rewrite source to make a test pass.
+      zh: |-
+        不要为了让测试通过而改写源码。

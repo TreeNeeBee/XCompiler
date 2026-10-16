@@ -5,7 +5,6 @@ import { BusinessResponseError } from '../application/execution/business_request
 import { FileBusinessResponseStore } from '../infrastructure/llm/file_business_response_store.js';
 import { BusinessResponseAuditAdapter } from '../infrastructure/llm/business_response_audit.js';
 import { FileBusinessRequestAttemptStore } from '../infrastructure/llm/file_business_request_attempt_store.js';
-import { BusinessRequestAttemptAuditAdapter } from '../infrastructure/llm/business_request_attempt_audit.js';
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 import { resumeRuntimeBusinessRequestAttempt, sendRuntimeBusinessRequest } from './business_request_attempts.js';
 
@@ -15,7 +14,6 @@ export function createRuntimeBusinessRequestRecovery(container: ProjectContainer
   const inputs = createRuntimeBusinessRequestInputs(container, audit);
   const root = container.state.abs('llm', 'business-inputs');
   const attemptStore = new FileBusinessRequestAttemptStore(root, container.root);
-  const attemptAudit = new BusinessRequestAttemptAuditAdapter(audit, container.state.abs('audit'), container.root);
   return new BusinessRequestRecovery(
     new FileBusinessResponseStore(root, container.root),
     new BusinessResponseAuditAdapter(audit, container.state.abs('audit'), container.root),
@@ -25,12 +23,10 @@ export function createRuntimeBusinessRequestRecovery(container: ProjectContainer
         signal?.throwIfAborted();
         const stored = await attemptStore.read(source.input.logicalRequestId, source.request.providerAttemptId);
         signal?.throwIfAborted();
+        // The live response was already bound to this attempt by source validation; the audit is not read.
         if (!stored || stored.digest !== source.attemptRecord.digest) throw new BusinessResponseError('identity_conflict', {
           logicalRequestId: source.input.logicalRequestId, field: 'attempt_record',
         });
-        // Fresh material can verify protected audit values. It must not require exact resume.
-        await attemptAudit.verifyResponse(stored, source.request, source.response, signal);
-        signal?.throwIfAborted();
       },
       recover: async (record, signal) => {
         const restored = await resumeRuntimeBusinessRequestAttempt({

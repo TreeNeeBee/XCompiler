@@ -60,7 +60,6 @@ const failure = (reason: string) => ({ code: 'business_request_input_failed', re
 describe('required original business request input audit', () => {
   it.each(['redacted', 'full'] as const)('retains exact nonsensitive input and recovers it in %s mode', async mode => {
     const current = await capture(undefined, mode);
-    await expect(current.audit.verify(current.record, current.input)).resolves.toBeUndefined();
     const recovered = await adapters(mode).audit.recover(current.record);
     expect(recovered).toEqual(current.input);
     expect(Object.isFrozen(recovered.messages)).toBe(true);
@@ -73,12 +72,11 @@ describe('required original business request input audit', () => {
     });
   });
 
-  it('accepts live protected evidence but refuses to restore redacted values', async () => {
+  it('writes protected evidence but refuses to restore redacted values', async () => {
     const current = await capture('Observed authorization: test-credential-value');
     const protectedInput = protectAuditContent(current.input, 'redacted');
     expect(protectedInput).not.toEqual(current.input);
     expect((await rows())[0]?.data?.input).toEqual(protectedInput);
-    await expect(current.audit.verify(current.record, current.input)).resolves.toBeUndefined();
     await expect(current.audit.recover(current.record)).rejects.toMatchObject({
       ...failure('audit_mismatch'), cause: failure('identity_conflict'),
     });
@@ -99,7 +97,6 @@ describe('required original business request input audit', () => {
     await edit(current.record, data => {
       data.input = input('Observed authorization: changed-test-value');
     });
-    await expect(current.audit.verify(current.record, current.input)).rejects.toMatchObject(failure('audit_mismatch'));
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_mismatch'));
   });
 
@@ -114,7 +111,6 @@ describe('required original business request input audit', () => {
     }));
     for (const winner of winners) expect(winner).toEqual(winners[0]);
     const winner = winners[0]!;
-    await expect(audit.verify(winner, material)).resolves.toBeUndefined();
     expect(await adapters().audit.recover(winner)).toEqual(material);
     expect(new Set((await rows()).map(event => event.data?.inputRecordId)).size).toBe(proposals.length);
   });
@@ -126,7 +122,6 @@ describe('required original business request input audit', () => {
     expect(await current.audit.recover(current.record)).toEqual(current.input);
     const matching = (await rows()).find(event => event.data?.inputRecordId === current.record.recordId)!;
     await fs.appendFile(auditPath, `${JSON.stringify(matching)}\n`);
-    await expect(current.audit.verify(current.record, current.input)).rejects.toMatchObject(failure('audit_ambiguous'));
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_ambiguous'));
   });
 
@@ -141,7 +136,6 @@ describe('required original business request input audit', () => {
   it.each(['recordDigest', 'inputDigest'] as const)('rejects changed %s in otherwise valid audit', async field => {
     const current = await capture();
     await edit(current.record, data => { data[field] = `sha256:${'b'.repeat(64)}`; });
-    await expect(current.audit.verify(current.record, current.input)).rejects.toMatchObject(failure('audit_mismatch'));
     await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_mismatch'));
   });
 
@@ -152,7 +146,7 @@ describe('required original business request input audit', () => {
       ...failure('audit_invalid'), cause: failure('invalid'),
     });
     await edit(current.record, data => { data.input = current.input; data.unrecognized = true; });
-    await expect(current.audit.verify(current.record, current.input)).rejects.toMatchObject(failure('audit_invalid'));
+    await expect(current.audit.recover(current.record)).rejects.toMatchObject(failure('audit_invalid'));
   });
 
   it('normalizes UUID spelling in audit identity while preserving the original input values', async () => {
@@ -162,7 +156,6 @@ describe('required original business request input audit', () => {
       data.inputRecordId = current.record.recordId.toUpperCase();
       data.input = { ...current.input, logicalRequestId: logicalRequestId.toUpperCase() };
     });
-    await expect(current.audit.verify(current.record, current.input)).resolves.toBeUndefined();
     expect(await current.audit.recover(current.record)).toEqual(current.input);
   });
 
@@ -249,7 +242,6 @@ describe('required original business request input audit', () => {
     const reason = new Error('Fixture cancellation');
     controller.abort(reason);
     await expect(audit.write(record, material, controller.signal)).rejects.toBe(reason);
-    await expect(audit.verify(record, material, controller.signal)).rejects.toBe(reason);
     await expect(audit.recover(record, controller.signal)).rejects.toBe(reason);
     expect(await fs.readdir(container)).toEqual([]);
   });

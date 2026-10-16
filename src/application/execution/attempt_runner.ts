@@ -90,7 +90,6 @@ import { collectTestOutcomes, unresolvedTestFailures, type TestOutcome } from '.
 import { acceptedContractChanges } from './accepted_contract_changes.js';
 import { roleProfile, type RoleId } from '../../domain/workflow/role.js';
 import { defaultRoleForStep, stepWork, type WorkId } from '../../domain/workflow/work.js';
-import { stepWorkGuidance } from '../../domain/workflow/work_guidance.js';
 import type { RecordReplayController } from '../record_replay/controller.js';
 import {
   reconcileMeasuredQualityAssessment,
@@ -515,7 +514,6 @@ export class DomainAttemptRunner {
           projectId: input.domainStep.projectId, phaseId: input.domainStep.phaseId,
         }),
         // Transitional: the Step work's guidance until M-D moves it into the RuleChain work segment.
-        roleIdentity: workGuidanceBlock(input.domainStep.type),
         languageProfile: this.profile,
       });
       if (!result.success) {
@@ -1499,9 +1497,4 @@ function attemptIdentity(input: AttemptInput, language: Language): { work: WorkI
   const role = input.assignee?.actor.roleId ?? defaultRoleForStep(input.domainStep.type, language);
   return { work, role, roleVersion: input.assignee?.actor.roleVersion ?? roleProfile(role).version,
     modelPool: input.assignee?.actor.modelPool ?? roleProfile(role).defaultPool };
-}
-
-function workGuidanceBlock(type: Step['type']) {
-  const guidance = stepWorkGuidance(stepWork(type));
-  return { rolePrompt: guidance.role, capabilityPrompt: guidance.capability, prohibitions: [...guidance.prohibitions] };
 }

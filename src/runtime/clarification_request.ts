@@ -25,6 +25,9 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import {
+  correctRuntimeProtocolResponse, protocolCorrectionReference, recoverAdoptedProtocolText, type RuntimeProtocolCorrection,
+} from './protocol_correction.js';
 import { roleProfile } from '../domain/workflow/role.js';
 
 export class ClarificationProtocolError extends Error {
@@ -63,10 +66,13 @@ export function createRuntimeClarificationRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'project-manager', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS.clarification }, required: [],
+          work: PLANNING_REQUEST_CONTEXTS.clarification, locale: payload.locale },
+        bind: { role: 'project-manager', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS.clarification },
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
       signal?.throwIfAborted();
+      // At most one correction per logical request; keyed by the attempt whose reply it corrected.
+      const corrections = new Map<string, RuntimeProtocolCorrection>();
       const sent = await sendRuntimeValidatedBusinessRequest({ container, audit, router, options, request: {
         logicalRequestId, owner, templateVersion: CLARIFICATION_TEMPLATE_VERSION,
         outputProtocol: CLARIFICATION_PROTOCOL, auditContext: payload, messages: [...messages], signal,
@@ -75,7 +81,11 @@ export function createRuntimeClarificationRequestPort(input: {
         try { text = clarificationProtocolText(response); }
         catch (cause) {
           if (!(cause instanceof ClarificationProtocolError)) throw cause;
-          throw new ResponseValidationRejection('protocol', cause);
+          const corrected = await correctRuntimeProtocolResponse({ container, router, audit, response,
+            protocol: CLARIFICATION_PROTOCOL, signal });
+          if (!corrected) throw new ResponseValidationRejection('protocol', cause);
+          corrections.set(response.providerAttemptId.toLowerCase(), corrected);
+          text = corrected.text;
         }
         signal?.throwIfAborted();
         try { await validate(text); }
@@ -88,11 +98,13 @@ export function createRuntimeClarificationRequestPort(input: {
       signal?.throwIfAborted();
       const processed = await recovery.process(sent.source, signal);
       signal?.throwIfAborted();
-      const text = clarificationProtocolText(sent.source.response);
+      const correction = corrections.get(sent.source.response.providerAttemptId.toLowerCase());
+      const text = correction?.text ?? clarificationProtocolText(sent.source.response);
       await audit.event('llm.response', 'Clarification candidate passed its original business contract', {
         messageId: 'llm.clarification_judgement', logicalRequestId, owner,
         responseRecordId: processed.record.responseRecordId, responseRecordDigest: processed.record.digest,
         protocolResultId: processed.result.resultRecordId, protocolResultDigest: processed.result.digest,
+        ...(correction ? { protocolCorrection: protocolCorrectionReference(correction) } : {}),
       }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } });
       signal?.throwIfAborted();
       return Object.freeze({ text, provider: sent.source.response.provider });
@@ -112,7 +124,8 @@ export async function resumeRuntimeClarificationRequest(input: {
   assertClarificationInput(original);
   const payload = validateClarificationPayload(original.auditContext);
   validateClarificationRequestMessages(original.messages);
-  const text = clarificationProtocolText(restored.source.response);
+  const text = await recoverAdoptedProtocolText({ container, response: restored.source.response, signal,
+    read: clarificationProtocolText, protocolError: ClarificationProtocolError });
   const questions = validateClarifyJson(text, payload.parseContext.complex, payload.parseContext);
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,

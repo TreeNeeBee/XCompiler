@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { protectAuditContent, type AuditLogger } from '../../audit/audit.js';
+import type { AuditLogger } from '../../audit/audit.js';
 import {
   BusinessRequestAttemptError, assertBusinessRequestAttemptRecord,
   validateBusinessRequestAttempt, validateBusinessRequestAttemptRecord,
@@ -11,7 +11,6 @@ import { BusinessInputAuditBindingSchema } from '../../application/rules/rule_re
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import {
   normalizeRoutedResponseEvidence, recordedResponseEvidenceDigest, RoutedResponseEvidenceSchema,
-  type RoutedResponseEvidence,
 } from '../../llm/response_evidence.js';
 import { readRawLLMAudit } from './raw_llm_audit.js';
 
@@ -55,87 +54,6 @@ export class BusinessRequestAttemptAuditAdapter implements BusinessRequestAttemp
       messageId: 'llm.business_request_attempt', ...reference(record), attemptRecordDigest: record.digest,
       finalRequestDigest: record.finalRequestDigest, request,
     }, { persistence: 'required', location: { containerRoot: this.containerRoot, auditRoot: this.root } });
-    signal?.throwIfAborted();
-  }
-
-  async verify(raw: BusinessRequestAttemptRecord, material: BusinessRequestAttempt, signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const record = validateBusinessRequestAttemptRecord(raw, raw.logicalRequestId, raw.providerAttemptId);
-    const request = validateBusinessRequestAttempt(material);
-    assertBusinessRequestAttemptRecord(record, request);
-    const events = await this.read(record, signal);
-    const retained = this.request(record, events);
-    // Protect only the trusted live value; protecting retained text could hide substituted secrets.
-    const actual = canonicalRuleJson(retained);
-    if (actual !== canonicalRuleJson(request) && actual !== canonicalRuleJson(protectAuditContent(request, 'redacted'))) {
-      throw new BusinessRequestAttemptError('audit_mismatch', { ...reference(record), field: 'request' });
-    }
-    signal?.throwIfAborted();
-  }
-
-  async verifyResponse(
-    raw: BusinessRequestAttemptRecord, material: BusinessRequestAttempt,
-    evidence: RoutedResponseEvidence, signal?: AbortSignal,
-  ): Promise<void> {
-    signal?.throwIfAborted();
-    const record = validateBusinessRequestAttemptRecord(raw, raw.logicalRequestId, raw.providerAttemptId);
-    const request = validateBusinessRequestAttempt(material);
-    assertBusinessRequestAttemptRecord(record, request);
-    let response: RoutedResponseEvidence;
-    try { response = normalizeRoutedResponseEvidence(evidence); }
-    catch (cause) { throw new BusinessRequestAttemptError('invalid', {
-      ...reference(record), field: 'live-response',
-    }, { cause }); }
-    if (response.logicalRequestId !== record.logicalRequestId || response.providerAttemptId !== record.providerAttemptId
-      || response.provider !== request.provider || response.model !== request.model) {
-      throw new BusinessRequestAttemptError('audit_mismatch', { ...reference(record), field: 'live-response-binding' });
-    }
-    if (response.capture.status !== 'recorded') throw new BusinessRequestAttemptError('response_unavailable', {
-      ...reference(record), reason: response.capture.reason,
-    });
-    if (response.capture.response.output !== response.output) throw new BusinessRequestAttemptError('audit_mismatch', {
-      ...reference(record), field: 'live-response-output',
-    });
-    const responseDigest = recordedResponseEvidenceDigest(response);
-    // Observe both events in one complete scan; a later malformed line cannot disappear.
-    const events = await this.read(record, signal);
-    const retained = this.request(record, events);
-    const actualRequest = canonicalRuleJson(retained);
-    if (actualRequest !== canonicalRuleJson(request)
-      && actualRequest !== canonicalRuleJson(protectAuditContent(request, 'redacted'))) {
-      throw new BusinessRequestAttemptError('audit_mismatch', { ...reference(record), field: 'request' });
-    }
-    const responses = events.filter((event) => eventKind(event) === 'response');
-    if (responses.length !== 1) throw new BusinessRequestAttemptError(responses.length ? 'audit_ambiguous' : 'audit_missing', {
-      ...reference(record), field: 'response', matches: responses.length,
-    });
-    const parsed = ResponseEvent.safeParse(responses[0]);
-    if (!parsed.success) throw new BusinessRequestAttemptError('audit_invalid', {
-      ...reference(record), field: 'response',
-    }, { cause: parsed.error });
-    const data = parsed.data.data;
-    if (data.responseEvidenceDigest !== responseDigest) throw new BusinessRequestAttemptError('audit_mismatch', {
-      ...reference(record), field: 'responseEvidenceDigest',
-    });
-    const retainedResponse = normalizeRoutedResponseEvidence(data.responseEvidence);
-    if (retainedResponse.capture.status !== 'recorded') throw new BusinessRequestAttemptError('response_unavailable', {
-      ...reference(record), reason: retainedResponse.capture.reason,
-    });
-    // Independent snapshots prevent repeated object references from becoming [Circular] in protection.
-    const expected = {
-      ...reference(record), provider: request.provider, model: request.model, role: request.role, output: response.output,
-      requestBinding: structuredClone(request.requestBinding), requestMessages: structuredClone(request.messages),
-      responseEvidence: structuredClone(response),
-    };
-    const actual = { ...data, responseEvidence: retainedResponse };
-    const protectedExpected = protectAuditContent(expected, 'redacted') as typeof expected;
-    for (const field of Object.keys(expected) as (keyof typeof expected)[]) {
-      const retainedValue = canonicalRuleJson(actual[field]);
-      if (retainedValue !== canonicalRuleJson(expected[field])
-        && retainedValue !== canonicalRuleJson(protectedExpected[field])) {
-        throw new BusinessRequestAttemptError('audit_mismatch', { ...reference(record), field });
-      }
-    }
     signal?.throwIfAborted();
   }
 

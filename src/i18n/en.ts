@@ -1,7 +1,7 @@
 import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
+const PYTHON_PLANNER_SYSTEM = `Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
 
 Output language: Python only (plan.language is fixed to "python").
 
@@ -92,7 +92,7 @@ Output JSON shape:
   ]
 }`;
 
-const PYTHON_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
+const PYTHON_EXECUTOR_SYSTEM = `You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
 Every round you must return strict JSON:
 {
@@ -162,7 +162,7 @@ Rules:
    - The concatenated result must be valid Python; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.`;
 
-const TYPESCRIPT_PLANNER_SYSTEM = `You are the Planner of the XCompiler system. Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
+const TYPESCRIPT_PLANNER_SYSTEM = `Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
 
 Output language: TypeScript / Node.js only (plan.language is fixed to "typescript").
 
@@ -204,7 +204,7 @@ Mandatory rules:
 
 Output JSON shape is identical to Python and must include \`"projectType": "application | library | mixed"\`, with TypeScript paths such as \`src/example.ts\` and \`tests/example.test.ts\`; the first Step phase must be \`REQUIREMENT_ANALYSIS\`, not \`REQUIREMENT\`. There is no CLI project-type override.`;
 
-const TYPESCRIPT_EXECUTOR_SYSTEM = `You are XCompiler's Step Executor. You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
+const TYPESCRIPT_EXECUTOR_SYSTEM = `You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
 Every round you must return strict JSON:
 {
@@ -256,15 +256,15 @@ Rules:
 7. package.json is the dependency manifest. Use add_dependency for npm packages; never write requirements.txt.
 8. run_program runs the project entry with \`npx tsx\`, run_tests runs Vitest via \`npm test\`, and the final delivery gate also verifies the direct Node entry command.`;
 
-const PLANNER_CLARIFY_SYSTEM = `You are the requirements analyst for XCompiler's V-model. Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
+const PLANNER_CLARIFY_SYSTEM = `Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
 Return strict JSON only. Each question must be directly answerable by a product owner and cover one decision. Avoid vague catch-all or implementation-stack questions, except for the single development-language question when the user prompt explicitly requires it.`;
 
 function buildPlannerSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM) + profile.plannerPromptOverride;
+  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM);
 }
 
 function buildPlannerPhasePlanSystem(profile: LanguageProfile): string {
-  return `You are the Planner of XCompiler. This is two-level planning, pass one: PhasePlan.
+  return `This is two-level planning, pass one: PhasePlan.
 
 Target language: ${profile.displayName}.
 
@@ -289,11 +289,11 @@ Return strict JSON only:
   ]
 }
 
-No Markdown, no explanatory prose, no steps, no source/test file inventory.` + profile.plannerPromptOverride;
+No Markdown, no explanatory prose, no steps, no source/test file inventory.`;
 }
 
 function buildPlannerPhaseDecomposeSystem(profile: LanguageProfile): string {
-  return `You are the Planner of XCompiler. This is two-level planning, pass two: generate a full V-model StepPlan for the requested phase.
+  return `This is two-level planning, pass two: generate a full V-model StepPlan for the requested phase.
 
 Target language: ${profile.displayName}.
 
@@ -343,7 +343,7 @@ Return strict JSON only:
   ]
 }
 
-Do not output Steps for future planned phases. Do not output requirements.txt. Design phases must not write src/ product code; their paired tests are mandatory. FUNCTIONAL_TEST must include README.md, docs/quickstart.md, and the functional validation document.` + profile.plannerPromptOverride;
+Do not output Steps for future planned phases. Do not output requirements.txt. Design phases must not write src/ product code; their paired tests are mandatory. FUNCTIONAL_TEST must include README.md, docs/quickstart.md, and the functional validation document.`;
 }
 
 function buildExecutorSystem(profile: LanguageProfile): string {
@@ -835,9 +835,7 @@ Return a full V-model StepPlan only for ${opts.phaseId}:
 Return strict JSON StepPlan for the current phase only.`,
     executorSystem: (p) => buildExecutorSystem(p),
     executorDebugBlock: (reason: string, suggestions?: string) =>
-      `\n\nYou are now in DEBUG retry mode. Previous failure reason: ${reason}\n` +
-      'Use the Bug Ticket and compact failure evidence as the source of truth. In a requirement/design rollback, update only the current contract, test plan, or diagnostic outputs when the concrete source file belongs to a later Step; that later V-model Step will implement it. ' +
-      'If the previous attempt stalled on read-only probes, do not repeat discovery: perform the next justified mutation or verification action.' +
+      `\n\nPrevious failure reason: ${reason}` +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
     executorAcceptedContractChangesBlock: (changes) =>
@@ -845,10 +843,6 @@ Return strict JSON StepPlan for the current phase only.`,
       changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
         `  Source: ${JSON.stringify(change.source)}`].join('\n')).join('\n'),
     executorContextBlock: (context: string) => `\n\n# Assembled context\n${context}`,
-    executorRoleBlock: (identity) => `\n\n## Your role\n${identity.rolePrompt}\n${identity.capabilityPrompt}`
-      + (identity.prohibitions.length > 0
-        ? `\n\nYou must not:\n${identity.prohibitions.map((rule) => `- ${rule}`).join('\n')}`
-        : ''),
     executorStepBlock: (sp: string) =>
       `\n\n## Current Step prompt (sole mission — do not drift across steps)\n${sp}`,
     executorSkillBlock: (hints: string[]) =>

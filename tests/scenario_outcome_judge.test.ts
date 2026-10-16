@@ -115,7 +115,7 @@ describe('scenario outcome judgement', () => {
     await judgeScenarioOutcome({
       send: async (messages) => {
         payload = readScenarioOutcomeMessages(messages);
-        return assessment('{"ok":true,"reason":"met"}');
+        return { assessment: assessment('{"ok":true,"reason":"met"}') };
       },
       before: [{ path: 'unchanged.txt', mtimeMs: 7 }], scenario,
       scene: { ...scene, stdoutTail: 's'.repeat(2_001), stderrTail: 'e'.repeat(2_001) },
@@ -155,6 +155,22 @@ describe('scenario outcome judgement', () => {
     expect(verdict.evidence).toContain('process: exited with code 0');
   });
 
+  it('judges a proven escape-insertion correction of an unresolved reply by the same routing checks', async () => {
+    const unresolved = assessment('{"ok":false,"reason":"the "summary" field is empty","ticketType":"bug","target":"code"}');
+    expect(unresolved.outcome).toBe('unresolved');
+    const corrected = '{"ok":false,"reason":"the \\"summary\\" field is empty","ticketType":"bug","target":"code"}';
+    expect(await judgeScenarioOutcome({ send: async () => ({ assessment: unresolved, corrected }), before: [], scenario, scene }))
+      .toMatchObject({ ok: false, reason: 'the "summary" field is empty', ticketType: 'bug', target: 'code' });
+    // Business validation still decides: a correction that fails routing is not a verdict.
+    await expect(judgeScenarioOutcome({ send: async () => ({ assessment: unresolved,
+      corrected: '{"ok":false,"reason":"the \\"summary\\" field is empty"}' }), before: [], scenario, scene }))
+      .rejects.toBeInstanceOf(ScenarioOutcomeJudgementError);
+    // A readable reply keeps its own text; a correction cannot replace it.
+    await expect(judgeScenarioOutcome({ send: async () => ({ assessment: assessment('{"ok":true,"reason":"met"}'),
+      corrected: '{"ok":false,"reason":"x","ticketType":"bug","target":"code"}' }), before: [], scenario, scene }))
+      .rejects.toBeInstanceOf(ScenarioOutcomeJudgementError);
+  });
+
   it('rejects parseable JSON when provider completion is ineligible', async () => {
     await expect(judgeScenarioOutcome({
       send: sendAnswer([], '{"ok":true,"reason":"met"}', { finishReasons: ['length'] }),
@@ -180,7 +196,7 @@ describe('scenario outcome judgement', () => {
     await judgeScenarioOutcome({
       send: async (messages) => {
         payload = readScenarioOutcomeMessages(messages);
-        return assessment('{"ok":true,"reason":"met"}');
+        return { assessment: assessment('{"ok":true,"reason":"met"}') };
       },
       before: [], scenario: currentScenario, scene: currentScene,
       artifacts: { snapshot: async () => {
@@ -267,7 +283,7 @@ describe('pinned scenario framework input', () => {
 function sendAnswer(seen: string[], answer: string, facts: Partial<ProviderResponseEvidence> = {}) {
   return async (messages: readonly ChatMessage[]) => {
     seen.push(...messages.map((message) => message.content));
-    return assessment(answer, facts);
+    return { assessment: assessment(answer, facts) };
   };
 }
 

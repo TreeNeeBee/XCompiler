@@ -116,6 +116,15 @@ export function businessRequestPool(owner: BusinessRequestOwner): string {
   return owner.modelPool;
 }
 
+/**
+ * The identity a request's pinned Rule snapshot is stored and read under. All rounds of one
+ * Executor execution share a single selection (D-6), so selection and review happen once per
+ * execution; every other request selects for itself.
+ */
+export function businessRequestSelectionId(input: { logicalRequestId: string; owner: BusinessRequestOwner }): string {
+  return (input.owner.kind === 'step-execution' ? input.owner.executionId : input.logicalRequestId).toLowerCase();
+}
+
 /** These materials are already validated; this checks their shared request ownership boundary. */
 export function assertBusinessRequestSnapshotOwner(
   snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: BusinessRequestAuditContext,
@@ -139,10 +148,9 @@ export interface BusinessRequestInputStore {
 }
 
 export interface BusinessRequestInputAudit {
+  /** Required trace evidence. Live requests never read it back: the store record is their authority. */
   write(record: BusinessRequestInputRecord, input: BusinessRequestInput, signal?: AbortSignal): Promise<void>;
-  /** Live input can prove a protected audit representation without reconstructing redacted values. */
-  verify(record: BusinessRequestInputRecord, input: BusinessRequestInput, signal?: AbortSignal): Promise<void>;
-  /** Recovery requires the exact original values, never placeholders or current prompt material. */
+  /** Restart recovery only. It requires the exact original values, never placeholders or current prompt material. */
   recover(record: BusinessRequestInputRecord, signal?: AbortSignal): Promise<BusinessRequestInput>;
 }
 
@@ -220,7 +228,7 @@ export class BusinessRequestInputs {
     // Zod copies nested material; freeze it before any collaborator can suspend this operation.
     const captured = freeze(parsed.data);
     assertBusinessRequestAuditContext(captured);
-    const snapshot = await this.snapshot(captured.logicalRequestId, captured.owner, undefined, signal, captured.auditContext);
+    const snapshot = await this.snapshot(businessRequestSelectionId(captured), captured.owner, undefined, signal, captured.auditContext);
     signal?.throwIfAborted();
     const input = validateBusinessRequestInput({ ...captured, schemaVersion: 1, snapshotDigest: snapshot.digest });
     const existing = await this.store.read(input.logicalRequestId);
@@ -239,8 +247,6 @@ export class BusinessRequestInputs {
       signal?.throwIfAborted();
       assertBusinessRequestInputRecord(record, input);
     }
-    await this.audit.verify(record, input, signal);
-    signal?.throwIfAborted();
     return Object.freeze({ status: 'captured' as const, record, input, snapshot });
   }
 
@@ -254,12 +260,15 @@ export class BusinessRequestInputs {
     const input = validateBusinessRequestInput(await this.audit.recover(record, signal));
     signal?.throwIfAborted();
     assertBusinessRequestInputRecord(record, input);
-    const snapshot = await this.snapshot(id, record.owner, record.snapshotDigest, signal, input.auditContext);
+    const snapshot = await this.snapshot(businessRequestSelectionId({ logicalRequestId: id, owner: record.owner }),
+      record.owner, record.snapshotDigest, signal, input.auditContext);
+    // A Rule review's raw evidence is checked against the audit only when restoring after a restart.
+    await this.ruleEvidence.verify(snapshot, signal);
     signal?.throwIfAborted();
     return Object.freeze({ status: 'recovered', record, input, snapshot });
   }
 
-  /** Verify an existing live capture; evidence checks never recreate missing authority records. */
+  /** Verify a live capture against its store record and snapshot; never recreates missing authority records. */
   async verifyCaptured(raw: BusinessRequestInput, rawRecord: BusinessRequestInputRecord, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     const input = validateBusinessRequestInput(raw);
@@ -270,9 +279,7 @@ export class BusinessRequestInputs {
     if (!stored || validateBusinessRequestInputRecord(stored, input.logicalRequestId).digest !== expected.digest) {
       throw new BusinessRequestInputError('identity_conflict', { logicalRequestId: input.logicalRequestId, field: 'captured_record' });
     }
-    await this.audit.verify(expected, input, signal);
-    signal?.throwIfAborted();
-    await this.snapshot(input.logicalRequestId, input.owner, input.snapshotDigest, signal, input.auditContext);
+    await this.snapshot(businessRequestSelectionId(input), input.owner, input.snapshotDigest, signal, input.auditContext);
     signal?.throwIfAborted();
   }
 
@@ -288,8 +295,6 @@ export class BusinessRequestInputs {
     if (digest !== undefined && snapshot.digest !== digest) {
       throw new BusinessRequestInputError('snapshot_mismatch', { logicalRequestId: id, snapshotDigest: snapshot.digest });
     }
-    await this.ruleEvidence.verify(snapshot, signal);
-    signal?.throwIfAborted();
     return snapshot;
   }
 }

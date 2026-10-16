@@ -25,6 +25,9 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import {
+  correctRuntimeProtocolResponse, protocolCorrectionReference, recoverAdoptedProtocolText, type RuntimeProtocolCorrection,
+} from './protocol_correction.js';
 import { roleProfile } from '../domain/workflow/role.js';
 
 export class PhasePlanProtocolError extends Error {
@@ -63,10 +66,13 @@ export function createRuntimePhasePlanRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'planner', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS['phase-plan'] }, required: [],
+          work: PLANNING_REQUEST_CONTEXTS['phase-plan'], locale: payload.locale },
+        bind: { role: 'planner', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS['phase-plan'] },
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
       signal?.throwIfAborted();
+      // At most one correction per logical request; keyed by the attempt whose reply it corrected.
+      const corrections = new Map<string, RuntimeProtocolCorrection>();
       const sent = await sendRuntimeValidatedBusinessRequest({ container, audit, router, options, request: {
         logicalRequestId, owner, templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
         outputProtocol: PHASE_PLAN_PROTOCOL, auditContext: payload, messages: [...messages], signal,
@@ -75,7 +81,11 @@ export function createRuntimePhasePlanRequestPort(input: {
         try { text = phasePlanProtocolText(response); }
         catch (cause) {
           if (!(cause instanceof PhasePlanProtocolError)) throw cause;
-          throw new ResponseValidationRejection('protocol', cause);
+          const corrected = await correctRuntimeProtocolResponse({ container, router, audit, response,
+            protocol: PHASE_PLAN_PROTOCOL, signal });
+          if (!corrected) throw new ResponseValidationRejection('protocol', cause);
+          corrections.set(response.providerAttemptId.toLowerCase(), corrected);
+          text = corrected.text;
         }
         signal?.throwIfAborted();
         try {
@@ -90,11 +100,13 @@ export function createRuntimePhasePlanRequestPort(input: {
       // llm.after and final response/validation identity must succeed before adoption.
       const processed = await recovery.process(sent.source, signal);
       signal?.throwIfAborted();
-      const text = phasePlanProtocolText(sent.source.response);
+      const correction = corrections.get(sent.source.response.providerAttemptId.toLowerCase());
+      const text = correction?.text ?? phasePlanProtocolText(sent.source.response);
       await audit.event('llm.response', 'PhasePlan candidate passed its original business contract', {
         messageId: 'llm.phase_plan_judgement', logicalRequestId, owner,
         responseRecordId: processed.record.responseRecordId, responseRecordDigest: processed.record.digest,
         protocolResultId: processed.result.resultRecordId, protocolResultDigest: processed.result.digest,
+        ...(correction ? { protocolCorrection: protocolCorrectionReference(correction) } : {}),
       }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } });
       signal?.throwIfAborted();
       return Object.freeze({ text, provider: sent.source.response.provider });
@@ -114,7 +126,8 @@ export async function resumeRuntimePhasePlanRequest(input: {
   assertPhasePlanInput(original);
   const payload = validatePhasePlanPayload(original.auditContext);
   validatePhasePlanRequestMessages(original.messages);
-  const text = phasePlanProtocolText(restored.source.response);
+  const text = await recoverAdoptedProtocolText({ container, response: restored.source.response, signal,
+    read: phasePlanProtocolText, protocolError: PhasePlanProtocolError });
   const phasePlan = parsePhasePlanResponse(text, payload.parseContext);
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,

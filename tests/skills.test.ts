@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
+import { boundRuleBlock } from './support/compiler_rules.js';
 import {
   AgentSkillError,
   SkillRegistry,
@@ -182,7 +182,8 @@ describe('Agent Skills Specification integration', () => {
     });
   });
 
-  it('keeps the Runtime path policy authoritative over Skill guidance', () => {
-    expect(renderExecutionPromptPolicy({ debug: true })).toMatch(/workspace-relative|workspace 相对/u);
+  it('keeps the Runtime path policy authoritative over Skill guidance', async () => {
+    expect((await boundRuleBlock({ role: 'python-developer', work: 'repair.debug', stepWork: 'code.implement', language: 'python' })).content).toMatch(/workspace-relative/u);
+    expect((await boundRuleBlock({ role: 'python-developer', work: 'repair.debug', stepWork: 'code.implement', language: 'python' }, 'zh')).content).toMatch(/workspace 相对/u);
   });
 });

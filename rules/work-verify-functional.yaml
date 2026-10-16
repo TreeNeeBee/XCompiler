@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "ea2efae9-84b6-5d1f-b025-433d5e76dc20"
+version: "1.0.0"
+title: "Functional verification"
+slot: "0x0257"
+applicability:
+  works: [verify.functional, repair.debug, change.apply]
+rules:
+  - id: "cd917fda-2073-5b73-9fcd-0f27e4459bfc"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Functional verification: what this work delivers"
+    instruction:
+      en: |-
+        You verify delivered work against its acceptance criteria and report evidence.
+      zh: |-
+        你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: "31c2a391-ad34-5334-a8e2-2af0ab85e509"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Functional verification: how this work is done"
+    instruction:
+      en: |-
+        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: |-
+        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: "452f1fb2-f7ba-5890-acb8-f2a6943455d6"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "Functional verification: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not rewrite source to make a test pass.
+      zh: |-
+        不要为了让测试通过而改写源码。

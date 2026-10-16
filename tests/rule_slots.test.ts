@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEBUG_RULE_SLOT_RANGE,
+  LANGUAGE_RULE_SLOT_RANGE,
+  ROLE_RULE_SLOT_RANGE,
   RULE_SLOTS,
+  WORK_RULE_SLOT_RANGE,
+  isBoundRuleSlot,
   RuleSlotError,
   compareRuleSlots,
   formatRuleSlot,
@@ -65,22 +69,30 @@ describe('RuleChain slots', () => {
     }));
   });
 
-  it('keeps the declaration, language, framework and model-role allocations distinct', () => {
+  it('keeps the declaration, language, framework and business allocations distinct', () => {
     expect(RULE_SLOTS).toEqual({
       genesis: 0x0000,
       languageIndex: 0x0100,
       typeScript: 0x0101,
       python: 0x0102,
       frameworkIndex: 0x0200,
-      planner: 0x0201,
-      architect: 0x0202,
-      coder: 0x0203,
-      tester: 0x0204,
-      debugger: 0x0205,
-      projectManager: 0x0206,
       businessIndex: 0x1000,
     });
-    expect(new Set(Object.values(RULE_SLOTS)).size).toBe(12);
+    expect(new Set(Object.values(RULE_SLOTS)).size).toBe(6);
+  });
+
+  it('divides the framework range into a role segment followed by a work segment (D-13)', () => {
+    expect(LANGUAGE_RULE_SLOT_RANGE).toEqual({ start: 0x0101, end: 0x01ff });
+    expect(ROLE_RULE_SLOT_RANGE).toEqual({ start: 0x0201, end: 0x023f });
+    expect(WORK_RULE_SLOT_RANGE).toEqual({ start: 0x0240, end: 0x02bf });
+    expect(ROLE_RULE_SLOT_RANGE.end + 1).toBe(WORK_RULE_SLOT_RANGE.start);
+  });
+
+  it.each([
+    [0x0000, false], [0x00ff, false], [0x0100, false], [0x0101, true], [0x01ff, true], [0x0200, false],
+    [0x0201, true], [0x0240, true], [0x02a0, true], [0x02bf, true], [0x02c0, false], [0x0300, false], [0x1001, false],
+  ] as const)('binds slot %i only through Runtime when it is a language, role or work list', (slot, expected) => {
+    expect(isBoundRuleSlot(slot)).toBe(expected);
   });
 
   it.each([
@@ -141,7 +153,7 @@ describe('RuleChain slots', () => {
     expect(slots.every(isRuleListSlot)).toBe(true);
     expect(slots.some(isProtectedRuleSlot)).toBe(false);
     expect(slots.some(isIndexRuleSlot)).toBe(false);
-    expect(DEBUG_RULE_SLOT_RANGE.start).toBeGreaterThan(RULE_SLOTS.projectManager);
+    expect(DEBUG_RULE_SLOT_RANGE.start).toBeGreaterThan(WORK_RULE_SLOT_RANGE.end);
     expect(DEBUG_RULE_SLOT_RANGE.end).toBeLessThan(RULE_SLOTS.businessIndex);
   });
 

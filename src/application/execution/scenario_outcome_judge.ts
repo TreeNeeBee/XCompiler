@@ -26,13 +26,14 @@ export interface ScenarioArtifactReader {
 
 export const SCENARIO_OUTCOME_CONTEXT = 'scenario-outcome-judgement' as const;
 export const SCENARIO_OUTCOME_RULE = Object.freeze({
-  ruleId: 'a707ec22-a5d2-45da-83b3-823d96d18f20', version: '2.0.0',
+  ruleId: 'a707ec22-a5d2-45da-83b3-823d96d18f20', version: '2.1.0',
 });
 export const SCENARIO_OUTCOME_TEMPLATE_VERSION = 'scenario-outcome/2' as const;
-const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
+// Version 2 permits one model escape-insertion correction (D-3).
+const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion'];
 Object.freeze(PROTOCOL_TRANSFORMATIONS);
 export const SCENARIO_OUTCOME_PROTOCOL: JsonOutputProtocol = Object.freeze({
-  id: 'scenario-outcome', version: '1', root: 'object',
+  id: 'scenario-outcome', version: '2', root: 'object',
   transformations: PROTOCOL_TRANSFORMATIONS,
 });
 
@@ -113,7 +114,8 @@ const MAX_STREAM_CHARS = 2_000;
  * `output/`, and nothing should.
  */
 export async function judgeScenarioOutcome(input: {
-  send: (messages: readonly ChatMessage[]) => Promise<BusinessProtocolAssessment>;
+  /** The adopted reply's protocol assessment, and the proven correction read when it was unresolved. */
+  send: (messages: readonly ChatMessage[]) => Promise<ScenarioOutcomeReply>;
   artifacts?: ScenarioArtifactReader;
   before: readonly ScenarioArtifactSnapshot[];
   scenario: DeliveryGateScenario;
@@ -161,27 +163,38 @@ export async function judgeScenarioOutcome(input: {
     ...observations,
   ];
 
-  const assessment = await send(buildScenarioOutcomeMessages({
+  const reply = await send(buildScenarioOutcomeMessages({
     expectation, operation, requirementDigest, acceptedContractChanges: input.acceptedContractChanges, evidence,
   }));
   signal?.throwIfAborted();
-  return consumeScenarioOutcomeProtocol(assessment, evidence);
+  return consumeScenarioOutcomeProtocol(reply.assessment, evidence, reply.corrected);
+}
+
+export interface ScenarioOutcomeReply {
+  readonly assessment: BusinessProtocolAssessment;
+  /** Escape-insertion correction of an unresolved reply (D-3); still judged by the same shape checks. */
+  readonly corrected?: string;
 }
 
 /** Protocol validity precedes the existing PM-owned business shape checks. */
 export function consumeScenarioOutcomeProtocol(
-  assessment: BusinessProtocolAssessment, evidence: readonly string[],
+  assessment: BusinessProtocolAssessment, evidence: readonly string[], corrected?: string,
 ): ScenarioOutcomeVerdict {
   const inspection = assessment.inspection;
-  if ((assessment.outcome !== 'valid' && assessment.outcome !== 'normalized') || inspection.status !== 'assessed'
+  // A correction exists only for an unresolved reply; a readable reply keeps its own text.
+  if (corrected !== undefined && assessment.outcome !== 'unresolved') {
+    throw new ScenarioOutcomeJudgementError('Scenario outcome judgement has no eligible, value-preserving JSON result');
+  }
+  if (corrected === undefined && ((assessment.outcome !== 'valid' && assessment.outcome !== 'normalized') || inspection.status !== 'assessed'
     || inspection.result.status === 'unresolved'
     || (assessment.outcome === 'valid' && inspection.result.status !== 'valid')
     || (assessment.outcome === 'normalized' && (inspection.result.status !== 'repairable'
       || assessment.proof.status !== 'preserved' || assessment.proof.original !== inspection.result.original
-      || assessment.proof.candidate !== inspection.result.normalized))) {
+      || assessment.proof.candidate !== inspection.result.normalized)))) {
     throw new ScenarioOutcomeJudgementError('Scenario outcome judgement has no eligible, value-preserving JSON result');
   }
-  const verdict = parseVerdict(inspection.result.normalized);
+  const verdict = parseVerdict(corrected ?? (inspection.status === 'assessed' && inspection.result.status !== 'unresolved'
+    ? inspection.result.normalized : ''));
   // A malformed judgement is neither evidence that the project passed nor evidence for a Bug. Stop
   // the gate without manufacturing a product Ticket; the runtime/provider failure remains visible.
   if (!verdict) {

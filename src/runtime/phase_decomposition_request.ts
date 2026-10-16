@@ -25,6 +25,9 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import {
+  correctRuntimeProtocolResponse, protocolCorrectionReference, recoverAdoptedProtocolText, type RuntimeProtocolCorrection,
+} from './protocol_correction.js';
 import { roleProfile } from '../domain/workflow/role.js';
 import { OperationActorBindingSchema, type OperationActorBinding } from '../application/execution/execution_turn_request.js';
 
@@ -88,11 +91,14 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'planner', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'],
-          ...(owner.kind === 'project-planning-operation' ? { projectId: owner.projectId } : {}) }, required: [],
+          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'], locale: payload.locale,
+          ...(owner.kind === 'project-planning-operation' ? { projectId: owner.projectId } : {}) },
+        bind: { role: 'planner', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'] },
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
       signal?.throwIfAborted();
+      // At most one correction per logical request; keyed by the attempt whose reply it corrected.
+      const corrections = new Map<string, RuntimeProtocolCorrection>();
       const sent = await sendRuntimeValidatedBusinessRequest({ container, audit, router, options, request: {
         logicalRequestId, owner, templateVersion: PHASE_DECOMPOSITION_TEMPLATE_VERSION,
         outputProtocol: PHASE_DECOMPOSITION_PROTOCOL, auditContext: payload, messages: [...messages], signal,
@@ -101,7 +107,11 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
         try { text = phaseDecompositionProtocolText(response); }
         catch (cause) {
           if (!(cause instanceof PhaseDecompositionProtocolError)) throw cause;
-          throw new ResponseValidationRejection('protocol', cause);
+          const corrected = await correctRuntimeProtocolResponse({ container, router, audit, response,
+            protocol: PHASE_DECOMPOSITION_PROTOCOL, signal });
+          if (!corrected) throw new ResponseValidationRejection('protocol', cause);
+          corrections.set(response.providerAttemptId.toLowerCase(), corrected);
+          text = corrected.text;
         }
         signal?.throwIfAborted();
         try {
@@ -116,11 +126,13 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
       // llm.after and final response/validation identity must succeed before adoption.
       const processed = await recovery.process(sent.source, signal);
       signal?.throwIfAborted();
-      const text = phaseDecompositionProtocolText(sent.source.response);
+      const correction = corrections.get(sent.source.response.providerAttemptId.toLowerCase());
+      const text = correction?.text ?? phaseDecompositionProtocolText(sent.source.response);
       await audit.event('llm.response', 'Phase decomposition candidate passed its original business contract', {
         messageId: 'llm.phase_decomposition_judgement', logicalRequestId, owner,
         responseRecordId: processed.record.responseRecordId, responseRecordDigest: processed.record.digest,
         protocolResultId: processed.result.resultRecordId, protocolResultDigest: processed.result.digest,
+        ...(correction ? { protocolCorrection: protocolCorrectionReference(correction) } : {}),
       }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } });
       signal?.throwIfAborted();
       return Object.freeze({ text, provider: sent.source.response.provider });
@@ -140,7 +152,8 @@ export async function resumeRuntimePhaseDecompositionRequest(input: {
   assertPhaseDecompositionInput(original);
   const payload = validatePhaseDecompositionPayload(original.auditContext);
   validatePhaseDecompositionRequestMessages(original.messages);
-  const text = phaseDecompositionProtocolText(restored.source.response);
+  const text = await recoverAdoptedProtocolText({ container, response: restored.source.response, signal,
+    read: phaseDecompositionProtocolText, protocolError: PhaseDecompositionProtocolError });
   const draft = parsePhaseDecompositionResponse(text, payload);
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,

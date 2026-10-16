@@ -2,13 +2,15 @@ import { z } from 'zod';
 import { LANGUAGES } from '../planning/execution_plan.js';
 import { RoleIdSchema } from '../workflow/role.js';
 import { WorkIdSchema } from '../workflow/work.js';
-import type { RuleApplicability, RuleLookup } from './catalogue.js';
+import { RuleLocaleSchema, type RuleApplicability, type RuleLookup } from './catalogue.js';
 
 export const RuleContextSchema = z.object({
   projectId: z.uuid().optional(),
   language: z.enum(LANGUAGES).optional(),
   role: RoleIdSchema.optional(),
   work: WorkIdSchema.optional(),
+  /** The prompt locale the request renders Rules in; not an applicability dimension. */
+  locale: RuleLocaleSchema.optional(),
 }).strict();
 export type RuleContext = z.infer<typeof RuleContextSchema>;
 
@@ -18,9 +20,11 @@ export const RuleRetrievalProfileSchema = z.object({
 }).strict();
 export type RuleRetrievalProfile = z.infer<typeof RuleRetrievalProfileSchema>;
 
+export type RuleApplicabilityDimension = Exclude<keyof RuleContext, 'locale'>;
+
 export interface RuleApplicabilityIssue {
   readonly source: 'owner' | 'list' | 'rule';
-  readonly dimension: keyof RuleContext;
+  readonly dimension: RuleApplicabilityDimension;
   readonly reason: 'missing-context' | 'outside-scope';
 }
 
@@ -36,7 +40,7 @@ export type RuleSelectionEntry = {
 /** Owner, list and Rule restrictions all apply; absence of a restriction is an open dimension. */
 export function ruleApplicability(entry: RuleSelectionEntry, context: RuleContext): readonly RuleApplicabilityIssue[] {
   const issues: RuleApplicabilityIssue[] = [];
-  const check = (source: RuleApplicabilityIssue['source'], dimension: keyof RuleContext, allowed: readonly string[] | undefined) => {
+  const check = (source: RuleApplicabilityIssue['source'], dimension: RuleApplicabilityDimension, allowed: readonly string[] | undefined) => {
     if (!allowed) return;
     const actual = context[dimension];
     if (actual === undefined) issues.push({ source, dimension, reason: 'missing-context' });

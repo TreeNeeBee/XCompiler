@@ -85,7 +85,7 @@ async function endpoint(status = 200, options: { review?: boolean } = {}) {
 
 async function fixture(options: {
   endpoint: string; audit?: boolean; plugins?: PluginHost; record?: boolean;
-  fallback?: { endpoint: string; contextWindow: number }; optional?: boolean;
+  fallback?: { endpoint: string; contextWindow: number }; optional?: boolean; primaryContextWindow?: number;
 }) {
   const container = new ProjectContainer(path.join(root, 'project'));
   await container.canonical().workspace.ensure('.');
@@ -94,7 +94,7 @@ async function fixture(options: {
   await fs.writeFile(configPath, YAML.stringify({
     llm: {
       providers: {
-        primary: { ...provider, base_url: options.endpoint },
+        primary: { ...provider, base_url: options.endpoint, context_window: options.primaryContextWindow ?? provider.context_window },
         ...(options.fallback ? { secondary: {
           ...provider, base_url: options.fallback.endpoint, context_window: options.fallback.contextWindow,
         } } : {}),
@@ -276,14 +276,55 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
     await expect(sendRuntimeRuleRequest({ ...current.input,
       messages: [...current.input.messages, { role: 'user', content: 'Retain this context. '.repeat(700) }],
     })).rejects.toMatchObject({
-      code: 'rule_business_request_failed', reason: 'capacity_exceeded', details: { provider: 'secondary' },
+      failure: { code: 'all_providers_failed', details: { failures: [
+        expect.stringContaining('primary'), expect.stringMatching(/secondary.*cannot hold the request/u),
+      ] } },
     });
     expect(primary.calls).toHaveLength(1);
     expect(secondary.calls).toHaveLength(0);
     expect(current.boost).not.toHaveBeenCalled();
+    // Only the provider that actually failed is penalised; a window too small is not a fault.
     expect(current.decay).toHaveBeenCalledTimes(1);
     expect(current.decay).toHaveBeenCalledWith('primary', expect.any(String));
   });
+
+  it('moves a request its first provider cannot hold to a wider provider of the pool, untrimmed', async () => {
+    const primary = await endpoint();
+    const secondary = await endpoint();
+    const current = await fixture({ endpoint: primary.url, primaryContextWindow: 2048,
+      fallback: { endpoint: secondary.url, contextWindow: 131072 } });
+    const extra = 'Retain this context. '.repeat(700);
+    const result = await sendRuntimeRuleRequest({ ...current.input,
+      messages: [...current.input.messages, { role: 'user', content: extra }] });
+    expect(result.response).toMatchObject({ provider: 'secondary', output });
+    expect(primary.calls).toHaveLength(0);
+    expect(secondary.calls).toHaveLength(1);
+    expect(secondary.calls[0]!.input.messages.at(-1)!.content).toBe(extra);
+    expect(current.decay).not.toHaveBeenCalled();
+    const skipped = (await current.events()).find((event) => event.messageId === 'llm.provider_capacity_skipped');
+    expect(skipped?.data).toMatchObject({ provider: 'primary', contextWindowTokens: 2048, logicalRequestId: id(800) });
+  });
+
+  it('fails with every provider\'s capacity when no provider of the pool can hold the request', async () => {
+    const primary = await endpoint();
+    const secondary = await endpoint();
+    const current = await fixture({ endpoint: primary.url, primaryContextWindow: 2048,
+      fallback: { endpoint: secondary.url, contextWindow: 4096 } });
+    await expect(sendRuntimeRuleRequest({ ...current.input,
+      messages: [...current.input.messages, { role: 'user', content: 'Retain this context. '.repeat(2000) }],
+    })).rejects.toMatchObject({
+      code: 'provider_capacity_exhausted',
+      shortfalls: [
+        expect.objectContaining({ provider: 'primary', contextWindowTokens: 2048 }),
+        expect.objectContaining({ provider: 'secondary', contextWindowTokens: 4096 }),
+      ],
+    });
+    expect(primary.calls).toHaveLength(0);
+    expect(secondary.calls).toHaveLength(0);
+    expect(current.boost).not.toHaveBeenCalled();
+    expect(current.decay).not.toHaveBeenCalled();
+  });
+
 
   it('recovers the pinned role and Rule source without loading changed current definitions', async () => {
     const server = await endpoint();

@@ -443,6 +443,18 @@ describe('Rule request capture and recovery through the real immutable file stor
     }));
   });
 
+  it('rejects a language, role or work Rule recorded as an optional selection, even with a new digest', async () => {
+    const selected = await fixture();
+    const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
+    expect(snapshot.requiredRuleIds.map((id) => id.toLowerCase())).not.toContain(uuid(21));
+    // Only Runtime's binding computation may bring a bound-segment list into a request (D-14).
+    await expectInvalidAtBothFileBoundaries(changedSnapshot(snapshot, (draft) => {
+      for (const entry of [...draft.consideredRules, ...draft.rules]) {
+        if ((entry as { ruleId?: string }).ruleId === uuid(21) || ('rule' in entry && entry.rule.id === uuid(21))) entry.slot = 0x0253 as never;
+      }
+    }));
+  });
+
   it('rejects a valid snapshot stored under another logical request identity', async () => {
     const selected = await fixture();
     const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });

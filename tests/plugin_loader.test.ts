@@ -73,7 +73,7 @@ describe('manifest-first plugin loader', () => {
     await expect(fs.access(f.markerPath)).rejects.toThrow();
   });
 
-  it('registers valid manifest-declared Skills through Plugin API 3', async () => {
+  it('registers valid manifest-declared Skills through the current Plugin API', async () => {
     const f = await fixture('0.1.3');
     const manifest = JSON.parse(await fs.readFile(f.manifestPath, 'utf8')) as Record<string, unknown>;
     manifest.skills = ['skills'];

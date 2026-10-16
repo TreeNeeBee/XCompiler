@@ -1,0 +1,100 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "bda408b8-61c3-53f4-87fe-1528a2f8101b"
+version: "1.0.0"
+title: "TypeScript runtime and test contract"
+slot: "0x0101"
+applicability:
+  languages: [typescript]
+rules:
+  - id: "5b8efe62-bef7-5394-abd3-530068a0ae4c"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript runtime and test contract precedence"
+    instruction:
+      en: |-
+        TypeScript runtime and test contract: the rules in this list are mandatory and override any contrary description in a Step.
+      zh: |-
+        TypeScript 运行时与测试契约：本列表中的规则为强制要求，覆盖 Step 中任何相反的描述。
+  - id: "da7781e2-ca5f-5e80-b598-0e301811ef16"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript tests use Vitest, never Jest"
+    instruction:
+      en: |-
+        Tests use Vitest: test files import `describe`, `it`, `expect` and `vi` from `vitest`. Never use the Jest API, `jest.fn`, `jest.spyOn` or `jest.mock`.
+      zh: |-
+        测试框架必须使用 Vitest：测试文件从 `vitest` 导入 `describe/it/expect/vi`，禁止 Jest API、`jest.fn`、`jest.spyOn`、`jest.mock`。
+  - id: "ba1a953c-9c82-5fd3-bcd9-7ca60f00f633"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript package.json scripts and module type"
+    instruction:
+      en: |-
+        `package.json` uses `"test": "vitest run"` and `"build": "tsc --noEmit"`, and contains `type: "module"`.
+      zh: |-
+        `package.json` 必须使用 `"test": "vitest run"`，`"build": "tsc --noEmit"`，并包含 `type: "module"`。
+  - id: "98922e2f-b473-57ce-ac48-d581a2e3c8e8"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript tsconfig extensions and product build scope"
+    instruction:
+      en: |-
+        `tsconfig.json` enables `allowImportingTsExtensions: true` and limits the product build/typecheck `include` to `src/**/*.ts` and `src/**/*.tsx`. Each phase's tests run only through their own Vitest gate; never merge the tests of future phases into the product build.
+      zh: |-
+        `tsconfig.json` 必须启用 `allowImportingTsExtensions: true`，并将产品 build/typecheck 的 include 限定为 `src/**/*.ts`、`src/**/*.tsx`；各阶段测试只由对应 Vitest 门禁执行，不得把未来阶段 tests 全量并入产品 build。
+  - id: "f33c6a23-5379-50fb-adf7-e5dbb4044d8a"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript greenfield project configuration ownership by Step"
+    instruction:
+      en: |-
+        In a greenfield project, HIGH_LEVEL_DESIGN outputs `package.json`, `tsconfig.json` and the module tests; CODE outputs the product source, the unit test plan and executable unit tests, and does not write the base project configuration again.
+      zh: |-
+        greenfield 项目的 HIGH_LEVEL_DESIGN 必须输出 `package.json`、`tsconfig.json` 与模块测试；CODE 阶段输出产品源码、单元测试计划与可执行单元测试，不再补写基础工程配置。
+  - id: "9275a14e-bf72-5695-a286-fcd8f2bd3352"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript development dependencies allowed and forbidden"
+    instruction:
+      en: |-
+        `devDependencies` use `typescript`, `tsx`, `vitest`, `@vitest/coverage-v8` and `@types/node`, with compatible versions of Vitest and its coverage provider. Never add or require `jest`, `ts-jest`, `@types/jest`, `ts-node` or `nodemon`.
+      zh: |-
+        `devDependencies` 使用 `typescript`、`tsx`、`vitest`、`@vitest/coverage-v8`、`@types/node`，Vitest 与 coverage provider 使用兼容版本；禁止新增或要求 `jest`、`ts-jest`、`@types/jest`、`ts-node`、`nodemon`。
+  - id: "f0728478-7d03-50cc-80ff-c523d1b956d6"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript explicit .ts ESM import specifiers"
+    instruction:
+      en: |-
+        Local source imports use explicit `.ts` ESM specifiers, and code stays compatible with Node's native TypeScript type stripping.
+      zh: |-
+        本地源码导入必须使用显式 `.ts` ESM specifier，代码需兼容 Node 原生 TypeScript type stripping。
+  - id: "2b4e423a-bb56-5075-89a3-c5947d80ae8d"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript time-dependent tests freeze or derive the clock"
+    instruction:
+      en: |-
+        Time-dependent tests freeze the system clock or derive the expected value from the current clock; never call `new Date()` while hard-coding a year.
+      zh: |-
+        时间相关测试必须冻结系统时钟或从当前时钟推导预期值；禁止一边调用 `new Date()` 一边硬编码年份。
+  - id: "9592c8fa-314b-5ed8-8615-b30a369a7ec1"
+    version: "1.0.0"
+    category: framework
+    level: mandatory
+    retrievalDescription: "TypeScript test file names collected by vitest run"
+    instruction:
+      en: |-
+        TypeScript test files must be named `<name>.test.ts` or `<name>.spec.ts` (for example `tests/modules/service.test.ts`). `vitest run` collects no other name, so a Step declaring `tests/test_service.ts` produces a suite that can never run.
+      zh: |-
+        TypeScript 测试文件必须命名为 `<name>.test.ts` 或 `<name>.spec.ts`（例如 `tests/modules/service.test.ts`）。`vitest run` 不会收集其他命名，因此声明 `tests/test_service.ts` 的 Step 会产生一个永远无法运行的测试集。

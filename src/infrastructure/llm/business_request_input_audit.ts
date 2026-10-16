@@ -1,11 +1,10 @@
 import { z } from 'zod';
-import { protectAuditContent, type AuditLogger } from '../../audit/audit.js';
+import type { AuditLogger } from '../../audit/audit.js';
 import {
   BusinessRequestInputError, assertBusinessRequestInputRecord,
   validateBusinessRequestInput, validateBusinessRequestInputRecord,
   type BusinessRequestInput, type BusinessRequestInputAudit, type BusinessRequestInputRecord,
 } from '../../application/execution/business_request_input.js';
-import { canonicalRuleJson } from '../../application/rules/rule_evidence_encoding.js';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import { readRawLLMAudit } from './raw_llm_audit.js';
 
@@ -19,7 +18,7 @@ const Event = z.object({
   }).strict(),
 }).passthrough();
 
-/** Fresh input can prove redaction; recovery can only return the retained exact original values. */
+/** Writes trace evidence; restart recovery can only return the retained exact original values. */
 export class BusinessRequestInputAuditAdapter implements BusinessRequestInputAudit {
   constructor(
     private readonly audit: Pick<AuditLogger, 'event'>,
@@ -36,20 +35,6 @@ export class BusinessRequestInputAuditAdapter implements BusinessRequestInputAud
       messageId: 'llm.business_request_input', logicalRequestId: record.logicalRequestId,
       inputRecordId: record.recordId, recordDigest: record.digest, inputDigest: record.inputDigest, input,
     }, { persistence: 'required', location: { containerRoot: this.containerRoot, auditRoot: this.root } });
-    signal?.throwIfAborted();
-  }
-
-  async verify(raw: BusinessRequestInputRecord, material: BusinessRequestInput, signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const record = validateBusinessRequestInputRecord(raw, raw.logicalRequestId);
-    const input = validateBusinessRequestInput(material);
-    assertBusinessRequestInputRecord(record, input);
-    const retained = await this.read(record, signal);
-    // Never redact the retained value again: doing so could hide a substituted secret value.
-    const actual = canonicalRuleJson(retained);
-    if (actual !== canonicalRuleJson(input) && actual !== canonicalRuleJson(protectAuditContent(input, 'redacted'))) {
-      throw new BusinessRequestInputError('audit_mismatch', { ...reference(record), field: 'input' });
-    }
     signal?.throwIfAborted();
   }
 

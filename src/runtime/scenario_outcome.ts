@@ -22,6 +22,9 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 import { createRuntimeBusinessRequestRecovery, sendRuntimeBusinessResponse } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import {
+  correctRuntimeProtocolResponse, protocolCorrectionReference, recoverRuntimeProtocolCorrection, type RuntimeProtocolCorrection,
+} from './protocol_correction.js';
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
 import { OperationActorBindingSchema, type OperationActorBinding } from '../application/execution/execution_turn_request.js';
 import { roleProfile } from '../domain/workflow/role.js';
@@ -62,6 +65,7 @@ export async function judgeRuntimeScenarioOutcome(input: {
     actorId: actor.actorId, role: actor.role, roleVersion: actor.roleVersion, work: 'judge.scenario', ...modelPool,
   }));
   let processed: Awaited<ReturnType<typeof sendRuntimeBusinessResponse>> | undefined;
+  let correction: RuntimeProtocolCorrection | undefined;
   const verdict = await judgeScenarioOutcome({
     before: input.before, scenario: input.scenario, scene: input.scene,
     requirementDigest: input.requirementDigest, acceptedContractChanges: input.acceptedContractChanges,
@@ -70,8 +74,9 @@ export async function judgeRuntimeScenarioOutcome(input: {
       const payload = readScenarioOutcomeMessages(messages);
       const snapshot = await prepareRuntimeRuleRequest({
         config: input.config, container, recordReplay: input.recordReplay, router, modelPool, logicalRequestId,
-        context: { projectId: owner.projectId, role: 'project-manager', work: 'judge.scenario' },
-        required: [SCENARIO_OUTCOME_RULE], taskSummary: payload.expectation, signal,
+        // The J06 template is English-only, so its Rules render in English too.
+        context: { projectId: owner.projectId, role: 'project-manager', work: 'judge.scenario', locale: 'en' },
+        bind: { role: 'project-manager', work: 'judge.scenario' }, taskSummary: payload.expectation, signal,
       });
       signal?.throwIfAborted();
       assertScenarioSnapshot(snapshot, owner.projectId, SCENARIO_OUTCOME_RULE.version);
@@ -80,7 +85,12 @@ export async function judgeRuntimeScenarioOutcome(input: {
         outputProtocol: SCENARIO_OUTCOME_PROTOCOL, messages: [...messages], signal,
       } });
       signal?.throwIfAborted();
-      return processed.assessment;
+      // J06 reads its reply after adoption, so its one correction follows an unresolved assessment.
+      if (processed.assessment.outcome === 'unresolved') {
+        correction = await correctRuntimeProtocolResponse({ container, router, audit, response: processed.source.response,
+          protocol: SCENARIO_OUTCOME_PROTOCOL, signal });
+      }
+      return { assessment: processed.assessment, corrected: correction?.text };
     },
   });
   signal?.throwIfAborted();
@@ -90,6 +100,7 @@ export async function judgeRuntimeScenarioOutcome(input: {
     messageId: 'llm.scenario_outcome_judgement', logicalRequestId, owner,
     responseRecordId: processed.record.responseRecordId, responseRecordDigest: processed.record.digest,
     protocolResultId: processed.result.resultRecordId, protocolResultDigest: processed.result.digest,
+    ...(correction ? { protocolCorrection: protocolCorrectionReference(correction) } : {}),
     verdict,
   }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } });
   signal?.throwIfAborted();
@@ -113,7 +124,11 @@ export async function resumeRuntimeScenarioOutcome(input: {
   }
   assertScenarioSnapshot(original.snapshot, restored.source.input.owner.projectId);
   const payload = readScenarioOutcomeMessages(restored.source.input.messages);
-  const verdict = consumeScenarioOutcomeProtocol(restored.assessment, payload.evidence);
+  const corrected = restored.assessment.outcome === 'unresolved'
+    ? await recoverRuntimeProtocolCorrection({ container, logicalRequestId, signal,
+      originalProviderAttemptId: restored.source.response.providerAttemptId })
+    : undefined;
+  const verdict = consumeScenarioOutcomeProtocol(restored.assessment, payload.evidence, corrected?.text);
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,
     logicalRequestId: restored.source.input.logicalRequestId, owner: restored.source.input.owner, verdict });

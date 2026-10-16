@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { RuleCatalogue, type RuleLookup } from '../../domain/rules/catalogue.js';
-import { isProtectedRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
+import { RuleCatalogue, ruleInstructionText, type RuleLookup } from '../../domain/rules/catalogue.js';
+import { isBoundRuleSlot, isProtectedRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
 import {
   compareRuleIds,
   normalizedCosine,
@@ -138,6 +138,8 @@ export class RuleSelector {
     const excluded: { ruleId: string; issues: readonly RuleApplicabilityIssue[] }[] = [];
     for (const list of this.catalogue.lists) for (const rule of list.definition.rules) {
       if (required.has(rule.id.toLowerCase())) continue;
+      // Language, role and work Rules are never retrieval candidates: only Runtime binds them.
+      if (isBoundRuleSlot(list.definition.slot)) continue;
       const entry = { list, rule };
       const issues = ruleApplicability(entry, context);
       if (issues.length) excluded.push({ ruleId: rule.id, issues });
@@ -209,7 +211,7 @@ export class RuleSelector {
     return { ...resolved, promptRules: resolved.rules.map(({ rule, list }) => ({
       ruleId: rule.id, ruleVersion: rule.version, ruleListId: list.definition.id,
       ruleListVersion: list.definition.version, slot: list.definition.slot,
-      level: rule.level, instruction: rule.instruction,
+      level: rule.level, instruction: ruleInstructionText(rule.instruction, prepared.context.locale),
     })) };
   }
 }

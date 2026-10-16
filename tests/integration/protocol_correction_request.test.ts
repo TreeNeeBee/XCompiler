@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 const protocol: JsonOutputProtocol = {
-  id: 'fixture-object', version: '1', root: 'object', transformations: ['trailing-comma'],
+  id: 'fixture-object', version: '2', root: 'object', transformations: ['trailing-comma', 'escape-insertion'],
 };
 const probe = async () => ({ ok: true, latencyMs: 0, detail: 'local fixture' });
 type Reply = { output: string; finishReason?: string; refusal?: string; reportedModel?: string };
@@ -74,7 +74,7 @@ function state() {
 }
 
 async function fixture(options: { replies?: readonly Reply[]; plugins?: PluginHost; originalAudit?: boolean } = {}) {
-  const wire = await endpoint(options.replies ?? [{ output: '{"count":1,}' }, { output: '{"count":1}' }]);
+  const wire = await endpoint(options.replies ?? [{ output: '{"note":"a"b"}' }, { output: '{"note":"a\\"b"}' }]);
   const cfg = { llm: {
     providers: { primary: { type: 'openai', model: 'requested-alias', base_url: wire.url, api_key: '',
       retry: { max_retries: 0, max_delay: 0, jitter: 'none' } } },
@@ -179,19 +179,19 @@ describe('Explicit correction through Router, raw audit and durable allowance', 
     await expect(f.correction.correctOnce({ original: f.original, protocol })).rejects.toMatchObject({
       code: 'protocol_correction_request_failed', reason: 'response_evidence_invalid',
     });
-    expect((await responses())[1]!.data).toMatchObject({ output: '{"count":1}' });
+    expect((await responses())[1]!.data).toMatchObject({ output: '{"note":"a\\"b"}' });
     expect(await f.store.readResult(f.original.logicalRequestId)).toBeUndefined();
     await expect(f.correction.correctOnce({ original: f.original, protocol })).resolves.toMatchObject({ status: 'incomplete' });
     expect(f.wire.requests).toHaveLength(2);
   });
 
   it.each([
-    { name: 'changed value', candidate: { output: '{"count":2}' }, outcome: 'unresolved' },
-    { name: 'refusal', candidate: { output: '{"count":1}', refusal: 'Fixture refusal.' }, outcome: 'ineligible' },
-    { name: 'truncation', candidate: { output: '{"count":1}', finishReason: 'length' }, outcome: 'ineligible' },
-    { name: 'different reported producer', candidate: { output: '{"count":1}', reportedModel: 'different-revision' }, outcome: 'ineligible' },
+    { name: 'changed value', candidate: { output: '{"note":"a\\"c"}' }, outcome: 'unresolved' },
+    { name: 'refusal', candidate: { output: '{"note":"a\\"b"}', refusal: 'Fixture refusal.' }, outcome: 'ineligible' },
+    { name: 'truncation', candidate: { output: '{"note":"a\\"b"}', finishReason: 'length' }, outcome: 'ineligible' },
+    { name: 'different reported producer', candidate: { output: '{"note":"a\\"b"}', reportedModel: 'different-revision' }, outcome: 'ineligible' },
   ])('retains a real $name response as a consumed unsuccessful outcome', async ({ candidate, outcome }) => {
-    const f = await fixture({ replies: [{ output: '{"count":1,}' }, candidate] });
+    const f = await fixture({ replies: [{ output: '{"note":"a"b"}' }, candidate] });
     const completed = await f.correction.correctOnce({ original: f.original, protocol });
     expect(completed).toMatchObject({ status: 'completed', result: { outcome } });
     const events = await responses();
@@ -222,33 +222,33 @@ describe('Explicit correction through Router, raw audit and durable allowance', 
     expect(f.wire.requests).toHaveLength(1);
   });
 
-  it('requires the original raw audit before publishing a claim', async () => {
+  it('corrects live without the original raw audit, which restart recovery then requires', async () => {
     const f = await fixture({ originalAudit: false });
-    await expect(f.correction.correctOnce({ original: f.original, protocol })).rejects.toMatchObject({
+    expect(await f.correction.correctOnce({ original: f.original, protocol })).toMatchObject({
+      status: 'completed', result: { outcome: 'preserved' },
+    });
+    expect(f.wire.requests).toHaveLength(2);
+    await expect(f.correction.resume({ logicalRequestId: f.original.logicalRequestId })).rejects.toMatchObject({
       code: 'protocol_correction_evidence_failed', reason: 'missing',
     });
-    expect(await f.store.readClaim(f.original.logicalRequestId)).toBeUndefined();
-    expect(f.wire.requests).toHaveLength(1);
   });
 
-  it.each(['live', 'retained-redacted'] as const)('rejects %s input when audit cannot retain the original represented values', async (source) => {
-    const output = '{"note":"Bearer fixture-value-only",}';
-    const f = await fixture({ replies: [{ output }] });
+  it('corrects exact live values that the audit protects, while recovery refuses the protected copy', async () => {
+    const output = '{"note":"say "Bearer fixture-value-only""}';
+    const f = await fixture({ replies: [{ output }, { output: '{"note":"say \\"Bearer fixture-value-only\\""}' }] });
     expect(f.original.output).toBe(output);
     const retained = (await responses())[0]!.data!.responseEvidence as RoutedResponseEvidence;
     expect(retained).toMatchObject({
       logicalRequestId: f.original.logicalRequestId, providerAttemptId: f.original.providerAttemptId,
-      output: '{"note":"Bearer [REDACTED]",}',
+      output: '{"note":"say "Bearer [REDACTED]""}',
     });
-    const original = source === 'live' ? f.original : retained;
-    const routerFactory = vi.spyOn(f.router, 'forProtocolCorrection');
+    expect(await f.correction.correctOnce({ original: f.original, protocol })).toMatchObject({
+      status: 'completed', result: { outcome: 'preserved' },
+    });
     // Equality with the protected audit copy cannot prove equality with the producer's raw values.
-    await expect(f.correction.correctOnce({ original, protocol })).rejects.toMatchObject({
+    await expect(f.correction.resume({ logicalRequestId: f.original.logicalRequestId })).rejects.toMatchObject({
       code: 'protocol_correction_evidence_failed', reason: 'mismatch',
     });
-    expect(await f.store.readClaim(f.original.logicalRequestId)).toBeUndefined();
-    expect(routerFactory).not.toHaveBeenCalled();
-    expect(f.wire.requests).toHaveLength(1);
   });
 
   it('keeps a claim durably consumed when cancellation arrives immediately after its publication', async () => {
@@ -281,7 +281,7 @@ describe('Explicit correction through Router, raw audit and durable allowance', 
         logicalRequestId: options.logicalRequestId!, providerAttemptId: randomUUID(), provider: 'primary', model: client.name,
         messages, contextWindowTokens: fault === 'capacity' ? 1 : 32768, maxTokens: 1024,
       });
-      return '{"count":1}';
+      return '{"note":"a\\"b"}';
     } };
     await expect(new LLMProtocolCorrection(f.store, f.evidence, { forProtocolCorrection: () => client })
       .correctOnce({ original: f.original, protocol })).rejects.toMatchObject({

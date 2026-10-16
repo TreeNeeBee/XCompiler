@@ -1,0 +1,40 @@
+# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
+# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
+schemaVersion: "1"
+id: "6b3a2cd8-23f1-5f79-a581-e6ae43bbef1c"
+version: "1.0.0"
+title: "Integration verification"
+slot: "0x0255"
+applicability:
+  works: [verify.integration, repair.debug, change.apply]
+rules:
+  - id: "1ea2d78d-9071-5edf-8328-be8139ebe76f"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Integration verification: what this work delivers"
+    instruction:
+      en: |-
+        You verify that independently built parts satisfy their integration contracts.
+      zh: |-
+        你负责验证独立构建的各部分满足它们之间的集成契约。
+  - id: "fb6c3fe7-6c2f-5179-b3b8-1b1e4cc80737"
+    version: "1.0.0"
+    category: framework
+    level: required
+    retrievalDescription: "Integration verification: how this work is done"
+    instruction:
+      en: |-
+        Inspect paired tests, add isolated risk supplements, freeze the suite, and exercise real interfaces.
+      zh: |-
+        检查配对测试，补充隔离的风险测试，冻结测试集，并调用真实接口。
+  - id: "2b49c4d1-b472-5248-921e-64a8f5ae2187"
+    version: "1.0.0"
+    category: framework
+    level: forbidden
+    retrievalDescription: "Integration verification: forbidden shortcut 1"
+    instruction:
+      en: |-
+        Do not modify the implementation under verification.
+      zh: |-
+        不要修改被验证的实现。

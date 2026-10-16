@@ -267,7 +267,7 @@ describe('full candidate value preservation', () => {
     expect(proveJsonProtocolCorrection(original, candidate, protocol).status).toBe('unresolved');
   });
 
-  it('leaves the motivating combined raw-newline and inner-quote response unresolved', () => {
+  it('leaves the motivating inner-quote response to the model escape-insertion path: value correspondence cannot prove it', () => {
     const value = 'def run():\n    print("x")\n    return None\n';
     const original = `{
   "thoughts": "create file",
@@ -290,13 +290,16 @@ describe('full candidate value preservation', () => {
 
 describe('C1 completion boundary before JSON inspection', () => {
   it('accepts an explicit producer stop before inspecting a complete representation', () => {
-    const original = '{"content":"a\r\nb",}';
-    const candidate = '{"content":"a\\r\\nb"}';
-    expect(assessJsonProtocolResponse(response(original), protocol)).toMatchObject({
-      status: 'assessed', completion: { eligibleForProtocolCalibration: true }, result: { status: 'repairable' },
+    // Model correction proves escape insertion (D-3); it is offered only an E1-admitted original.
+    const permitting = { ...protocol, transformations: [...protocol.transformations, 'escape-insertion'] } as JsonOutputProtocol;
+    const original = '{"content":"say "a"\r\nb"}';
+    const candidate = '{"content":"say \\"a\\"\\r\\nb"}';
+    expect(assessJsonProtocolResponse(response(original), permitting)).toMatchObject({
+      status: 'assessed', completion: { eligibleForProtocolCalibration: true },
+      result: { status: 'unresolved', diagnostic: { code: 'unexpected_token', withinRoot: true } },
     });
-    expect(assessJsonProtocolCorrection(response(original), correctionResponse(candidate), protocol, correctionRequestId)).toMatchObject({
-      status: 'assessed', result: { status: 'preserved' },
+    expect(assessJsonProtocolCorrection(response(original), correctionResponse(candidate), permitting, correctionRequestId)).toMatchObject({
+      status: 'assessed', result: { status: 'preserved', method: 'escape-insertion' },
     });
   });
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { setLocale, t } from '../src/i18n/index.js';
-import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
+import { boundRuleBlock } from './support/compiler_rules.js';
 
 describe('language-specific planner/executor prompts', () => {
   beforeEach(() => setLocale('en'));
@@ -147,8 +147,8 @@ describe('language-specific planner/executor prompts', () => {
     expect(ts).not.toContain('6000 bytes');
   });
 
-  it('requires tests to exercise production behavior through real injection seams', () => {
-    const prompt = renderExecutionPromptPolicy({ debug: true });
+  it('requires tests to exercise production behavior through real injection seams', async () => {
+    const prompt = (await boundRuleBlock({ role: 'python-developer', work: 'repair.debug', stepWork: 'code.implement', language: 'python' })).content;
     expect(prompt).toContain('real production function, module, orchestration, or entry boundary');
     expect(prompt).toContain('never mock the function or module under test');
     expect(prompt).toContain('repair the product API with dependency injection');
@@ -159,8 +159,7 @@ describe('language-specific planner/executor prompts', () => {
     expect(prompt).toContain('Never make unit, integration, module, or functional gates repeatedly call live public services');
     expect(prompt).toContain('captured stdout, stderr, exit status or signal, and timeout state');
 
-    setLocale('zh');
-    const zh = renderExecutionPromptPolicy({ debug: true });
+    const zh = (await boundRuleBlock({ role: 'python-developer', work: 'repair.debug', stepWork: 'code.implement', language: 'python' }, 'zh')).content;
     expect(zh).toContain('真实的被测产品函数、模块、编排或入口边界');
     expect(zh).toContain('禁止 mock 被测函数或被测模块');
     expect(zh).toContain('为产品 API 增加依赖注入');

@@ -88,7 +88,7 @@ function questionSet() {
   ];
 }
 const accepted = () => JSON.stringify(questionSet());
-type WireReply = { output: string; finishReason?: string; reportedModel?: boolean };
+type WireReply = { output: string; finishReason?: string; reportedModel?: boolean; model?: string };
 type WireRequest = { model: string; stream?: boolean; messages: ChatMessage[] };
 async function endpoint(reply: (call: number) => WireReply = () => ({ output: accepted() })) {
   const calls: WireRequest[] = [];
@@ -104,7 +104,7 @@ async function endpoint(reply: (call: number) => WireReply = () => ({ output: ac
       const request = JSON.parse(body) as WireRequest;
       calls.push(request);
       const next = reply(calls.length);
-      const model = next.reportedModel === false ? {} : { model: `${request.model}-actual` };
+      const model = next.reportedModel === false ? {} : { model: next.model ?? `${request.model}-actual` };
       const finish = next.finishReason ?? 'stop';
       if (request.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -232,9 +232,10 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
     expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'project-manager', work: PLANNING_REQUEST_CONTEXTS.clarification, language: 'python' } });
     expect(snapshot!.context).not.toHaveProperty('projectId');
-    expect(snapshot!.requiredRuleIds).toHaveLength(3);
-    expect(snapshot!.rules).toHaveLength(3);
-    expect(snapshot!.rules.every(rule => rule.slot === 0)).toBe(true);
+    // Runtime binds genesis and the clarifying role's identity; a Python project has no language list.
+    expect(snapshot!.requiredRuleIds).toHaveLength(4);
+    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0201]);
+    expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software project manager');
     const metadata = JSON.parse(await fs.readFile(path.join(current.ledger, 'requests', `${original.logicalRequestId}.json`), 'utf8')) as BusinessRequestInputRecord;
     expect(metadata.inputDigest).toBe(businessRequestInputDigest(original));
     expect(metadata).not.toHaveProperty('auditContext');
@@ -256,6 +257,28 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const original = inputEvents(await current.events())[0]!;
     await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: output, questions: validateOriginal(output, requestMaterial().payload) });
     expect(server.calls).toHaveLength(1);
+  });
+
+  it('corrects unescaped inner quotes once, validates the correction and restores it exactly (D-3)', async () => {
+    const questions = questionSet();
+    questions[0]!.why = 'Keep the "legacy" import path.';
+    const strict = JSON.stringify(questions);
+    const output = strict.replace('\\"legacy\\"', '"legacy"');
+    // The original's actual producing model answers its one correction.
+    const server = await endpoint(call => (call === 1 ? { output } : { output: strict, model: 'pm-model-actual' }));
+    const current = await fixture(server.url);
+    const material = requestMaterial();
+    const business = vi.fn((text: string) => { validateOriginal(text, material.payload); });
+    const result = await current.port.send({ operationId: randomUUID(), ...material, validate: business });
+    expect(result.text).toBe(strict);
+    expect(business).toHaveBeenCalledExactlyOnceWith(strict);
+    expect(server.calls).toHaveLength(2);
+    const events = await current.events();
+    expect(events.find(event => event.messageId === 'llm.business_protocol_result')!.data).toMatchObject({ record: { outcome: 'unresolved' } });
+    expect(events.find(event => event.messageId === 'llm.clarification_judgement')!.data).toMatchObject({
+      protocolCorrection: { claimId: expect.any(String) } });
+    const original = inputEvents(events)[0]!;
+    await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: strict });
   });
 
   it.each(['json-fence', 'trailing-comma', 'raw-string-control'] as const)('proves %s values before business validation and exact recovery', async (transform) => {

@@ -281,15 +281,13 @@ describe('Runtime business input retention and exact read-only recovery', () => 
     expect(await fs.readFile(f.auditPath, 'utf8')).toBe(before);
   });
 
-  it('requires raw review evidence for a pinned low-score Rule selection', async () => {
-    // The snapshot is valid, but no reviewer response was emitted. Its reference alone is insufficient.
+  it('captures live against the stored low-score selection; only recovery requires its raw review evidence', async () => {
+    // The snapshot is valid, but no reviewer response was emitted. Its reference alone is insufficient on restart.
     const f = await fixture({ lowScore: true });
     expect(f.retained.ranking.decision).toBe('review-required');
-    const before = await fs.readFile(f.auditPath, 'utf8');
-    await expect(f.service.capture(f.request)).rejects.toMatchObject({
-      code: 'rule_review_evidence_failed', reason: 'missing',
-    });
-    expect(await fs.readFile(f.auditPath, 'utf8')).toBe(before);
+    expect(await f.service.capture(f.request)).toMatchObject({ status: 'captured', snapshot: f.retained });
+    await expect(createRuntimeBusinessRequestInputs(f.container, f.audit)
+      .resume({ logicalRequestId: requestId })).rejects.toMatchObject({ code: 'rule_review_evidence_failed', reason: 'missing' });
   });
 
   it('does not recover an otherwise intact input when its pinned Rule review evidence is missing', async () => {

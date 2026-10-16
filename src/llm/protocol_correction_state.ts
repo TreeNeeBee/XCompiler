@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { assessJsonProtocolCorrection, assessJsonProtocolResponse } from './protocol_candidate.js';
 import { createJsonProtocolCorrectionPrompt, JSON_CORRECTION_PROMPT_VERSION } from './protocol_correction_prompt.js';
-import { JSON_PROOF_VERSION, JsonOutputProtocolSchema, type JsonOutputProtocol } from './protocol_json.js';
+import { admitsEscapeInsertion, JSON_PROOF_VERSION, JsonOutputProtocolSchema, type JsonOutputProtocol } from './protocol_json.js';
 import { normalizeRoutedResponseEvidence, type RoutedResponseEvidence } from './response_evidence.js';
 
 const Text = z.string().refine((value) => value.trim().length > 0);
@@ -94,7 +94,8 @@ export function validateProtocolCorrectionResponse(raw: unknown): RoutedResponse
 }
 
 /**
- * Single-attempt accounting, not an automatic repair policy or a sender. Call begin only when an
+ * Single-attempt accounting, not an automatic repair policy or a sender. Live begin/complete trust
+ * the caller's in-memory responses and the store; raw audit is read only to rebuild what memory lost. Call begin only when an
  * LLM attempt is requested; current deterministic normalization does not call this ledger.
  * A returned acquired claim is the only new dispatch allowance. Recovery never returns it again.
  */
@@ -147,9 +148,11 @@ export class ProtocolCorrectionLedger {
     input.signal?.throwIfAborted();
     if (existing) {
       const claim = validateProtocolCorrectionClaim(existing, id);
+      // One logical request owns one correction: another attempt's claim already spent it.
+      if (claim.originalProviderAttemptId !== original.providerAttemptId.toLowerCase()) {
+        return freeze({ status: 'exhausted' as const, claim });
+      }
       this.assertOriginal(claim, original, protocol);
-      await this.evidence.verifyOriginal(claim, original, input.signal);
-      input.signal?.throwIfAborted();
       if (result) return this.recover(claim, result, original, input.signal);
       // The winner may have published between the two reads.
       const completed = await this.store.readResult(id);
@@ -159,7 +162,8 @@ export class ProtocolCorrectionLedger {
     }
     if (result) throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: id, record: 'result-without-claim' });
     const inspection = assessJsonProtocolResponse(original, protocol);
-    if (inspection.status !== 'assessed' || inspection.result.status !== 'repairable') {
+    // A repairable original keeps its deterministic path; only E1-admitted originals call a model.
+    if (inspection.status !== 'assessed' || !admitsEscapeInsertion(inspection.result)) {
       return freeze({ status: 'not-eligible' as const, inspection });
     }
     if (original.capture.status !== 'recorded') throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: id });
@@ -172,8 +176,6 @@ export class ProtocolCorrectionLedger {
       promptDigest: protocolCorrectionDigest(prompt.messages), claimId: randomUUID(), correctionRequestId: randomUUID(),
       createdAt: new Date().toISOString(),
     }, id);
-    await this.evidence.verifyOriginal(proposed, original, input.signal);
-    input.signal?.throwIfAborted();
     const winner = validateProtocolCorrectionClaim(await this.store.claim(proposed), id);
     this.assertOriginal(winner, original, protocol);
     // A cancellation after publication keeps the consumed claim even though nothing was sent.
@@ -184,8 +186,6 @@ export class ProtocolCorrectionLedger {
       }
       return freeze({ status: 'acquired' as const, claim: winner });
     }
-    await this.evidence.verifyOriginal(winner, original, input.signal);
-    input.signal?.throwIfAborted();
     const completed = await this.store.readResult(id);
     input.signal?.throwIfAborted();
     if (completed) return this.recover(winner, completed, original, input.signal);
@@ -208,9 +208,7 @@ export class ProtocolCorrectionLedger {
       throw new ProtocolCorrectionStateError('identity_conflict', { logicalRequestId: original.logicalRequestId, record: 'claim' });
     }
     this.assertOriginal(claim, original, claim.outputProtocol);
-    input.signal?.throwIfAborted();
-    await this.evidence.verifyOriginal(claim, original, input.signal);
-    await this.evidence.verifyCandidate(claim, original, candidate, input.signal);
+    this.assertCandidateProducer(claim, candidate);
     input.signal?.throwIfAborted();
     const assessment = this.assess(claim, original, candidate);
     const existing = await this.store.readResult(claim.logicalRequestId);
@@ -272,8 +270,17 @@ export class ProtocolCorrectionLedger {
       throw new ProtocolCorrectionStateError('identity_conflict', { logicalRequestId: original.logicalRequestId, record: 'prompt' });
     }
     const inspection = assessJsonProtocolResponse(original, validatedProtocol);
-    if (inspection.status !== 'assessed' || inspection.result.status !== 'repairable') {
+    if (inspection.status !== 'assessed' || !admitsEscapeInsertion(inspection.result)) {
       throw new ProtocolCorrectionStateError('invalid', { logicalRequestId: original.logicalRequestId, record: 'original-not-eligible' });
+    }
+  }
+
+  /** The live candidate must come from the original producer's protocol and requested model. */
+  private assertCandidateProducer(claim: ProtocolCorrectionClaim, candidate: RoutedResponseEvidence) {
+    const capture = candidate.capture;
+    if (candidate.provider !== claim.provider || capture.status !== 'recorded'
+      || capture.response.protocol !== claim.providerProtocol || capture.response.requestedModel !== claim.producingModel) {
+      throw new ProtocolCorrectionStateError('identity_conflict', { logicalRequestId: claim.logicalRequestId, record: 'candidate-producer' });
     }
   }
 

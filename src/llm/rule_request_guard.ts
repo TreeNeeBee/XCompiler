@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ChatMessage, ChatOptions } from './types.js';
 import { estimateTextTokens, resolveSkillOperationWindow } from './window.js';
+import { ProviderCapacityShortfall } from './errors.js';
 
 const Text = z.string().refine((value) => value.trim().length > 0);
 const RequestBoundarySchema = z.object({
@@ -17,7 +18,7 @@ export function validateRuleProviderRequestIdentity(
     messages: readonly Readonly<ChatMessage>[];
     hasAttempt: (lowerId: string) => boolean;
     error: (
-      reason: 'request_integrity' | 'capacity_exceeded',
+      reason: 'request_integrity',
       details: Readonly<Record<string, unknown>>,
       options?: ErrorOptions,
     ) => Error;
@@ -56,7 +57,7 @@ export function validateRuleProviderRequest(
     messages: readonly Readonly<ChatMessage>[];
     hasAttempt: (lowerId: string) => boolean;
     error: (
-      reason: 'request_integrity' | 'capacity_exceeded',
+      reason: 'request_integrity',
       details: Readonly<Record<string, unknown>>,
       options?: ErrorOptions,
     ) => Error;
@@ -67,7 +68,8 @@ export function validateRuleProviderRequest(
   const promptTokens = estimateTextTokens(promptChars);
   const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptChars });
   if (promptTokens + safetyTokens + actual.maxTokens > actual.contextWindowTokens) {
-    throw input.error('capacity_exceeded', {
+    // Typed so Router can try a wider provider of the same pool; required content is never trimmed.
+    throw new ProviderCapacityShortfall({
       logicalRequestId: input.logicalRequestId, providerAttemptId: actual.providerAttemptId,
       provider: actual.provider, model: actual.model, contextWindowTokens: actual.contextWindowTokens,
       promptTokens, safetyTokens, maxTokens: actual.maxTokens,

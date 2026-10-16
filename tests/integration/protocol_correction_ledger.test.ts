@@ -14,8 +14,9 @@ const requestId = 'abababab-abab-4bab-8bab-abababababab';
 const originalAttemptId = 'abababab-abab-4bab-8bab-abababababac';
 const candidateAttemptId = 'abababab-abab-4bab-8bab-abababababad';
 const unrelatedId = 'abababab-abab-4bab-8bab-abababababaf';
+// Model correction is offered only an E1-admitted original (D-3): an unescaped inner quote here.
 const protocol: JsonOutputProtocol = {
-  id: 'json-actions', version: '1', root: 'object', transformations: ['trailing-comma'],
+  id: 'json-actions', version: '2', root: 'object', transformations: ['trailing-comma', 'raw-string-control', 'escape-insertion'],
 };
 let container: string;
 let stateRoot: string;
@@ -31,7 +32,7 @@ afterEach(async () => {
 });
 
 function store() { return new FileProtocolCorrectionStateStore(stateRoot, container); }
-function response(output = '{"x":1,}', changes: Partial<RoutedResponseEvidence> = {},
+function response(output = '{"x":"a"b"}', changes: Partial<RoutedResponseEvidence> = {},
   facts: Partial<ProviderResponseEvidence> = {}): RoutedResponseEvidence {
   return {
     logicalRequestId: requestId, providerAttemptId: originalAttemptId, provider: 'primary', model: 'openai:alias', output,
@@ -45,7 +46,7 @@ function response(output = '{"x":1,}', changes: Partial<RoutedResponseEvidence> 
     } }, ...changes,
   };
 }
-function candidate(claim: ProtocolCorrectionClaim, output = '{"x":1}',
+function candidate(claim: ProtocolCorrectionClaim, output = '{"x":"a\\"b"}',
   changes: Partial<RoutedResponseEvidence> = {}, facts: Partial<ProviderResponseEvidence> = {}) {
   return response(output, {
     logicalRequestId: claim.correctionRequestId, providerAttemptId: candidateAttemptId,
@@ -83,10 +84,10 @@ async function tamper(section: 'claims' | 'results', changes: Record<string, unk
 }
 
 describe('persistent single logical protocol correction allowance', () => {
-  it('grants one claim and recovers an incomplete attempt through independent ledger and store instances', async () => {
+  it('grants one claim and reports an incomplete attempt through independent instances without reading audit', async () => {
     const audit = evidence();
     const claim = await acquire(new ProtocolCorrectionLedger(store(), audit));
-    expect(audit.verifyOriginal).toHaveBeenCalledExactlyOnceWith(claim, response(), undefined);
+    expect(audit.verifyOriginal).not.toHaveBeenCalled();
     expect(claim.logicalRequestId).toBe(requestId);
     expect(claim.correctionRequestId).not.toBe(requestId);
     expect(claim.producingModel).toBe('actual-model');
@@ -94,14 +95,27 @@ describe('persistent single logical protocol correction allowance', () => {
     const resumedAudit = evidence();
     const resumed = await new ProtocolCorrectionLedger(store(), resumedAudit).begin({ original: response(), protocol });
     expect(resumed).toEqual({ status: 'incomplete', claim });
-    expect(resumedAudit.verifyOriginal).toHaveBeenCalledExactlyOnceWith(claim, response(), undefined);
+    expect(resumedAudit.verifyOriginal).not.toHaveBeenCalled();
     expect(resumedAudit.recoverCandidate).not.toHaveBeenCalled();
     expect(await store().readResult(requestId)).toBeUndefined();
   });
 
+  it('reports the allowance spent when another attempt of the same logical request already claimed it', async () => {
+    const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()));
+    const audit = evidence();
+    expect(await new ProtocolCorrectionLedger(store(), audit)
+      .begin({ original: response(undefined, { providerAttemptId: unrelatedId }), protocol }))
+      .toEqual({ status: 'exhausted', claim });
+    expect(audit.verifyOriginal).not.toHaveBeenCalled();
+    expect(await store().readClaim(requestId)).toEqual(claim);
+  });
+
   it('gives only one of two simultaneous callers permission to dispatch', async () => {
-    const results = await Promise.all([1, 2].map(() =>
-      new ProtocolCorrectionLedger(store(), evidence()).begin({ original: response(), protocol })));
+    const audits = [evidence(), evidence()];
+    const results = await Promise.all(audits.map(audit =>
+      new ProtocolCorrectionLedger(store(), audit).begin({ original: response(), protocol })));
+    // Neither the winner nor the caller that lost the claim race reads raw audit.
+    for (const audit of audits) expect(audit.verifyOriginal).not.toHaveBeenCalled();
     expect(results.map(result => result.status).sort()).toEqual(['acquired', 'incomplete']);
     const persisted = await store().readClaim(requestId);
     expect(persisted).toBeDefined();
@@ -114,7 +128,7 @@ describe('persistent single logical protocol correction allowance', () => {
     const contract = { ...protocol, transformations: [...protocol.transformations] };
     const read = disk.readClaim.bind(disk);
     vi.spyOn(disk, 'readClaim').mockImplementationOnce(async id => {
-      Object.assign(supplied, response('{"x":2,}'));
+      Object.assign(supplied, response('{"x":"c"d"}'));
       contract.version = 'changed-after-entry';
       return read(id);
     });
@@ -131,7 +145,7 @@ describe('persistent single logical protocol correction allowance', () => {
     const supplied = { ...candidate(claim) };
     const read = disk.readClaim.bind(disk);
     vi.spyOn(disk, 'readClaim').mockImplementationOnce(async id => {
-      Object.assign(supplied, candidate(claim, '{"x":2}'));
+      Object.assign(supplied, candidate(claim, '{"x":"a\\"c"}'));
       return read(id);
     });
     const completed = await ledger.complete({ claim, original: response(), candidate: supplied });
@@ -141,8 +155,10 @@ describe('persistent single logical protocol correction allowance', () => {
 
   it.each([
     ['already valid', response('{"x":1}')],
-    ['unprovable quote boundaries', response('{"x":"print("x")"}')],
-    ['truncated provider response', response('{"x":1,}', {}, { finishReasons: ['length'] })],
+    ['deterministically repairable', response('{"x":1,}')],
+    ['prose before the root', response('Here: {"x":"a"b"}')],
+    ['truncated JSON', response('{"x":"ab')],
+    ['truncated provider response', response(undefined, {}, { finishReasons: ['length'] })],
   ] as const)('does not consume or verify an allowance for %s', async (_name, original) => {
     const audit = evidence();
     expect(await new ProtocolCorrectionLedger(store(), audit).begin({ original, protocol }))
@@ -154,12 +170,11 @@ describe('persistent single logical protocol correction allowance', () => {
   });
 
   it.each([
-    ['original attempt', response(undefined, { providerAttemptId: unrelatedId }), protocol],
     ['configured model label', response(undefined, { model: 'openai:other-alias' }), protocol],
     ['reported model', response(undefined, {}, { reportedModels: ['other-model'] }), protocol],
-    ['original output', response('{"x":2,}'), protocol],
+    ['original output', response('{"x":"c"d"}'), protocol],
     ['now valid output', response('{"x":1}'), protocol],
-    ['protocol version', response(), { ...protocol, version: '2' }],
+    ['protocol version', response(), { ...protocol, version: '3' }],
   ] as const)('rejects a changed %s without replacing the consumed claim', async (_name, original, changedProtocol) => {
     const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()));
     await expect(new ProtocolCorrectionLedger(store(), evidence()).begin({ original, protocol: changedProtocol }))
@@ -201,26 +216,31 @@ describe('persistent single logical protocol correction allowance', () => {
     expect(await store().readResult(requestId)).toBeUndefined();
   });
 
-  it('fails closed before acquisition when original audit is unavailable', async () => {
+  it('acquires live without the original audit; restart recovery fails closed when it is unavailable', async () => {
     const audit = evidence();
     const unavailable = new Error('Original raw audit unavailable');
+    audit.recoverOriginal.mockResolvedValue(response());
     audit.verifyOriginal.mockRejectedValue(unavailable);
-    await expect(new ProtocolCorrectionLedger(store(), audit).begin({ original: response(), protocol })).rejects.toBe(unavailable);
-    expect(await store().readClaim(requestId)).toBeUndefined();
+    const claim = await acquire(new ProtocolCorrectionLedger(store(), audit));
+    await expect(new ProtocolCorrectionLedger(store(), audit).resume({ logicalRequestId: requestId })).rejects.toBe(unavailable);
+    expect(await store().readClaim(requestId)).toEqual(claim);
     expect(await store().readResult(requestId)).toBeUndefined();
   });
 
-  it.each(['verifyOriginal', 'verifyCandidate'] as const)('keeps an acquired claim when %s rejects completion', async method => {
+  it.each(['verifyOriginal', 'verifyCandidate'] as const)('completes live without %s; restart recovery fails closed on it', async method => {
     const audit = evidence();
     const ledger = new ProtocolCorrectionLedger(store(), audit);
     const claim = await acquire(ledger);
+    const corrected = candidate(claim);
     const unavailable = new Error('Required raw audit evidence unavailable');
-    audit[method].mockRejectedValueOnce(unavailable);
-    await expect(ledger.complete({ claim, original: response(), candidate: candidate(claim) })).rejects.toBe(unavailable);
-    expect(await store().readClaim(requestId)).toEqual(claim);
-    expect(await store().readResult(requestId)).toBeUndefined();
-    expect(await new ProtocolCorrectionLedger(store(), evidence()).begin({ original: response(), protocol }))
-      .toEqual({ status: 'incomplete', claim });
+    audit[method].mockRejectedValue(unavailable);
+    const completed = await ledger.complete({ claim, original: response(), candidate: corrected });
+    expect(completed.status).toBe('completed');
+    expect(audit[method]).not.toHaveBeenCalled();
+    audit.recoverOriginal.mockResolvedValue(response());
+    audit.recoverCandidate.mockResolvedValue(corrected);
+    await expect(new ProtocolCorrectionLedger(store(), audit).resume({ logicalRequestId: requestId })).rejects.toBe(unavailable);
+    expect(await store().readResult(requestId)).toEqual(completed.result);
   });
 
   it('does not consume on early cancellation and never resets a claim published before cancellation', async () => {
@@ -279,14 +299,15 @@ describe('persistent single logical protocol correction allowance', () => {
     const completed = await ledger.complete({ claim, original: response(), candidate: corrected });
     expect(completed).toMatchObject({ status: 'completed', result: { outcome: 'preserved', completedAt: '2026-10-08T00:00:00.000Z' },
       assessment: { status: 'assessed', result: { status: 'preserved' } } });
-    expect(audit.verifyCandidate).toHaveBeenCalledExactlyOnceWith(claim, response(), corrected, undefined);
+    expect(audit.verifyCandidate).not.toHaveBeenCalled();
     clock.mockReturnValue('2026-10-09T00:00:00.000Z');
     expect(await ledger.complete({ claim, original: response(), candidate: corrected })).toEqual(completed);
     expect(await store().readResult(requestId)).toEqual(completed.result);
 
     const resumedAudit = evidence();
+    resumedAudit.recoverOriginal.mockResolvedValue(response());
     resumedAudit.recoverCandidate.mockResolvedValue(corrected);
-    const recovered = await new ProtocolCorrectionLedger(store(), resumedAudit).begin({ original: response(), protocol });
+    const recovered = await new ProtocolCorrectionLedger(store(), resumedAudit).resume({ logicalRequestId: requestId });
     expect(recovered).toEqual({ ...completed, status: 'recovered' });
     expect(resumedAudit.verifyOriginal).toHaveBeenCalledExactlyOnceWith(claim, response(), undefined);
     expect(resumedAudit.recoverCandidate).toHaveBeenCalledExactlyOnceWith(claim, completed.result, undefined);
@@ -295,8 +316,8 @@ describe('persistent single logical protocol correction allowance', () => {
 
   it.each([
     ['malformed', '{"x":', 'candidate_invalid'],
-    ['changed value', '{"x":2}', 'values_changed'],
-    ['unchanged text', '{"x":1,}', 'unchanged_candidate'],
+    ['changed value', '{"x":"a\\"c"}', 'values_changed'],
+    ['unchanged text', '{"x":"a"b"}', 'unchanged_candidate'],
   ] as const)('records a %s candidate as unresolved without releasing its allowance', async (_name, output, code) => {
     const audit = evidence();
     const ledger = new ProtocolCorrectionLedger(store(), audit);
@@ -345,12 +366,13 @@ describe('persistent single logical protocol correction allowance', () => {
       const completed = await ledger.complete({ claim, original: response(), candidate: corrected });
       const audit = evidence();
       audit.recoverCandidate.mockResolvedValue(kind === 'redacted' ? candidate(claim, '"[REDACTED]"')
-        : kind === 'different' ? candidate(claim, '{"x":2}') : corrected);
+        : kind === 'different' ? candidate(claim, '{"x":"a\\"c"}') : corrected);
       const unavailable = new Error('Raw evidence unavailable during recovery');
       if (kind === 'missing') audit.recoverCandidate.mockRejectedValue(unavailable);
       if (kind === 'original audit rejected') audit.verifyOriginal.mockRejectedValue(unavailable);
       if (kind === 'candidate audit rejected') audit.verifyCandidate.mockRejectedValue(unavailable);
-      const resumed = new ProtocolCorrectionLedger(store(), audit).begin({ original: response(), protocol });
+      audit.recoverOriginal.mockResolvedValue(response());
+      const resumed = new ProtocolCorrectionLedger(store(), audit).resume({ logicalRequestId: requestId });
       if (kind === 'redacted' || kind === 'different') await expect(resumed).rejects.toMatchObject(failure('identity_conflict'));
       else await expect(resumed).rejects.toBe(unavailable);
       expect(await store().readClaim(requestId)).toEqual(claim);
@@ -419,7 +441,7 @@ describe('read-only correction recovery by original logical request identity', (
   });
 
   it('restores an incomplete attempt using only its retained original and never grants another allowance', async () => {
-    const original = response('{"x":"retained\\r\\nvalue",}');
+    const original = response('{"x":"retained\\r\\n"value"}');
     const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()), original);
     const audit = evidence();
     audit.recoverOriginal.mockResolvedValue(original);
@@ -503,7 +525,7 @@ describe('read-only correction recovery by original logical request identity', (
       const claim = await acquire(new ProtocolCorrectionLedger(store(), evidence()));
       const audit = evidence();
       const unavailable = new Error('Original raw evidence is unavailable');
-      audit.recoverOriginal.mockResolvedValue(kind === 'different' ? response('{"x":2,}')
+      audit.recoverOriginal.mockResolvedValue(kind === 'different' ? response('{"x":"c"d"}')
         : kind === 'wrong-request' ? response(undefined, { logicalRequestId: unrelatedId }) : response());
       if (kind === 'missing') audit.recoverOriginal.mockRejectedValue(unavailable);
       if (kind === 'verification-rejected') audit.verifyOriginal.mockRejectedValue(unavailable);
