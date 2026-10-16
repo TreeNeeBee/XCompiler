@@ -15,7 +15,7 @@ import {
 import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
 import type { DeliveryGateScenario, DeliveryGateScene } from '../../src/domain/quality/delivery_gate.js';
 import { FileRuleRequestStateStore } from '../../src/infrastructure/rules/file_rule_request_state_store.js';
 import { LLMRouter } from '../../src/llm/router.js';
@@ -31,6 +31,7 @@ let root: string;
 const servers: Server[] = [];
 const projectId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2';
 const phaseId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3';
+const actorId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa4';
 const reason = 'The accepted external capability must change to produce the required result.';
 const verdictText = JSON.stringify({ ok: false, reason, ticketType: 'change-request', target: 'high-level-design' });
 const scenario: DeliveryGateScenario = { name: 'current-flow', description: 'Exercise the current scenario.',
@@ -57,14 +58,14 @@ function afterPlugin(after: (event: HookContextMap['llm.after']) => void | Promi
   }] });
 }
 
-async function endpoint(output = verdictText, finishReason = 'stop') {
+async function endpoint(output = verdictText, finishReason = 'stop', status = 200) {
   const calls: Array<{ url: string; input: Record<string, unknown> & { messages: ChatMessage[] } }> = [];
   const server = createServer((request, response) => {
     let body = '';
     request.on('data', chunk => { body += String(chunk); });
     request.on('end', () => {
       calls.push({ url: request.url!, input: JSON.parse(body) });
-      response.writeHead(200, { 'content-type': 'application/json' });
+      response.writeHead(status, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ model: 'actual-model', choices: [{ index: 0,
         message: { content: output }, finish_reason: finishReason }] }));
     });
@@ -74,14 +75,18 @@ async function endpoint(output = verdictText, finishReason = 'stop') {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, calls };
 }
 
-async function fixture(url: string, plugins?: PluginHost) {
+async function fixture(url: string, plugins?: PluginHost, options: { actorPool?: string; fallback?: string } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
   await container.canonical().workspace.ensure('.');
   const configPath = path.join(container.root, 'test-config.yaml');
   await fs.writeFile(configPath, YAML.stringify({ llm: {
     providers: { roleProvider: { type: 'openai', model: 'requested-model', base_url: url,
-      context_window: 131072, request_timeout_ms: 1000 } },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['roleProvider']])), fallbacks: [],
+      context_window: 131072, request_timeout_ms: 1000, retry: { max_retries: 0 } },
+      ...(options.fallback ? { globalProvider: { type: 'openai', model: 'global-model', base_url: options.fallback,
+        context_window: 131072, request_timeout_ms: 1000, retry: { max_retries: 0 } } } : {}),
+    },
+    pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['roleProvider']])),
+    fallbacks: options.fallback ? ['globalProvider'] : [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root,
@@ -91,9 +96,11 @@ async function fixture(url: string, plugins?: PluginHost) {
   const recordReplay = createRuntimeRecordReplay(config, container.control, { mode: 'off' });
   const router = new LLMRouter(config, audit, undefined, undefined, plugins,
     async () => ({ ok: true, latencyMs: 0, detail: 'loopback fixture' }), recordReplay);
-  const input = { config: config.rules, container, recordReplay, router, audit, projectId, phaseId,
+  const actor = { actorId, role: 'project-manager' as const, roleVersion: roleProfile('project-manager').version,
+    ...(options.actorPool === undefined ? {} : { modelPool: options.actorPool }) };
+  const input = { config: config.rules, container, recordReplay, router, audit, projectId, phaseId, actor,
     before: [], scenario, scene, requirementDigest: 'Preserve the accepted primary workflow.' };
-  return { ...input, input,
+  return { ...input, input, fullConfig: config,
     events: async () => (await fs.readFile(container.state.abs('audit', 'audit.jsonl'), 'utf8'))
       .split('\n').filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
   };
@@ -103,19 +110,20 @@ describe('Runtime scenario outcome through retained current Rule and response ev
   it('selects the installed base and explicitly bound rubric once, then judges with ProjectManager without embedding', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
-    const role = vi.spyOn(current.router, 'for');
+    const role = vi.spyOn(current.router, 'forPool');
     const verdict = await judgeRuntimeScenarioOutcome(current.input);
     expect(verdict).toMatchObject({ ok: false, reason, ticketType: 'change-request', target: 'high-level-design' });
     expect(role).toHaveBeenCalledTimes(1);
-    expect(role).toHaveBeenCalledWith('ProjectManager');
+    expect(role).toHaveBeenCalledWith({ modelPool: 'management', inheritFallbacks: true, allowedProviders: ['roleProvider'] },
+      { label: 'project-manager' });
     expect(server.calls.map(call => call.url)).toEqual(['/v1/chat/completions']);
     const events = await current.events();
     const success = events.find(event => event.messageId === 'llm.scenario_outcome_judgement')!;
     const logicalRequestId = success.data!.logicalRequestId as string;
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root)
       .read(logicalRequestId);
-    expect(snapshot).toMatchObject({ requestKind: 'business', context: { projectId, role: 'ProjectManager',
-      scenario: SCENARIO_OUTCOME_CONTEXT }, requiredRuleIds: expect.arrayContaining([SCENARIO_OUTCOME_RULE.ruleId]) });
+    expect(snapshot).toMatchObject({ requestKind: 'business', context: { projectId, role: 'project-manager',
+      work: 'judge.scenario' }, requiredRuleIds: expect.arrayContaining([SCENARIO_OUTCOME_RULE.ruleId]) });
     expect(snapshot?.requiredRuleIds).toHaveLength(4);
     expect(snapshot?.rules).toHaveLength(4);
     expect(snapshot?.rules.filter(rule => rule.ruleId === SCENARIO_OUTCOME_RULE.ruleId)).toHaveLength(1);
@@ -151,6 +159,59 @@ describe('Runtime scenario outcome through retained current Rule and response ev
     expect(server.calls).toHaveLength(2);
   });
 
+  it('keeps an explicit Actor pool independent even when it has the same name as the role default', async () => {
+    const primary = await endpoint(verdictText, 'stop', 503);
+    const global = await endpoint();
+    const current = await fixture(primary.url, undefined, { actorPool: 'management', fallback: global.url });
+
+    await expect(judgeRuntimeScenarioOutcome(current.input)).rejects.toMatchObject({ failure: { code: 'all_providers_failed' } });
+
+    expect(primary.calls).toHaveLength(1);
+    expect(global.calls).toHaveLength(0);
+    const original = (await current.events()).find(event => event.messageId === 'llm.business_request_input')!.data!.input as BusinessRequestInput;
+    expect(original.owner).toMatchObject({ actorId, role: 'project-manager', roleVersion: roleProfile('project-manager').version,
+      work: 'judge.scenario', modelPool: 'management', inheritFallbacks: false, allowedProviders: ['roleProvider'] });
+  });
+
+  it('retains global fallback for the role default when the Actor supplies no override', async () => {
+    const primary = await endpoint(verdictText, 'stop', 503);
+    const global = await endpoint();
+    const current = await fixture(primary.url, undefined, { fallback: global.url });
+
+    await expect(judgeRuntimeScenarioOutcome(current.input)).resolves.toMatchObject({ ok: false, ticketType: 'change-request' });
+
+    expect(primary.calls).toHaveLength(1);
+    expect(global.calls).toHaveLength(1);
+    expect(global.calls[0]!.input.model).toBe('global-model');
+    const original = (await current.events()).find(event => event.messageId === 'llm.business_request_input')!.data!.input as BusinessRequestInput;
+    expect(original.owner).toMatchObject({ modelPool: 'management', inheritFallbacks: true,
+      allowedProviders: ['roleProvider', 'globalProvider'] });
+  });
+
+  it('recovers the original Actor and allowed providers after the named pool changes without resolving the current pool', async () => {
+    const primary = await endpoint();
+    const global = await endpoint();
+    const current = await fixture(primary.url, undefined, { actorPool: 'management', fallback: global.url });
+    const verdict = await judgeRuntimeScenarioOutcome(current.input);
+    const before = await current.events();
+    const original = before.find(event => event.messageId === 'llm.business_request_input')!.data!.input as BusinessRequestInput;
+    current.fullConfig.llm.pools.management = ['globalProvider'];
+    const resolve = vi.spyOn(current.router, 'resolvePool').mockImplementation(() => { throw new Error('Recovery cannot resolve current pools.'); });
+    const route = vi.spyOn(current.router, 'forPool');
+
+    const restored = await resumeRuntimeScenarioOutcome({ container: current.container, audit: current.audit,
+      logicalRequestId: original.logicalRequestId });
+
+    expect(restored).toMatchObject({ status: 'recovered', owner: original.owner, verdict });
+    expect(restored.status === 'recovered' && restored.owner).toMatchObject({ actorId,
+      modelPool: 'management', inheritFallbacks: false, allowedProviders: ['roleProvider'] });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(route).not.toHaveBeenCalled();
+    expect(primary.calls).toHaveLength(1);
+    expect(global.calls).toHaveLength(0);
+    expect(await current.events()).toEqual(before);
+  });
+
   it('restores the bounded original evidence by request ID without current files, Rule sources, writes or another model request', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
@@ -176,7 +237,7 @@ describe('Runtime scenario outcome through retained current Rule and response ev
     vi.spyOn(installationRoots, 'installedCompilerRulesRoot').mockImplementation(() => {
       throw new Error('Recovery must not load current installed Rules');
     });
-    const role = vi.spyOn(current.router, 'for');
+    const role = vi.spyOn(current.router, 'forPool');
     const restored = await resumeRuntimeScenarioOutcome({ container: new ProjectContainer(current.container.root),
       audit: current.audit, logicalRequestId: input.logicalRequestId });
     expect(restored).toEqual({ status: 'recovered', protocolStatus: 'processed', logicalRequestId: input.logicalRequestId,

@@ -1,5 +1,7 @@
 # 0.4.0: Rule architecture and module separation
 
+> **2026-10-16 起**：[审查变更清单](2026-10-15-review-change-list.md) 的 D-1–D-20 替代本文中与之冲突的描述（业务 Rule 推迟到 0.5、角色/工作内容拆分、RuleChain 分段、具名模型池等）。当前进度只以 [HANDOVER](HANDOVER.md) 的状态表为准（D-9）；下文带日期的段落是历史记录。
+
 Status: feature implementation in progress; tests follow complete functional milestones and release
 preparation follows functional acceptance. Updated 2026-10-15.
 

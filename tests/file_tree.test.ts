@@ -375,7 +375,7 @@ describe('file tree registration', () => {
     const { DomainObjectRepository } = await import(
       '../src/infrastructure/repository/domain_object_repository.js');
     const { ProjectContainer } = await import('../src/workspace/project_container.js');
-    const { compileProjectGraph } = await import('../src/domain/planning/compiler.js');
+    const { materializeProjectGraph } = await import('../src/application/planning/project_graph_persistence_service.js');
     const { ProjectGraphPersistenceService } = await import(
       '../src/application/planning/project_graph_persistence_service.js');
 
@@ -384,7 +384,7 @@ describe('file tree registration', () => {
       const container = new ProjectContainer(containerRoot);
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
-      const graph = compileProjectGraph({ draft: minimalPlan(), topic: 't', projectName: 'p' });
+      const graph = materializeProjectGraph({ draft: minimalPlan(), topic: 't', projectName: 'p' });
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
 
       const tree = FileTreeService.create({ projectId: graph.project.id });

@@ -46,7 +46,7 @@ Mandatory rules:
 5. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration.
 6. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN own their paired baseline tests but no src/ product code. CODE owns product source/runtime assets and unit tests. Right-side phases may write tests only under their Runtime-declared verification supplement root and must not modify paired baselines or src/.
 7. The same outputs path is globally unique. DEBUG may modify dependency-chain files at runtime; planned Steps should not duplicate outputs.
-8. id has the form S001, S002, ...; role is Planner / Architect / Coder / Tester / Debugger.
+8. id has the form S001, S002, ...; do not output a role: the phase determines the Step's work and Runtime assigns who does it.
 9. Every Step needs a systemPrompt that pins scope, inputs, outputs, acceptance, forbidden actions, and the paired test-design obligation when applicable.
 10. projectType is inferred by the LLM after clarification: application, library, or mixed. There is no CLI project-type override.
 11. complexityAssessment is your plan-stage complexity assessment. simple => P1 only; moderate => at least P1+P2; complex => at least P1+P2+P3. If the user explicitly asks for phases/stages, set userForcedPhaseSplit=true and split.
@@ -78,7 +78,6 @@ Output JSON shape:
       "title": "string",
       "description": "string",
       "systemPrompt": "Step-specific prompt: scope, inputs, outputs, acceptance, forbidden actions",
-      "role": "Planner",
       "tools": ["skill:artifact-authoring", "skill:test-design"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"],
@@ -340,7 +339,7 @@ Return strict JSON only:
     { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.py"], "assetPaths": ["src/templates/example.txt"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
   ],
   "steps": [
-    { "id": "S001", "iterationId": "P1", "phase": "REQUIREMENT_ANALYSIS", "title": "string", "description": "string", "systemPrompt": "scope, inputs, outputs, acceptance, forbidden actions", "role": "Planner", "tools": ["skill:artifact-authoring", "skill:test-design"], "inputs": ["docs/topic.md"], "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"], "subTasks": [], "dependsOn": [], "acceptance": "string", "maxAttempts": 3 }
+    { "id": "S001", "iterationId": "P1", "phase": "REQUIREMENT_ANALYSIS", "title": "string", "description": "string", "systemPrompt": "scope, inputs, outputs, acceptance, forbidden actions", "tools": ["skill:artifact-authoring", "skill:test-design"], "inputs": ["docs/topic.md"], "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"], "subTasks": [], "dependsOn": [], "acceptance": "string", "maxAttempts": 3 }
   ]
 }
 
@@ -352,8 +351,6 @@ function buildExecutorSystem(profile: LanguageProfile): string {
 }
 const messages: Messages = {
   llm: {
-    coderDebuggerSameModel: (model, coderProvider, debuggerProvider) =>
-      `Model configuration advice: Coder (${coderProvider}) and Debugger (${debuggerProvider}) both use ${model}. Prefer different models so debugging provides an independent reasoning path.`,
     invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); configure a valid HTTP(S) URL (default: ${fallback})`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} failed output contract validation`,
     providerValidationRetry: (role, model) => `[${role}] retrying provider ${model} with contract feedback before fallback`,
@@ -372,7 +369,7 @@ const messages: Messages = {
     scorePersistFailed: (message) => `failed to persist scores: ${message}`,
     preflightOllamaReachable: (baseUrl, models) => `preflight: ollama ${baseUrl} reachable; found ${models} model(s)`,
     preflightOllamaUnreachable: (baseUrl, message) => `preflight: ollama ${baseUrl} unreachable: ${message}`,
-    preflightAutoAdded: (providers, roles) => `preflight: auto-added ${providers} provider(s) for roles [${roles}]`,
+    preflightAutoAdded: (providers, roles) => `preflight: auto-added ${providers} provider(s) for model pools [${roles}]`,
     scoreFileHeader: '# XCompiler LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
     scoreFileSemantics: '# Scores: dynamic snapshot; default 1.0; automatic range 0.1-1.0; providers tagged cluster default to 0.2-0.5 unless llm.cluster_score_min/max widens it; transport/attributed quality failure -0.5; verified finding/repair/change +0.1. Put user overrides in llm_scores_user.yaml; 0 disables a provider.',
   },
@@ -632,7 +629,7 @@ const messages: Messages = {
       `steps=${total} done=${done} ready=${ready} blocked=${blocked} running=${running}`,
     planReadFailed: (p, message) => `${p} — ${message}`,
     stepHeader: (id, phase, title, state, attempts, maxAttempts) => `${id} ${phase} ${title} ${state} attempts=${attempts}/${maxAttempts}`,
-    stepRoleTools: (role, tools) => `role=${role} tools=[${tools}]`,
+    stepRoleTools: (type, tools) => `type=${type} tools=[${tools}]`,
     stepDependsOn: (ids) => `dependsOn: ${ids}`,
     outputStatus: (exists, p) => `${exists ? '✓' : '✗'} ${p}`,
     auditEntry: (ts, kind, message) => `${ts} ${kind} ${message}`,
@@ -843,6 +840,10 @@ Return strict JSON StepPlan for the current phase only.`,
       'If the previous attempt stalled on read-only probes, do not repeat discovery: perform the next justified mutation or verification action.' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
+    executorAcceptedContractChangesBlock: (changes) =>
+      '\n\n## Accepted contract changes (newer than the constraints above; follow these where they differ)\n' +
+      changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
+        `  Source: ${JSON.stringify(change.source)}`].join('\n')).join('\n'),
     executorContextBlock: (context: string) => `\n\n# Assembled context\n${context}`,
     executorRoleBlock: (identity) => `\n\n## Your role\n${identity.rolePrompt}\n${identity.capabilityPrompt}`
       + (identity.prohibitions.length > 0
@@ -908,8 +909,8 @@ Return strict JSON StepPlan for the current phase only.`,
     openaiModelListMissing: (provider, model) =>
       `provider "${provider}": model "${model}" not in /models response (it may still work if your account has access)`,
     providerScoreZero: (provider) => `provider "${provider}" disabled (score=0)`,
-    roleNoLiveProvider: (role) => `role "${role}" has no live provider (no candidate is reachable & enabled)`,
-    roleOk: (role, provider) => `role "${role}" → ${provider}`,
+    roleNoLiveProvider: (role) => `model pool "${role}" has no live provider (no candidate is reachable & enabled)`,
+    roleOk: (role, provider) => `model pool "${role}" → ${provider}`,
     sandboxKind: (kind) => `sandbox=${kind}`,
     sandboxNetworkPolicy: (policy, ports) =>
       `network=${policy}` + (ports.length ? ` (expose_ports=[${ports.join(', ')}])` : ''),

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectStatusProjectionService } from '../src/application/project_management/project_projection.js';
 import {
@@ -72,7 +72,7 @@ async function fixture(): Promise<{
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-pm-projection-'));
   const workspace = new Workspace(root);
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a TypeScript reporting application.',
     projectName: 'report',

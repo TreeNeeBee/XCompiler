@@ -117,7 +117,7 @@ function config(url: string, protocol: WireProtocol = 'openai', secondary?: stri
         request_timeout_ms: 5000, stream_idle_timeout_ms: 5000,
         retry: { max_retries: 1, max_delay: 0, jitter: 'none' } },
       ...(secondary ? { secondary: { type: 'openai', base_url: secondary, model: 'secondary-alias', api_key: '' } } : {}),
-    }, roles: { Coder: ['primary'] }, fallbacks: secondary ? ['secondary'] : [], role_fallbacks: {}, scores: {},
+    }, pools: { coding: ['primary'] }, fallbacks: secondary ? ['secondary'] : [], scores: {},
   } } as unknown as XCompilerConfig;
 }
 
@@ -158,7 +158,7 @@ describe('Router completion-aware response validation through real transports', 
     const transport = protocol === 'openai' ? vi.spyOn(OpenAIClient.prototype, 'chat') : vi.spyOn(OllamaClient.prototype, 'chat');
     const inspected: RoutedResponseEvidence[] = [];
     const adopted = vi.fn();
-    const pending = router.for('Coder').chat(messages, {
+    const pending = router.forPool('coding', { label: 'python-developer' }).chat(messages, {
       logicalRequestId, onToken: () => { firstToken.resolve(); }, onResponse: adopted,
       validateResponse(response) { inspected.push(response); validateTurn(response); },
     });
@@ -204,7 +204,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router } = await fixture(server.url, protocol);
     let response: RoutedResponseEvidence | undefined;
     try {
-      await expect(router.for('Coder').chat(messages, {
+      await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
         onToken: () => {}, validate: (output) => { JSON.parse(output); }, onResponse: (value) => { response = value; },
       })).resolves.toBe(prefix);
       expect(response!.output).toBe(prefix);
@@ -226,7 +226,7 @@ describe('Router completion-aware response validation through real transports', 
     });
     boost.mockImplementation((...args) => { order.push('boost'); ScoreStore.prototype.boost.apply(scores, args); });
     const adopted = vi.fn(() => { expect(order).toEqual(['validation-start', 'validation-end', 'raw-audit']); order.push('adopt'); });
-    const pending = router.for('Coder').chat(messages, { logicalRequestId, onResponse: adopted,
+    const pending = router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, onResponse: adopted,
       async validateResponse() { order.push('validation-start'); entered.resolve(); await decision.promise; order.push('validation-end'); },
     });
     await entered.promise;
@@ -249,7 +249,7 @@ describe('Router completion-aware response validation through real transports', 
     const inspected: RoutedResponseEvidence[] = [];
     const cause = Object.assign(new Error('A completed turn is required'), { code: 'fixture_business_contract_invalid', diagnostic: { field: 'done' } });
     const adopted = vi.fn();
-    const pending = router.for('Coder').chat(messages, { logicalRequestId, onResponse: adopted,
+    const pending = router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, onResponse: adopted,
       async validateResponse(response) {
         inspected.push(response);
         if (inspected.length === 1) { entered.resolve(); await decision.promise; }
@@ -273,8 +273,8 @@ describe('Router completion-aware response validation through real transports', 
     expect(new Set(inspected.map((response) => response.logicalRequestId))).toEqual(new Set([logicalRequestId]));
     expect(new Set(inspected.map((response) => response.providerAttemptId)).size).toBe(3);
     expect(adopted).toHaveBeenCalledExactlyOnceWith(inspected[2]);
-    expect(decay).toHaveBeenCalledExactlyOnceWith('primary', 'business validation failed in role Coder');
-    expect(boost).toHaveBeenCalledExactlyOnceWith('secondary', 'success in role Coder');
+    expect(decay).toHaveBeenCalledExactlyOnceWith('primary', 'business validation failed in role python-developer');
+    expect(boost).toHaveBeenCalledExactlyOnceWith('secondary', 'success in role python-developer');
     expect(scores.get('primary')).toBeCloseTo(0.1);
     expect(scores.get('secondary')).toBeCloseTo(0.7);
     const refused = (await events()).filter((event) => event.messageId === 'llm.provider_validation_failed');
@@ -292,7 +292,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router, boost, decay } = await fixture(primary.url, 'openai', secondary.url);
     const original = Object.assign(new Error('Consumer failed independently of the candidate'), { code: 'fixture_consumer_failed' });
     const adopted = vi.fn();
-    await expect(router.for('Coder').chat(messages, { logicalRequestId, onResponse: adopted,
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, onResponse: adopted,
       validateResponse() { throw original; },
     })).rejects.toBe(original);
     expect(primary.calls).toHaveLength(1);
@@ -315,7 +315,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router, boost, decay } = await fixture(server.url);
     const original = kind === 'typed-rejection' ? new ResponseValidationRejection('business', new Error('Unaccepted candidate')) : new Error('Consumer failed');
     const adopted = vi.fn();
-    const error = await router.for('Coder').chat(messages, { logicalRequestId, onResponse: adopted,
+    const error = await router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, onResponse: adopted,
       async validateResponse() { await fs.unlink(auditPath()); await fs.mkdir(auditPath()); throw original; },
     }).then(() => undefined, (cause: unknown) => cause);
     expect(error).toBeInstanceOf(AuditPersistenceError);
@@ -338,7 +338,7 @@ describe('Router completion-aware response validation through real transports', 
     const server = await endpoint('openai', () => ({ output: accepted }));
     const { router, boost, decay } = await fixture(server.url);
     const adopted = vi.fn();
-    await expect(router.for('Coder').chat(messages, { onResponse: adopted,
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: adopted,
       async validateResponse() { await fs.unlink(auditPath()); await fs.mkdir(auditPath()); },
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: { messageId: 'llm.provider_response' },
       record: { data: { output: accepted } },
@@ -357,7 +357,7 @@ describe('Router completion-aware response validation through real transports', 
     const controller = new AbortController();
     const reason = new Error('Owning task cancelled');
     const adopted = vi.fn();
-    const pending = router.for('Coder').chat(messages, { logicalRequestId, signal: controller.signal, onResponse: adopted,
+    const pending = router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, signal: controller.signal, onResponse: adopted,
       async validateResponse() { entered.resolve(); await decision.promise;
         if (outcome === 'typed-reject') throw new ResponseValidationRejection('protocol', new Error('Late rejection'));
       },
@@ -391,7 +391,7 @@ describe('Router completion-aware response validation through real transports', 
       const adopted = vi.fn();
       const providerStarted = vi.fn();
       const finalSend = vi.fn();
-      await expect(router.for('Coder').chat(messages, { logicalRequestId, signal: controller.signal, onResponse: adopted,
+      await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { logicalRequestId, signal: controller.signal, onResponse: adopted,
         onProviderStart: providerStarted, beforeProviderRequest: finalSend,
         validateResponse() { if (stage !== 'llm.provider_response') throw new ResponseValidationRejection('business', new Error('Candidate rejected')); },
       })).rejects.toBe(reason);
@@ -418,7 +418,7 @@ describe('Router completion-aware response validation through real transports', 
     const reason = new Error('Cancelled before request');
     controller.abort(reason);
     const validator = vi.fn();
-    await expect(router.for('Coder').chat(messages, { signal: controller.signal, validateResponse: validator })).rejects.toBe(reason);
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { signal: controller.signal, validateResponse: validator })).rejects.toBe(reason);
     expect(availability).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(0);
     expect(validator).not.toHaveBeenCalled();
@@ -437,7 +437,7 @@ describe('Router completion-aware response validation through real transports', 
     const reason = new Error('Cancelled while the probe was pending');
     const validator = vi.fn();
     const adopted = vi.fn();
-    const pending = router.for('Coder').chat(messages, {
+    const pending = router.forPool('coding', { label: 'python-developer' }).chat(messages, {
       signal: controller.signal, validateResponse: validator, onResponse: adopted,
     });
     await entered.promise;
@@ -459,7 +459,7 @@ describe('Router completion-aware response validation through real transports', 
     const controller = new AbortController();
     const reason = new Error('Cancelled by the response consumer');
     const adopted = vi.fn(() => { controller.abort(reason); });
-    await expect(router.for('Coder').chat(messages, { signal: controller.signal, validateResponse: validateTurn, onResponse: adopted })).rejects.toBe(reason);
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { signal: controller.signal, validateResponse: validateTurn, onResponse: adopted })).rejects.toBe(reason);
     expect(server.calls).toHaveLength(1);
     expect(adopted).toHaveBeenCalledTimes(1);
     expect(boost).not.toHaveBeenCalled();
@@ -475,7 +475,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router, boost, decay } = await fixture(server.url, protocol);
     const inspections: RoutedResponseEvidence[] = [];
     const adopted = vi.fn();
-    await expect(router.for('Coder').chat(messages, { onResponse: adopted,
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: adopted,
       validateResponse(response) {
         inspections.push(response);
         expect(JSON.parse(response.output)).toEqual({ done: true, actions: [] });
@@ -490,7 +490,7 @@ describe('Router completion-aware response validation through real transports', 
     expect(inspections).toHaveLength(2);
     expect(adopted).not.toHaveBeenCalled();
     expect(boost).not.toHaveBeenCalled();
-    expect(decay).toHaveBeenCalledExactlyOnceWith('primary', 'protocol validation failed in role Coder');
+    expect(decay).toHaveBeenCalledExactlyOnceWith('primary', 'protocol validation failed in role python-developer');
     expect((await events()).filter((event) => event.messageId === 'llm.provider_validation_failed')).toHaveLength(2);
   });
 
@@ -499,7 +499,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router, boost, decay } = await fixture(server.url);
     const validator = vi.fn();
     const legacy = vi.fn(() => true);
-    await expect(router.for('Coder').chat(messages, { validateResponse: validator, [key]: legacy })).rejects.toMatchObject({
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { validateResponse: validator, [key]: legacy })).rejects.toMatchObject({
       failure: { code: 'request_failed', retryable: false, switchProvider: false,
         details: { stage: 'response-validation-options', unsupported: [key] } },
     });
@@ -514,7 +514,7 @@ describe('Router completion-aware response validation through real transports', 
   it.each([null, false, 'not-a-function'])('rejects non-function response validator %s before transport', async (value) => {
     const server = await endpoint('openai', () => ({ output: accepted }));
     const { router, boost, decay } = await fixture(server.url);
-    const error = await router.for('Coder').chat(messages, { validateResponse: value } as unknown as ChatOptions)
+    const error = await router.forPool('coding', { label: 'python-developer' }).chat(messages, { validateResponse: value } as unknown as ChatOptions)
       .then(() => undefined, (cause: unknown) => cause);
     expect(error).toBeInstanceOf(LLMRequestError);
     expect(error).toMatchObject({ failure: { code: 'request_failed', details: { stage: 'response-validation-options', invalidValidator: true } } });
@@ -528,7 +528,7 @@ describe('Router completion-aware response validation through real transports', 
     const availability = vi.fn(probe);
     const router = new LLMRouter(config(server.url), undefined, undefined, undefined, undefined, availability);
     const validator = vi.fn();
-    await expect(router.for('Coder').chat(messages, { validateResponse: validator })).rejects.toMatchObject({
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { validateResponse: validator })).rejects.toMatchObject({
       failure: { code: 'request_failed', details: { stage: 'response-validation-options', missingAudit: true } },
     });
     expect(availability).not.toHaveBeenCalled();
@@ -546,7 +546,7 @@ describe('Router completion-aware response validation through real transports', 
     const { router, boost, decay } = await fixture(server.url, 'openai', undefined, plugins);
     const original = vi.fn(validateTurn);
     const adopted = vi.fn();
-    await expect(router.for('Coder').chat(messages, { ...(identified ? { logicalRequestId } : {}), validateResponse: original, onResponse: adopted })).resolves.toBe(accepted);
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { ...(identified ? { logicalRequestId } : {}), validateResponse: original, onResponse: adopted })).resolves.toBe(accepted);
     expect(original).toHaveBeenCalledTimes(2);
     expect(replacement).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(2);
@@ -566,7 +566,7 @@ describe('Router completion-aware response validation through real transports', 
     }] });
     const server = await endpoint('openai', () => ({ output: accepted }));
     const { router } = await fixture(server.url, 'openai', undefined, plugins);
-    await expect(router.for('Coder').chat(messages)).resolves.toBe(accepted);
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages)).resolves.toBe(accepted);
     expect(injected).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(1);
     expect((await events()).some((event) => event.messageId === 'llm.provider_validation_failed')).toBe(false);
@@ -576,7 +576,7 @@ describe('Router completion-aware response validation through real transports', 
     const server = await endpoint('openai', () => ({ output: '{"done":true,}' }));
     const { router, boost, decay } = await fixture(server.url);
     let original: RoutedResponseEvidence | undefined;
-    await router.for('Coder').chat(messages, { scoreSuccess: false, onResponse: (value) => { original = value; } });
+    await router.forPool('coding', { label: 'python-developer' }).chat(messages, { scoreSuccess: false, onResponse: (value) => { original = value; } });
     const protocol: JsonOutputProtocol = { id: 'fixture-q0', version: '1', root: 'object', transformations: ['trailing-comma'] };
     const prompt = createJsonProtocolCorrectionPrompt(original!.output, protocol);
     const validator = vi.fn();

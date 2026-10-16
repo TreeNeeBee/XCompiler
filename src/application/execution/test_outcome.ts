@@ -36,9 +36,7 @@ export function collectTestOutcomes(
   // through `npx vitest` and recorded nothing, which leaves a Bug whose verification contract names
   // that Step unable to ever be proven. The sibling check in `run_program` already reads the command
   // rather than the tool; this is the same rule, applied where the evidence is collected.
-  return calls.filter((call) =>
-    call.tool === 'run_tests' ||
-    (call.tool === 'run_program' && isTestRunnerInvocation(toolArgList(call)))).map((call) => {
+  return calls.filter(isTestCall).map((call) => {
     const data = isRecord(call.data) ? call.data : {};
     const timedOut = data.timedOut === true;
     const exitCode = typeof data.exitCode === 'number' ? data.exitCode : undefined;
@@ -47,7 +45,9 @@ export function collectTestOutcomes(
       ? data.failedTests.filter((value): value is string => typeof value === 'string')
       : [];
     return {
-      status: timedOut ? 'timed_out' : call.ok ? 'passed' : 'failed',
+      status: call.executionStatus === 'permission-blocked' ? 'denied'
+        : call.executionStatus === 'tool-not-allowed' ? 'skipped'
+        : timedOut ? 'timed_out' : call.ok ? 'passed' : 'failed',
       stepType,
       tool: call.tool === 'run_program' ? 'run_program' : 'run_tests',
       callId: call.callId,
@@ -64,6 +64,33 @@ export function collectTestOutcomes(
       recordedAt: new Date().toISOString(),
     };
   });
+}
+
+/** A passing subset is not evidence that another verification contract was repaired. */
+export function unresolvedTestFailures(calls: readonly ToolCallRecord[]): ToolCallRecord[] {
+  const latest = new Map<string, ToolCallRecord>();
+  for (const call of calls) {
+    if (!isTestCall(call) || call.executionStatus === 'permission-blocked' ||
+      call.executionStatus === 'tool-not-allowed') continue;
+    const data = isRecord(call.data) ? call.data : {};
+    const args = Array.isArray(data.effectiveArgs)
+      ? data.effectiveArgs.filter((value): value is string => typeof value === 'string')
+      : toolArgList(call);
+    const cwd = typeof call.args?.cwd === 'string' && call.args.cwd.trim()
+      ? call.args.cwd
+      : '.';
+    // Tool identity is deliberate: run_tests supplies a Runtime-owned runner whereas run_program
+    // supplies its executable in argv. No inferred equivalence may erase either verdict.
+    const key = JSON.stringify([call.tool, cwd, args]);
+    latest.delete(key);
+    latest.set(key, call);
+  }
+  return [...latest.values()].filter((call) => !call.ok);
+}
+
+function isTestCall(call: ToolCallRecord): boolean {
+  return call.tool === 'run_tests' ||
+    (call.tool === 'run_program' && isTestRunnerInvocation(toolArgList(call)));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

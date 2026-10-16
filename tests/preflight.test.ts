@@ -13,9 +13,8 @@ function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig
         ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
         ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
       },
-      roles: { Coder: ['ollama_code'], Planner: ['ollama_design'] },
+      pools: { coding: ['ollama_code'], planning: ['ollama_design'] },
       fallbacks: [],
-      role_fallbacks: {},
       ...overrides,
     },
     agent: {
@@ -73,8 +72,8 @@ describe('preflightProviders', () => {
     expect(result.zeroed).toContain('ollama_design');
     expect(Object.keys(result.autoAdded).length).toBeGreaterThanOrEqual(2);
     // Roles must now include the synthetic providers
-    expect(cfg.llm.roles.Coder.some((n) => n.startsWith('auto_'))).toBe(true);
-    expect(cfg.llm.roles.Planner.some((n) => n.startsWith('auto_'))).toBe(true);
+    expect(cfg.llm.pools.coding.some((n) => n.startsWith('auto_'))).toBe(true);
+    expect(cfg.llm.pools.planning.some((n) => n.startsWith('auto_'))).toBe(true);
     // The synthetic providers must exist with score=1
     for (const synth of Object.keys(result.autoAdded)) {
       expect(scores.get(synth)).toBe(1);
@@ -135,7 +134,7 @@ describe('preflightProviders', () => {
       providers: {
         openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
       },
-      roles: { Planner: ['openai'] },
+      pools: { planning: ['openai'] },
     });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     scores.set('openai', 0, 'previous transient failures');
@@ -151,7 +150,7 @@ describe('preflightProviders', () => {
       providers: {
         openai: { type: 'openai', api_key: 'k', base_url: 'http://openai', model: 'gpt' },
       },
-      roles: { Planner: ['openai'] },
+      pools: { planning: ['openai'] },
     });
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-preflight-'));
     await fs.writeFile(path.join(dir, 'llm_scores_user.yaml'), 'openai: 0\n');

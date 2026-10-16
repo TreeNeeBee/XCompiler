@@ -40,7 +40,7 @@ import { normalizeGitPath } from './v_model_policy.js';
 import { TEST_FIXTURE_DIR } from '../../domain/quality/external_dependency.js';
 import { getLanguageProfile, type LanguageProfile } from './language_support.js';
 import { inspectLanguageProjectContract } from './language_project_contract.js';
-import type { Plan, Step as ExecutionStep } from '../../domain/planning/execution_plan.js';
+import type { Language, Plan, Step as ExecutionStep } from '../../domain/planning/execution_plan.js';
 import type { StageQualityAssessment } from '../../domain/quality/stage_quality.js';
 import { STEP_TYPE_ORDER, type Step, type StepType } from '../../domain/steps/step.js';
 import {
@@ -82,10 +82,15 @@ import { AuditPersistenceError } from '../../audit/errors.js';
 import {
   classifyFailure,
   isEvidencePersistenceFailure,
+  priorAttemptFailure,
   type AttemptFailure,
   type AttemptFailureKind,
 } from './failure_classification.js';
-import { collectTestOutcomes, type TestOutcome } from './test_outcome.js';
+import { collectTestOutcomes, unresolvedTestFailures, type TestOutcome } from './test_outcome.js';
+import { acceptedContractChanges } from './accepted_contract_changes.js';
+import { roleProfile, type RoleId } from '../../domain/workflow/role.js';
+import { defaultRoleForStep, stepWork, type WorkId } from '../../domain/workflow/work.js';
+import { stepWorkGuidance } from '../../domain/workflow/work_guidance.js';
 import type { RecordReplayController } from '../record_replay/controller.js';
 import {
   reconcileMeasuredQualityAssessment,
@@ -381,9 +386,13 @@ export class DomainAttemptRunner {
       const debugContext = input.ticket.type === 'bug'
         ? debugContextFrom(input.ticket, debugBrief!, assembled.debugWikiMatches)
         : undefined;
-      const retryFeedback = input.ticket.type === 'bug'
-        ? await this.latestAttemptFailure(input)
+      const previousAttempt = input.ticket.type === 'bug'
+        ? await this.latestFailureLog(input)
         : undefined;
+      const retryFeedback = previousAttempt
+        ? renderAttemptRetryFeedback(previousAttempt, input.executionStep.phase)
+        : undefined;
+      const previousFailure = priorAttemptFailure(previousAttempt?.data.structuredFailure);
       wikiMatches = assembled.debugWikiMatches;
       if (wikiMatches.length > 0 && input.ticket.type === 'bug') {
         await this.wiki.recordUse(wikiMatches.map((match) => match.entry.id), {
@@ -445,7 +454,8 @@ export class DomainAttemptRunner {
       const result = await environment.executor.run({
         step: input.executionStep,
         stepName: input.domainStep.name,
-        executionRole: input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
+        work: attemptIdentity(input, this.profile.id).work,
+        role: attemptIdentity(input, this.profile.id).role,
         baselineTestExecution: environment.baselineGateExecution.mode === 'defer'
           ? 'defer'
           : 'execute',
@@ -462,6 +472,7 @@ export class DomainAttemptRunner {
           reason: retryFeedback
             ? 'The previous repair attempt produced newer failure evidence. Continue from the current workspace state and that evidence; do not restart the original repair.'
             : input.ticket.failure.summary,
+          ...(previousFailure ? { previousFailure } : {}),
           failureLog: prioritizeAttemptFailureEvidence(
             input.ticket.failure.message,
             retryFeedback,
@@ -500,27 +511,32 @@ export class DomainAttemptRunner {
         } : undefined,
         layeredContext: assembled.text,
         globalPrompt: input.plan.globalPrompt,
-        roleIdentity: input.assignee && {
-          rolePrompt: input.assignee.definition.rolePrompt,
-          capabilityPrompt: input.assignee.definition.capabilityPrompt,
-          prohibitions: input.assignee.definition.prohibitions,
-        },
+        acceptedContractChanges: await acceptedContractChanges(this.options.repository, {
+          projectId: input.domainStep.projectId, phaseId: input.domainStep.phaseId,
+        }),
+        // Transitional: the Step work's guidance until M-D moves it into the RuleChain work segment.
+        roleIdentity: workGuidanceBlock(input.domainStep.type),
         languageProfile: this.profile,
       });
       if (!result.success) {
-        const failure = result.toolCalls.some((call) => call.tool === 'run_tests' && !call.ok)
+        const failedTests = unresolvedTestFailures(result.toolCalls);
+        const lastTestFailure = failedTests.at(-1);
+        const failure = lastTestFailure
           ? {
               kind: 'execution' as const,
               category: 'test' as const,
               code: 'test_command_failed',
-              message: result.error ?? 'Test command failed.',
+              message: lastTestFailure.error ?? lastTestFailure.summary ?? result.error ?? 'Test command failed.',
               retryable: true,
               switchProvider: false,
+              details: { testFailures: failedTests, ...(result.failure ? { executorFailure: result.failure } : {}) },
             }
           : result.failure ?? classifyFailure(result.error);
         const failureKind = failure.kind;
+        // A stalled turn never applied the retrieved solution, so it is no evidence against it.
         if (
           failureKind === 'execution' &&
+          failure.code !== 'agent_execution_stalled' &&
           input.ticket.type === 'bug' &&
           wikiMatches.length > 0
         ) {
@@ -756,17 +772,18 @@ export class DomainAttemptRunner {
     const rewriteExistingFiles = input.mode === 'debug'
       ? await this.failureEvidenceRewriteTargets(scope, input, allowedWrites, retryFeedback)
       : [];
+    const identity = attemptIdentity(input, this.profile.id);
+    const modelPool = this.options.router.resolvePool(identity.modelPool, {
+      inheritFallbacks: input.assignee?.actor.modelPool === undefined,
+    });
     const budgetContext = {
       phase: input.executionStep.phase,
-      role: input.mode === 'debug' ? 'Debugger' as const : input.domainStep.agent,
       debug: input.mode === 'debug',
       tools: toolNames,
       outputs: input.executionStep.outputs,
       allowedWrites,
       contextChars: stepContextChars(input.plan, input.executionStep),
-      contextWindowTokens: this.options.router.primaryContextWindow?.(
-        input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
-      ),
+      contextWindowTokens: this.options.router.primaryContextWindow?.(modelPool),
     };
     const window = resolveSkillOperationWindow({
       contextWindowTokens: budgetContext.contextWindowTokens,
@@ -828,14 +845,9 @@ export class DomainAttemptRunner {
         request: this.options.executionRequests?.({
           projectId: input.domainStep.projectId, phaseId: input.domainStep.phaseId,
           stepId: input.domainStep.id, ticketId: input.ticket.id, executionId: randomUUID(),
-          role: input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
+          ...identity, ...modelPool,
           actorId: input.assignee?.actor.id, assignmentId: input.ticket.activeAssignmentId,
-          providerPool: input.assignee?.actor.llmBinding?.providerPool,
         }),
-        llm: this.options.router.for(
-          input.mode === 'debug' ? 'Debugger' : input.domainStep.agent,
-          { providerPool: input.assignee?.actor.llmBinding?.providerPool },
-        ),
         signal: this.options.abortSignal,
         streamOutput: this.options.terminalOutput === true,
         maxRounds: rounds,
@@ -955,14 +967,7 @@ export class DomainAttemptRunner {
   }
 
   private async latestAttemptFailure(input: AttemptInput): Promise<string | undefined> {
-    const failures = [];
-    for (const logId of input.ticket.logIds) {
-      const object = await this.options.repository.read(logId);
-      if (object.objectType !== 'log' || object.level !== 'error') continue;
-      if (object.data.stepId !== input.domainStep.id) continue;
-      failures.push(object);
-    }
-    const selected = selectActionableAttemptFailure(failures);
+    const selected = await this.latestFailureLog(input);
     return selected ? renderAttemptRetryFeedback(selected, input.executionStep.phase) : undefined;
   }
 
@@ -1481,4 +1486,22 @@ function debugContextFrom(ticket: BugTicket, brief: DebugBrief, matches: DebugWi
           : `- ${match.entry.id} status=${match.entry.status} confidence=${match.confidence?.toFixed(2) ?? 'unknown'}: ${match.entry.solution}`),
     ].join('\n'),
   };
+}
+
+/**
+ * The work, speaking role and model pool of one attempt. The assignment decides who and with which
+ * model; the attempt mode decides the work. Neither the plan nor a model chooses them.
+ */
+function attemptIdentity(input: AttemptInput, language: Language): { work: WorkId; role: RoleId; roleVersion: string; modelPool: string } {
+  const work: WorkId = input.mode === 'debug'
+    ? 'repair.debug'
+    : input.mode === 'change-request' ? 'change.apply' : stepWork(input.domainStep.type);
+  const role = input.assignee?.actor.roleId ?? defaultRoleForStep(input.domainStep.type, language);
+  return { work, role, roleVersion: input.assignee?.actor.roleVersion ?? roleProfile(role).version,
+    modelPool: input.assignee?.actor.modelPool ?? roleProfile(role).defaultPool };
+}
+
+function workGuidanceBlock(type: Step['type']) {
+  const guidance = stepWorkGuidance(stepWork(type));
+  return { rolePrompt: guidance.role, capabilityPrompt: guidance.capability, prohibitions: [...guidance.prohibitions] };
 }

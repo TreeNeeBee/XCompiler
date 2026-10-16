@@ -1,13 +1,16 @@
 import { z } from 'zod';
+import { AcceptedContractChangeSchema } from './accepted_contract_changes.js';
+import { PriorAttemptFailureSchema } from './execution_stall.js';
 import { ObjectIdSchema } from '../../domain/identity/object_id.js';
 import { LANGUAGES, StepSchema } from '../../domain/planning/execution_plan.js';
 import {
   ChangeRequestTicketSchema, EnhancementTicketSchema, TicketSchema,
 } from '../../domain/tickets/ticket.js';
-import { ExecutingRoleSchema, type ExecutingRole } from '../../domain/workflow/role.js';
+import { RoleIdSchema, type RoleId } from '../../domain/workflow/role.js';
+import { WorkIdSchema, type WorkId } from '../../domain/workflow/work.js';
 import type { JsonOutputProtocol } from '../../llm/protocol_json.js';
 import type { RuleBusinessChatOptions } from '../../llm/rule_business_request.js';
-import type { ChatMessage } from '../../llm/types.js';
+import { ModelPoolBindingSchema, type ChatMessage } from '../../llm/types.js';
 import type { SkillOperationWindow } from '../../llm/window.js';
 
 export const EXECUTION_TURN_TEMPLATE_VERSION = 'execution-turn/1' as const;
@@ -21,11 +24,22 @@ const ObjectId = ObjectIdSchema.transform(value => ObjectIdSchema.parse(value.to
 const Text = z.string().refine(value => value.trim().length > 0);
 const PositiveInteger = z.number().int().positive();
 
-/** Runtime pins the assigned owner and pool once per attempt, independently of model output. */
-export const ExecutionRequestScopeSchema = z.object({
+export { ModelPoolBindingSchema } from '../../llm/types.js';
+
+/** Already registered by PM; ports retain this identity without selecting or creating an Actor. */
+export const OperationActorBindingSchema = z.object({
+  actorId: ObjectId, role: RoleIdSchema, roleVersion: Text, modelPool: Text.optional(),
+}).strict();
+export type OperationActorBinding = z.infer<typeof OperationActorBindingSchema>;
+
+/**
+ * Runtime pins the work, the actor's role and its model pool once per attempt, independently of
+ * model output. The role says who is speaking; the work says what is being done.
+ */
+export const ExecutionRequestScopeSchema = ModelPoolBindingSchema.extend({
   projectId: ObjectId, phaseId: ObjectId, stepId: ObjectId, ticketId: ObjectId,
-  executionId: z.uuid().transform(value => value.toLowerCase()), role: ExecutingRoleSchema,
-  actorId: ObjectId.optional(), assignmentId: ObjectId.optional(), providerPool: z.array(Text).min(1).optional(),
+  executionId: z.uuid().transform(value => value.toLowerCase()), role: RoleIdSchema, work: WorkIdSchema,
+  roleVersion: Text, actorId: ObjectId.optional(), assignmentId: ObjectId.optional(),
 }).strict();
 export type ExecutionRequestScope = z.infer<typeof ExecutionRequestScopeSchema>;
 
@@ -37,6 +51,7 @@ const DebugContextSchema = z.object({
   }).strict().optional(),
   deferredVerificationScope: z.object({ stepId: z.string(), phase: StepSchema.shape.phase }).strict().optional(),
   phaseDeliveryVerification: z.object({ phaseId: z.string(), findingCode: z.string() }).strict().optional(),
+  previousFailure: PriorAttemptFailureSchema.optional(),
 }).strict();
 
 // Domain projection replaces the draft display ID before the production attempt is executed.
@@ -44,11 +59,12 @@ export const ExecutionPromptStepSchema = StepSchema.extend({ id: z.union([Object
 
 /** Original framework inputs support only the existing deterministic per-provider window rendering. */
 export const ExecutionPromptContextSchema = z.object({
-  step: ExecutionPromptStepSchema, executionRole: ExecutingRoleSchema.optional(),
+  step: ExecutionPromptStepSchema, work: WorkIdSchema, role: RoleIdSchema.optional(),
   baselineTestExecution: z.enum(['execute', 'defer']).optional(),
   baselineTestExecutionReason: z.enum([
     'initial-pre-code', 'pre-code-correction', 'code-step', 'post-code-correction', 'verification-step',
   ]).optional(),
+  acceptedContractChanges: z.array(AcceptedContractChangeSchema).readonly().optional(),
   contextSnippets: z.array(z.object({ path: z.string(), content: z.string() }).strict()).optional(),
   ticket: TicketSchema.optional(), changeRequest: ChangeRequestTicketSchema.optional(),
   enhancement: EnhancementTicketSchema.optional(), debugContext: DebugContextSchema.optional(),
@@ -100,9 +116,9 @@ export class ExecutionTurnRequestConfigurationError extends Error {
 export class ExecutionTurnRequestFailure extends Error {
   readonly code = 'execution_turn_request_failed';
   constructor(
-    readonly details: Readonly<{ stepId: string; role: ExecutingRole; round: number }>, options?: ErrorOptions,
+    readonly details: Readonly<{ stepId: string; work: WorkId; role?: RoleId; round: number }>, options?: ErrorOptions,
   ) {
-    super(`Execution turn request failed for ${details.stepId}/${details.role} round ${details.round}`, options);
+    super(`Execution turn request failed for ${details.stepId}/${details.work} round ${details.round}`, options);
     this.name = 'ExecutionTurnRequestFailure';
   }
 }

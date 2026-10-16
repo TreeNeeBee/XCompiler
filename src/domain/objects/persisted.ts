@@ -51,7 +51,6 @@ import {
   type MergeRequest,
 } from '../workspace/merge_request.js';
 import { ContextRecordSchema, type ContextRecord } from '../context/context_record.js';
-import { RoleDefinitionSchema, type RoleDefinition } from '../workflow/role_definition.js';
 import { DomainEventSchema, type DomainEvent } from '../observability/domain_event.js';
 
 export type PersistedDomainObject =
@@ -68,7 +67,6 @@ export type PersistedDomainObject =
   | MergeRequest
   | MergeGateRun
   | ContextRecord
-  | RoleDefinition
   | ProjectManagementPlan
   | RiskRecord
   | DecisionRecord
@@ -99,7 +97,6 @@ export const PersistedDomainObjectSchema: z.ZodType<PersistedDomainObject> = z.u
   MergeRequestSchema,
   MergeGateRunSchema,
   ContextRecordSchema,
-  RoleDefinitionSchema,
   ProjectManagementPlanSchema,
   RiskRecordSchema,
   DecisionRecordSchema,

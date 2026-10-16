@@ -36,7 +36,7 @@ function config(): XCompilerConfig {
       primary: { type: 'openai', base_url: 'http://127.0.0.1:1/v1', api_key: '', model: 'primary-model' },
       secondary: { type: 'openai', base_url: 'http://127.0.0.1:2/v1', api_key: '', model: 'secondary-model' },
     },
-    roles: { Coder: ['primary'] }, fallbacks: ['secondary'], role_fallbacks: {}, scores: {},
+    pools: { coding: ['primary'] }, fallbacks: ['secondary'], scores: {},
   } } as unknown as XCompilerConfig;
 }
 
@@ -78,8 +78,7 @@ async function seedProviderRecording() {
   const store = new FileRecordReplayStore(fixtures);
   const fetch = transport('accepted');
   const record = new RecordReplayController({ mode: 'record', store });
-  await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record)
-    .for('Coder').chat(messages);
+  await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record).forPool('coding', { label: 'python-developer' }).chat(messages);
   const original = (await store.list())[0]!;
   const files = await fixtureFiles(fixtures);
   expect(files).toHaveLength(1);
@@ -137,7 +136,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
       const replay = new RecordReplayController({ mode: 'replay', store });
       const delivered = vi.fn();
       const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
-      const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+      const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
       expect(failure).toBeInstanceOf(AuditPersistenceError);
       expect((failure as AuditPersistenceError).failure).toMatchObject({
@@ -164,7 +163,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const delivered = vi.fn();
     const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
 
-    const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+    const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     expect((failure as AuditPersistenceError).failure).toMatchObject({
@@ -204,7 +203,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
       const delivered = vi.fn();
       const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
 
-      const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+      const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
       expect(failure).toBeInstanceOf(AuditPersistenceError);
       expect((failure as AuditPersistenceError).failure).toMatchObject({
@@ -239,7 +238,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
       const delivered = vi.fn();
       const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
 
-      const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+      const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
       expect(failure).toBeInstanceOf(AuditPersistenceError);
       const requestKey = find.mock.calls[0]![1];
@@ -262,8 +261,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
   it('rejects a complete recording copied into another real request directory', async () => {
     const { fixtures, store, fetch, original, target } = await seedProviderRecording();
     const record = new RecordReplayController({ mode: 'record', store });
-    await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record)
-      .for('Coder').chat([{ role: 'user', content: 'A different request with its own valid recording.' }]);
+    await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record).forPool('coding', { label: 'python-developer' }).chat([{ role: 'user', content: 'A different request with its own valid recording.' }]);
     const foreign = (await store.list()).find((entry) => entry.requestKey !== original.requestKey)!;
     const foreignFile = (await fixtureFiles(fixtures)).find((file) => file !== target)!;
     const contents = await fs.readFile(foreignFile, 'utf8');
@@ -276,7 +274,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const delivered = vi.fn();
     const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
 
-    const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+    const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     expect((failure as AuditPersistenceError).failure).toMatchObject({
@@ -314,7 +312,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
       const delivered = vi.fn();
       const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
 
-      const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+      const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
       expect(failure).toBeInstanceOf(AuditPersistenceError);
       expect((failure as AuditPersistenceError).failure).toMatchObject({
@@ -368,8 +366,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const store = new FileRecordReplayStore(fixtures);
     const fetch = transport('accepted');
     const record = new RecordReplayController({ mode: 'record', store });
-    await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record)
-      .for('Coder').chat(messages);
+    await new LLMRouter(config(), undefined, undefined, undefined, undefined, probe, record).forPool('coding', { label: 'python-developer' }).chat(messages);
     const original = (await store.list())[0]!;
     const files = await fixtureFiles(fixtures);
     expect(files).toHaveLength(1);
@@ -388,7 +385,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const delivered = vi.fn();
     const replay = new RecordReplayController({ mode: 'replay', store });
     const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, replay);
-    const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+    const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     const evidenceFailure = failure as AuditPersistenceError;
@@ -421,7 +418,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const delivered = vi.fn();
     const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, record);
 
-    const failure = await failureOf(router.for('Coder').chat(messages, { onResponse: delivered }));
+    const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered }));
 
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     const evidenceFailure = failure as AuditPersistenceError;
@@ -457,7 +454,7 @@ describe('recording storage failures at their real filesystem boundaries', () =>
     const store = new FileRecordReplayStore(fixtures);
     const controller = new RecordReplayController({ mode: 'replay', store });
     const router = new LLMRouter(config(), undefined, scores, undefined, undefined, probe, controller);
-    const failure = await failureOf(router.for('Coder').chat(messages));
+    const failure = await failureOf(router.forPool('coding', { label: 'python-developer' }).chat(messages));
 
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     const evidenceFailure = failure as AuditPersistenceError;

@@ -1,3 +1,4 @@
+import { fixtureScenarioOwner } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -14,7 +15,7 @@ import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_en
 import { createRuleSelectionDraft, finalizeRuleSelectionDraft } from '../../src/application/rules/rule_request_snapshot.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { RuleCatalogue } from '../../src/domain/rules/catalogue.js';
 import { FileRuleRequestStateStore } from '../../src/infrastructure/rules/file_rule_request_state_store.js';
 import { LLMRouter } from '../../src/llm/router.js';
@@ -84,7 +85,7 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; redact
   await fs.writeFile(configPath, YAML.stringify({ llm: {
     providers: { primary: { type: 'openai', model: 'requested-model', base_url: options.endpoint,
       context_window: 131072, request_timeout_ms: 1000 } },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['primary']])), fallbacks: [],
+    pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['primary']])), fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const catalogue = new RuleCatalogue([{
@@ -94,8 +95,8 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; redact
         instruction: 'PINNED_RULE: inspect only the current evidence.', retrievalDescription: 'Current evidence declaration' }] },
   }]);
   const selector = new RuleSelector(catalogue);
-  const prepared = selector.prepare({ requestKind: 'business', context: { projectId, role: 'ProjectManager',
-    scenario: 'scenario-judgement' }, required: [] });
+  const prepared = selector.prepare({ requestKind: 'business', context: { projectId, role: 'project-manager',
+    work: 'judge.scenario' }, required: [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [], profile: { threshold: 0.8, maxCandidates: 20 } });
   const snapshot = finalizeRuleSelectionDraft(createRuleSelectionDraft({ prepared, ranked,
     logicalRequestId, requestKind: 'business', createdAt: '2026-10-13T00:00:00.000Z' }));
@@ -107,7 +108,7 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; redact
   const router = new LLMRouter(config, audit, undefined, undefined, options.plugins,
     async () => ({ ok: true, latencyMs: 0, detail: 'loopback fixture' }));
   const request = { logicalRequestId,
-    owner: { kind: 'scenario-judgement' as const, projectId, phaseId, executionId },
+    owner: fixtureScenarioOwner({ projectId, phaseId, executionId }, router.resolvePool('management')),
     templateVersion: 'scenario-fixture/1', messages: structuredClone(options.messages ?? frameworkMessages),
     outputProtocol: { id: 'scenario-fixture', version: '1', root: 'object' as const, transformations: ['trailing-comma' as const] } };
   const recovery = createRuntimeBusinessRequestRecovery(container, audit);
@@ -152,7 +153,7 @@ describe('Runtime recovery of the original business response', () => {
     expect(ruleEvidenceDigest(completed.assessment)).toBe(assessmentDigest);
     expect(completed.result.assessmentDigest).toBe(assessmentDigest);
     const eventsBefore = await current.events();
-    const forRole = vi.spyOn(current.router, 'for');
+    const forRole = vi.spyOn(current.router, 'forPool');
     const recovered = await current.resume();
     expect(recovered).toEqual({ status: 'processed', record: completed.record, source: completed.source,
       result: completed.result, assessment: completed.assessment });

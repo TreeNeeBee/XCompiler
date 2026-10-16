@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { simpleGit } from 'simple-git';
-import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { TicketChangeSetService } from '../../src/application/workspace/ticket_change_set_service.js';
 import { MergeIntegrationService } from '../../src/application/workspace/merge_integration_service.js';
@@ -293,7 +293,7 @@ async function commit(root: string, file: string, content: string): Promise<stri
 async function openBug(world: Awaited<ReturnType<typeof fixture>>): Promise<Ticket> {
   const unit = world.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
   return new TicketWorkflow(world.repository).openBug({
-    creatorActorId: world.graph.actors.find((actor) => actor.role === 'tester')!.id,
+    creatorActorId: world.graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
     failedStep: unit,
     targetStep: world.coding,
     verificationStep: unit,
@@ -336,7 +336,7 @@ async function fixture() {
   const container = new ProjectContainer(root);
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
-  const graph = compileProjectGraph({ draft: plan(), topic: 'loop', projectName: 'loop' });
+  const graph = materializeProjectGraph({ draft: plan(), topic: 'loop', projectName: 'loop' });
   await new ProjectGraphPersistenceService(repository).persistGraph(graph);
   const git = new GitRepositoryService(canonical);
   const coding = graph.steps.find((step) => step.type === 'CODE')!;
@@ -388,7 +388,7 @@ function plan(): Plan {
     steps: STEP_TYPES.map((type, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase: type,
       title: `${type} step`, description: `${type} work`, systemPrompt: `Do the ${type} work.`,
-      role: 'Coder' as const, tools: ['write_file'], inputs: [], outputs: [`docs/${type.toLowerCase()}.md`],
+      tools: ['write_file'], inputs: [], outputs: [`docs/${type.toLowerCase()}.md`],
       dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
       acceptance: `${type} accepted`, maxAttempts: 3,
     })),

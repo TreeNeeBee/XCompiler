@@ -7,6 +7,7 @@ import {
 import {
   BusinessRequestInputError, assertBusinessRequestSnapshotOwner, businessRequestInputDigest,
   createBusinessRequestInputRecord, validateBusinessRequestInput, type BusinessRequestInput,
+  PlanningOperationOwnerSchema, PLANNING_REQUEST_CONTEXTS, type PlanningOperationOwner,
 } from '../src/application/execution/business_request_input.js';
 import {
   PHASE_PLAN_PROTOCOL, PHASE_PLAN_TEMPLATE_VERSION, type PhasePlanPayload,
@@ -22,6 +23,12 @@ import { PlannerContractViolation } from '../src/agents/planning/validation_retr
 import { inspectJsonProtocol } from '../src/llm/protocol_json.js';
 
 const id = (value: number) => `00000000-0000-4000-8000-${value.toString(16).padStart(12, '0')}`;
+function owner(operation: PlanningOperationOwner['operation']) {
+  const role = operation === 'clarification' ? 'project-manager' : 'planner';
+  return PlanningOperationOwnerSchema.parse({ kind: 'planning-operation', operationId: id(2), operation,
+    role, roleVersion: '1', work: PLANNING_REQUEST_CONTEXTS[operation],
+    modelPool: role === 'planner' ? 'planning' : 'management', inheritFallbacks: true, allowedProviders: ['fixture'] });
+}
 function payload(): ClarificationPayload {
   return {
     schemaVersion: 1, kind: 'planning-clarification', templateVersion: CLARIFICATION_TEMPLATE_VERSION,
@@ -34,7 +41,7 @@ function payload(): ClarificationPayload {
 function input(): BusinessRequestInput {
   return {
     schemaVersion: 1, logicalRequestId: id(1),
-    owner: { kind: 'planning-operation', operationId: id(2), operation: 'clarification' },
+    owner: owner('clarification'),
     templateVersion: CLARIFICATION_TEMPLATE_VERSION, outputProtocol: CLARIFICATION_PROTOCOL,
     snapshotDigest: `sha256:${'a'.repeat(64)}`, auditContext: payload(),
     messages: [{ role: 'system', content: 'Original system.' }, { role: 'user', content: 'Original user.' }],
@@ -42,7 +49,7 @@ function input(): BusinessRequestInput {
 }
 
 function snapshot(context: RuleContext = {
-  language: 'python', role: 'ProjectManager', scenario: 'planning-clarification',
+  language: 'python', role: 'project-manager', work: 'plan.clarify',
 }) {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: 'rules/base.yaml' },
@@ -153,8 +160,8 @@ describe('Clarification input ownership and audit binding', () => {
   });
 
   it.each([
-    (value: BusinessRequestInput) => ({ ...value, owner: { kind: 'planning-operation', operationId: id(2), operation: 'phase-plan' } }),
-    (value: BusinessRequestInput) => ({ ...value, owner: { kind: 'planning-operation', operationId: id(2), operation: 'phase-decomposition' } }),
+    (value: BusinessRequestInput) => ({ ...value, owner: owner('phase-plan') }),
+    (value: BusinessRequestInput) => ({ ...value, owner: owner('phase-decomposition') }),
     (value: BusinessRequestInput) => ({ ...value, templateVersion: 'planning-clarification/2' }),
     (value: BusinessRequestInput) => ({ ...value, outputProtocol: PHASE_PLAN_PROTOCOL }),
     (value: BusinessRequestInput) => ({ ...value, outputProtocol: { ...CLARIFICATION_PROTOCOL, root: 'array' } }),
@@ -168,24 +175,24 @@ describe('Clarification input ownership and audit binding', () => {
     const source = input();
     expect(() => assertBusinessRequestSnapshotOwner(snapshot(), source.owner, source.auditContext)).not.toThrow();
     for (const context of [
-      { language: 'typescript', role: 'ProjectManager', scenario: 'planning-clarification' },
-      { language: 'python', role: 'Planner', scenario: 'planning-clarification' },
-      { language: 'python', role: 'ProjectManager', scenario: 'planning-phase-plan' },
-      { language: 'python', role: 'ProjectManager', scenario: 'planning-clarification', projectId: id(20) },
+      { language: 'typescript', role: 'project-manager', work: 'plan.clarify' },
+      { language: 'python', role: 'planner', work: 'plan.clarify' },
+      { language: 'python', role: 'project-manager', work: 'plan.phase' },
+      { language: 'python', role: 'project-manager', work: 'plan.clarify', projectId: id(20) },
     ] satisfies RuleContext[]) {
       expect(() => assertBusinessRequestSnapshotOwner(snapshot(context), source.owner, source.auditContext))
         .toThrow(BusinessRequestInputError);
     }
   });
 
-  it('preserves the original P02 and context-free input digest shape', () => {
+  it('hashes P02 and context-free inputs with their pinned role and pool ownership', () => {
     const auditContext: PhasePlanPayload = {
       schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION, locale: 'en',
       parseContext: { language: 'python', rawRequirement: 'Original phase requirement.', userAddenda: '',
         baselineSummary: '', intent: 'greenfield' }, clarifications: [], semanticAttempt: 1, repairFeedback: '',
     };
     const phaseInput: BusinessRequestInput = {
-      ...input(), owner: { kind: 'planning-operation', operationId: id(2), operation: 'phase-plan' },
+      ...input(), owner: owner('phase-plan'),
       auditContext, templateVersion: PHASE_PLAN_TEMPLATE_VERSION, outputProtocol: PHASE_PLAN_PROTOCOL,
     };
     expect(businessRequestInputDigest(phaseInput)).toBe(ruleEvidenceDigest(phaseInput));
@@ -195,7 +202,9 @@ describe('Clarification input ownership and audit binding', () => {
     const scenarioInput: BusinessRequestInput = {
       ...withoutContext,
       owner: { kind: 'scenario-judgement', projectId: parseObjectId(id(90).replace('-4000-', '-7000-')),
-        phaseId: parseObjectId(id(91).replace('-4000-', '-7000-')), executionId: id(92) },
+        phaseId: parseObjectId(id(91).replace('-4000-', '-7000-')), executionId: id(92),
+        actorId: parseObjectId(id(93).replace('-4000-', '-7000-')), role: 'project-manager', roleVersion: '1',
+        work: 'judge.scenario', modelPool: 'management', inheritFallbacks: true, allowedProviders: ['fixture'] },
       templateVersion: 'scenario-outcome/1',
       outputProtocol: { id: 'scenario-outcome', version: '1', root: 'object', transformations: [] },
     };

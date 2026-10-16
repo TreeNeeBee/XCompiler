@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ContextService } from '../src/application/context/context_service.js';
 import {
@@ -28,7 +28,7 @@ async function fixture() {
   const container = new ProjectContainer(root);
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a TypeScript application.',
     projectName: 'fixture',
@@ -189,7 +189,7 @@ describe('context assembly', () => {
     const coding = graph.steps.find((step) => step.type === 'CODE')!;
     const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const enhancement = await new TicketWorkflow(repository).openEnhancement({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       sourceStep: unit,
       targetStep: coding,
       verificationStep: unit,
@@ -327,7 +327,7 @@ async function openBugTicket(
   const coding = graph.steps.find((step) => step.type === 'CODE')!;
   const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
   return new TicketWorkflow(repository).openBug({
-    creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+    creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
     failedStep: unit,
     targetStep: coding,
     verificationStep: unit,

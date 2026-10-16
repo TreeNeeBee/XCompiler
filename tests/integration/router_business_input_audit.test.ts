@@ -43,7 +43,7 @@ function location() { return { containerRoot: root, auditRoot: path.join(root, '
 function config(baseUrl: string): XCompilerConfig {
   return { llm: {
     providers: { primary: { type: 'openai', base_url: baseUrl, api_key: '', model: 'requested-alias' } },
-    roles: { ProjectManager: ['primary'] }, fallbacks: [], role_fallbacks: {}, scores: {},
+    pools: { management: ['primary'] }, fallbacks: [], scores: {},
   } } as unknown as XCompilerConfig;
 }
 async function events(): Promise<AuditEvent[]> {
@@ -86,7 +86,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       }); },
     }] });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, plugins, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: scope, beforeProviderRequest: () => binding,
     })).resolves.toBe('accepted');
     expect(server.requests).toHaveLength(1);
@@ -111,7 +111,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
     if (initialized) await plugins.initialize();
     const previousSetups = setups;
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, plugins, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: {
       operation: 'initialize', logicalRequestId, messageId: 'plugins.audit_unavailable',
@@ -134,7 +134,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       setup(api) { api.on('llm.before', hook); },
     }] });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, plugins, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: {
       operation: 'initialize', logicalRequestId, messageId: 'plugins.loaded',
@@ -153,7 +153,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       return 'accepted';
     });
     (router as unknown as { clients: Map<string, LLMClient> }).clients.set('primary', { name: 'fixture', chat });
-    await router.for('ProjectManager').chat(messages, {
+    await router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     });
     expect(chat).toHaveBeenCalledOnce();
@@ -164,7 +164,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
     const wrongRoot = path.join(root, 'wrong');
     const audit = new AuditLogger({ root: wrongRoot, command: 'wrong-ledger' });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: {
       operation: 'initialize', logicalRequestId, messageId: 'llm.required_audit_location',
@@ -186,7 +186,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       await preflight(...args);
       if (++checks === 2) controller.abort(cancellation);
     });
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
       signal: controller.signal,
     })).rejects.toBe(cancellation);
@@ -204,7 +204,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       const server = await endpoint();
       const audit = reason === 'missing-logger' ? undefined : new AuditLogger({ root, command: reason });
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-      await expect(router.for('ProjectManager').chat(messages, {
+      await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
         logicalRequestId, requiredAuditLocation: reason === 'missing-scope' ? undefined : location(),
         beforeProviderRequest: () => reason === 'identity-mismatch'
           ? { ...binding, logicalRequestId: binding.inputRecordId } : binding,
@@ -220,7 +220,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
     await fs.writeFile(outside, 'outside sentinel\n');
     const audit = new AuditLogger({ root, command: 'changed-ledger' });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: async () => {
         await fs.unlink(path.join(root, 'audit/audit.jsonl'));
         await fs.symlink(outside, path.join(root, 'audit/audit.jsonl'));
@@ -244,7 +244,7 @@ describe('Router binds migrated business responses to the owning audit ledger', 
       const audit = new AuditLogger({ root, command: 'response-location' });
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
       const delivered = vi.fn();
-      await expect(router.for('ProjectManager').chat(messages, {
+      await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
         logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
         validate: outcome === 'validation-failed' ? () => { throw new Error('Rejected current evidence'); } : undefined,
         onResponse: delivered,
@@ -277,7 +277,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
     cfg.llm.providers.primary!.retry = { max_retries: 1, max_delay: 0, jitter: 'none' };
     const router = new LLMRouter(cfg, audit, scores, undefined, undefined, probe);
     const delivered = vi.fn();
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding, onResponse: delivered,
     })).rejects.toMatchObject({
       code: 'evidence_persistence_failed', failure: { logicalRequestId, providerAttemptId: expect.any(String),
@@ -302,7 +302,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
       return append(...args);
     });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: { messageId: 'audit.llm_request', logicalRequestId } });
     expect(server.requests).toHaveLength(0);
@@ -322,7 +322,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
     const boost = vi.spyOn(scores, 'boost');
     const delivered = vi.fn();
     const router = new LLMRouter(config(server.url), audit, scores, undefined, undefined, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding, onResponse: delivered,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: { messageId: 'audit.llm_response', logicalRequestId } });
     expect(server.requests).toHaveLength(1);
@@ -342,7 +342,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
     });
     const original = new Error('Original final-boundary failure');
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => { throw original; },
     })).rejects.toMatchObject({
       code: 'evidence_persistence_failed', failure: { messageId: 'audit.llm_error', logicalRequestId },
@@ -361,7 +361,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
       return { ok: diagnostic !== 'probe', latencyMs: 0, detail: 'fixture diagnostic' };
     };
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, changingProbe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({ code: 'evidence_persistence_failed', failure: { logicalRequestId,
       messageId: diagnostic === 'probe' ? 'llm.provider_probe_unreachable' : 'llm.operation_window_updated' } });
@@ -384,7 +384,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
       throw new Error('Fixture provider failure after diagnostic');
     });
     (router as unknown as { clients: Map<string, LLMClient> }).clients.set('primary', { name: 'fixture', chat });
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toBeInstanceOf(AuditPersistenceError);
     expect(chat).toHaveBeenCalledOnce();
@@ -402,7 +402,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
       setup(api) { api.on('llm.before', async () => { outside = await replaceLedger(); throw original; }); },
     }] });
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, plugins, probe);
-    await expect(router.for('ProjectManager').chat(messages, {
+    await expect(router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     })).rejects.toMatchObject({
       code: 'evidence_persistence_failed', failure: { logicalRequestId, messageId: 'plugins.hook_failed' },
@@ -428,7 +428,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
         setup(api) { api.on('llm.error', async () => { outside = await replaceLedger(); throw hookFailure; }); },
       }] });
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, plugins, probe);
-      const pending = router.for('ProjectManager').chat(messages, {
+      const pending = router.forPool('management', { label: 'project-manager' }).chat(messages, {
         logicalRequestId, requiredAuditLocation: location(), signal: controller.signal,
         beforeProviderRequest: () => {
           if (outcome === 'cancelled') controller.abort(original);
@@ -471,7 +471,7 @@ describe('scoped request failure and diagnostic audit boundaries', () => {
       }); },
     }] });
     const router = new LLMRouter(config(server.url), audit, scores, undefined, plugins, probe);
-    const failure: unknown = await router.for('ProjectManager').chat(messages, {
+    const failure: unknown = await router.forPool('management', { label: 'project-manager' }).chat(messages, {
       logicalRequestId, requiredAuditLocation: location(), beforeProviderRequest: () => binding,
     }).then(() => undefined, (error: unknown) => error);
     await scores.flush();

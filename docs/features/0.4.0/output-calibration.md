@@ -1,5 +1,7 @@
 # 0.4.0: LLM output-protocol calibration
 
+> **2026-10-16 修改合同**：[变更清单](2026-10-15-review-change-list.md) D-3 为引号/转义类无法确定性修复的原文增加 `escape-insertion` 字符保持证明，并把单次模型校准接入生产调用方（M-E）。
+
 Updated 2026-10-15; earlier source observations below retain the `77ff6e2` review baseline.
 Status: LLM-assisted protocol correction is confirmed as 0.4 scope. Q6 A now selects the original
 response's actual producing provider/model and at most one logical calibration attempt; transport

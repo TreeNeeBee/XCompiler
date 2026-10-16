@@ -23,7 +23,6 @@ function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
     title: overrides.title ?? `${overrides.phase} ${overrides.id}`,
     description: overrides.description ?? 'Execute one bounded V-model responsibility.',
     systemPrompt: overrides.systemPrompt ?? 'Limit this Step to its declared inputs, outputs, acceptance and forbidden writes.',
-    role: overrides.role ?? 'Coder',
     tools: overrides.tools ?? [],
     inputs: overrides.inputs ?? [],
     outputs: overrides.outputs ?? [],
@@ -58,7 +57,6 @@ function complexPlan(): Plan {
   const moduleTestStep = step({
     id: 'S012',
     phase: 'MODULE_TEST',
-    role: 'Tester',
     outputs: ['docs/07-module-test.md'],
     inputs: [
       ...moduleSpecs.map((spec) => spec[3]),
@@ -132,7 +130,6 @@ function complexPlan(): Plan {
       step({
         id: 'S001',
         phase: 'REQUIREMENT_ANALYSIS',
-        role: 'Planner',
         outputs: [
           'docs/01-requirement-analysis.md',
           'docs/tests/functional-test-plan.md',
@@ -142,7 +139,6 @@ function complexPlan(): Plan {
       step({
         id: 'S002',
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         outputs: [
           'docs/02-high-level-design.md',
           'docs/tests/module-test-plan.md',
@@ -153,7 +149,6 @@ function complexPlan(): Plan {
       step({
         id: 'S003',
         phase: 'DETAILED_DESIGN',
-        role: 'Architect',
         outputs: [
           'docs/03-detailed-design.md',
           'docs/tests/integration-test-plan.md',
@@ -165,7 +160,6 @@ function complexPlan(): Plan {
       step({
         id: 'S010',
         phase: 'UNIT_TEST',
-        role: 'Tester',
         inputs: ['tests/test_unit.py'],
         outputs: ['docs/05-unit-test.md'],
         dependsOn: codeSteps.map((item) => item.id),
@@ -173,7 +167,6 @@ function complexPlan(): Plan {
       step({
         id: 'S011',
         phase: 'INTEGRATION_TEST',
-        role: 'Tester',
         inputs: ['tests/test_integration.py'],
         outputs: ['docs/06-integration-test.md'],
         dependsOn: ['S010'],

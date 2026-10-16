@@ -10,7 +10,6 @@ import { getLanguageProfile } from '../src/application/execution/language_suppor
 import { getLocale, setLocale, tFor } from '../src/i18n/index.js';
 import { LLMRequestError, ResponseValidationRejection } from '../src/llm/errors.js';
 import { inspectJsonProtocol } from '../src/llm/protocol_json.js';
-import type { LLMClient } from '../src/llm/types.js';
 
 const originalLocale = getLocale();
 afterEach(() => { setLocale(originalLocale); });
@@ -41,15 +40,8 @@ function phasePlan() {
   };
 }
 
-function legacyClient() {
-  const chat = vi.fn(async (): Promise<string> => { throw new Error('Unexpected bare Planner request.'); });
-  const client: LLMClient = { name: 'bare-planner', chat };
-  return { client, chat };
-}
-
 function planner(port?: PhasePlanRequestPort, signal?: AbortSignal) {
-  const legacy = legacyClient();
-  return { planner: new Planner(legacy.client, undefined, 'python', false, signal, undefined, port), ...legacy };
+  return { planner: new Planner(undefined, 'python', false, signal, undefined, port) };
 }
 
 describe('PhasePlan retained request materials', () => {
@@ -135,7 +127,6 @@ describe('Planner PhasePlan request port', () => {
     const fixture = planner();
     await expect(fixture.planner.planPhasePlan({ rawRequirement: 'A small number function.', clarifications: [] }))
       .rejects.toBeInstanceOf(PhasePlanRequestConfigurationError);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it('sends the existing i18n prompts with a separate frozen audit context', async () => {
@@ -151,7 +142,6 @@ describe('Planner PhasePlan request port', () => {
     const fixture = planner(port, signal);
     await fixture.planner.planPhasePlan({ rawRequirement: 'A small number function.', clarifications: [],
       userAddenda: '  Exact addenda.  ', baselineContext: 'Existing helper.', intent: 'self' });
-    expect(fixture.chat).not.toHaveBeenCalled();
     expect(seen).toHaveLength(1);
     const input = seen[0]!;
     expect(input.messages).toEqual([
@@ -211,7 +201,6 @@ describe('Planner PhasePlan request port', () => {
     expect(repaired.payload.clarifications[0]!.answer).toBe('Whole numbers.');
     expect(repaired.payload.clarifications[0]!.options![0]!.answer).toBe('Whole numbers.');
     expect(Object.isFrozen(repaired.payload.clarifications[0]!.options)).toBe(true);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it('starts a separate operation identity for a new PhasePlan invocation', async () => {
@@ -228,7 +217,6 @@ describe('Planner PhasePlan request port', () => {
     await fixture.planner.planPhasePlan(input);
     expect(operationIds).toHaveLength(2);
     expect(operationIds[0]).not.toBe(operationIds[1]);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -244,7 +232,6 @@ describe('Planner PhasePlan request port', () => {
     await expect(fixture.planner.planPhasePlan({ rawRequirement, clarifications: [], intent }))
       .rejects.toBeInstanceOf(PlannerContractViolation);
     expect(send).toHaveBeenCalledTimes(attempts);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it('preserves a custom cancellation reason before typed candidate retry', async () => {
@@ -258,7 +245,6 @@ describe('Planner PhasePlan request port', () => {
     await expect(fixture.planner.planPhasePlan({ rawRequirement: 'A small number function.', clarifications: [] }))
       .rejects.toBe(reason);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it('does not dispatch a planning operation whose signal was already cancelled', async () => {
@@ -281,7 +267,6 @@ describe('Planner PhasePlan request port', () => {
     await expect(fixture.planner.planPhasePlan({ rawRequirement: 'A small number function.', clarifications: [] }))
       .rejects.toBe(failure);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(fixture.chat).not.toHaveBeenCalled();
   });
 
   it.each([

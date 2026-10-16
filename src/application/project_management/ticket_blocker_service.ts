@@ -48,7 +48,7 @@ export class TicketBlockerService {
     const marker = {
       eventType: 'escalated' as const,
       initiatorActorId: actor.id,
-      initiatorRole: actor.role,
+      initiatorRole: actor.roleId,
       assignmentId: work.activeAssignmentId,
       fromOwnerActorId: actor.id,
       toOwnerActorId: actor.id,

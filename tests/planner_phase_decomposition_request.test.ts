@@ -15,7 +15,6 @@ import { REQUIRED_V_MODEL_PHASES, type Phase, type Step } from '../src/domain/pl
 import { phaseDeliveryGate } from '../src/domain/quality/delivery_gate.js';
 import { getLocale, setLocale, tFor, type Locale } from '../src/i18n/index.js';
 import { LLMRequestError, ResponseValidationRejection } from '../src/llm/errors.js';
-import type { LLMClient } from '../src/llm/types.js';
 import { buildDefaultSkills, renderSkillCatalog, type SkillRegistry } from '../src/skills/index.js';
 
 let initialLocale: Locale;
@@ -64,7 +63,7 @@ function stepPlan() {
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase,
       title: `${phase} formatting slice`, description: 'Deliver the formatting slice.',
       systemPrompt: 'Produce only the declared formatting deliverables and their paired test assets.',
-      role: 'Coder', tools: phase === 'CODE' ? ['skill:focused-file-editing', 'read_file'] : [],
+      tools: phase === 'CODE' ? ['skill:focused-file-editing', 'read_file'] : [],
       inputs, outputs, dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
       acceptance: 'Declared deliverables and the formatting contract pass.', maxAttempts: 3,
     };
@@ -88,11 +87,10 @@ function source(): PlannerInput {
 function fixture(port?: PhaseDecompositionRequestPort, options: {
   signal?: AbortSignal; skills?: SkillRegistry; phasePlanPort?: PhasePlanRequestPort;
 } = {}) {
-  const chat = vi.fn<LLMClient['chat']>(async () => { throw new Error('Unexpected bare Planner model call.'); });
   const skills = options.skills ?? buildDefaultSkills();
   return {
-    chat, skills,
-    planner: new Planner({ name: 'bare-client', chat }, undefined, 'python', false, options.signal,
+    skills,
+    planner: new Planner(undefined, 'python', false, options.signal,
       skills, options.phasePlanPort, undefined, port),
   };
 }
@@ -107,11 +105,10 @@ function acceptedPort(seen: Request[] = []): PhaseDecompositionRequestPort {
 }
 
 describe('Planner Phase decomposition retained request port', () => {
-  it('requires the ninth constructor port and never falls back to bare chat', async () => {
+  it('requires a decomposition request port', async () => {
     const value = fixture();
     await expect(value.planner.decomposePhase(source(), phasePlan(), 'P1'))
       .rejects.toBeInstanceOf(PhaseDecompositionRequestConfigurationError);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it('keeps PhasePlan and decomposition ports distinct through the public decompose caller', async () => {
@@ -132,7 +129,6 @@ describe('Planner Phase decomposition retained request port', () => {
     expect(steps[0]!.payload.kind).toBe('planning-phase-decomposition');
     expect(steps[0]!.payload.phasePlan.requirementDigest).toBe(phasePlan().requirementDigest);
     expect(steps[0]!.operationId).not.toBe(plans[0]!.operationId);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it('keeps the original public decompose inputs through a suspended PhasePlan request', async () => {
@@ -172,10 +168,9 @@ describe('Planner Phase decomposition retained request port', () => {
     expect(sent.messages[1]!.content).toBe(tFor('en').prompts.plannerPhaseDecompose('Format a single integer.', qa, 'Preserve signs.', {
       intent: 'greenfield', baseline: 'Original helper.', phasePlan: JSON.stringify(sent.payload.phasePlan, null, 2), phaseId: 'P1',
     }));
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
-  it('does not substitute the seventh PhasePlan port for missing decomposition injection', async () => {
+  it('does not substitute the PhasePlan port for missing decomposition injection', async () => {
     const send = vi.fn<PhasePlanRequestPort['send']>(async input => {
       const text = JSON.stringify(phasePlan());
       input.validate(text);
@@ -184,7 +179,6 @@ describe('Planner Phase decomposition retained request port', () => {
     const value = fixture(undefined, { phasePlanPort: { name: 'phase-plan-only', send } });
     await expect(value.planner.decompose(source())).rejects.toBeInstanceOf(PhaseDecompositionRequestConfigurationError);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it('sends the original locale prompts and metadata catalogue with separate frozen context', async () => {
@@ -212,7 +206,6 @@ describe('Planner Phase decomposition retained request port', () => {
     expect(sent.options?.responseFormat).toBe('json');
     expect(sent.options?.temperature).toBe(0.1);
     expect(sent.signal).toBe(controller.signal);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it('captures original inputs, current Phase and Skill catalogue before the first send suspension', async () => {
@@ -271,7 +264,6 @@ describe('Planner Phase decomposition retained request port', () => {
     expect(currentCatalog).not.toHaveBeenCalled();
     expect(currentReferenceCheck).not.toHaveBeenCalled();
     expect(activation).not.toHaveBeenCalled();
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -295,7 +287,6 @@ describe('Planner Phase decomposition retained request port', () => {
       expect(request.messages[0]).toEqual(requests[0]!.messages[0]);
       expect(request.messages[1]!.content).toBe(requests[0]!.messages[1]!.content + formatPlannerValidationFeedback(refusal));
     }
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -357,7 +348,6 @@ describe('Planner Phase decomposition retained request port', () => {
     const value = fixture({ name: 'retained-planner', send });
     await expect(value.planner.decomposePhase(source(), phasePlan(), 'P1')).rejects.toBe(failure);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 
   it('does not dispatch an already cancelled decomposition', async () => {
@@ -383,6 +373,5 @@ describe('Planner Phase decomposition retained request port', () => {
     const value = fixture({ name: 'retained-planner', send }, { signal: controller.signal });
     await expect(value.planner.decomposePhase(source(), phasePlan(), 'P1')).rejects.toBe(reason);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(value.chat).not.toHaveBeenCalled();
   });
 });

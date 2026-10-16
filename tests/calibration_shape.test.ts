@@ -8,7 +8,7 @@ import {
 import type { Step } from '../src/domain/planning/execution_plan.js';
 
 describe('calibrateStepShape', () => {
-  it('backfills missing role / acceptance / systemPrompt with phase-aware defaults', () => {
+  it('backfills missing acceptance / systemPrompt with phase-aware defaults and assigns no role', () => {
     const raw = [
       // 模拟 LLM 漏写 role 与 acceptance 的 FUNCTIONAL_TEST Step
       {
@@ -22,7 +22,7 @@ describe('calibrateStepShape', () => {
       },
     ] as unknown as Step[];
     const [s] = calibrateStepShape(raw);
-    expect(s!.role).toBe('Tester');
+    expect(s).not.toHaveProperty('role');
     expect(s!.acceptance.length).toBeGreaterThan(0);
     expect(s!.systemPrompt.length).toBeGreaterThanOrEqual(20);
     expect(s!.tools).toEqual([
@@ -38,9 +38,9 @@ describe('calibrateStepShape', () => {
 
   it('adds phase-aware default tools when a writable step forgot to declare any', () => {
     const raw = [
-      { id: 'S001', phase: 'DETAILED_DESIGN', title: '任务拆解', description: '编写任务清单', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: ['docs/03-detailed-design.md'] },
-      { id: 'S002', phase: 'UNIT_TEST', title: '补测试', description: '写测试并执行', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['tests/test_app.py'] },
-      { id: 'S003', phase: 'CODE', title: '实现代码', description: '编写实现', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['src/app.py'] },
+      { id: 'S001', phase: 'DETAILED_DESIGN', title: '任务拆解', description: '编写任务清单', systemPrompt: 'x'.repeat(30), outputs: ['docs/03-detailed-design.md'] },
+      { id: 'S002', phase: 'UNIT_TEST', title: '补测试', description: '写测试并执行', systemPrompt: 'x'.repeat(30), outputs: ['tests/test_app.py'] },
+      { id: 'S003', phase: 'CODE', title: '实现代码', description: '编写实现', systemPrompt: 'x'.repeat(30), outputs: ['src/app.py'] },
     ] as unknown as Step[];
     const out = calibrateStepShape(raw);
     expect(out[0]!.tools).toEqual([
@@ -178,47 +178,31 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
-  it('maps role aliases to whitelist (developer -> Coder, qa -> Tester)', () => {
+  it('drops any role the model still emits: the phase decides the work and Runtime assigns the role', () => {
     const raw = [
       { id: 'S001', phase: 'CODE', title: 'x', description: 'x', systemPrompt: 'this is a long enough prompt for code', role: 'developer', outputs: ['src/x.py'] },
-      { id: 'S002', phase: 'UNIT_TEST', title: 'y', description: 'y', systemPrompt: 'this is a long enough prompt for test', role: 'QA', outputs: [] },
+      { id: 'S002', phase: 'HIGH_LEVEL_DESIGN', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'wizard', outputs: ['docs/02-high-level-design.md'] },
+      { id: 'S003', phase: 'DETAILED_DESIGN', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['docs/03-detailed-design.md'] },
     ] as unknown as Step[];
     const out = calibrateStepShape(raw);
-    expect(out[0]!.role).toBe('Coder');
-    expect(out[1]!.role).toBe('Tester');
-  });
-
-  it('falls back to phase default when role is junk', () => {
-    const raw = [
-      { id: 'S001', phase: 'HIGH_LEVEL_DESIGN', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'wizard', outputs: ['docs/02-high-level-design.md'] },
-    ] as unknown as Step[];
-    expect(calibrateStepShape(raw)[0]!.role).toBe('Architect');
-  });
-
-  it('normalizes valid but phase-incompatible roles back to the phase owner', () => {
-    const raw = [
-      { id: 'S001', phase: 'DETAILED_DESIGN', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['docs/03-detailed-design.md'] },
-      { id: 'S002', phase: 'CODE', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['src/app.py'] },
-    ] as unknown as Step[];
-    const out = calibrateStepShape(raw);
-    expect(out[0]!.role).toBe('Architect');
-    expect(out[1]!.role).toBe('Coder');
+    for (const step of out) expect(step).not.toHaveProperty('role');
+    expect(out.map((step) => step.phase)).toEqual(['CODE', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN']);
   });
 
   it('infers phase from outputs path when LLM writes a junk phase like "---"', () => {
     // 真实回放：用户报错 S008 phase="---" 但 outputs=["docs/05-delivery.md"]，校准为新 FUNCTIONAL_TEST
     const raw = [
-      { id: 'S008', phase: '---', title: '项目交付物清单', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: ['docs/05-delivery.md'] },
+      { id: 'S008', phase: '---', title: '项目交付物清单', description: 'd', systemPrompt: 'x'.repeat(30), outputs: ['docs/05-delivery.md'] },
     ] as unknown as Step[];
     expect(calibrateStepShape(raw)[0]!.phase).toBe('FUNCTIONAL_TEST');
   });
 
   it('maps phase aliases to the canonical V-model phases', () => {
     const raw = [
-      { id: 'S001', phase: 'design', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Architect', outputs: [] },
-      { id: 'S002', phase: 'implement', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: [] },
-      { id: 'S003', phase: 'packaging', title: 'c', description: 'c', systemPrompt: 'x'.repeat(30), role: 'Planner', outputs: [] },
-      { id: 'S004', phase: 'testing', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: [] },
+      { id: 'S001', phase: 'design', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), outputs: [] },
+      { id: 'S002', phase: 'implement', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), outputs: [] },
+      { id: 'S003', phase: 'packaging', title: 'c', description: 'c', systemPrompt: 'x'.repeat(30), outputs: [] },
+      { id: 'S004', phase: 'testing', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), outputs: [] },
     ] as unknown as Step[];
     const out = calibrateStepShape(raw);
     expect(out.map((s) => s.phase)).toEqual(['DETAILED_DESIGN', 'CODE', 'FUNCTIONAL_TEST', 'UNIT_TEST']);
@@ -226,18 +210,18 @@ describe('calibrateStepShape', () => {
 
   it('infers src and executable test outputs as CODE-owned when phase is missing', () => {
     const raw = [
-      { id: 'S001', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), role: 'Coder', outputs: ['src/foo.py'] },
-      { id: 'S002', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['tests/test_foo.py'] },
+      { id: 'S001', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), outputs: ['src/foo.py'] },
+      { id: 'S002', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), outputs: ['tests/test_foo.py'] },
     ] as unknown as Step[];
     const out = calibrateStepShape(raw);
     expect(out[0]!.phase).toBe('CODE');
     expect(out[1]!.phase).toBe('CODE');
-    expect(out[1]!.role).toBe('Coder');
+    expect(out[1]).not.toHaveProperty('role');
   });
 
   it('adds delivery documentation bundle paths based on project type', () => {
     const raw = [
-      { id: 'S001', phase: 'FUNCTIONAL_TEST', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), role: 'Tester', outputs: ['docs/08-functional-test.md'] },
+      { id: 'S001', phase: 'FUNCTIONAL_TEST', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), outputs: ['docs/08-functional-test.md'] },
     ] as unknown as Step[];
     expect(calibrateDocPaths(raw, 'application')[0]!.outputs).toEqual([
       'README.md',
@@ -260,7 +244,6 @@ describe('calibrateStepShape', () => {
         title: 'requirements',
         description: 'requirements',
         systemPrompt: 'x'.repeat(30),
-        role: 'Planner',
         inputs: ['docs/project-topic.md'],
         outputs: ['docs/topic.md'],
       },
@@ -270,7 +253,6 @@ describe('calibrateStepShape', () => {
         title: 'requirements without declared input',
         description: 'requirements without declared input',
         systemPrompt: 'x'.repeat(30),
-        role: 'Planner',
         inputs: [],
         outputs: [],
       },
@@ -291,7 +273,6 @@ describe('calibrateStepShape', () => {
         title: 'code',
         description: 'code',
         systemPrompt: 'x'.repeat(30),
-        role: 'Coder',
         outputs: ['src/app.py', 'docs/tests/unit-test-plan.md'],
       },
       {
@@ -300,7 +281,6 @@ describe('calibrateStepShape', () => {
         title: 'unit',
         description: 'unit',
         systemPrompt: 'x'.repeat(30),
-        role: 'Tester',
         outputs: ['docs/tests/unit-test-plan.md', 'tests/test_app.py'],
         dependsOn: ['S001'],
       },
@@ -320,7 +300,6 @@ describe('calibrateStepShape', () => {
         title: 'code',
         description: 'code',
         systemPrompt: 'x'.repeat(30),
-        role: 'Coder',
         outputs: ['src/app.ts', 'docs/04-unit-test-plan.md', 'docs/tests/unit-test-plan.md'],
       },
       {
@@ -329,7 +308,6 @@ describe('calibrateStepShape', () => {
         title: 'unit',
         description: 'unit',
         systemPrompt: 'x'.repeat(30),
-        role: 'Tester',
         outputs: ['docs/unit_test_plan.md', 'tests/app.test.ts'],
         dependsOn: ['S001'],
       },

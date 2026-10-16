@@ -1,3 +1,4 @@
+import { fixtureAcceptedContractSource } from './support/accepted_contract_fixture.js';
 import { executorBugTicketFixture, executorChangeRequestFixture } from './helpers/executor_ticket_fixtures.js';
 import { withFixtureExecutionRequest } from './support/execution_request_fixture.js';
 import { renderExecutionPromptPolicy } from '../src/agents/prompt_policy.js';
@@ -17,7 +18,7 @@ import type { Tool, ToolContext, ToolExecutionEvent } from '../src/tools/types.j
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
 import { runTestsTool } from '../src/tools/sandbox.js';
-import { seedRoleDefinition } from '../src/domain/workflow/role_definition.js';
+import { stepWorkGuidance } from '../src/domain/workflow/work_guidance.js';
 import { ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
 
 class CapturingLLM implements LLMClient {
@@ -55,7 +56,6 @@ const baseStep: Step = {
   title: 't',
   description: 'd',
   systemPrompt: '本 Step 专属：仅生成 src/x.py，禁止触碰其它文件。',
-  role: 'Coder',
   tools: ['write_file'],
   inputs: [],
   outputs: ['src/x.py'],
@@ -134,7 +134,7 @@ describe('StepExecutor system prompt assembly', () => {
     writes.mockRestore();
 
     expect(result.success).toBe(true);
-    expect(output).toContain('$ P1-S004 Coder round 1');
+    expect(output).toContain('$ P1-S004 code.implement round 1');
     expect(output).toMatch(/\$ P1-S004 (?:工具|tool) write_file/u);
     expect(output).not.toContain(canonicalId);
     expect(events).toHaveLength(2);
@@ -142,25 +142,25 @@ describe('StepExecutor system prompt assembly', () => {
     expect(events.every((event) => event.stepName === 'P1-S004')).toBe(true);
   });
 
-  it('injects the assignee role identity into the system message', async () => {
+  it('injects the Step work guidance into the system message', async () => {
     const llm = new CapturingLLM();
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
-    const identity = seedRoleDefinition('developer');
+    const guidance = stepWorkGuidance('code.implement');
     const r = await exec.run({
       step: baseStep,
       tools: [writeFileTool],
       ctx,
       roleIdentity: {
-        rolePrompt: identity.rolePrompt,
-        capabilityPrompt: identity.capabilityPrompt,
-        prohibitions: identity.prohibitions,
+        rolePrompt: guidance.role,
+        capabilityPrompt: guidance.capability,
+        prohibitions: [...guidance.prohibitions],
       },
     });
     expect(r.success).toBe(true);
     expect(llm.lastSystem).toContain('## Your role');
-    expect(llm.lastSystem).toContain(identity.rolePrompt);
-    expect(llm.lastSystem).toContain(identity.capabilityPrompt);
-    for (const rule of identity.prohibitions) expect(llm.lastSystem).toContain(rule);
+    expect(llm.lastSystem).toContain(guidance.role);
+    expect(llm.lastSystem).toContain(guidance.capability);
+    for (const rule of guidance.prohibitions) expect(llm.lastSystem).toContain(rule);
   });
 
   it('injects the assembled layered context, and nothing when there is none', async () => {
@@ -229,7 +229,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S003',
       phase: 'DETAILED_DESIGN',
-      role: 'Architect',
       outputs: ['docs/03-detailed-design.md', 'tests/integration/pipeline.test.ts'],
     };
     await ws.writeFile('docs/03-detailed-design.md', '# design\n');
@@ -285,7 +284,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S005',
       phase: 'UNIT_TEST',
-      role: 'Tester',
       tools: [],
       outputs: [],
     };
@@ -300,6 +298,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.success).toBe(false);
     expect(result.validationDefect).toBeUndefined();
     expect(result.error).toContain('max rounds exceeded');
+    expect(result.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'max-rounds' } });
   });
 
   it('lets a CR assignee report a defect that contradicts the original failed-gate diagnosis', async () => {
@@ -488,7 +487,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S005',
       phase: 'UNIT_TEST',
-      role: 'Tester',
       tools: ['read_file', 'run_tests'],
       outputs: ['tests/unit/x.test.ts'],
       qualityGate: {
@@ -570,7 +568,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S005',
       phase: 'UNIT_TEST',
-      role: 'Tester',
       tools: ['read_file', 'run_tests', 'write_file'],
       outputs: ['docs/05-unit-test.md'],
       qualityGate: {
@@ -638,7 +635,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S005',
       phase: 'UNIT_TEST',
-      role: 'Tester',
       tools: ['run_tests'],
       outputs: ['tests/unit/x.test.ts'],
     };
@@ -703,7 +699,6 @@ describe('StepExecutor system prompt assembly', () => {
       ...baseStep,
       id: 'S005',
       phase: 'UNIT_TEST',
-      role: 'Tester',
       tools: ['run_tests'],
       outputs: ['tests/unit/x.test.ts'],
       qualityGate: {
@@ -785,7 +780,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(turns[0].data.done).toBe(true);
   });
 
-  it('uses the runtime execution role in prompts and audit events', async () => {
+  it('names the work in the prompt and labels audit with the assembled role', async () => {
     const { AuditLogger } = await import('../src/audit/audit.js');
     const audit = new AuditLogger({ root: tmp, command: 'test' });
     await audit.start({});
@@ -793,17 +788,18 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
+      role: 'python-developer',
       tools: [writeFileTool],
       ctx: { ...ctx, audit },
     });
     expect(r.success).toBe(true);
-    expect(llm.lastUser).toContain('role: Debugger');
-    expect(llm.lastUser).not.toContain('role: Coder');
+    expect(llm.lastUser).toContain('work: repair.debug');
+    expect(llm.lastUser).not.toContain('work: code.implement');
 
     const jsonl = await fs.readFile(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8');
     const turns = jsonl.trim().split('\n').map((l) => JSON.parse(l)).filter((l) => l.kind === 'executor.turn');
-    expect(turns[0].data.role).toBe('Debugger');
+    expect(turns[0].data.role).toBe('python-developer');
   });
 
   it('requires bugResolutionPlan before resolving a DEBUG Bug Ticket', async () => {
@@ -820,7 +816,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingPlanLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -861,7 +857,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -907,7 +903,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -954,7 +950,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new RepairOnlyLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       languageProfile: getLanguageProfile('typescript'),
       tools: [writeFileTool, runProgram],
       ctx: { ...ctx, language: 'typescript' },
@@ -1015,7 +1011,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       languageProfile: getLanguageProfile('typescript'),
       tools: [writeFileTool, runProgram, runTests],
       ctx: {
@@ -1078,11 +1074,10 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         outputs: ['docs/02-high-level-design.md'],
         tools: ['write_file', 'run_tests'],
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       baselineTestExecution: 'execute',
       tools: [writeFileTool, runTests],
       ctx: {
@@ -1161,7 +1156,6 @@ describe('StepExecutor system prompt assembly', () => {
     const step: Step = {
       ...baseStep,
       phase: 'HIGH_LEVEL_DESIGN',
-      role: 'Architect',
       outputs: ['package.json'],
       tools: ['read_file', 'run_tests'],
     };
@@ -1249,7 +1243,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'CODE',
-        role: 'Coder',
         outputs: ['src/x.py', 'src/y.py'],
         tools: ['read_file', 'write_file', 'run_tests'],
       },
@@ -1315,11 +1308,10 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         outputs: ['tests/modules/x.test.ts'],
         tools: ['read_file', 'write_file', 'run_tests'],
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       baselineTestExecution: 'execute',
       tools: [readFileTool, writeFileTool, runTests],
       ctx: {
@@ -1359,7 +1351,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new PlannedLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -1392,7 +1384,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -1469,7 +1461,7 @@ describe('StepExecutor system prompt assembly', () => {
           },
         },
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool, runTestsTool],
       ctx: {
         ...ctx,
@@ -1553,7 +1545,7 @@ describe('StepExecutor system prompt assembly', () => {
           },
         },
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [],
       ctx,
       contextSnippets: [
@@ -1622,7 +1614,7 @@ describe('StepExecutor system prompt assembly', () => {
     const llm = new UnstructuredBugNoopLLM();
     const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step: { ...baseStep, phase: 'REQUIREMENT_ANALYSIS' },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [],
       ctx,
       contextSnippets: [{ path: 'src/x.py', content: 'x = 1\n' }],
@@ -1684,12 +1676,11 @@ describe('StepExecutor system prompt assembly', () => {
     const step: Step = {
       ...baseStep,
       phase: 'REQUIREMENT_ANALYSIS',
-      role: 'Planner',
       outputs: ['tests/functional/cli.test.ts'],
     };
     const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
       step,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [],
       ctx: { ...ctx, allowedWrites: ['tests/functional/'], stepId: step.id },
       contextSnippets: [{
@@ -1962,7 +1953,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         tools: ['read_file'],
         outputs: ['docs/design.md'],
       },
@@ -2049,7 +2039,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         tools: ['read_file', 'write_file'],
         outputs: ['docs/design.md'],
       },
@@ -2457,7 +2446,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoopDependencyLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['add_dependency'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [addDependency],
       ctx,
       debugContext: {
@@ -2486,7 +2475,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoopWriteLLM(), maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -2708,7 +2697,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'DETAILED_DESIGN',
-        role: 'Architect',
         tools: ['write_file'],
         outputs: [
           'docs/03-detailed-design.md',
@@ -2775,7 +2763,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'DETAILED_DESIGN',
-        role: 'Architect',
         tools: ['write_file'],
         outputs: ['docs/03-detailed-design.md'],
         qualityGate: {
@@ -2861,7 +2848,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         tools: [],
         outputs: ['docs/02-high-level-design.md', 'tests/modules/x.test.ts'],
         qualityGate: {
@@ -2939,7 +2925,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'UNIT_TEST',
-        role: 'Tester',
         tools: ['run_tests'],
         outputs: ['reports/unit-test-report.md'],
         qualityGate: {
@@ -2952,7 +2937,6 @@ describe('StepExecutor system prompt assembly', () => {
           },
         },
       },
-      executionRole: 'Tester',
       tools: [runTests],
       ctx: { ...ctx, allowedWrites: ['reports/unit-test-report.md'] },
     });
@@ -3009,7 +2993,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'UNIT_TEST',
-        role: 'Tester',
         tools: ['run_tests'],
         outputs: [],
         qualityGate: {
@@ -3022,7 +3005,6 @@ describe('StepExecutor system prompt assembly', () => {
           },
         },
       },
-      executionRole: 'Tester',
       tools: [runTests],
       ctx,
     });
@@ -3094,7 +3076,7 @@ describe('StepExecutor system prompt assembly', () => {
           },
         },
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [failingProgramTool],
       ctx,
       debugContext: {
@@ -3128,7 +3110,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'DETAILED_DESIGN',
-        role: 'Architect',
         tools: ['write_file'],
         outputs: ['docs/03-detailed-design.md'],
       },
@@ -3249,7 +3230,7 @@ describe('StepExecutor system prompt assembly', () => {
       const tool: Tool = { name: 'run_tests', description: 'Controlled automatic test gate', argsSchema: {}, run };
       const chat = vi.fn(async () => '{"thoughts":"invalid test response","actions":[],"done":false');
       const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'invalid-test-turn', chat }, maxRounds: 1 })).run({
-        step: { ...baseStep, phase, role: 'Tester', tools: ['run_tests'], outputs: [] }, tools: [tool],
+        step: { ...baseStep, phase, tools: ['run_tests'], outputs: [] }, tools: [tool],
         ctx: { ...ctx, requestPermission: permission },
       });
       expect(result.success).toBe(false);
@@ -3303,7 +3284,7 @@ describe('StepExecutor system prompt assembly', () => {
     });
     const permission = vi.fn(async () => ({ approved: true }));
     const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'custom-debugger-validation', chat }, maxRounds: 1 })).run({
-      step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
+      step: baseStep, work: 'repair.debug', tools: [writeFileTool],
       ctx: { ...ctx, audit, requestPermission: permission },
       debugContext: { bugTicketId: 'BUG-PROTOCOL', reason: 'Current implementation output is missing.',
         failureLog: 'src/x.py has not been delivered.', repairRequired: true },
@@ -3347,13 +3328,14 @@ describe('StepExecutor system prompt assembly', () => {
     });
     const permission = vi.fn(async () => ({ approved: false, outcome: 'denied' as const, reason: 'Controlled user denial' }));
     const result = await new StepExecutor(withFixtureExecutionRequest({ llm: { name: 'custom-denied-validation', chat }, maxRounds: 6 })).run({
-      step: baseStep, executionRole: 'Debugger', tools: [writeFileTool],
+      step: baseStep, work: 'repair.debug', tools: [writeFileTool],
       ctx: { ...ctx, audit, requestPermission: permission },
       debugContext: { bugTicketId: 'BUG-DENIED-PROTOCOL', reason: 'Current implementation output is missing.',
         failureLog: 'src/x.py has not been delivered.', repairRequired: true },
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain('permission_blocked');
+    expect(result.failure).toMatchObject({ kind: 'infrastructure', code: 'permission_blocked' });
     expect(result.rounds).toBe(2);
     expect(chat).toHaveBeenCalledTimes(2);
     expect(permission).toHaveBeenCalledTimes(1);
@@ -3479,7 +3461,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'UNIT_TEST',
-        role: 'Tester',
         tools: ['read_file', 'run_tests'],
         outputs: ['docs/05-unit-test.md'],
         qualityGate: {
@@ -3554,7 +3535,6 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'UNIT_TEST',
-        role: 'Tester',
         tools: ['run_tests', 'write_file'],
         outputs: ['docs/05-unit-test.md', 'docs/reports/unit-test-report.md'],
         qualityGate: {
@@ -3969,7 +3949,6 @@ describe('StepExecutor system prompt assembly', () => {
     const testStep: Step = {
       ...baseStep,
       phase: 'INTEGRATION_TEST',
-      role: 'Tester',
       tools: ['run_tests', 'write_file'],
       outputs: [],
     };
@@ -4146,6 +4125,7 @@ describe('StepExecutor system prompt assembly', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('invalid no-progress output');
+    expect(result.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'no-progress' } });
     expect(result.error).toContain('missing outputs: src/x.py');
     expect(llm.calls).toBe(2);
     expect(llm.sawWarning).toBe(true);
@@ -4308,6 +4288,7 @@ describe('StepExecutor system prompt assembly', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('invalid completion loop');
+    expect(result.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'invalid-completion-loop' } });
     expect(result.error).toContain('qualityAssessment');
     expect(llm.calls).toBe(2);
     expect(llm.sawQualityFeedback).toBe(true);
@@ -4334,7 +4315,7 @@ describe('StepExecutor system prompt assembly', () => {
               mode: 'router',
               retryable: true,
               switchProvider: true,
-              details: { role: 'Debugger', failures: ['a/b: …'], contentRejectedOnly: true },
+              details: { role: 'repair.debug', failures: ['a/b: …'], contentRejectedOnly: true },
             },
           );
         }
@@ -4525,17 +4506,19 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool],
       ctx,
       debugContext: {
-        reason: 'repeated read-only/probe actions without progress for 3 rounds',
+        reason: 'The previous repair attempt produced newer failure evidence.',
+        previousFailure: { code: 'agent_execution_stalled', stallKind: 'read-only-loop' },
         failureLog: 'previous attempt only read files and made no repair',
         repairRequired: true,
       },
     });
     expect(r.success).toBe(false);
     expect(r.error).toContain('read-only recovery mode repeated probe actions');
+    expect(r.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'read-only-recovery-loop' } });
     expect(llm.calls).toBe(2);
     expect(llm.sawRecoveryWarning).toBe(true);
   });
@@ -4574,7 +4557,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const result = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -4643,7 +4626,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -4693,12 +4676,13 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new BoundedRecoveryLLM(), maxRounds: 2 }));
     const result = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
         bugTicketId: 'BUG-BOUNDED',
-        reason: 'repeated read-only/probe actions without progress for 3 rounds',
+        reason: 'The previous repair attempt produced newer failure evidence.',
+        previousFailure: { code: 'agent_execution_stalled', stallKind: 'read-only-loop' },
         failureLog: 'previous attempt inspected the whole workspace without creating src/x.py',
         repairRequired: true,
       },
@@ -4775,11 +4759,12 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, outputs: ['src/source.py'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
-        reason: 'read-only recovery mode repeated probe actions for 2 rounds',
+        reason: 'The previous repair attempt produced newer failure evidence.',
+        previousFailure: { code: 'agent_execution_stalled', stallKind: 'read-only-recovery-loop' },
         failureLog: 'previous attempt only read files and made no repair',
         repairRequired: true,
       },
@@ -4867,7 +4852,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['run_program', 'read_file', 'write_file'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [runProgram, readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -4900,11 +4885,12 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new LowQualityRejectedLLM(), maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
-        reason: 'read-only recovery mode repeated probe actions for 2 rounds',
+        reason: 'The previous repair attempt produced newer failure evidence.',
+        previousFailure: { code: 'agent_execution_stalled', stallKind: 'read-only-recovery-loop' },
         failureLog: 'previous retry only read tests/unit_s005.test.ts',
         repairRequired: true,
       },
@@ -4956,7 +4942,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 }));
     const result = await exec.run({
       step: { ...baseStep, tools: ['read_file', 'write_file'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -4998,13 +4984,14 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const result = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
-        reason:
-          'low-quality Debugger response: read-only/probe actions in read-only recovery mode; ' +
-          'produce a repair action',
+        reason: 'The previous repair attempt produced newer failure evidence.',
+        previousFailure: {
+          code: 'agent_execution_stalled', stallKind: 'content-rejection', violationReason: 'debugger-repeated-probe',
+        },
         failureLog: 'src/x.py(1,1): error TS2339: Property api is missing',
         repairRequired: true,
       },
@@ -5051,7 +5038,7 @@ describe('StepExecutor system prompt assembly', () => {
         outputs: ['docs/05-unit-test.md'],
         tools: ['read_file', 'write_file'],
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/'] },
       debugContext: {
@@ -5086,11 +5073,10 @@ describe('StepExecutor system prompt assembly', () => {
       step: {
         ...baseStep,
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         tools: ['read_file', 'write_file'],
         outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'],
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/'] },
       debugContext: {
@@ -5119,7 +5105,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new NoisyCompletionLLM(), maxRounds: 1 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [writeFileTool],
       ctx,
       debugContext: {
@@ -5161,7 +5147,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: baseStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [readFileTool, writeFileTool],
       ctx,
       debugContext: {
@@ -5252,7 +5238,7 @@ describe('StepExecutor system prompt assembly', () => {
         tools: ['add_dependency', 'run_program', 'run_tests'],
         qualityGate: { metrics: {}, tolerance: { maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 } },
       },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [addDependency, runProgram, runTests],
       ctx: {
         ...ctx,
@@ -5308,7 +5294,6 @@ describe('StepExecutor system prompt assembly', () => {
     const designStep: Step = {
       ...baseStep,
       phase: 'DETAILED_DESIGN',
-      role: 'Architect',
       tools: ['replace_in_file', 'write_file'],
       outputs: ['docs/03-detailed-design.md'],
     };
@@ -5322,7 +5307,7 @@ describe('StepExecutor system prompt assembly', () => {
     }));
     const r = await exec.run({
       step: designStep,
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [replaceMissTool, writeFileTool],
       ctx: { ...ctx, allowedWrites: ['docs/', 'tests/'] },
       debugContext: {
@@ -5480,7 +5465,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['run_tests'], outputs: ['src/x.py'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [runTestsTool],
       ctx,
       contextSnippets: [
@@ -5540,7 +5525,7 @@ describe('StepExecutor system prompt assembly', () => {
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 5 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['inspect_state', 'run_tests'], outputs: ['src/x.py'] },
-      executionRole: 'Debugger',
+      work: 'repair.debug',
       tools: [inspectStateTool, runTestsTool],
       ctx,
       debugContext: {
@@ -5583,10 +5568,13 @@ describe('glob outputs', () => {
 });
 
 describe('design-phase policy', () => {
-  const capture = async (phase: Step['phase']): Promise<string> => {
+  const capture = async (
+    phase: Step['phase'],
+    baselineTestExecution: 'execute' | 'defer' = 'defer',
+  ): Promise<string> => {
     const llm = new CapturingLLM();
     await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 }))
-      .run({ step: { ...baseStep, phase, outputs: ['src/x.py'] }, tools: [writeFileTool], ctx });
+      .run({ step: { ...baseStep, phase, outputs: ['src/x.py'] }, tools: [writeFileTool], ctx, baselineTestExecution });
     return llm.lastSystem;
   };
 
@@ -5601,6 +5589,33 @@ describe('design-phase policy', () => {
       // a quality gap, and the gate fails the Step for every gap it reports — punishing it for
       // being accurate.
       expect(system, phase).toContain('Do not record that deferral as a quality gap');
+    }
+  });
+
+  it('shows contract revisions accepted after the project constraints were planned', async () => {
+    const llm = new CapturingLLM();
+    const options = withFixtureExecutionRequest({ llm, maxRounds: 1 });
+    const send = vi.spyOn(options.request, 'send');
+    await new StepExecutor(options).run({
+      step: { ...baseStep, phase: 'CODE', outputs: ['src/x.py'] }, tools: [writeFileTool], ctx,
+      globalPrompt: 'Read the news feed API.',
+      acceptedContractChanges: [{ source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['Read articles from the archive API.'] }],
+    });
+    expect(llm.lastSystem).toContain('Read the news feed API.');
+    expect(llm.lastSystem).toContain('Use the archive API');
+    expect(llm.lastSystem).toContain('Read articles from the archive API.');
+    expect(llm.lastSystem).toContain(JSON.stringify(fixtureAcceptedContractSource()));
+    expect(send.mock.calls[0]![0].payload.promptContext.acceptedContractChanges).toEqual([
+      { source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['Read articles from the archive API.'] },
+    ]);
+    expect(llm.lastSystem.indexOf('Use the archive API')).toBeGreaterThan(llm.lastSystem.indexOf('Read the news feed API.'));
+  });
+
+  it('withholds the deferral rule when the resolved baseline policy executes here', async () => {
+    // A post-CODE correction of a design Step runs its baseline before redelivering. The phase name
+    // alone said "tests run elsewhere" to exactly that attempt, contradicting its gate (I06).
+    for (const phase of ['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN'] as const) {
+      expect(await capture(phase, 'execute'), phase).not.toContain('Design Step');
     }
   });
 

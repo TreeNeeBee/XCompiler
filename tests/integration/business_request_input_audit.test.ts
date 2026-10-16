@@ -1,3 +1,4 @@
+import { fixturePool, fixtureScenarioOwner } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -25,8 +26,9 @@ afterEach(async () => { await fs.rm(container, { recursive: true, force: true })
 function input(content = 'Current evidence\r\nLiteral # annotation.'): BusinessRequestInput {
   return validateBusinessRequestInput({
     schemaVersion: 1, logicalRequestId,
-    owner: { kind: 'scenario-judgement', projectId: 'abababab-abab-7bab-8bab-abababababac',
+    owner: fixtureScenarioOwner({ projectId: 'abababab-abab-7bab-8bab-abababababac',
       phaseId: 'abababab-abab-7bab-8bab-abababababad', executionId: 'abababab-abab-4bab-8bab-abababababae' },
+    fixturePool('management', ['fixture'])),
     templateVersion: 'scenario-fixture/1', snapshotDigest: `sha256:${'a'.repeat(64)}`,
     outputProtocol: { id: 'scenario-fixture', version: '1', root: 'object', transformations: ['trailing-comma'] },
     messages: [{ role: 'system', content: 'Judge current evidence.' }, { role: 'user', content }],

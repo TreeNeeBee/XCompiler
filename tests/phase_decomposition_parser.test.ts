@@ -75,7 +75,7 @@ function stepPlan(phaseId = 'P1') {
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: phaseId, phase,
       title: `${phase} formatting slice`, description: 'Deliver the formatting slice.',
       systemPrompt: 'Produce only the declared formatting deliverables and their paired test assets.',
-      role: 'Coder', tools: phase === 'CODE' ? ['skill:old-skill', 'read_file'] : [], inputs, outputs,
+      tools: phase === 'CODE' ? ['skill:old-skill', 'read_file'] : [], inputs, outputs,
       dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
       acceptance: 'Declared deliverables and the formatting contract pass.', maxAttempts: 3,
     };
@@ -104,7 +104,7 @@ describe('retained Phase decomposition business validation', () => {
     expect(draft.complexityAssessment).toEqual(retained.phasePlan.complexityAssessment);
     expect(draft.implementationPhases).toEqual(retained.phasePlan.implementationPhases);
     expect(draft.steps.map(step => step.phase)).toEqual(REQUIRED_V_MODEL_PHASES);
-    expect(draft.steps[3]).toMatchObject({ role: 'Coder', maxAttempts: 3 });
+    expect(draft.steps[3]).toMatchObject({ maxAttempts: 3 });
     expect(draft.steps[3]!.systemPrompt.length).toBeGreaterThanOrEqual(20);
   });
 

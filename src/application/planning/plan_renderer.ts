@@ -1,6 +1,7 @@
 import type { Plan } from '../../domain/planning/execution_plan.js';
 import { getLanguageProfile } from '../execution/language_support.js';
 import { t } from '../../i18n/index.js';
+import { stepWork } from '../../domain/workflow/work.js';
 
 export function renderPlanMarkdown(plan: Plan): string {
   const lines: string[] = [];
@@ -80,11 +81,11 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push('');
   lines.push('## Steps');
   lines.push('');
-  lines.push('| ID | Iteration | Phase | Role | Title | Outputs | Depends |');
+  lines.push('| ID | Iteration | Phase | Work | Title | Outputs | Depends |');
   lines.push('| --- | --- | --- | --- | --- | --- | --- |');
   for (const s of plan.steps) {
     lines.push(
-      `| ${s.id} | ${s.iterationId ?? 'P1'} | ${s.phase} | ${s.role} | ${escapePipe(s.title)} | ${s.outputs.join(', ')} | ${
+      `| ${s.id} | ${s.iterationId ?? 'P1'} | ${s.phase} | ${stepWork(s.phase)} | ${escapePipe(s.title)} | ${s.outputs.join(', ')} | ${
         s.dependsOn.join(', ') || '—'
       } |`,
     );
@@ -93,7 +94,7 @@ export function renderPlanMarkdown(plan: Plan): string {
   lines.push('## Detail');
   lines.push('');
   for (const s of plan.steps) {
-    lines.push(`### ${s.id} — ${s.title} (${s.iterationId ?? 'P1'} / ${s.phase} / ${s.role})`);
+    lines.push(`### ${s.id} — ${s.title} (${s.iterationId ?? 'P1'} / ${s.phase} / ${stepWork(s.phase)})`);
     lines.push('');
     lines.push(s.description);
     lines.push('');
@@ -124,7 +125,7 @@ function escapePipe(s: string): string {
 function renderMacroWorkflow(plan: Plan): string[] {
   const lines: string[] = [];
   for (const step of plan.steps) {
-    lines.push(`- ${step.id} ${step.iterationId ?? 'P1'} ${step.phase}: ${step.title} (${step.role})`);
+    lines.push(`- ${step.id} ${step.iterationId ?? 'P1'} ${step.phase}: ${step.title} (${stepWork(step.phase)})`);
     if (step.subTasks && step.subTasks.length > 0) {
       lines.push(...renderSubTasks(step.subTasks, 1));
     }

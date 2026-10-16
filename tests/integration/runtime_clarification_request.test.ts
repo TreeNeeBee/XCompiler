@@ -1,3 +1,4 @@
+import { fixturePlanningOwner } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -24,7 +25,8 @@ import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
 import { analyzeArchitectureDemand } from '../../src/domain/planning/architecture_policy.js';
-import { ROLES, type PlanIntent } from '../../src/domain/planning/execution_plan.js';
+import { type PlanIntent } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import * as i18n from '../../src/i18n/index.js';
 import { BusinessRequestAttemptAuditAdapter } from '../../src/infrastructure/llm/business_request_attempt_audit.js';
 import { FileBusinessRequestAttemptStore } from '../../src/infrastructure/llm/file_business_request_attempt_store.js';
@@ -136,7 +138,7 @@ async function fixture(url: string, options: { fallback?: string; plugins?: Plug
       pm: { type: 'openai', model: 'pm-model', api_key: '', base_url: url, context_window: 131072, request_timeout_ms: 1000 },
       planner: { type: 'openai', model: 'planner-model', api_key: '', base_url: url, context_window: 131072, request_timeout_ms: 1000 },
       ...(options.fallback ? { fallback: { type: 'openai', model: 'fallback-model', api_key: '', base_url: options.fallback, context_window: 65536, request_timeout_ms: 1000 } } : {}),
-    }, roles: Object.fromEntries(ROLES.map(role => [role, [role === 'ProjectManager' ? 'pm' : 'planner']])),
+    }, pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, [role === 'management' ? 'pm' : 'planner']])),
     fallbacks: options.fallback ? ['fallback'] : [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
@@ -154,7 +156,7 @@ async function fixture(url: string, options: { fallback?: string; plugins?: Plug
   const router = new LLMRouter(config, audit, scores, undefined, options.plugins,
     async () => ({ ok: true, latencyMs: 0, detail: 'loopback fixture' }), recordReplay);
   const port = createRuntimeClarificationRequestPort({ config: config.rules, container, recordReplay, router, audit });
-  const planner = new Planner(router.for('ProjectManager'), audit, 'python', false, options.signal, undefined, undefined, port);
+  const planner = new Planner(audit, 'python', false, options.signal, undefined, undefined, port);
   const auditPath = container.state.abs('audit', 'audit.jsonl');
   const ledger = container.state.abs('llm', 'business-inputs');
   return { config, container, recordReplay, router, audit, port, planner, boost, decay, scores, ledger, auditPath,
@@ -214,9 +216,11 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const expected = requestMaterial(requirement, { intent: 'feature', hasBaseline: true, languageAmbiguous: true });
     expect(original.messages).toEqual(expected.messages);
     expect(original.auditContext).toEqual(expected.payload);
-    expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'clarification', operationId: expect.any(String) });
+    expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'clarification', operationId: expect.any(String),
+      role: 'project-manager', roleVersion: '1', work: 'plan.clarify', modelPool: 'management', inheritFallbacks: true, allowedProviders: ['pm'] });
     expect(original.owner).not.toHaveProperty('projectId');
     expect(original.owner).not.toHaveProperty('phaseId');
+    expect(original.owner).not.toHaveProperty('actorId');
     expect(original.templateVersion).toBe(CLARIFICATION_TEMPLATE_VERSION);
     expect(original.outputProtocol).toEqual(CLARIFICATION_PROTOCOL);
     expect(original.outputProtocol.root).toBe('any');
@@ -226,7 +230,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(server.calls[0]!.messages[2]!.content.trimStart().startsWith('{')).toBe(false);
     expect(server.calls[0]!.messages[2]!.content).not.toContain('"parseContext"');
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
-    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'ProjectManager', scenario: PLANNING_REQUEST_CONTEXTS.clarification, language: 'python' } });
+    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'project-manager', work: PLANNING_REQUEST_CONTEXTS.clarification, language: 'python' } });
     expect(snapshot!.context).not.toHaveProperty('projectId');
     expect(snapshot!.requiredRuleIds).toHaveLength(3);
     expect(snapshot!.rules).toHaveLength(3);
@@ -235,11 +239,11 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(metadata.inputDigest).toBe(businessRequestInputDigest(original));
     expect(metadata).not.toHaveProperty('auditContext');
     expect(metadata).not.toHaveProperty('messages');
-    expect((await current.events()).find(event => event.messageId === 'llm.business_request_attempt')!.data).toMatchObject({ request: { role: 'ProjectManager' } });
+    expect((await current.events()).find(event => event.messageId === 'llm.business_request_attempt')!.data).toMatchObject({ request: { role: 'project-manager' } });
     expect((await current.events()).filter(event => event.messageId === 'llm.clarification_judgement')).toHaveLength(1);
     expect((await current.events()).filter(event => event.messageId === 'llm.business_response_retained')).toHaveLength(1);
     await expect(fs.stat(current.container.state.abs('rules', 'indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role ProjectManager');
+    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role project-manager');
     expect(current.decay).not.toHaveBeenCalled();
   });
 
@@ -316,13 +320,13 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const attempts = events.filter(event => event.messageId === 'llm.business_request_attempt');
     expect(attempts).toHaveLength(3);
     expect(attempts.every(event => (event.data!.request as { logicalRequestId: string; role: string }).logicalRequestId === inputs[0]!.logicalRequestId
-      && (event.data!.request as { role: string }).role === 'ProjectManager')).toBe(true);
+      && (event.data!.request as { role: string }).role === 'project-manager')).toBe(true);
     expect(new Set(attempts.map(event => (event.data!.request as { providerAttemptId: string }).providerAttemptId)).size).toBe(3);
     expect(events.filter(event => event.messageId === 'llm.provider_validation_failed').every(event => event.data?.validationKind === 'business')).toBe(true);
     expect(events.filter(event => event.messageId === 'llm.business_response_retained')).toHaveLength(1);
     expect(events.some(event => event.messageId === 'planner.validation_retry')).toBe(false);
-    expect(current.decay).toHaveBeenCalledExactlyOnceWith('pm', 'business validation failed in role ProjectManager');
-    expect(current.boost).toHaveBeenCalledExactlyOnceWith('fallback', 'success in role ProjectManager');
+    expect(current.decay).toHaveBeenCalledExactlyOnceWith('pm', 'business validation failed in role project-manager');
+    expect(current.boost).toHaveBeenCalledExactlyOnceWith('fallback', 'success in role project-manager');
   });
 
   it.each(['greenfield', 'feature'] as const)('adds no outer clarification retry for %s after candidate exhaustion', async (intent) => {
@@ -410,11 +414,11 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const logicalRequestId = randomUUID();
     const snapshot = await prepareRuntimeRuleRequest({ config: current.config.rules, container: current.container,
       recordReplay: current.recordReplay, router: current.router, logicalRequestId,
-      context: { role: 'ProjectManager', scenario: PLANNING_REQUEST_CONTEXTS.clarification, language: 'typescript' },
+      context: { role: 'project-manager', work: PLANNING_REQUEST_CONTEXTS.clarification, language: 'typescript' },
       required: [], taskSummary: requirement,
     });
     const material = requestMaterial();
-    const request = { logicalRequestId, owner: { kind: 'planning-operation' as const, operation: 'clarification' as const, operationId: randomUUID() },
+    const request = { logicalRequestId, owner: fixturePlanningOwner('clarification', randomUUID(), current.router.resolvePool('management')),
       templateVersion: CLARIFICATION_TEMPLATE_VERSION, outputProtocol: CLARIFICATION_PROTOCOL, auditContext: material.payload, messages: [...material.messages],
     };
     const before = await stateBytes(current.container);
@@ -427,7 +431,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
       const record = createBusinessRequestInputRecord(original);
       const location = { containerRoot: current.container.root, auditRoot: current.container.state.abs('audit') };
       const business = vi.fn();
-      await expect(new LLMRuleBusinessRequest(current.router.for('ProjectManager'), new RuleDecorator()).sendValidatedInput({
+      await expect(new LLMRuleBusinessRequest(current.router.forPool('management', { label: 'project-manager' }), new RuleDecorator()).sendValidatedInput({
         snapshot, original, record, location, validateResponse: business,
         store: new FileBusinessRequestAttemptStore(current.ledger, current.container.root),
         audit: new BusinessRequestAttemptAuditAdapter(current.audit, location.auditRoot, current.container.root),
@@ -446,11 +450,11 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const logicalRequestId = randomUUID();
     const operation = field === 'owner' ? 'phase-plan' : 'clarification';
     await prepareRuntimeRuleRequest({ config: current.config.rules, container: current.container, recordReplay: current.recordReplay,
-      router: current.router, logicalRequestId, context: { role: operation === 'clarification' ? 'ProjectManager' : 'Planner',
-        scenario: PLANNING_REQUEST_CONTEXTS[operation], language: 'python' }, required: [], taskSummary: requirement,
+      router: current.router, logicalRequestId, context: { role: operation === 'clarification' ? 'project-manager' : 'planner',
+        work: PLANNING_REQUEST_CONTEXTS[operation], language: 'python' }, required: [], taskSummary: requirement,
     });
     await sendRuntimeBusinessResponse({ container: current.container, audit: current.audit, router: current.router,
-      request: { logicalRequestId, owner: { kind: 'planning-operation', operation, operationId: randomUUID() },
+      request: { logicalRequestId, owner: fixturePlanningOwner(operation, randomUUID(), current.router.resolvePool(operation === 'clarification' ? 'management' : 'planning')),
         templateVersion: field === 'template' ? 'planning-clarification/999' : CLARIFICATION_TEMPLATE_VERSION,
         outputProtocol: field === 'protocol' ? { ...CLARIFICATION_PROTOCOL, version: '999' } : CLARIFICATION_PROTOCOL,
         messages: [...requestMaterial().messages],
@@ -486,7 +490,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(events.some(event => event.messageId === 'llm.business_response_retained')).toBe(false);
     await expect(current.resume(inputEvents(events)[0]!.logicalRequestId)).resolves.toMatchObject({ status: 'not-retained' });
     // Candidate scoring belongs to Router acceptance before Plugin return/adoption storage.
-    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role ProjectManager');
+    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role project-manager');
   });
 
   it('keeps the original protocol/business validator when a Plugin replaces response-validation options', async () => {
@@ -497,7 +501,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     await expect(current.clarify()).resolves.toHaveLength(8);
     expect(server.calls).toHaveLength(2);
     expect(substitute).not.toHaveBeenCalled();
-    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role ProjectManager');
+    expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role project-manager');
     expect((await current.events()).filter(event => event.messageId === 'llm.business_response_retained')).toHaveLength(1);
   });
 
@@ -528,7 +532,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
       });
       expect(await fs.readFile(current.auditPath, 'utf8')).toBe(before);
       expect(server.calls).toHaveLength(1);
-      expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role ProjectManager');
+      expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role project-manager');
       expect(current.decay).not.toHaveBeenCalled();
     },
   );
@@ -581,9 +585,9 @@ describe('P01 clarification through the Runtime retained request port', () => {
   it('refuses adoption when a real client wrapper omits the mandatory response-validation call', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
-    const forRole = current.router.for.bind(current.router);
-    vi.spyOn(current.router, 'for').mockImplementation(role => {
-      const client = forRole(role);
+    const forRole = current.router.forPool.bind(current.router);
+    vi.spyOn(current.router, 'forPool').mockImplementation((pool, options) => {
+      const client = forRole(pool, options);
       return { name: client.name, chat(messages: ChatMessage[], options?: ChatOptions) {
         const forwarded = { ...options };
         delete forwarded.validateResponse;

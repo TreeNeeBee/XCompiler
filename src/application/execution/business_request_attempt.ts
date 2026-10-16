@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
-import { RoleSchema } from '../../domain/workflow/role.js';
+import { RoleIdSchema } from '../../domain/workflow/role.js';
 import { BusinessInputAuditBindingSchema } from '../rules/rule_request_binding.js';
 import { ruleEvidenceDigest } from '../rules/rule_evidence_encoding.js';
 import { businessRequestRole, validateBusinessRequestInputRecord, type BusinessRequestInputRecord } from './business_request_input.js';
@@ -10,7 +10,7 @@ const UUID = z.uuid().transform((value) => value.toLowerCase());
 const Text = z.string().refine(value => value.trim().length > 0);
 const Material = z.object({
   schemaVersion: z.literal(1), logicalRequestId: UUID, providerAttemptId: UUID,
-  provider: Text, model: Text, role: RoleSchema, preparedAt: z.iso.datetime(),
+  provider: Text, model: Text, role: RoleIdSchema, preparedAt: z.iso.datetime(),
   contextWindowTokens: z.number().int().positive(), maxTokens: z.number().int().positive(),
   requestBinding: BusinessInputAuditBindingSchema.transform(binding => ({
     ...binding, logicalRequestId: binding.logicalRequestId.toLowerCase(), inputRecordId: binding.inputRecordId.toLowerCase(),
@@ -100,9 +100,7 @@ export function assertBusinessRequestAttemptInput(raw: BusinessRequestAttemptRec
   const record = validateBusinessRequestAttemptRecord(raw, input.logicalRequestId, raw.providerAttemptId);
   const pinned = validateBusinessRequestInputRecord(input, record.logicalRequestId);
   const binding = record.requestBinding;
-  if (record.role !== businessRequestRole(pinned.owner)
-    || (pinned.owner.kind === 'step-execution' && pinned.owner.providerPool !== undefined
-      && !pinned.owner.providerPool.includes(record.provider))
+  if (record.role !== businessRequestRole(pinned.owner) || !pinned.owner.allowedProviders.includes(record.provider)
     || binding.inputRecordId !== pinned.recordId || binding.inputRecordDigest !== pinned.digest
     || binding.inputDigest !== pinned.inputDigest || binding.snapshotDigest !== pinned.snapshotDigest) {
     throw new BusinessRequestAttemptError('identity_conflict', {

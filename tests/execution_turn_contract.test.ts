@@ -9,10 +9,10 @@ import { defaultQualityGateForPhase } from '../src/domain/quality/stage_quality.
 function payload(flags: Partial<ExecutionTurnPayload['validation']> = {}): ExecutionTurnPayload {
   return validateExecutionTurnPayload({ schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
     locale: 'en', parseContext: { language: 'python' }, round: 2,
-    promptContext: { step: { id: 'S004', iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Implement current output',
+    promptContext: { step: { id: 'S004', iterationId: 'P1', phase: 'CODE', title: 'Implement current output',
       description: 'Implement the declared current contract.', systemPrompt: 'Keep the current scope.', tools: ['read_file', 'write_file'],
       inputs: [], outputs: ['src/current.py'], dependsOn: [], acceptance: 'The current output is verified.', maxAttempts: 3,
-      qualityGate: defaultQualityGateForPhase('CODE') }, ctx: { allowedWrites: ['src/'] } }, initialMissingOutputs: [],
+      qualityGate: defaultQualityGateForPhase('CODE') }, work: 'code.implement', ctx: { allowedWrites: ['src/'] } }, initialMissingOutputs: [],
     tools: [{ name: 'read_file', description: 'Read one file.', argsSchema: { path: 'string', offset: 'number?' } },
       { name: 'write_file', description: 'Write one file.', argsSchema: { path: 'string', content: 'string' } }],
     validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,

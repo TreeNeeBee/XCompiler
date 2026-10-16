@@ -49,7 +49,7 @@ export function createCliRuntimeIO(
           'created',
           event.ticketName ?? event.ticketType ?? 'ticket',
           '→ PM →',
-          [event.assigneeRole, event.assigneeAgent].filter(Boolean).join('/'),
+          [event.assigneeRole, event.work].filter(Boolean).join('/'),
         ].join(' '));
       }
     },

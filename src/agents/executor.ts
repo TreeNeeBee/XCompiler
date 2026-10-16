@@ -5,7 +5,6 @@ import {
 } from '../domain/quality/test_assets.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import type { LLMClient } from '../llm/types.js';
 import {
   V_MODEL_DEVELOPMENT_PHASES,
   V_MODEL_TEST_PHASES,
@@ -39,7 +38,13 @@ import {
   type ExecutionTurnPayload, type ExecutionTurnRequestPort,
 } from '../application/execution/execution_turn_request.js';
 import { AuditPersistenceError } from '../audit/errors.js';
-import { agentContentRejectionFailure, type AttemptFailure } from '../application/execution/failure_classification.js';
+import {
+  agentContentRejectionFailure, agentExecutionStallFailure, permissionBlockedFailure,
+  type AttemptFailure, type PriorAttemptFailure,
+} from '../application/execution/failure_classification.js';
+import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
+import type { RoleId } from '../domain/workflow/role.js';
+import { stepWork, type WorkId } from '../domain/workflow/work.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { makeStreamReporter } from '../llm/stream.js';
 import { getLocale, t, tFor } from '../i18n/index.js';
@@ -122,7 +127,6 @@ const MAX_DIRECT_REPAIR_PROBE_ROUNDS = 4;
  */
 
 export interface ExecutorOptions {
-  llm: LLMClient;
   request?: ExecutionTurnRequestPort;
   signal?: AbortSignal;
   /** Enables direct human terminal stream rendering for the CLI adapter only. */
@@ -141,8 +145,13 @@ export interface ExecutorRunInput {
   step: Step;
   /** Human-readable domain Step name used only for prompts and UI, for example P1-S004. */
   stepName?: string;
-  /** Runtime execution role. Debug retries keep the same source step but execute as Debugger. */
-  executionRole?: Step['role'];
+  /**
+   * The work this attempt does; defaults to the Step's own work. A Bug attempt is `repair.debug`:
+   * debugging is a way of working on the same Step, not a separate persona.
+   */
+  work?: WorkId;
+  /** The assembled actor's role, used to label audit and stream output. */
+  role?: RoleId;
   /** Whether this left-side delivery gate executes its authored baseline suite in this attempt. */
   baselineTestExecution?: 'execute' | 'defer';
   /** Auditable reason for executing or deferring that exact baseline suite. */
@@ -169,6 +178,8 @@ export interface ExecutorRunInput {
   debugContext?: {
     bugTicketId?: string;
     reason: string;
+    /** Typed facts of this Ticket's previous failed attempt; recovery modes branch on these, not on text. */
+    previousFailure?: PriorAttemptFailure;
     failureLog: string;
     debugBrief?: string;
     suggestions?: string;
@@ -204,6 +215,8 @@ export interface ExecutorRunInput {
   layeredContext?: string;
   /** Plan 级别的全局 system prompt（xcompiler build 沉淀）。 */
   globalPrompt?: string;
+  /** Contract revisions accepted in this Phase after `globalPrompt` was planned. */
+  acceptedContractChanges?: readonly AcceptedContractChange[];
   /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
   languageProfile?: LanguageProfile;
 }
@@ -245,6 +258,8 @@ export interface ToolCallRecord {
   tool: string;
   args?: Record<string, unknown>;
   ok: boolean;
+  /** Runtime rejected this requested call before the Tool executed. */
+  executionStatus?: 'permission-blocked' | 'tool-not-allowed';
   summary?: string;
   error?: string;
   /** Why it failed, when a caller has to act on the reason rather than report it. */
@@ -286,8 +301,10 @@ export class StepExecutor {
     const prompts = tFor(locale).prompts;
     const maxRounds = this.opts.maxRounds ?? 6;
     let roundLimit = maxRounds;
-    const role = inp.executionRole ?? inp.step.role;
-    const bugResolutionPlanRequired = role === 'Debugger' && !!inp.debugContext?.bugTicketId;
+    const work = inp.work ?? stepWork(inp.step.phase);
+    const role: string = inp.role ?? work;
+    const debugWork = work === 'repair.debug';
+    const bugResolutionPlanRequired = debugWork && !!inp.debugContext?.bugTicketId;
     const toolMap = new Map(inp.tools.map((t) => [t.name, t]));
     const toolDocs = inp.tools
       .map((t) => `- ${t.name}: ${describeToolForStep(t, inp.ctx, inp.step)} args=${JSON.stringify(t.argsSchema)}`)
@@ -305,6 +322,9 @@ export class StepExecutor {
       inp.globalPrompt && inp.globalPrompt.trim()
         ? prompts.executorGlobalBlock(inp.globalPrompt.trim())
         : '';
+    const contractChangeBlock = inp.acceptedContractChanges && inp.acceptedContractChanges.length > 0
+      ? prompts.executorAcceptedContractChangesBlock(inp.acceptedContractChanges)
+      : '';
     const roleBlock = inp.roleIdentity ? prompts.executorRoleBlock(inp.roleIdentity) : '';
     const contextBlock = inp.layeredContext?.trim()
       ? prompts.executorContextBlock(inp.layeredContext.trim())
@@ -315,9 +335,12 @@ export class StepExecutor {
       changeRequest: !!inp.changeRequest,
       // Not in Debug: a Bug routed to a design Step was opened deliberately by its paired
       // verification, and repairing it is exactly the job. Rule 9 governs ownership there.
-      declarative: isDeclarativeOutputPhase(inp.step.phase) && !inp.debugContext,
+      // Only while the resolved baseline policy defers execution: a post-CODE correction of a
+      // design Step executes its baseline here, so telling it otherwise contradicts its gate.
+      declarative: isDeclarativeOutputPhase(inp.step.phase) && !inp.debugContext &&
+        inp.baselineTestExecution === 'defer',
     });
-    const userPrompt = renderExecutionUserPrompt(inp, toolDocs, initialMissingOutputs, locale);
+    const userPrompt = renderExecutionUserPrompt({ ...inp, work }, toolDocs, initialMissingOutputs, locale);
     const profile = inp.languageProfile ?? getLanguageProfile('python');
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -328,6 +351,7 @@ export class StepExecutor {
           roleBlock +
           policyBlock +
           globalBlock +
+          contractChangeBlock +
           contextBlock +
           stepBlock +
           skillBlock +
@@ -383,16 +407,19 @@ export class StepExecutor {
         deniedCapabilities: [...deniedCapabilities], adaptationRound: permissionAdaptationRound,
       });
       return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan,
-        error: reason, metrics };
+        error: reason, failure: permissionBlockedFailure(reason), metrics };
     };
     let repairEvidence = false;
     const ownedChangeRequestArtifacts = currentStepAffectedArtifacts(inp);
     const changeRequestMutationRequired = ownedChangeRequestArtifacts.length > 0;
     const repairRequired = inp.debugContext?.repairRequired === true || changeRequestMutationRequired;
-    const readOnlyRecoveryMode = isReadOnlyLoopFailure(inp.debugContext?.reason ?? '');
-    const strictReadOnlyRecoveryMode = isRejectedReadOnlyRecovery(inp.debugContext?.reason ?? '');
+    const previousFailure = inp.debugContext?.previousFailure;
+    const readOnlyRecoveryMode = previousFailure?.stallKind === 'read-only-loop' ||
+      previousFailure?.stallKind === 'read-only-recovery-loop';
+    const strictReadOnlyRecoveryMode = previousFailure?.stallKind === 'content-rejection' &&
+      previousFailure.violationReason === 'debugger-repeated-probe';
     const directRepairMode =
-      role === 'Debugger' &&
+      debugWork &&
       repairRequired &&
       (initialMissing > 0 || hasActionableDebuggerFailure(inp.debugContext));
     const directRepairProbeRoundBudget = directRepairMode
@@ -433,7 +460,7 @@ export class StepExecutor {
       const changeRequestDispositionBeforeRound = changeRequestDisposition;
       const rep = makeStreamReporter(
         `${stepLabel} ${role} round ${round}`,
-        this.opts.llm.name,
+        request.name,
         { enabled: this.opts.streamOutput === true },
       );
       // 另起一份本轮完整原始输出的拼接，以便 llm.chat 报错/超时/loop 被 abort 时仔细存证。
@@ -450,7 +477,7 @@ export class StepExecutor {
           directRepairProbeRounds < directRepairProbeRoundBudget &&
           (!strictReadOnlyRecoveryMode || mutationGeneration > 0);
         const enforceRecoveryContract =
-          role === 'Debugger' && (
+          debugWork && (
             strictReadOnlyRecoveryMode ||
             (readOnlyRecoveryMode && recoveryProbeFingerprints.size > 0) ||
             (
@@ -464,7 +491,7 @@ export class StepExecutor {
           );
         const validateCompletionQuality = !!inp.step.qualityGate && lastMissingCount === 0;
         const validateDebuggerRecovery =
-          role === 'Debugger' && (
+          debugWork && (
             enforceRecoveryContract ||
             (bugResolutionPlanRequired && !bugResolutionPlan?.trim())
           );
@@ -472,8 +499,9 @@ export class StepExecutor {
           schemaVersion: 1, kind: 'step-execution-turn', templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
           locale, parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
           promptContext: {
-            step: inp.step, executionRole: role, baselineTestExecution: inp.baselineTestExecution,
+            step: inp.step, work, ...(inp.role ? { role: inp.role } : {}), baselineTestExecution: inp.baselineTestExecution,
             baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: inp.contextSnippets,
+            acceptedContractChanges: inp.acceptedContractChanges,
             ticket: inp.ticket, changeRequest: inp.changeRequest, enhancement: inp.enhancement, debugContext: inp.debugContext,
             ctx: {
               allowedWrites: inp.ctx.allowedWrites, preserveExistingFiles: inp.ctx.preserveExistingFiles,
@@ -540,7 +568,7 @@ export class StepExecutor {
         const candidateRejection = isContentRejectionExhausted(err) || err instanceof ExecutionTurnProtocolError
           || err instanceof ExecutionTurnContractViolation || err instanceof ResponseValidationRejection;
         if (!candidateRejection && !isLLMRequestError(err)) {
-          throw new ExecutionTurnRequestFailure({ stepId: inp.ctx.stepId ?? inp.step.id, role, round }, { cause: err });
+          throw new ExecutionTurnRequestFailure({ stepId: inp.ctx.stepId ?? inp.step.id, work, role: inp.role, round }, { cause: err });
         }
         const errMsg = (err as Error).message;
         actualRounds = round;
@@ -573,7 +601,7 @@ export class StepExecutor {
           parseFailures++;
           await inp.ctx.audit?.event('llm.error', 'Executor reply rejected by the full JSON protocol', {
             messageId: 'audit.executor_turn_protocol_rejected', stepId: inp.step.id, role, round, provider,
-            client: this.opts.llm.name,
+            client: request.name,
             code: err.code, protocol: err.protocol, diagnostic: err.diagnostic, stage: 'caller-validation',
           });
         }
@@ -688,7 +716,7 @@ export class StepExecutor {
       }
       const normalizedActions = normalizeActions(turn.actions, toolMap);
       let actions = normalizedActions.actions;
-      if (role === 'Debugger' && (readOnlyRecoveryMode || directRepairMode)) {
+      if (debugWork && (readOnlyRecoveryMode || directRepairMode)) {
         const bounded = boundRecoveryProbeActions(actions);
         actions = bounded.actions;
         if (bounded.omitted > 0) {
@@ -920,7 +948,7 @@ export class StepExecutor {
         (fingerprint) => !recoveryProbeFingerprints.has(fingerprint),
       );
       const novelDiagnosticProbeRound =
-        role === 'Debugger' &&
+        debugWork &&
         readOnlyRound &&
         novelProbeFingerprints.length > 0;
       if (directRepairMode && novelDiagnosticProbeRound) {
@@ -1020,7 +1048,8 @@ export class StepExecutor {
         if (!selectedTool) {
           const r = { ok: false, error: `tool not allowed for this step: ${a.tool}` };
           updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
-          calls.push({ tool: a.tool, ok: false, error: r.error });
+          calls.push({ tool: a.tool, args: a.args, ok: false, error: r.error,
+            executionStatus: 'tool-not-allowed' });
           turnResults.push({ ...r, tool: a.tool });
           await inp.ctx.audit?.event('tool.call', t().audit.toolDenied(a.tool), {
             messageId: 'audit.tool_denied', stepId: inp.step.id, tool: a.tool,
@@ -1078,7 +1107,8 @@ export class StepExecutor {
               ok: false,
               permissionDenied: true,
             });
-            calls.push({ tool: a.tool, ok: false, error: r.error });
+            calls.push({ callId, tool: a.tool, args: a.args, ok: false, error: r.error,
+              executionStatus: 'permission-blocked' });
             turnResults.push({ ...r, tool: a.tool });
             await inp.ctx.onToolEvent?.({
               callId,
@@ -1657,6 +1687,8 @@ export class StepExecutor {
           bugResolutionPlan,
           qualityAssessment,
           error,
+          failure: agentExecutionStallFailure('invalid-completion-loop', error,
+            { consecutiveInvalidCompletionRounds, qualityAssessmentMissing }),
           metrics,
         };
       }
@@ -1767,7 +1799,11 @@ export class StepExecutor {
           consecutiveReadOnlyRounds,
           actions,
         });
-        return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics };
+        return {
+          success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics,
+          failure: agentExecutionStallFailure(readOnlyRecoveryViolation ? 'read-only-recovery-loop' : 'read-only-loop',
+            error, { consecutiveReadOnlyRounds, readOnlyRecoveryRounds }),
+        };
       }
       if (consecutiveNoProgressRounds >= 2) {
         repeatedTurns++;
@@ -1800,7 +1836,11 @@ export class StepExecutor {
           missingOutputs: verify.missing,
           unresolvedToolFailures: [...unresolvedToolFailures.values()],
         });
-        return { success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics };
+        return {
+          success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics,
+          failure: agentExecutionStallFailure('no-progress', error,
+            { consecutiveNoProgressRounds, missingOutputs: verify.missing }),
+        };
       }
       const needsQualityHandshake =
         completionSignal &&
@@ -1976,6 +2016,33 @@ export class StepExecutor {
       { baselineExecutionDeferred: inp.baselineTestExecution === 'defer' },
     );
     const unresolvedFailureDetails = [...unresolvedToolFailures.values()];
+    // Only the three round-budget outcomes are agent stalls; the other endings keep their existing
+    // (untyped) routing, which treats them as execution failures of the Step.
+    let maxRoundsError: string | undefined;
+    let error: string;
+    if (finalVerify.missing.length > 0) {
+      error = maxRoundsError =
+        `max rounds exceeded without satisfying outputs; missing outputs: ${finalVerify.missing.join(', ')}`;
+    } else if (unresolvedFailureDetails.length > 0) {
+      error = maxRoundsError =
+        `max rounds exceeded; unresolved tool failures remain: ${unresolvedFailureDetails.join('; ')}`;
+    } else if (debugWork && !!inp.debugContext?.bugTicketId && !bugResolutionPlan?.trim()) {
+      error = 'DEBUG bug-ticket completion missing bugResolutionPlan; provide a concrete handling plan before closing the ticket.';
+    } else if (
+      repairRequired &&
+      finalVerify.ok &&
+      unresolvedToolFailures.size === 0 &&
+      !repairEvidence &&
+      !canAcceptOutputCompletionRecovery(inp, initialMissing)
+    ) {
+      error = 'DEBUG retry ended without repair evidence; run a successful patch/write/dependency change or verification command before done=true.';
+    } else if (completionSignaled && finalQualityAssessmentMissing.length > 0) {
+      error = `qualityAssessment is incomplete; missing: ${finalQualityAssessmentMissing.join(', ')}`;
+    } else {
+      error = maxRoundsError = mutationGeneration > verifiedMutationGeneration
+        ? 'max rounds exceeded before completion; the latest successful repair has not been followed by a successful verification.'
+        : 'max rounds exceeded before completion';
+    }
     return {
       success: false,
       rounds: actualRounds || roundLimit,
@@ -1983,31 +2050,13 @@ export class StepExecutor {
       finalThought,
       bugResolutionPlan,
       qualityAssessment,
-      error:
-        finalVerify.missing.length > 0
-          ? `max rounds exceeded without satisfying outputs; missing outputs: ${finalVerify.missing.join(', ')}`
-          :
-        unresolvedFailureDetails.length > 0
-          ? `max rounds exceeded; unresolved tool failures remain: ${unresolvedFailureDetails.join('; ')}`
-          :
-        role === 'Debugger' &&
-          !!inp.debugContext?.bugTicketId &&
-          !bugResolutionPlan?.trim()
-          ? 'DEBUG bug-ticket completion missing bugResolutionPlan; provide a concrete handling plan before closing the ticket.'
-          :
-        repairRequired &&
-          finalVerify.ok &&
-          unresolvedToolFailures.size === 0 &&
-          !repairEvidence &&
-          !canAcceptOutputCompletionRecovery(inp, initialMissing)
-          ? 'DEBUG retry ended without repair evidence; run a successful patch/write/dependency change or verification command before done=true.'
-          :
-        completionSignaled && finalQualityAssessmentMissing.length > 0
-          ? `qualityAssessment is incomplete; missing: ${finalQualityAssessmentMissing.join(', ')}`
-          :
-        mutationGeneration > verifiedMutationGeneration
-          ? 'max rounds exceeded before completion; the latest successful repair has not been followed by a successful verification.'
-          : 'max rounds exceeded before completion',
+      error,
+      ...(maxRoundsError ? {
+        failure: agentExecutionStallFailure('max-rounds', maxRoundsError, {
+          missingOutputs: finalVerify.missing,
+          unresolvedToolFailures: unresolvedFailureDetails,
+        }),
+      } : {}),
       metrics,
     };
   }
@@ -2069,15 +2118,6 @@ function recoveryProbeActionFingerprints(action: LLMAction): string[] {
   return targets.map((target) => `${action.tool}:${target}:${qualifier}`);
 }
 
-function isReadOnlyLoopFailure(reason: string): boolean {
-  return /repeated read-only\/probe actions without progress/i.test(reason) ||
-    /read-only recovery mode repeated probe actions/i.test(reason);
-}
-
-function isRejectedReadOnlyRecovery(reason: string): boolean {
-  return /low-quality Debugger response: read-only\/probe actions in read-only recovery mode/i.test(reason);
-}
-
 
 function hasActionableDebuggerFailure(debugContext: ExecutorRunInput['debugContext']): boolean {
   if (!debugContext) return false;
@@ -2131,7 +2171,7 @@ function resolveDirectRepairProbeRoundBudget(
 }
 
 function canAcceptOutputCompletionRecovery(inp: ExecutorRunInput, initialMissing: number): boolean {
-  if (inp.executionRole !== 'Debugger') return false;
+  if ((inp.work ?? stepWork(inp.step.phase)) !== 'repair.debug') return false;
   if (inp.debugContext?.repairRequired !== true) return false;
   if (initialMissing !== 0) return false;
   return isOutputCompletionFailure(inp.debugContext.reason, inp.debugContext.failureLog);

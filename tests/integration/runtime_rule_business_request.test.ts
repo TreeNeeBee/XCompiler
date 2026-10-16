@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditLogger, protectAuditContent, type AuditEvent } from '../../src/audit/audit.js';
 import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_encoding.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { loadYamlRuleCatalogue } from '../../src/infrastructure/rules/yaml_rule_catalogue.js';
 import { LLMRouter } from '../../src/llm/router.js';
 import { ScoreStore } from '../../src/llm/scores.js';
@@ -55,16 +55,26 @@ function plugin(hooks: {
   }] });
 }
 
-async function endpoint(status = 200) {
-  const calls: { path: string; input: { model: string; messages: ChatMessage[] } }[] = [];
+async function endpoint(status = 200, options: { review?: boolean } = {}) {
+  const calls: { path: string; input: { model: string; messages: ChatMessage[]; input?: string[] } }[] = [];
+  let chatCalls = 0;
   const server = createServer((request, response) => {
     let body = '';
     request.on('data', (chunk) => { body += String(chunk); });
     request.on('end', () => {
       calls.push({ path: request.url!, input: JSON.parse(body) });
       response.writeHead(status, { 'content-type': 'application/json' });
+      if (options.review && request.url === '/v1/embeddings') {
+        const input = calls.at(-1)!.input.input!;
+        response.end(JSON.stringify({ model: 'encoder', data: input.map((text, index) => ({
+          index, embedding: text.startsWith('{') ? [0, 1] : [1, 0],
+        })) }));
+        return;
+      }
+      chatCalls++;
+      const responseOutput = options.review && chatCalls === 1 ? JSON.stringify({ selectedRuleIds: [id(4)] }) : output;
       response.end(JSON.stringify(status === 200 ? {
-        model: 'reported-model', choices: [{ index: 0, message: { content: output }, finish_reason: 'stop' }],
+        model: 'reported-model', choices: [{ index: 0, message: { content: responseOutput }, finish_reason: 'stop' }],
       } : { error: { message: 'The configured provider rejected this request.' } }));
     });
   });
@@ -75,7 +85,7 @@ async function endpoint(status = 200) {
 
 async function fixture(options: {
   endpoint: string; audit?: boolean; plugins?: PluginHost; record?: boolean;
-  fallback?: { endpoint: string; contextWindow: number };
+  fallback?: { endpoint: string; contextWindow: number }; optional?: boolean;
 }) {
   const container = new ProjectContainer(path.join(root, 'project'));
   await container.canonical().workspace.ensure('.');
@@ -89,10 +99,14 @@ async function fixture(options: {
           ...provider, base_url: options.fallback.endpoint, context_window: options.fallback.contextWindow,
         } } : {}),
       },
-      roles: Object.fromEntries(ROLES.map((role) => [role, ['primary']])),
+      pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map((role) => [role, ['primary']])),
       fallbacks: options.fallback ? ['secondary'] : [],
     },
     agent: {},
+    ...(options.optional ? { rules: { embedding: {
+      provider: 'openai', base_url: options.endpoint, model: 'encoder', space_version: 'test-space/1',
+      dimensions: 2, request_timeout_ms: 1000,
+    }, retrieval: { threshold: 0.8, max_candidates: 1 } } } : {}),
   }));
   const { config } = await loadConfigWithPath(configPath);
   const sourceRoot = path.join(root, 'compiler-rules');
@@ -104,8 +118,15 @@ async function fixture(options: {
       retrievalDescription: 'Operation evidence declaration',
     }],
   })}`);
+  if (options.optional) await fs.writeFile(path.join(sourceRoot, 'optional.yaml'), YAML.stringify({
+    schemaVersion: '1', id: id(3), version: '1', title: 'Evidence handling', slot: '0x0300', rules: [{
+      id: id(4), version: '1', category: 'framework', level: 'advised',
+      instruction: 'OPTIONAL_RULE: preserve the operation evidence.', retrievalDescription: 'Operation evidence handling',
+    }],
+  }));
   const loadCatalogue = vi.fn(() => loadYamlRuleCatalogue([
     { root: sourceRoot, relativePath: 'base.yaml', owner: { kind: 'compiler' } },
+    ...(options.optional ? [{ root: sourceRoot, relativePath: 'optional.yaml', owner: { kind: 'compiler' as const } }] : []),
   ]));
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'business-rules' });
   await audit.start();
@@ -118,10 +139,10 @@ async function fixture(options: {
   return {
     input: {
       config: config.rules, container, recordReplay, router, logicalRequestId: id(800),
-      context: { role: 'Coder' as const, language: 'python' as const }, required: [],
+      context: { role: 'python-developer' as const, language: 'python' as const }, required: [],
       loadCatalogue, taskSummary: 'Inspect the operation.', messages: structuredClone(frameworkMessages),
     },
-    sourceRoot, boost, decay,
+    sourceRoot, boost, decay, routingConfig: config.llm,
     events: async (): Promise<AuditEvent[]> => (await container.state.readFile('audit/audit.jsonl'))
       .trim().split('\n').map((line) => JSON.parse(line) as AuditEvent),
   };
@@ -270,11 +291,11 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
     const snapshot = await prepareRuntimeRuleRequest(current.input);
     await fs.rm(current.sourceRoot, { recursive: true });
     current.input.loadCatalogue.mockRejectedValue(new Error('Recovery must not load current sources'));
-    const forRole = vi.spyOn(current.input.router, 'for');
+    const forRole = vi.spyOn(current.input.router, 'forPool');
     const result = await sendRuntimeRuleRequest({ ...current.input,
-      context: { role: 'Tester', language: 'typescript' }, taskSummary: 'Changed current task',
+      context: { role: 'test-engineer', language: 'typescript' }, taskSummary: 'Changed current task',
     });
-    expect(forRole).toHaveBeenCalledExactlyOnceWith('Coder');
+    expect(forRole).toHaveBeenCalledExactlyOnceWith('coding', { label: 'python-developer' });
     expect(current.input.loadCatalogue).toHaveBeenCalledTimes(1);
     expect(result.binding.snapshotDigest).toBe(snapshot.digest);
     expect(server.calls[0]!.input.messages[0]!.content).toContain('PINNED_RULE:');
@@ -284,12 +305,38 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
   it('rejects a missing business role before selecting a provider', async () => {
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
-    const forRole = vi.spyOn(current.input.router, 'for');
+    const forRole = vi.spyOn(current.input.router, 'forPool');
     await expect(sendRuntimeRuleRequest({ ...current.input, context: { language: 'python' } })).rejects.toMatchObject({
       code: 'runtime_rule_configuration_failed', reason: 'business_role_missing',
     });
     expect(forRole).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(0);
+  });
+
+  it('keeps low-score review and business on the captured Actor candidates after current pool and fallback changes', async () => {
+    const original = await endpoint(200, { review: true });
+    const unauthorized = await endpoint(200, { review: true });
+    const current = await fixture({ endpoint: original.url, optional: true,
+      fallback: { endpoint: unauthorized.url, contextWindow: 131072 } });
+    const modelPool = current.input.router.resolvePool('coding', { inheritFallbacks: false });
+    expect(modelPool.allowedProviders).toEqual(['primary']);
+    current.routingConfig.pools.coding = ['secondary'];
+    current.routingConfig.fallbacks = ['secondary'];
+    const snapshot = await prepareRuntimeRuleRequest({ ...current.input, modelPool });
+    expect(snapshot.ranking.decision).toBe('review-required');
+    expect(snapshot.review).toMatchObject({ provider: 'primary' });
+    expect(snapshot.rules.map(rule => rule.ruleId)).toEqual([id(2), id(4)]);
+    const result = await sendRuntimeRuleRequest({ ...current.input, modelPool });
+    expect(result.output).toBe(output);
+    expect(result.response.provider).toBe('primary');
+    expect(original.calls.map(call => call.path)).toEqual([
+      '/v1/embeddings', '/v1/embeddings', '/v1/chat/completions', '/v1/chat/completions',
+    ]);
+    expect(unauthorized.calls).toHaveLength(0);
+    const responseEvents = (await current.events()).filter(event => event.messageId === 'llm.provider_response');
+    expect(responseEvents.map(event => event.data?.provider)).toEqual(['primary', 'primary']);
+    expect(current.boost).not.toHaveBeenCalled();
+    expect(current.decay).not.toHaveBeenCalled();
   });
 
   it('replays the provider response with the current request binding and no second HTTP call', async () => {

@@ -11,7 +11,7 @@ import {
   loadXCompilerProject,
   updateProjectFile,
 } from '../src/infrastructure/project/project_manifest.js';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { StepSchema } from '../src/domain/steps/step.js';
 import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
@@ -191,7 +191,7 @@ async function canonicalWorkspace() {
   await fs.mkdir(workspace, { recursive: true });
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a Python application.',
     projectName: 'sample',

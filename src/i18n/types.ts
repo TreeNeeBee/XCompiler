@@ -1,3 +1,4 @@
+import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
 import type { LanguageProfile } from '../application/execution/language_support.js';
 
 /**
@@ -10,7 +11,6 @@ export type Locale = 'en' | 'zh';
 export interface Messages {
   // ───────── shared LLM role guidance ─────────
   llm: {
-    coderDebuggerSameModel: (model: string, coderProvider: string, debuggerProvider: string) => string;
     invalidBaseUrl: (raw: string, fallback: string) => string;
     providerValidationFailed: (role: string, model: string) => string;
     providerValidationRetry: (role: string, model: string) => string;
@@ -293,7 +293,7 @@ export interface Messages {
     planStatusSummary: (total: number, done: number, ready: number, blocked: number, running: number) => string;
     planReadFailed: (path: string, message: string) => string;
     stepHeader: (id: string, phase: string, title: string, state: string, attempts: number, maxAttempts: number) => string;
-    stepRoleTools: (role: string, tools: string) => string;
+    stepRoleTools: (type: string, tools: string) => string;
     stepDependsOn: (ids: string) => string;
     outputStatus: (exists: boolean, path: string) => string;
     auditEntry: (ts: string, kind: string, message: string) => string;
@@ -393,6 +393,7 @@ export interface Messages {
     executorSystem: (profile: LanguageProfile) => string;
     executorDebugBlock: (reason: string, suggestions?: string) => string;
     executorGlobalBlock: (globalPrompt: string) => string;
+    executorAcceptedContractChangesBlock: (changes: readonly AcceptedContractChange[]) => string;
     executorContextBlock: (context: string) => string;
     executorRoleBlock: (identity: {
       rolePrompt: string;

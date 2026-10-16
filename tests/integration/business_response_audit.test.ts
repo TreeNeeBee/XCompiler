@@ -1,3 +1,4 @@
+import { fixturePool, fixtureScenarioOwner } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -38,8 +39,9 @@ afterEach(async () => { await fs.rm(container, { recursive: true, force: true })
 function material(output = '{"verdict":"pass"}', finishReason = 'stop') {
   const input = validateBusinessRequestInput({
     schemaVersion: 1, logicalRequestId,
-    owner: { kind: 'scenario-judgement', projectId: 'abababab-abab-7bab-8bab-abababababac',
+    owner: fixtureScenarioOwner({ projectId: 'abababab-abab-7bab-8bab-abababababac',
       phaseId: 'abababab-abab-7bab-8bab-abababababad', executionId: 'abababab-abab-4bab-8bab-abababababae' },
+    fixturePool('management', ['fixture'])),
     templateVersion: 'scenario-fixture/1', snapshotDigest: digest('a'),
     outputProtocol: { id: 'scenario-fixture', version: '1', root: 'object', transformations: ['trailing-comma'] },
     messages: [{ role: 'user', content: 'Fresh scenario evidence.' }],
@@ -49,7 +51,7 @@ function material(output = '{"verdict":"pass"}', finishReason = 'stop') {
   });
   const request = validateBusinessRequestAttempt({
     schemaVersion: 1, logicalRequestId, providerAttemptId, provider: 'fixture', model: 'fixture-model',
-    role: 'ProjectManager', preparedAt: '2026-10-13T00:01:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
+    role: 'project-manager', preparedAt: '2026-10-13T00:01:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
     requestBinding: { schemaVersion: 1, kind: 'business-input', logicalRequestId, snapshotDigest: inputRecord.snapshotDigest,
       promptVersion: 'rule-business-request/1',
       requestDigest: ruleBusinessRequestDigest('rule-business-request/1', protectAuditContent(input.messages, 'redacted')),

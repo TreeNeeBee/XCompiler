@@ -27,7 +27,7 @@ function plannerWithPlanningPorts(llm: LLMClient, language: Language = 'python')
       return { text, provider: llm.name };
     },
   };
-  return new Planner(llm, undefined, language, false, undefined, undefined, port, undefined, decompositionPort);
+  return new Planner(undefined, language, false, undefined, undefined, port, undefined, decompositionPort);
 }
 
 function plannerWithClarificationPort(llm: LLMClient): Planner {
@@ -40,7 +40,7 @@ function plannerWithClarificationPort(llm: LLMClient): Planner {
       return { text, provider: llm.name };
     },
   };
-  return new Planner(llm, undefined, 'python', false, undefined, undefined, undefined, port);
+  return new Planner(undefined, 'python', false, undefined, undefined, undefined, port);
 }
 
 function fakeLLM(reply: string | string[]): LLMClient {
@@ -113,7 +113,6 @@ const minimalStep = (id: string, phase: string, outputs: string[] = [], iteratio
     title: `${phase} ${id}`,
     description: 'd',
     systemPrompt: '本 Step 专属提示词：明确范围、输入、产出、验收与禁令。',
-    role: 'Coder',
     tools: [],
     inputs: [],
     outputs,
@@ -299,11 +298,9 @@ const languageClarificationQuestion = {
 
 describe('Planner.decompose — V 模型骨架完整性校验', () => {
   it('澄清缺少 Runtime 接口时明确报错，不回退到直接模型调用', async () => {
-    const seen: ChatMessage[][] = [];
-    const planner = new Planner(observingLLM(JSON.stringify(projectShapeQuestions), seen));
+    const planner = new Planner();
     await expect(planner.clarify('Build an API for weather data'))
       .rejects.toMatchObject({ code: 'clarification_request_not_configured' });
-    expect(seen).toHaveLength(0);
   });
 
   it('澄清阶段在 API/library 与应用形态不明时必须提出项目形态问题', async () => {

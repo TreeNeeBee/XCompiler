@@ -33,7 +33,7 @@ function request(content = 'Current scenario evidence.'): BusinessRequestAttempt
     { role: 'user' as const, content }];
   return validateBusinessRequestAttempt({
     schemaVersion: 1, logicalRequestId, providerAttemptId, provider: 'fixture', model: 'fixture-model',
-    role: 'ProjectManager', preparedAt: '2026-10-13T01:00:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
+    role: 'project-manager', preparedAt: '2026-10-13T01:00:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
     requestBinding: { schemaVersion: 1, kind: 'business-input', logicalRequestId, snapshotDigest: digest('a'),
       promptVersion: 'rule-business-request/1',
       requestDigest: ruleBusinessRequestDigest('rule-business-request/1', protectAuditContent(messages, 'redacted')),

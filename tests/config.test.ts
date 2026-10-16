@@ -6,14 +6,13 @@ import YAML from 'yaml';
 import { getXCompilerPath, loadConfig, loadConfigWithPath } from '../src/config/config.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../src/llm/window.js';
 
-function allRoles(provider: string): Record<string, string[]> {
+function allPools(provider: string): Record<string, string[]> {
   return {
-    Planner: [provider],
-    Architect: [provider],
-    Coder: [provider],
-    Tester: [provider],
-    Debugger: [provider],
-    ProjectManager: [provider],
+    management: [provider],
+    planning: [provider],
+    design: [provider],
+    coding: [provider],
+    testing: [provider],
   };
 }
 
@@ -23,9 +22,8 @@ function baseConfig(extra: Record<string, unknown> = {}): Record<string, unknown
       providers: {
         ollama_code: { type: 'ollama', base_url: 'http://localhost:11434', model: 'qwen' },
       },
-      roles: allRoles('ollama_code'),
+      pools: allPools('ollama_code'),
       fallbacks: [],
-      role_fallbacks: {},
     },
     agent: {
       sandboxes: {
@@ -147,15 +145,13 @@ llm:
       api_key: \${XC_TEST_NUMERIC_API_KEY}
       base_url: \${XC_TEST_OPENAI_BASE_URL}
       model: gpt-4o-mini
-  roles:
-    Planner:   [openai]
-    Architect: [openai]
-    Coder:     [openai]
-    Tester:    [openai]
-    Debugger:  [openai]
-    ProjectManager:  [openai]
+  pools:
+    management: [openai]
+    planning:   [openai]
+    design:     [openai]
+    coding:     [openai]
+    testing:    [openai]
   fallbacks: []
-  role_fallbacks: {}
 agent:
   sandboxes: {}
 `);
@@ -217,9 +213,8 @@ agent:
             json_response_format: 'json_schema',
           },
         },
-        roles: allRoles('openrouter_hy3'),
+        pools: allPools('openrouter_hy3'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const cfgPath = await writeConfig(cfg);
@@ -241,9 +236,8 @@ agent:
             stream_idle_timeout_ms: 60000,
           },
         },
-        roles: allRoles('openrouter'),
+        pools: allPools('openrouter'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const { config } = await loadConfigWithPath(await writeConfig(cfg));
@@ -264,9 +258,8 @@ agent:
             tags: ['Cluster'],
           },
         },
-        roles: allRoles('openrouter_free'),
+        pools: allPools('openrouter_free'),
         fallbacks: [],
-        role_fallbacks: {},
         cluster_score_min: 0.2,
         cluster_score_max: 0.5,
       },
@@ -287,15 +280,13 @@ llm:
       api_key: dummy
       base_url: https://openrouter.ai/api/v1
       model: openrouter/free
-  roles:
-    Planner:   [openrouter_free]
-    Architect: [openrouter_free]
-    Coder:     [openrouter_free]
-    Tester:    [openrouter_free]
-    Debugger:  [openrouter_free]
-    ProjectManager:  [openrouter_free]
+  pools:
+    management: [openrouter_free]
+    planning:   [openrouter_free]
+    design:     [openrouter_free]
+    coding:     [openrouter_free]
+    testing:    [openrouter_free]
   fallbacks: []
-  role_fallbacks: {}
 agent:
   sandboxes:
     python:
@@ -373,23 +364,35 @@ agent:
     await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/default/);
   });
 
-  it('rejects configs where a role has no manually specified provider', async () => {
+  it('rejects a config whose default model pool has no manually specified provider', async () => {
     const cfg = baseConfig();
-    const roles = (cfg.llm as Record<string, unknown>).roles as Record<string, string[]>;
-    delete roles.Debugger;
+    const pools = (cfg.llm as Record<string, unknown>).pools as Record<string, string[]>;
+    delete pools.coding;
     const cfgPath = await writeConfig(cfg);
-    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/llm\.roles\.Debugger/);
+    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/llm\.pools\.coding/);
   });
 
-  it('accepts role coverage supplied via role_fallbacks', async () => {
+  it('rejects an empty custom pool even when global fallbacks are configured', async () => {
     const cfg = baseConfig();
-    const llm = cfg.llm as Record<string, unknown>;
-    const roles = llm.roles as Record<string, string[]>;
-    delete roles.Debugger;
-    llm.role_fallbacks = { Debugger: ['ollama_code'] };
+    const llm = cfg.llm as { pools: Record<string, string[]>; fallbacks: string[] };
+    llm.pools.custom = [];
+    llm.fallbacks = ['ollama_code'];
+    await expect(loadConfigWithPath(await writeConfig(cfg))).rejects.toThrow(/custom/);
+  });
+
+  it.each(['pool', 'fallback'] as const)('rejects an unconfigured provider referenced by a %s', async source => {
+    const cfg = baseConfig();
+    const llm = cfg.llm as { pools: Record<string, string[]>; fallbacks: string[] };
+    if (source === 'pool') llm.pools.custom = ['not-configured'];
+    else llm.fallbacks = ['not-configured'];
+    await expect(loadConfigWithPath(await writeConfig(cfg))).rejects.toThrow(/unconfigured provider: not-configured/);
+  });
+
+  it('rejects the retired role-keyed model configuration instead of ignoring it', async () => {
+    const cfg = baseConfig();
+    (cfg.llm as Record<string, unknown>).roles = { Coder: ['ollama_code'] };
     const cfgPath = await writeConfig(cfg);
-    const { config } = await loadConfigWithPath(cfgPath);
-    expect(config.llm.role_fallbacks.Debugger).toEqual(['ollama_code']);
+    await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/roles/);
   });
 
   it('prefers XC_PATH as the short global config directory', async () => {
@@ -517,29 +520,31 @@ describe('Rule retrieval configuration', () => {
 
 // PM judges outcomes on the project's behalf and never executes a Step. Letting it be assigned as a
 // Step's role would put the judge in the position of doing the work it later assesses.
-describe('ProjectManager is a judging role, not an executing one', () => {
-  it('is configurable as an LLM role', async () => {
-    const { ROLES } = await import('../src/domain/planning/execution_plan.js');
-    expect(ROLES).toContain('ProjectManager');
+describe('project-manager is a judging role, not a Step owner', () => {
+  it('is a role profile drawing on the management pool', async () => {
+    const { ROLE_IDS, roleProfile } = await import('../src/domain/workflow/role.js');
+    expect(ROLE_IDS).toContain('project-manager');
+    expect(roleProfile('project-manager').defaultPool).toBe('management');
   });
 
   // No silent degradation: a project with no judge configured must not proceed believing it has
   // one. The gate that would have caught a wrong delivery is the thing being left unconfigured.
-  it('is rejected at load time when no provider is configured for it', async () => {
+  it('is rejected at load time when its pool lists no provider', async () => {
     const { loadConfig } = await import('../src/config/config.js');
-    const config = baseConfig() as { llm: { roles: Record<string, unknown> } };
-    delete config.llm.roles.ProjectManager;
+    const config = baseConfig() as { llm: { pools: Record<string, unknown> } };
+    delete config.llm.pools.management;
     const cfgPath = await writeConfig(config);
-    await expect(loadConfig(cfgPath)).rejects.toThrow(/ProjectManager/u);
+    await expect(loadConfig(cfgPath)).rejects.toThrow(/management/u);
   });
 
-  it('cannot be assigned as the role that runs a Step', async () => {
+  it('cannot be named by a plan: Steps record work, never a role', async () => {
     const { StepSchema } = await import('../src/domain/planning/execution_plan.js');
     const step = {
       id: 'S001', iterationId: 'P1', phase: 'REQUIREMENT_ANALYSIS', title: 't', description: 'd',
       systemPrompt: 'p', acceptance: 'a', maxAttempts: 3,
     };
-    expect(StepSchema.safeParse({ ...step, role: 'Coder' }).success).toBe(true);
-    expect(StepSchema.safeParse({ ...step, role: 'ProjectManager' }).success).toBe(false);
+    expect(StepSchema.safeParse(step).success).toBe(true);
+    expect(StepSchema.safeParse({ ...step, role: 'Coder' }).success).toBe(false);
+    expect(StepSchema.safeParse({ ...step, role: 'project-manager' }).success).toBe(false);
   });
 });

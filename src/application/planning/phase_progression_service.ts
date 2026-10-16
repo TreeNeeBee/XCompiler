@@ -9,7 +9,6 @@ import type { PlanStorePort } from '../../domain/ports/plan_store.js';
 import { refreshProjectMemory } from '../context/project_memory.js';
 import { renderPlanMarkdown } from './plan_renderer.js';
 import { archiveIfExists } from '../../workspace/doc_archive.js';
-import type { LLMRouter } from '../../llm/router.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { SkillRegistry } from '../../skills/index.js';
 import type { PhaseDecompositionRequestPort } from './phase_decomposition_request.js';
@@ -28,7 +27,6 @@ export class PhaseProgressionService {
     /** Project-root control plane. Phase plans never belong to the generated product worktree. */
     private readonly control: Workspace,
     private readonly planStore: PlanStorePort,
-    private readonly router: LLMRouter,
     private readonly audit: AuditLogger,
     private readonly terminalOutput: boolean,
     private readonly signal?: AbortSignal,
@@ -90,7 +88,6 @@ export class PhaseProgressionService {
       implementationPhases: transition.phasePlan.phases.map(({ planPath: _planPath, ...phase }) => phase),
     };
     const planner = new Planner(
-      this.router.for('Planner'),
       this.audit,
       transition.phasePlan.language,
       this.terminalOutput,

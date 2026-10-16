@@ -32,7 +32,7 @@ record_replay:
 #     max_candidates: 20
 
 llm:
-  # 模型选择必须手动指定：每个角色都要在下方 roles 中显式列出 provider，
+  # 模型选择必须手动指定：每个默认模型池都要在下方 pools 中显式列出 provider，
   # 不再支持 llm.default 隐式全局默认 provider。
   # Default template: OpenRouter Free mode through an OpenAI-compatible /v1 endpoint.
   providers:
@@ -90,17 +90,19 @@ llm:
     #   stream_idle_timeout_ms: 300000
     #   think: false
 
-  # 角色 → provider 数组。即使只有一个 provider，也必须使用数组。
+  # 具名模型池 → provider 数组。即使只有一个 provider，也必须使用数组。
   # 数组里的 provider 按 ScoreStore 有效评分降序使用；有效评分为用户覆盖优先，否则使用动态评分。
-  # 默认只启用 OpenRouter；如需本地备选，取消 providers 中对应块注释并加入各角色数组。
-  roles:
-    Planner:   [openrouter_free]
-    Architect: [openrouter_free]
-    Coder:     [openrouter_free]
-    Tester:    [openrouter_free]
-    Debugger:  [openrouter_free]
-    # Judges delivery outcomes on the project's behalf; never executes a Step.
-    ProjectManager: [openrouter_free]
+  # 默认只启用 OpenRouter；如需本地备选，取消 providers 中对应块注释并加入相应模型池。
+  # Named model pools. A role profile names its default pool (project-manager -> management,
+  # planner and requirements-analyst -> planning, system-architect -> design, developers -> coding,
+  # test engineers -> testing); an actor may override it with any pool defined here. Every default
+  # pool must list at least one provider. Debug work runs on the pool of the role doing it.
+  pools:
+    management: [openrouter_free]
+    planning:   [openrouter_free]
+    design:     [openrouter_free]
+    coding:     [openrouter_free]
+    testing:    [openrouter_free]
 
   # 动态评分快照由 XCompiler 自动维护，落盘到同目录的 llm_scores.yaml，请勿手工编辑。
   # 用户手动指定 provider 分数时，请在 config.yaml 同目录创建 llm_scores_user.yaml；
@@ -114,8 +116,8 @@ llm:
   # 「网络断了」和「模型还在思考」会产生同一条超时，却需要相反的处置。0 = 关闭。
   stall_diagnosis_after_ms: 600000
   # 全局 fallback 链：默认不启用本地备选；如已取消 provider 注释，可设为 [local_openai] 或 [local_openai, ollama_code]。
+  # 角色默认池可继承此链；Actor 显式覆盖池独立，即使覆盖值与默认池同名也不继承。
   fallbacks: []
-  role_fallbacks: {}
 
 agent:
   # 每个 Step 的事务尝试上限由 Planner 的 maxAttempts 与项目复杂度动态确定：

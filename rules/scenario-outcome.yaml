@@ -2,15 +2,15 @@
 # Author comments never enter prompts; the caller supplies current accepted context and evidence.
 schemaVersion: "1"
 id: "de4378d5-8731-4f17-8e9c-3e973f6ad7fd"
-version: "1.0.0"
+version: "2.0.0"
 title: "Scenario outcome and corrective ownership"
-slot: "0x0207"
+# Work segment, judgement range (change list D-13). Work-scoped: any role assigned this work uses it.
+slot: "0x02A0"
 applicability:
-  roles: [ProjectManager]
-  scenarios: [scenario-outcome-judgement]
+  works: [judge.scenario]
 rules:
   - id: "a707ec22-a5d2-45da-83b3-823d96d18f20"
-    version: "1.0.0"
+    version: "2.0.0"
     category: scenario
     level: required
     retrievalDescription: "Judge current scenario expectations and evidence; classify failed accepted contracts as Bug or Change Request and identify the owning V-model Step."
@@ -33,3 +33,5 @@ rules:
       An HTTP status, timeout, exception, or empty result is evidence only; it never determines
       ticketType or target by itself. Explain which accepted premise can remain or must change.
       If evidence is insufficient to prove a contract change, choose bug/code.
+      When acceptedContractChanges is present, those revisions were accepted after the requirement
+      digest was written and describe the current contract; where they differ, judge against them.

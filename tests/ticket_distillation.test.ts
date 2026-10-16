@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ContextService } from '../src/application/context/context_service.js';
 import { TicketDistillationService } from '../src/application/context/ticket_distillation_service.js';
@@ -19,7 +19,7 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xc-distil-'));
   const repository = new DomainObjectRepository(new ProjectContainer(root).state);
   await repository.load();
-  const graph = compileProjectGraph({ draft: plan(), topic: 't', projectName: 'p' });
+  const graph = materializeProjectGraph({ draft: plan(), topic: 't', projectName: 'p' });
   await new ProjectGraphPersistenceService(repository).persistGraph(graph);
   const coding = graph.steps.find((step) => step.type === 'CODE')!;
   const story = graph.tickets.find((ticket) => ticket.stepId === coding.id)!;
@@ -82,7 +82,7 @@ describe('ticket distillation', () => {
     // them for every role that later touches this Step.
     const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const bug = await new TicketWorkflow(repository).openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: unit,
       targetStep: coding,
       verificationStep: unit,

@@ -10,7 +10,7 @@ export function renderExecutionUserPrompt(
   initialMissingOutputs: string[] = [],
   locale: Locale = getLocale(),
 ): string {
-  const role = input.executionRole ?? input.step.role;
+  const work = input.work;
   const compactContext = !!input.debugContext;
   const snippets = input.contextSnippets ?? [];
   const debugRepairSnippetCount = Math.max(
@@ -244,7 +244,7 @@ export function renderExecutionUserPrompt(
   return [
     `# Step ${input.step.id} — ${input.step.title}`,
     `phase: ${input.step.phase}`,
-    `role: ${role}`,
+    `work: ${work}`,
     `acceptance: ${input.step.acceptance}`,
     '',
     metricContract,

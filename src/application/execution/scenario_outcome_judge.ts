@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AcceptedContractChangeSchema, type AcceptedContractChange } from './accepted_contract_changes.js';
 import type { ChatMessage } from '../../llm/types.js';
 import type { JsonOutputProtocol } from '../../llm/protocol_json.js';
 import type { BusinessProtocolAssessment } from './business_request_response.js';
@@ -25,9 +26,9 @@ export interface ScenarioArtifactReader {
 
 export const SCENARIO_OUTCOME_CONTEXT = 'scenario-outcome-judgement' as const;
 export const SCENARIO_OUTCOME_RULE = Object.freeze({
-  ruleId: 'a707ec22-a5d2-45da-83b3-823d96d18f20', version: '1.0.0',
+  ruleId: 'a707ec22-a5d2-45da-83b3-823d96d18f20', version: '2.0.0',
 });
-export const SCENARIO_OUTCOME_TEMPLATE_VERSION = 'scenario-outcome/1' as const;
+export const SCENARIO_OUTCOME_TEMPLATE_VERSION = 'scenario-outcome/2' as const;
 const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control'];
 Object.freeze(PROTOCOL_TRANSFORMATIONS);
 export const SCENARIO_OUTCOME_PROTOCOL: JsonOutputProtocol = Object.freeze({
@@ -45,6 +46,8 @@ const PayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal(SCENARIO_OUTCOME_CONTEXT),
   templateVersion: z.literal(SCENARIO_OUTCOME_TEMPLATE_VERSION),
   expectation: z.string(), operation: z.string(), requirementDigest: z.string().min(1).optional(),
+  /** Contract revisions accepted in this Phase after `requirementDigest` was planned. */
+  acceptedContractChanges: z.array(AcceptedContractChangeSchema).min(1).optional(),
   evidence: z.array(z.string()).min(1),
 }).strict();
 export type ScenarioOutcomePayload = z.infer<typeof PayloadSchema>;
@@ -59,12 +62,15 @@ export class ScenarioOutcomeInputError extends Error {
 
 /** Framework evidence only; the selected Rule owns the semantic judgement rubric. */
 export function buildScenarioOutcomeMessages(input: {
-  expectation: string; operation: string; requirementDigest?: string; evidence: readonly string[];
+  expectation: string; operation: string; requirementDigest?: string;
+  acceptedContractChanges?: readonly AcceptedContractChange[]; evidence: readonly string[];
 }): readonly ChatMessage[] {
   const parsed = PayloadSchema.safeParse({
     schemaVersion: 1, kind: SCENARIO_OUTCOME_CONTEXT, templateVersion: SCENARIO_OUTCOME_TEMPLATE_VERSION,
     expectation: input.expectation, operation: input.operation,
-    ...(input.requirementDigest ? { requirementDigest: input.requirementDigest } : {}), evidence: input.evidence,
+    ...(input.requirementDigest ? { requirementDigest: input.requirementDigest } : {}),
+    ...(input.acceptedContractChanges?.length ? { acceptedContractChanges: input.acceptedContractChanges } : {}),
+    evidence: input.evidence,
   });
   if (!parsed.success) throw new ScenarioOutcomeInputError('payload', { cause: parsed.error });
   return Object.freeze([
@@ -114,6 +120,8 @@ export async function judgeScenarioOutcome(input: {
   scene: DeliveryGateScene;
   /** Project framing needed to distinguish a broken implementation from an obsolete accepted contract. */
   requirementDigest?: string;
+  /** Revisions accepted since `requirementDigest` was planned; they describe the current contract. */
+  acceptedContractChanges?: readonly AcceptedContractChange[];
   signal?: AbortSignal;
 }): Promise<ScenarioOutcomeVerdict> {
   const { signal, send, artifacts } = input;
@@ -153,7 +161,9 @@ export async function judgeScenarioOutcome(input: {
     ...observations,
   ];
 
-  const assessment = await send(buildScenarioOutcomeMessages({ expectation, operation, requirementDigest, evidence }));
+  const assessment = await send(buildScenarioOutcomeMessages({
+    expectation, operation, requirementDigest, acceptedContractChanges: input.acceptedContractChanges, evidence,
+  }));
   signal?.throwIfAborted();
   return consumeScenarioOutcomeProtocol(assessment, evidence);
 }

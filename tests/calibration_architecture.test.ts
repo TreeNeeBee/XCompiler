@@ -14,7 +14,6 @@ function step(overrides: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
     title: overrides.title ?? 'Step ' + overrides.id,
     description: overrides.description ?? 'Execute one bounded task.',
     systemPrompt: overrides.systemPrompt ?? 'Only produce the declared outputs and keep changes scoped.',
-    role: overrides.role ?? 'Coder',
     tools: overrides.tools ?? ['write_file'],
     inputs: overrides.inputs ?? [],
     outputs: overrides.outputs ?? [],
@@ -44,7 +43,6 @@ describe('calibrateArchitectureStepMappings', () => {
       step({
         id: 'S001',
         phase: 'HIGH_LEVEL_DESIGN',
-        role: 'Architect',
         outputs: ['docs/02-high-level-design.md'],
       }),
       step({
@@ -56,7 +54,6 @@ describe('calibrateArchitectureStepMappings', () => {
       step({
         id: 'S003',
         phase: 'MODULE_TEST',
-        role: 'Tester',
         outputs: ['docs/07-module-test.md'],
         dependsOn: ['S002'],
       }),
@@ -102,9 +99,9 @@ describe('calibrateArchitectureStepMappings', () => {
       },
     ];
     const rawSteps = [
-      step({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md'] }),
-      step({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
+      step({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', outputs: ['docs/01-requirement-analysis.md'] }),
+      step({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
+      step({ id: 'S003', phase: 'DETAILED_DESIGN', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
       step({
         id: 'S004',
         phase: 'CODE',
@@ -115,11 +112,10 @@ describe('calibrateArchitectureStepMappings', () => {
       step({
         id: 'S006',
         phase: 'MODULE_TEST',
-        role: 'Tester',
         outputs: ['tests/test_holiday_service.py', 'tests/test_models.py'],
         dependsOn: ['S004'],
       }),
-      step({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_cli.py'], dependsOn: ['S005'] }),
+      step({ id: 'S007', phase: 'MODULE_TEST', outputs: ['tests/test_cli.py'], dependsOn: ['S005'] }),
     ];
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
     const codeSteps = calibrated.filter((item) => item.phase === 'CODE');
@@ -178,11 +174,11 @@ describe('calibrateArchitectureStepMappings', () => {
       },
     ];
     const rawSteps = [
-      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
+      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
       step({ id: 'S002', phase: 'CODE', outputs: ['src/weather_client.py'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_unit_weather.py'], dependsOn: ['S002'] }),
-      step({ id: 'S004', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md'], dependsOn: ['S003'] }),
-      step({ id: 'S005', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S004'] }),
+      step({ id: 'S003', phase: 'UNIT_TEST', outputs: ['tests/test_unit_weather.py'], dependsOn: ['S002'] }),
+      step({ id: 'S004', phase: 'INTEGRATION_TEST', outputs: ['docs/06-integration-test.md'], dependsOn: ['S003'] }),
+      step({ id: 'S005', phase: 'MODULE_TEST', outputs: ['docs/07-module-test.md'], dependsOn: ['S004'] }),
     ];
 
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
@@ -213,10 +209,10 @@ describe('calibrateArchitectureStepMappings', () => {
       },
     ];
     const rawSteps = [
-      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
+      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
       step({ id: 'S002', phase: 'CODE', outputs: ['src/weather_client.py'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_weather_client.py'], dependsOn: ['S002'] }),
-      step({ id: 'S004', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S003'] }),
+      step({ id: 'S003', phase: 'UNIT_TEST', outputs: ['tests/test_weather_client.py'], dependsOn: ['S002'] }),
+      step({ id: 'S004', phase: 'MODULE_TEST', outputs: ['docs/07-module-test.md'], dependsOn: ['S003'] }),
     ];
 
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);
@@ -248,11 +244,11 @@ describe('calibrateArchitectureStepMappings', () => {
       },
     ];
     const rawSteps = [
-      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
+      step({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
       step({ id: 'S002', phase: 'CODE', outputs: ['src/integration.py'], dependsOn: ['S001'] }),
-      step({ id: 'S003', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_unit_integration.py'], dependsOn: ['S002'] }),
-      step({ id: 'S004', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['tests/test_integration.py'], dependsOn: ['S003'] }),
-      step({ id: 'S005', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S004'] }),
+      step({ id: 'S003', phase: 'UNIT_TEST', outputs: ['tests/test_unit_integration.py'], dependsOn: ['S002'] }),
+      step({ id: 'S004', phase: 'INTEGRATION_TEST', outputs: ['tests/test_integration.py'], dependsOn: ['S003'] }),
+      step({ id: 'S005', phase: 'MODULE_TEST', outputs: ['docs/07-module-test.md'], dependsOn: ['S004'] }),
     ];
 
     const calibrated = calibrateArchitectureStepMappings(rawSteps, modules);

@@ -78,7 +78,7 @@ function preparation(options: {
       },
     ]);
     const selection = await new RuleSelector(catalogue).retrieve({
-      requestKind, context: { projectId: uuid(900), language: 'python', role: 'Coder', scenario: 'repair' },
+      requestKind, context: { projectId: uuid(900), language: 'python', role: 'python-developer', work: 'repair.debug' },
       required: [], taskSummary: 'Inspect the current failed operation.', errorSummary: 'The output lacks evidence.',
       retriever: new RuleVectorRetriever(embedding, new FileRuleVectorIndexStore(path.join(root, 'indexes'))),
     });

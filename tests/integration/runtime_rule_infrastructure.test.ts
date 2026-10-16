@@ -27,7 +27,7 @@ function draft() {
       retrievalDescription: 'Base declaration',
     }] },
   }]));
-  const prepared = selector.prepare({ requestKind: 'business', context: { role: 'Coder' }, required: [] });
+  const prepared = selector.prepare({ requestKind: 'business', context: { role: 'python-developer' }, required: [] });
   return createRuleSelectionDraft({
     logicalRequestId: id(800), requestKind: 'business', createdAt: new Date().toISOString(), prepared,
     ranked: selector.rank({ prepared, query: [], vectors: [], profile: config.retrieval }),

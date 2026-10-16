@@ -46,12 +46,12 @@ export function fixtureExecutionRequest(llm: LLMClient): ExecutionTurnRequestPor
   };
 }
 
-export function withFixtureExecutionRequest<T extends ExecutorOptions>(options: T): T & { request: ExecutionTurnRequestPort } {
+export function withFixtureExecutionRequest<T extends ExecutorOptions & { llm: LLMClient }>(options: T): T & { request: ExecutionTurnRequestPort } {
   return { ...options, request: fixtureExecutionRequest(options.llm) };
 }
 
 export function withFixtureExecutionRequests<T extends AttemptRunnerOptions>(options: T): T {
   return { ...options, executionRequests: scope => fixtureExecutionRequest(
-    options.router.for(scope.role, { providerPool: scope.providerPool }),
+    options.router.forPool(scope.modelPool, { label: scope.role }),
   ) };
 }

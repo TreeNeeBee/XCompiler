@@ -14,7 +14,6 @@ const baseStep = (over: Partial<Step>): Step =>
     title: 't',
     description: 'd',
     systemPrompt: 'sp'.repeat(20),
-    role: 'Planner',
     tools: ['write_file'],
     inputs: [],
     outputs: ['docs/01-requirement-analysis.md'],
@@ -79,7 +78,7 @@ describe('buildPlan — Step id 规整', () => {
       globalPrompt: 'g',
       dependencies: ['vitest'],
       steps: [
-        baseStep({ id: 'S001', phase: 'CODE', role: 'Coder', outputs: ['src/main.ts'] }),
+        baseStep({ id: 'S001', phase: 'CODE', outputs: ['src/main.ts'] }),
       ],
     };
     const plan = buildPlan(draft, { language: 'typescript' });
@@ -129,20 +128,19 @@ describe('buildPlan — Step id 规整', () => {
         },
       ],
       steps: [
-        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
-        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
+        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
         baseStep({
           id: 'S004',
           phase: 'CODE',
-          role: 'Coder',
           outputs: ['src/record-reader.ts', 'tests/record-reader.test.ts', 'docs/tests/unit-test-plan.md', 'package.json', 'tsconfig.json'],
           dependsOn: ['S003'],
         }),
-        baseStep({ id: 'S005', phase: 'UNIT_TEST', role: 'Tester', outputs: ['docs/05-unit-test.md'], dependsOn: ['S004'] }),
-        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md', 'tests/integration/report-cli.test.ts'], dependsOn: ['S005'] }),
-        baseStep({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md', 'tests/record-reader.test.ts'], dependsOn: ['S006'] }),
-        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'], dependsOn: ['S007'] }),
+        baseStep({ id: 'S005', phase: 'UNIT_TEST', outputs: ['docs/05-unit-test.md'], dependsOn: ['S004'] }),
+        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', outputs: ['docs/06-integration-test.md', 'tests/integration/report-cli.test.ts'], dependsOn: ['S005'] }),
+        baseStep({ id: 'S007', phase: 'MODULE_TEST', outputs: ['docs/07-module-test.md', 'tests/record-reader.test.ts'], dependsOn: ['S006'] }),
+        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', outputs: ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'], dependsOn: ['S007'] }),
       ],
     };
 
@@ -172,14 +170,14 @@ describe('buildPlan — Step id 规整', () => {
       globalPrompt: 'g',
       dependencies: ['pytest'],
       steps: [
-        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md'] }),
-        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
-        baseStep({ id: 'S004', phase: 'CODE', role: 'Coder', outputs: ['src/main.py'], dependsOn: [] }),
-        baseStep({ id: 'S005', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_main.py'], dependsOn: ['S004'] }),
-        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['tests/test_integration.py'], dependsOn: ['S005'] }),
-        baseStep({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_module.py'], dependsOn: ['S006'] }),
-        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: ['README.md'], dependsOn: ['S007'] }),
+        baseStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', outputs: ['docs/01-requirement-analysis.md'] }),
+        baseStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'DETAILED_DESIGN', outputs: ['docs/03-detailed-design.md'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S004', phase: 'CODE', outputs: ['src/main.py'], dependsOn: [] }),
+        baseStep({ id: 'S005', phase: 'UNIT_TEST', outputs: ['tests/test_main.py'], dependsOn: ['S004'] }),
+        baseStep({ id: 'S006', phase: 'INTEGRATION_TEST', outputs: ['tests/test_integration.py'], dependsOn: ['S005'] }),
+        baseStep({ id: 'S007', phase: 'MODULE_TEST', outputs: ['tests/test_module.py'], dependsOn: ['S006'] }),
+        baseStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', outputs: ['README.md'], dependsOn: ['S007'] }),
       ],
     };
     const plan = buildPlan(draft);
@@ -192,7 +190,7 @@ describe('buildPlan — Step id 规整', () => {
       requirementDigest: 'Build a complex reporting platform. Phase 1 core import, Phase 2 dashboard.',
       globalPrompt: 'g',
       dependencies: ['pytest'],
-      steps: [baseStep({ id: 'S001', phase: 'CODE', role: 'Coder', outputs: ['src/main.py'] })],
+      steps: [baseStep({ id: 'S001', phase: 'CODE', outputs: ['src/main.py'] })],
     };
     const plan = buildPlan(draft);
     expect(plan.complexityAssessment?.splitRecommended).toBe(true);
@@ -252,9 +250,9 @@ describe('buildPlan — Step id 规整', () => {
         },
       ],
       steps: [
-        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
-        baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/api.py'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/test_api.py'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
+        baseStep({ id: 'S002', phase: 'CODE', outputs: ['src/api.py'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'MODULE_TEST', outputs: ['tests/test_api.py'], dependsOn: ['S002'] }),
       ],
     };
     const plan = buildPlan(draft);
@@ -287,9 +285,9 @@ describe('buildPlan — Step id 规整', () => {
         },
       ],
       steps: [
-        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
-        baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/fetcher.ts', 'src/cli.ts'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/fetcher.test.ts', 'tests/cli.test.ts'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
+        baseStep({ id: 'S002', phase: 'CODE', outputs: ['src/fetcher.ts', 'src/cli.ts'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'MODULE_TEST', outputs: ['tests/fetcher.test.ts', 'tests/cli.test.ts'], dependsOn: ['S002'] }),
       ],
     };
 
@@ -316,9 +314,9 @@ describe('buildPlan — Step id 规整', () => {
         },
       ],
       steps: [
-        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md'] }),
-        baseStep({ id: 'S002', phase: 'CODE', role: 'Coder', outputs: ['src/templates/brief.md.hbs'], dependsOn: ['S001'] }),
-        baseStep({ id: 'S003', phase: 'MODULE_TEST', role: 'Tester', outputs: ['tests/template.test.ts'], dependsOn: ['S002'] }),
+        baseStep({ id: 'S001', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md'] }),
+        baseStep({ id: 'S002', phase: 'CODE', outputs: ['src/templates/brief.md.hbs'], dependsOn: ['S001'] }),
+        baseStep({ id: 'S003', phase: 'MODULE_TEST', outputs: ['tests/template.test.ts'], dependsOn: ['S002'] }),
       ],
     }, { language: 'typescript' });
 
@@ -338,7 +336,6 @@ describe('buildPlan — Step id 规整', () => {
         baseStep({
           id: 'S001',
           phase: 'CODE',
-          role: 'Coder',
           outputs: ['src/main.py'],
           subTasks: [
             {

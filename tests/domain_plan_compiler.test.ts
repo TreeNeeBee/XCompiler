@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Phase as DraftStepType, Plan as DraftPlan, Role as DraftRole } from '../src/domain/planning/execution_plan.js';
 import { isObjectId } from '../src/domain/identity/object_id.js';
 import {
-  compileProjectExtension,
-  compileProjectGraph,
   rebaseDraftPlanPhases,
 } from '../src/domain/planning/compiler.js';
 import { ProjectSchema } from '../src/domain/projects/project.js';
@@ -14,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Workspace } from '../src/workspace/workspace.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
-import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
+import { ProjectGraphPersistenceService, materializeProjectGraph, materializeProjectExtension } from '../src/application/planning/project_graph_persistence_service.js';
 import { DomainAuditTrail } from '../src/application/observability/domain_audit_trail.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { generateProjectDevelopmentReport } from '../src/application/reporting/project_report.js';
@@ -26,7 +24,7 @@ import { TicketSchema, type WorkTicket } from '../src/domain/tickets/ticket.js';
 
 describe('domain plan compiler', () => {
   it('compiles readable Planner names into a globally identified Project graph', () => {
-    const graph = compileProjectGraph({
+    const graph = materializeProjectGraph({
       draft: samplePlan(),
       topic: 'Build a TypeScript reporting application.',
       topicSourceRef: 'examples/news/news_ts.md',
@@ -92,7 +90,7 @@ describe('domain plan compiler', () => {
   });
 
   it('creates Epic, Story and two Task levels while leaving future Phases skeletal', () => {
-    const graph = compileProjectGraph({
+    const graph = materializeProjectGraph({
       draft: samplePlan(),
       topic: 'Build a TypeScript reporting application.',
       projectName: 'report',
@@ -150,7 +148,7 @@ describe('domain plan compiler', () => {
         }],
       },
     ];
-    const graph = compileProjectGraph({
+    const graph = materializeProjectGraph({
       draft,
       topic: 'Build a TypeScript reporting application.',
       projectName: 'report',
@@ -165,7 +163,7 @@ describe('domain plan compiler', () => {
   });
 
   it('pairs each development Step and Story with its verification side', () => {
-    const graph = compileProjectGraph({
+    const graph = materializeProjectGraph({
       draft: samplePlan(),
       topic: 'Build a TypeScript reporting application.',
       projectName: 'report',
@@ -184,7 +182,7 @@ describe('domain plan compiler', () => {
   it('persists the complete graph through the global object registry', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-domain-graph-'));
     const workspace = new Workspace(root);
-    const graph = compileProjectGraph({
+    const graph = materializeProjectGraph({
       draft: samplePlan(),
       topic: 'Build a TypeScript reporting application.',
       projectName: 'report',
@@ -193,9 +191,8 @@ describe('domain plan compiler', () => {
     await repository.load();
     await new ProjectGraphPersistenceService(repository).persistGraph(graph);
 
-    // Project + ProjectPlan + the PM management plan, plus every Role Definition, every registered
-    // actor, and the graph.
-    const expectedCount = 1 + 1 + 1 + graph.roleDefinitions.length + graph.actors.length +
+    // Project, plans, registered actors, and the canonical work graph share one registry.
+    const expectedCount = 1 + 1 + 1 + graph.actors.length +
       graph.phasePlans.length + graph.phases.length +
       graph.steps.length + graph.tickets.length + graph.kpis.length + graph.deliverables.length;
     expect(repository.registry.all()).toHaveLength(expectedCount);
@@ -247,7 +244,7 @@ describe('domain plan compiler', () => {
 
   it('does not declare final delivery while a later Phase is incomplete', async () => {
     const draft = samplePlan();
-    const graph = compileProjectGraph({ draft, topic: 'Build reports.', projectName: 'report' });
+    const graph = materializeProjectGraph({ draft, topic: 'Build reports.', projectName: 'report' });
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-report-'));
     const workspace = new Workspace(root);
     const repository = new DomainObjectRepository(workspace);
@@ -308,7 +305,7 @@ describe('domain plan compiler', () => {
   it('appends rebased Phases without replacing the canonical Project identity', async () => {
     const originalDraft = samplePlan();
     originalDraft.implementationPhases = [originalDraft.implementationPhases[0]!];
-    const original = compileProjectGraph({
+    const original = materializeProjectGraph({
       draft: originalDraft,
       topic: 'Build a TypeScript reporting application.',
       projectName: 'report',
@@ -342,7 +339,7 @@ describe('domain plan compiler', () => {
       { ...samplePlan(), intent: 'feature' },
       original.phases.map((phase) => phase.name),
     );
-    const extension = compileProjectExtension({
+    const extension = materializeProjectExtension({
       draft: extensionDraft,
       topic: 'Add personalized categories.',
       projectName: original.project.name,
@@ -356,6 +353,7 @@ describe('domain plan compiler', () => {
       managementPlan: original.managementPlan,
     });
 
+    expect(extension.actors).toEqual([]);
     expect(extension.project.id).toBe(original.project.id);
     expect(extension.project.projectPlanId).toBe(original.projectPlan.id);
     expect(extension.phases.map((phase) => phase.name)).toEqual(['P2', 'P3']);

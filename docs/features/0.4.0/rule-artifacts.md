@@ -1,5 +1,7 @@
 # 0.4.0 Rule artifacts and development interfaces
 
+> **2026-10-16 修改合同**：applicability 的 `roles` 改为角色 ID、`scenarios` 改为 `works`；快照按执行固定；正文支持 locale 变体；J06 迁至工作段（[变更清单](2026-10-15-review-change-list.md) D-6、D-13、D-18、M-R7）。
+
 Updated 2026-10-15. This describes authored F1/R1 components, J06/P01/P02/P03/Executor production composition
 and pre/post-graph planning identity. Initial focused checks have run; complete functional milestones are
 verified before further development and release remains last. Installed behavior is not yet
@@ -24,15 +26,17 @@ and retains the resolved source location for evidence.
   project definitions. Referencing shared content does not create a mutable project-owned copy.
 
 The loader provides no write or activation operation. Protected base and released Debug content
-retain their manual compiler-source/version update contract. The accepted automatic business-Rule
-candidate lifecycle still needs build/CR integration.
+retain their manual compiler-source/version update contract. The generic project-definition schema
+does not activate business Rules in 0.4; that build/CR lifecycle and the business segment are deferred
+to 0.5 by D-2.
 
 ### Installed compiler sources
 
 Runtime obtains `<installation>/rules` from
 [`installedCompilerRulesRoot`](../../../src/config/installation_root.ts): source and normal bundles
 use the module's installation root; a pkg executable uses its executable directory. Neither cwd nor
-`XC_PATH`/`XCOMPILER_PATH` participates. Existing Wiki/role path semantics are unchanged.
+`XC_PATH`/`XCOMPILER_PATH` participates. Existing Wiki paths are unchanged; M-R removes the old role
+template overlay and its installation path lookup.
 
 [`loadCompilerRuleCatalogue`](../../../src/infrastructure/rules/compiler_rule_catalogue.ts) is an
 internal adapter taking that Runtime-selected root, not a user-configurable path. Its compiled
@@ -55,12 +59,13 @@ packaging before build and before staging publication. All associated tests rema
 child-process pkg resolver simulation does not substitute for the native package gate.
 
 The J06 resource is [`rules/scenario-outcome.yaml`](../../../rules/scenario-outcome.yaml): one
-`scenario`/`required` Rule in slot `0x0207`, list and Rule version `1.0.0`. The list restricts role to
-`ProjectManager` and scenario to `scenario-outcome-judgement`. Runtime explicitly binds Rule
+`scenario`/`required` Rule in work-segment slot `0x02A0`, list and Rule version `2.0.0`. The list
+declares `works: [judge.scenario]`; role eligibility belongs to business code, not this rubric.
+Runtime explicitly binds Rule
 `a707ec22-a5d2-45da-83b3-823d96d18f20`; its instruction level alone does not load it. The existing
-expectation/evidence and Bug/CR rubric is authored here once. It excludes unrelated callers and
-does not create an embedding dependency for required-only J06. Its manifest digest was precomputed
-independently with schema defaults; product-parser validation remains unrun at G1.
+expectation/evidence and Bug/CR rubric is authored here once. It excludes unrelated work and
+does not create an embedding dependency for required-only J06. Its compiled manifest pins this
+version and the normalized definition digest.
 
 [`RuleCatalogue`](../../../src/domain/rules/catalogue.ts) validates the following strict fields:
 
@@ -70,11 +75,12 @@ independently with schema defaults; product-parser validation remains unrun at G
 | Rule | UUID `id`, nonblank `version`, `category`, `level`, `instruction`, `retrievalDescription` | `applicability: {}`, `conflicts: []` |
 | Reference | `ruleListId`, exact `version` | None |
 | Conflict claim | nonblank `key`, scalar `value` (string, boolean or finite number) | None |
-| Applicability | No required dimensions | `projectIds`, `languages`, `roles`, `scenarios`; each declared list must be nonempty |
+| Applicability | No required dimensions | `projectIds`, `languages`, `roles`, `works`; each declared list must be nonempty |
 
 Categories are `general`, `framework`, `scenario`, `business`. Levels are `mandatory`, `forbidden`,
 `required`, `advised`, `announce`. Versions are currently validated as nonblank strings and compared
-exactly; no semantic-version ordering is implied. Roles use the existing LLM role enum. Applicability
+exactly; no semantic-version ordering is implied. `roles` uses installation-level Role IDs and
+`works` uses Work IDs from the Domain catalogues. Applicability
 dimensions combine with AND, allowed values within one dimension with ANY; an absent dimension is
 unrestricted. Rule level does not make an optional Rule a required binding.
 
@@ -82,6 +88,11 @@ One RuleList owns one numeric slot. The catalogue rejects duplicate Rule/list id
 slot ownership, missing/wrong-version references, cycles and contradictory claims inside one list.
 Referenced lists retain their own slots and applicability. Index slots cannot hold RuleLists, and
 Rules at genesis `0x0000` must be declarations (`announce`).
+
+The approved allocation puts Role lists at `0x0201–0x023F`, shared/mode work at `0x0240–0x024F`,
+Step work at `0x0250–0x027F`, planning/management reservations at `0x0280–0x029F`, and judgement
+work at `0x02A0–0x02BF`. J06 already uses `0x02A0`; the remaining Role/work text extraction belongs
+to M-D. Debug lists retain `0x0300–0x0FFF`. See the [slot contract](2026-10-15-review-change-list.md#18-rulechain-槽位分配d-13).
 
 This is a YAML-format illustration for a declared compiler source, not a shipped rule or an
 additional CLI configuration:
@@ -94,7 +105,8 @@ version: "1.0.0"
 title: "Evidence handling"
 slot: "0x0300"
 applicability:
-  roles: [Coder, Debugger]
+  roles: [python-developer, typescript-developer]
+  works: [repair.debug]
 references: []
 rules:
   - id: "00000000-0000-4000-8000-000000000021"
@@ -401,7 +413,7 @@ Rules nor replenishes the separate Rule-review budget. Production caller integra
 
 The 2026-10-10–11 V1 input foundation references this already-persisted business Rule snapshot by its
 digest. `BusinessRequestInputs.capture` verifies that it belongs to the same logical request and
-ProjectManager/project context, including raw low-score review evidence. It never accepts a caller's
+role/work/Project context, including raw low-score review evidence. It never accepts a caller's
 arbitrary snapshot digest or starts a new selection. The framework messages, caller-owned scenario
 execution identity, Project/Phase references, protocol and template versions form a canonical input
 digest before audit protection. Message bodies stay only in required `llm.business_request_input`
@@ -430,6 +442,10 @@ provider/model, capacity and attempt ID. Before transport it writes required
 `.xcompiler/llm/business-inputs/attempts/<request-id>/<attempt-id>.json`, and verifies the retained
 request. Metadata owns a pre-redaction full-request digest and contains no messages. It records
 preparation, not successful dispatch or a send allowance.
+The M-R owner additionally pins role/version, work, named model pool, `inheritFallbacks` and the
+resolved `allowedProviders`. Explicit Actor pool overrides exclude global fallbacks, including an
+override with the same name as the role default. Capture and recovery retain that original range;
+current pool configuration cannot expand an old request's allowed providers.
 The retained request schema covers final messages, binding, producer identity, capacity and preparation
 time. Transport options and the serialized HTTP request remain owned by their existing adapters;
 this record alone is not a complete network replay specification.
@@ -494,24 +510,27 @@ request, and automatic interrupted-Phase-gate discovery is outside this helper. 
 file/HTTP and resource cases are authored, unrun; G1 must remove the actual binding, preparation,
 protocol consumer, required verdict-audit and run callback to falsify their wiring.
 
-### Pre-graph planning ownership and role binding
+### Planning ownership and role binding
 
 [`BusinessRequestOwnerSchema`](../../../src/application/execution/business_request_input.ts)
-now distinguishes the existing `scenario-judgement` fields from the strict pre-graph branch
-`{ kind: 'planning-operation', operationId, operation }`. `operationId` is a normalized UUID for
-caller correlation, not a canonical Domain ID. The branch has no Project/Phase fields or separately
-chosen role. Existing scenario bytes/digest material and schema version 1 are unchanged.
+distinguishes the Project-owned `scenario-judgement` and `project-planning-operation` branches from
+the strict pre-graph `planning-operation` branch. Each owner pins role/version, work and the resolved
+model-pool binding. `operationId` is a normalized UUID for caller correlation, not a canonical Domain
+ID. Pre-graph planning has no Project/Phase/Actor fields; its operation fixes the role and work.
+Project-owned P03 and J06 use a registered Actor and retain its `actorId` and role version. M-R
+changes owner material; pre-M-R workspaces are not migrated. Recovery of a retained current-contract
+request preserves its original bytes and digests rather than rebuilding identity from current definitions.
 
-| Operation | Owning role | Required snapshot scenario |
+| Operation | Owning role | Required snapshot work |
 |---|---|---|
-| `clarification` | `ProjectManager` | `planning-clarification` |
-| `phase-plan` | `Planner` | `planning-phase-plan` |
-| `phase-decomposition` | `Planner` | `planning-phase-decomposition` |
+| `clarification` | `project-manager` | `plan.clarify` |
+| `phase-plan` | `planner` | `plan.phase` |
+| `phase-decomposition` | `planner` | `plan.decompose` |
 
 These pre-graph planning snapshots must have `requestKind: business` and no Project scope. Capture, live
-verification, recovery and retained sending check this binding. Runtime chooses the role from
-the captured owner. Final attempt metadata and recovery require the original input's role as well
-as its record/snapshot hashes; matching attempt/audit/provider roles alone are insufficient.
+verification, recovery and retained sending check this binding. Final attempt metadata and recovery
+require the original input's role and an originally allowed provider as well as its record/snapshot
+hashes; matching attempt/audit/provider roles alone are insufficient.
 Scenario binding retains its existing PM/Project contract, and the J06 consumer rejects a planning
 owner before reading scenario-specific fields. No new lifecycle, scoring or correction owner is
 introduced. Existing audit adapters already parse and preserve this shared input/attempt material.
@@ -595,9 +614,10 @@ delivery, Skill-reference and lint contracts for candidate acceptance, final par
 Only explicit contract refusals enter semantic retry; other failures/cancellation propagate.
 
 Build's first decomposition retains `planning-operation` without invented Domain IDs. Run injects
-`project-planning-operation` with its existing canonical `projectId`; the Rule snapshot binds Planner,
-decomposition purpose, language and that same Project. Implementation phase labels such as `P2`
-remain audit context and are not Domain Phase IDs. Old P01/P02/J06 owner formats are unchanged.
+`project-planning-operation` with its existing canonical `projectId`. Its registered planner Actor
+is resolved lazily when a request is sent, and the owner pins the Actor/version and pool range.
+The Rule snapshot binds `planner`, `plan.decompose`, language and that same Project. Implementation
+phase labels such as `P2` remain audit context and are not Domain Phase IDs.
 The Application progression service consumes an injected port and retains concrete-plan-before-
 checkpoint persistence; final completion requires no decomposition request. No Domain lifecycle
 state is added.
@@ -616,15 +636,15 @@ resource failures are recorded in HANDOVER.
 
 `execution-turn/1` uses the Application `ExecutionTurnRequestPort` injected by Runtime Run through
 AttemptRunner. Each runner execution fixes canonical scope, actual role, Actor/assignment and its
-provider pool; each round retains its original rendering/validation payload, Tool descriptors and
+named model pool and allowed providers; each round retains its original rendering/validation payload, Tool descriptors and
 messages under a fresh logical request ID. The `step-execution` owner and `step-execution-turn`
-context bind that same work Step/Ticket, language, actual role and pool to snapshot/attempt evidence.
+context bind that same work Step/Ticket, language, actual role/version, work and pool range to snapshot/attempt evidence.
 Render context supports canonical projected Steps without weakening the Domain planning schema.
 
 Required genesis, original input, actual dispatch bytes, raw producer completion, whole protocol,
 independent normalization proof, original business validation, Plugin consistency, adoption and
 required judgement precede Tool execution. Ordinary output refusal retains its existing one-outer-
-round cost; conditional quality/Debugger checks retain existing Router feedback/fallback and bounded
+round cost; conditional quality/debug checks retain existing Router feedback/fallback and bounded
 grace. `scoreSuccess: false` leaves outcome scoring with its current owner. No new correction
 allowance is introduced, and compiler-local failures do not become product Bugs.
 

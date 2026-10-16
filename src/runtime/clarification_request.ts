@@ -25,6 +25,7 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import { roleProfile } from '../domain/workflow/role.js';
 
 export class ClarificationProtocolError extends Error {
   readonly code = 'clarification_protocol_invalid';
@@ -40,13 +41,16 @@ export function createRuntimeClarificationRequestPort(input: {
   router: LLMRouter; audit: AuditLogger;
 }): ClarificationRequestPort {
   const { config, container, recordReplay, router, audit } = input;
+  const profile = roleProfile('project-manager');
+  const modelPool = router.resolvePool(profile.defaultPool);
   return Object.freeze({
-    name: router.for('ProjectManager').name,
+    name: router.forPool(modelPool, { label: profile.id }).name,
     async send(request: Parameters<ClarificationRequestPort['send']>[0]) {
       const signal = request.signal;
       signal?.throwIfAborted();
       const owner = Object.freeze(PlanningOperationOwnerSchema.parse({
         kind: 'planning-operation', operation: 'clarification', operationId: request.operationId,
+        role: profile.id, roleVersion: profile.version, work: PLANNING_REQUEST_CONTEXTS.clarification, ...modelPool,
       }));
       const logicalRequestId = randomUUID();
       const payload = validateClarificationPayload(request.payload);
@@ -57,9 +61,9 @@ export function createRuntimeClarificationRequestPort(input: {
         logicalRequestId, field: 'clarification_validator',
       });
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
-      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, logicalRequestId,
-        context: { role: 'ProjectManager', language: payload.parseContext.language,
-          scenario: PLANNING_REQUEST_CONTEXTS.clarification }, required: [],
+      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
+        context: { role: 'project-manager', language: payload.parseContext.language,
+          work: PLANNING_REQUEST_CONTEXTS.clarification }, required: [],
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
       signal?.throwIfAborted();

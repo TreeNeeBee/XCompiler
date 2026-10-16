@@ -34,7 +34,7 @@ const probe = async () => ({ ok: true, latencyMs: 0, detail: 'local fixture' });
 function config(baseUrl: string): XCompilerConfig {
   return { llm: {
     providers: { primary: { type: 'openai', base_url: baseUrl, api_key: '', model: 'requested-alias' } },
-    roles: { Coder: ['primary'] }, fallbacks: [], role_fallbacks: {}, scores: {},
+    pools: { coding: ['primary'] }, fallbacks: [], scores: {},
   } } as unknown as XCompilerConfig;
 }
 async function auditEvents(): Promise<AuditEvent[]> {
@@ -79,7 +79,7 @@ describe('Router response evidence through provider, persistence and replay', ()
         },
       });
       let received: RoutedResponseEvidence | undefined;
-      await expect(router.for('Coder').chat(messages, { onResponse: (value) => { received = value; } }))
+      await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (value) => { received = value; } }))
         .resolves.toBe('accepted');
       expect(received!.capture).toMatchObject({ status: 'unavailable', reason });
       expect(Reflect.set(received!.capture, 'status', 'recorded')).toBe(false);
@@ -111,7 +111,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     await audit.start();
     const router = new LLMRouter(cfg, audit, undefined, undefined, undefined, probe);
     let delivered: RoutedResponseEvidence | undefined;
-    await expect(router.for('Coder').chat(messages, {
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
       validate: (text) => { if (text !== 'accepted') throw new Error('accepted text required'); },
       onResponse: (value) => { delivered = value; },
     })).resolves.toBe('accepted');
@@ -137,7 +137,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const responses: RoutedResponseEvidence[] = [];
     const logicalRequestId = '2d8272b5-a2a0-4083-a17d-6e11805ae836';
     const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe);
-    await expect(router.for('Coder').chat(messages, {
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
       logicalRequestId,
       validate: (text) => { if (text !== 'accepted') throw new Error('accepted text required'); },
       onResponse: (response) => { responses.push(response); },
@@ -185,7 +185,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const audit = new AuditLogger({ root, command: 'request-boundary' });
     await audit.start();
     const router = new LLMRouter(config(server.url), audit, scores, undefined, plugins, probe);
-    await expect(router.for('Coder').chat(messages, {
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
       logicalRequestId, beforeProviderRequest: originalGuard, onResponse: originalResponse, scoreSuccess: false,
     })).resolves.toBe('accepted');
     expect(server.calls()).toBe(1);
@@ -213,7 +213,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const boost = vi.spyOn(scores, 'boost').mockImplementation(() => undefined);
     const observed: unknown[] = [];
     const router = new LLMRouter(cfg, undefined, scores, undefined, plugins, probe);
-    await expect(router.for('Coder').chat(messages, { beforeProviderRequest(request) {
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { beforeProviderRequest(request) {
       observed.push(request);
       expect(request.messages).toEqual([{ role: 'user', content: 'changed by Plugin' }]);
       expect(Object.isFrozen(request.messages)).toBe(true);
@@ -234,7 +234,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     for (const mode of ['record', 'replay'] as const) {
       const controller = new RecordReplayController({ mode, store, enabledChannels: ['llm'] });
       const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, controller);
-      await expect(router.for('Coder').chat(messages, {
+      await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
         onResponse: (response) => { observed.push(response); },
       })).resolves.toBe('accepted');
       expect(controller.evidence().usage.llm).toMatchObject(mode === 'record' ? { recorded: 1 } : { replayed: 1 });
@@ -263,7 +263,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     for (const mode of ['record', 'replay'] as const) {
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
         new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
-      await expect(router.for('Coder').chat(messages, {
+      await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, {
         onResponse: (response) => { observed.push(response); },
       })).resolves.toBe(message.content);
     }
@@ -294,7 +294,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const server = await endpoint(() => message);
     const router = new LLMRouter(config(server.url), undefined, undefined, undefined, undefined, probe);
     let observed: RoutedResponseEvidence | undefined;
-    await router.for('Coder').chat(messages, { onResponse: (response) => { observed = response; } });
+    await router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed = response; } });
     if (observed?.capture.status !== 'recorded') throw new Error('Expected recorded provider evidence');
     const payload = observed.capture.response.payloadEvidence!;
     const entry = payload.observations[0]!;
@@ -327,7 +327,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     for (const mode of ['record', 'replay'] as const) {
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
         new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
-      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+      await router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed.push(response); } });
     }
     expect(server.calls()).toBe(1);
     const protectedMessage = {
@@ -363,7 +363,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
     const cfg = config(server.url);
     const record = new RecordReplayController({ mode: 'record', store });
-    await new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record).for('Coder').chat(messages);
+    await new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record).forPool('coding', { label: 'python-developer' }).chat(messages);
     const original = (await store.list())[0]!;
     const historical = structuredClone(original.response) as {
       format: 'xcompiler.llm-response/1'; output: string; observations: ProviderResponseEvidence[];
@@ -376,7 +376,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     let observed: RoutedResponseEvidence | undefined;
     const replay = new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe,
       new RecordReplayController({ mode: 'replay', store }));
-    await expect(replay.for('Coder').chat(messages, { onResponse: (response) => { observed = response; } }))
+    await expect(replay.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed = response; } }))
       .resolves.toBe('accepted');
     expect(observed!.capture).toMatchObject({ status: 'recorded', response: { source: 'replay', finishReasons: ['stop'] } });
     if (observed!.capture.status !== 'recorded') throw new Error('Expected historical provider evidence');
@@ -395,7 +395,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     for (const mode of ['record', 'replay'] as const) {
       const router = new LLMRouter(config(server.url), undefined, undefined, undefined, undefined, probe,
         new RecordReplayController({ mode, store, enabledChannels: ['llm'], redactedFields: ['tool_calls'] }));
-      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+      await router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed.push(response); } });
     }
     expect(assessResponseCompletion(observed[0]!)).toMatchObject({
       disposition: 'complete', eligibleForProtocolCalibration: false, reason: 'provider-tool-call',
@@ -420,7 +420,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     for (const mode of ['record', 'replay'] as const) {
       const router = new LLMRouter(config(server.url), audit, undefined, undefined, undefined, probe,
         new RecordReplayController({ mode, store, enabledChannels: ['llm'] }));
-      await router.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } });
+      await router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed.push(response); } });
     }
     for (const [index, response] of observed.entries()) {
       if (response.capture.status !== 'recorded') throw new Error('Expected retained provider evidence');
@@ -449,7 +449,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const record = new RecordReplayController({ mode: 'record', store });
     const cfg = config(server.url);
     const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record);
-    await router.for('Coder').chat(messages);
+    await router.forPool('coding', { label: 'python-developer' }).chat(messages);
     const original = (await store.list())[0]!;
     // Append an explicit superseding old-format fixture through the real recording controller.
     await new RecordReplayController({ mode: 'refresh', store }).execute({
@@ -458,7 +458,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const observed: RoutedResponseEvidence[] = [];
     const replay = new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe,
       new RecordReplayController({ mode: 'replay', store }));
-    await expect(replay.for('Coder').chat(messages, { onResponse: (response) => { observed.push(response); } }))
+    await expect(replay.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: (response) => { observed.push(response); } }))
       .resolves.toBe('historical text');
     expect(observed[0]!.capture).toMatchObject({ status: 'unavailable', reason: 'missing' });
     expect(await store.list()).toHaveLength(2);
@@ -470,7 +470,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const store = new FileRecordReplayStore(path.join(root, 'fixtures'));
     const cfg = config(server.url);
     const record = new RecordReplayController({ mode: 'record', store });
-    await new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record).for('Coder').chat(messages);
+    await new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe, record).forPool('coding', { label: 'python-developer' }).chat(messages);
     const original = (await store.list())[0]!;
     await new RecordReplayController({ mode: 'refresh', store }).execute({
       channel: 'llm', operation: 'chat', request: original.request,
@@ -480,7 +480,7 @@ describe('Router response evidence through provider, persistence and replay', ()
     const boost = vi.spyOn(scores, 'boost').mockImplementation(() => undefined);
     const replay = new LLMRouter(cfg, undefined, scores, undefined, undefined, probe,
       new RecordReplayController({ mode: 'replay', store }));
-    await expect(replay.for('Coder').chat(messages)).rejects.toMatchObject({
+    await expect(replay.forPool('coding', { label: 'python-developer' }).chat(messages)).rejects.toMatchObject({
       code: 'evidence_persistence_failed',
       failure: { operation: 'validate-recording', systemCode: 'record_corrupt' },
       cause: { code: 'record_corrupt' },
@@ -509,7 +509,7 @@ describe('Router response evidence through provider, persistence and replay', ()
       },
     });
     const delivered = vi.fn();
-    const failure: unknown = await router.for('Coder').chat(messages, { onResponse: delivered })
+    const failure: unknown = await router.forPool('coding', { label: 'python-developer' }).chat(messages, { onResponse: delivered })
       .then(() => undefined, (error: unknown) => error);
     expect(failure).toBeInstanceOf(AuditPersistenceError);
     expect(failure).toMatchObject({ failure: { messageId: 'llm.provider_response' } });

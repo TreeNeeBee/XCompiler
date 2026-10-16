@@ -8,7 +8,7 @@ import YAML from 'yaml';
 import { buildPlan } from '../../src/agents/planner.js';
 import { runCompile } from '../../src/runtime/build.js';
 import type { RuntimeIO, RuntimeInteraction } from '../../src/runtime/io.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import type { BusinessRequestInput } from '../../src/application/execution/business_request_input.js';
 import type { AuditEvent } from '../../src/audit/audit.js';
 import type { ChatMessage } from '../../src/llm/types.js';
@@ -18,14 +18,14 @@ import type { PhasePlan } from '../../src/domain/planning/phase_plan_checkpoint.
  * Which role actually spoke, observed from the wire.
  *
  * `build` picks its clients from the router by role name, and nothing downstream carries that name:
- * `router.for(role)` returns a client identified by its *provider*, so a role swap is invisible to
+ * `router.forPool(role)` returns a client identified by its *provider*, so a role swap is invisible to
  * every assertion made inside the process. Giving each role its own provider with its own model
  * string turns the choice into something the request itself reports — which is the only way a test
  * can tell a Planner-voiced clarification from a PM-voiced one.
  */
-const MODEL_FOR_ROLE = Object.fromEntries(
-  ROLES.map((role) => [role, `model-${role.toLowerCase()}`]),
-) as Record<(typeof ROLES)[number], string>;
+const MODEL_FOR_POOL = Object.fromEntries(
+  DEFAULT_MODEL_POOLS.map((role) => [role, `model-${role.toLowerCase()}`]),
+) as Record<(typeof DEFAULT_MODEL_POOLS)[number], string>;
 
 interface Captured {
   model: string;
@@ -42,20 +42,20 @@ interface Captured {
  */
 async function writeConfig(root: string, baseUrl: string): Promise<string> {
   const example = YAML.parse(await fs.readFile(path.resolve('config.example.yaml'), 'utf8')) as {
-    llm: { providers: Record<string, unknown>; roles: Record<string, string[]> };
+    llm: { providers: Record<string, unknown>; pools: Record<string, string[]> };
   };
-  example.llm.providers = Object.fromEntries(ROLES.map((role) => [`p_${role}`, {
+  example.llm.providers = Object.fromEntries(DEFAULT_MODEL_POOLS.map((role) => [`p_${role}`, {
     type: 'openai',
     api_key: '',
     base_url: baseUrl,
-    model: MODEL_FOR_ROLE[role],
+    model: MODEL_FOR_POOL[role],
     context_window: '128K',
     connect_timeout_ms: 5_000,
     request_timeout_ms: 15_000,
     stream_first_token_timeout_ms: 10_000,
     stream_idle_timeout_ms: 10_000,
   }]));
-  example.llm.roles = Object.fromEntries(ROLES.map((role) => [role, [`p_${role}`]]));
+  example.llm.pools = Object.fromEntries(DEFAULT_MODEL_POOLS.map((role) => [role, [`p_${role}`]]));
   const configPath = path.join(root, 'config.yaml');
   await fs.writeFile(configPath, YAML.stringify(example));
   return configPath;
@@ -178,9 +178,9 @@ describe('build speaks to the user as PM', () => {
     await run();
 
     expect(captured.length).toBeGreaterThan(0);
-    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.ProjectManager);
+    expect(captured[0]!.model).toBe(MODEL_FOR_POOL.management);
     // Not merely "some PM call happened somewhere": no executing role may speak before Gate 1.
-    expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_ROLE.Planner);
+    expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_POOL.planning);
   });
 
   it('injects the retained clarification port at the actual Build PM call before Gate 1', { timeout: 30_000 }, async () => {
@@ -193,7 +193,7 @@ describe('build speaks to the user as PM', () => {
     // are unnecessary to prove that this specific Build call uses the retained PM boundary.
     await runCompile({ workspace: containerRoot, name: 'clarification-port', configPath, inputFile, io: cancellingIO() });
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.ProjectManager);
+    expect(captured[0]!.model).toBe(MODEL_FOR_POOL.management);
     expect(captured[0]!.messages).toHaveLength(3);
     expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
     expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
@@ -226,9 +226,9 @@ describe('build speaks to the user as PM', () => {
       responseRecordId: expect.any(String), protocolResultId: expect.any(String) });
     expect(events.filter((event) => event.messageId === 'llm.business_protocol_result')).toHaveLength(1);
     expect(events.find((event) => event.messageId === 'llm.business_request_attempt')!.data)
-      .toMatchObject({ request: { logicalRequestId, role: 'ProjectManager' } });
+      .toMatchObject({ request: { logicalRequestId, role: 'project-manager' } });
     const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
-    expect(snapshot).toMatchObject({ context: { role: 'ProjectManager', scenario: 'planning-clarification', language: 'python' } });
+    expect(snapshot).toMatchObject({ context: { role: 'project-manager', work: 'plan.clarify', language: 'python' } });
     expect(snapshot.requiredRuleIds).toHaveLength(3);
     expect(snapshot.context).not.toHaveProperty('projectId');
     const metadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
@@ -259,8 +259,8 @@ describe('build speaks to the user as PM', () => {
 
     // Non-empty is the guard that keeps this from passing when the config fails to load at all.
     expect(captured.length).toBeGreaterThan(0);
-    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
-    expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_ROLE.ProjectManager);
+    expect(captured[0]!.model).toBe(MODEL_FOR_POOL.planning);
+    expect(captured.map((call) => call.model)).not.toContain(MODEL_FOR_POOL.management);
   });
 
   it('passes a readable incremental baseline through Runtime to the planning request', { timeout: 30_000 }, async () => {
@@ -274,7 +274,7 @@ describe('build speaks to the user as PM', () => {
       globalPrompt: 'Preserve the existing reporting behavior.',
       dependencies: [],
       steps: [{
-        id: 'S001', iterationId: 'P1', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner',
+        id: 'S001', iterationId: 'P1', phase: 'REQUIREMENT_ANALYSIS',
         title: 'Requirement', description: 'Record the reporting contract.',
         systemPrompt: 'Document the accepted reporting requirement.',
         tools: ['write_file'], inputs: [], outputs: ['docs/01-requirement-analysis.md'],
@@ -293,7 +293,7 @@ describe('build speaks to the user as PM', () => {
     })).rejects.toThrow();
 
     expect(captured.length).toBeGreaterThan(0);
-    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(captured[0]!.model).toBe(MODEL_FOR_POOL.planning);
     expect(captured[0]!.prompt).toContain('## Existing plan summary');
     expect(captured[0]!.prompt).toContain(requirementDigest);
   });
@@ -311,7 +311,7 @@ describe('build speaks to the user as PM', () => {
       io: cancellingIO(),
     })).rejects.toThrow();
     expect(captured.length).toBeGreaterThan(1);
-    expect(captured[0]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(captured[0]!.model).toBe(MODEL_FOR_POOL.planning);
     expect(captured[0]!.messages).toHaveLength(3);
     expect(captured[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
     expect(captured[0]!.messages[0]!.content).not.toContain('Author comments never enter prompts');
@@ -335,9 +335,9 @@ describe('build speaks to the user as PM', () => {
     expect(retained[0]!.data!.logicalRequestId).toBe(logicalRequestId);
     expect(events.filter((event) => event.messageId === 'llm.business_protocol_result')).toHaveLength(1);
     expect(events.find((event) => event.messageId === 'llm.business_request_attempt')!.data)
-      .toMatchObject({ request: { logicalRequestId, role: 'Planner' } });
+      .toMatchObject({ request: { logicalRequestId, role: 'planner' } });
     const snapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules', 'requests', 'snapshots', `${logicalRequestId}.json`), 'utf8'));
-    expect(snapshot).toMatchObject({ context: { role: 'Planner', scenario: 'planning-phase-plan' } });
+    expect(snapshot).toMatchObject({ context: { role: 'planner', work: 'plan.phase' } });
     expect(snapshot.requiredRuleIds).toHaveLength(3);
     expect(snapshot.context).not.toHaveProperty('projectId');
     const inputMetadata = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'llm', 'business-inputs', 'requests', `${logicalRequestId}.json`), 'utf8'));
@@ -359,7 +359,7 @@ describe('build speaks to the user as PM', () => {
     expect(decompositions[0]!.messages).toEqual(captured[1]!.messages.slice(1));
     const decompositionSnapshot = JSON.parse(await fs.readFile(path.join(containerRoot, '.xcompiler', 'rules',
       'requests', 'snapshots', `${decompositions[0]!.logicalRequestId}.json`), 'utf8'));
-    expect(decompositionSnapshot.context).toMatchObject({ role: 'Planner', scenario: 'planning-phase-decomposition', language: 'python' });
+    expect(decompositionSnapshot.context).toMatchObject({ role: 'planner', work: 'plan.decompose', language: 'python' });
     expect(decompositionSnapshot.context).not.toHaveProperty('projectId');
   });
 
@@ -408,7 +408,7 @@ describe('build speaks to the user as PM', () => {
     expect(decompositions[0]!.auditContext).toMatchObject({ phasePlan: { implementationPhases: [
       expect.objectContaining({ id: 'P1', status: 'current' }),
     ] } });
-    expect(captured[beforeCalls]!.model).toBe(MODEL_FOR_ROLE.Planner);
+    expect(captured[beforeCalls]!.model).toBe(MODEL_FOR_POOL.planning);
     expect(inputs[0]!.messages).toEqual(captured[beforeCalls]!.messages.slice(1));
     const repaired = JSON.parse(await fs.readFile(checkpointPath, 'utf8')) as PhasePlan;
     expect(repaired.sourceDigest).toBe(sourceDigest);

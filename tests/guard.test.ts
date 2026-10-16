@@ -78,7 +78,6 @@ describe('EditGuard', () => {
       maxLines: 'auto',
       budgetContext: {
         phase: 'MODULE_TEST',
-        role: 'Tester',
         tools: ['write_file', 'replace_in_file'],
         outputs: ['tests/test_weather.py'],
         allowedWrites: ['tests/'],

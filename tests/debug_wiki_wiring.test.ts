@@ -12,13 +12,14 @@ import {
   type AttemptRunnerOptions,
 } from '../src/application/execution/attempt_runner.js';
 import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
+import { agentExecutionStallFailure, permissionBlockedFailure, type ExecutionStallKind } from '../src/application/execution/failure_classification.js';
 import { projectExecutionPlan } from '../src/application/execution/execution_adapter.js';
 import type { DebugWikiEntry } from '../src/application/knowledge/debug_wiki.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 import { BugTicketSchema, type BugTicket } from '../src/domain/tickets/ticket.js';
@@ -133,6 +134,167 @@ describe('Debug Wiki through an attempt', () => {
     expect(storedBug.debugWikiResolutionEntryIds).toEqual([]);
   });
 
+  it('does not count a stalled turn against retrieved knowledge it never applied', async () => {
+    const setup = await fixture();
+    const entryId = await seedPriorSolution(setup);
+    vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(stalledExecution('content-rejection'));
+
+    await setup.runner.initialize();
+    const result = await setup.runner.run(setup.input);
+
+    expect(result.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'content-rejection' } });
+    expect(result.wikiEntryIds).toEqual([entryId]);
+    const page = await readProjectEntry(setup.projectWiki, entryId);
+    expect(page.stats).toEqual({ uses: 1, successes: 1, failures: 0 });
+    expect(page.status).not.toBe('needs_review');
+  });
+
+  it('judges the attempt by its latest test run, not by a failure a later run fixed', async () => {
+    const setup = await fixture();
+    const failing = failedExecution().toolCalls[0]!;
+    const passing = { ...failing, ok: true, error: undefined, data: { exitCode: 0, failedTests: [] } };
+    vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(stalledExecution('max-rounds', [failing, passing]))
+      .mockResolvedValueOnce(stalledExecution('max-rounds', [passing, failing]));
+    await setup.runner.initialize();
+
+    const fixedLater = await setup.runner.run(setup.input);
+    const brokenLast = await setup.runner.run(setup.input);
+
+    expect(fixedLater.failure).toMatchObject({ code: 'agent_execution_stalled', details: { stallKind: 'max-rounds' } });
+    expect(brokenLast.failure).toMatchObject({ kind: 'execution', category: 'test', code: 'test_command_failed' });
+  });
+
+  it.each(['run_tests', 'run_program'] as const)(
+    'retains a failing full contract after a passing subset through %s', async (tool) => {
+      const setup = await fixture();
+      const prefix = tool === 'run_program' ? ['npx', 'vitest', 'run'] : [];
+      const failing = {
+        ...failedExecution().toolCalls[0]!, tool,
+        args: { args: [...prefix, 'tests/unit/parser.test.ts'] },
+        data: { exitCode: 1, effectiveArgs: [...prefix, 'tests/unit/parser.test.ts'], failedTests: ['parser rejects empty input'] },
+      };
+      const passing = {
+        ...failing, ok: true, error: undefined,
+        args: { args: [...prefix, 'tests/unit/parser.test.ts', '-t=happy path'] },
+        data: { exitCode: 0, effectiveArgs: [...prefix, 'tests/unit/parser.test.ts', '-t=happy path'], failedTests: [] },
+      };
+      vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(stalledExecution('max-rounds', [failing, passing]));
+      await setup.runner.initialize();
+
+      const result = await setup.runner.run(setup.input);
+
+      expect(result.failure).toMatchObject({
+        kind: 'execution', category: 'test', code: 'test_command_failed', message: failureMessage,
+        details: { testFailures: [expect.objectContaining({ tool, data: failing.data })] },
+      });
+      expect(result.testOutcomes.map((outcome) => outcome.status)).toEqual(['failed', 'passed']);
+    },
+  );
+
+  it('uses Runtime effective selectors and cwd when deciding whether a rerun replaced a failure', async () => {
+    const setup = await fixture();
+    const failing = { ...failedExecution().toolCalls[0]!,
+      args: { args: [], cwd: '.' }, data: { exitCode: 1, effectiveArgs: ['tests/unit/parser.test.ts'] } };
+    const narrower = { ...failing, ok: true, error: undefined,
+      data: { exitCode: 0, effectiveArgs: ['tests/unit/parser.test.ts', '-t=happy'] } };
+    const otherDirectory = { ...failing, ok: true, error: undefined,
+      args: { args: [], cwd: 'packages/other' }, data: { exitCode: 0, effectiveArgs: ['tests/unit/parser.test.ts'] } };
+    const repaired = { ...failing, ok: true, error: undefined,
+      // The requested flags differ, but the effective invocation is the same verified contract.
+      args: { args: ['ignored-selector'], cwd: '.', timeoutMs: 30_000 },
+      data: { exitCode: 0, effectiveArgs: ['tests/unit/parser.test.ts'] } };
+    vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(stalledExecution('max-rounds', [failing, narrower, otherDirectory]))
+      .mockResolvedValueOnce(stalledExecution('max-rounds', [failing, narrower, otherDirectory, repaired]));
+    await setup.runner.initialize();
+
+    expect((await setup.runner.run(setup.input)).failure?.code).toBe('test_command_failed');
+    expect((await setup.runner.run(setup.input)).failure?.code).toBe('agent_execution_stalled');
+  });
+
+  it.each(['permission-blocked', 'tool-not-allowed'] as const)(
+    'keeps %s test calls outside defect routing and preserves any earlier real test failure', async executionStatus => {
+    const setup = await fixture();
+    const denied = { tool: 'run_tests', args: { args: ['tests/unit/parser.test.ts'] }, ok: false,
+      executionStatus, error: 'The requested operation did not execute.' };
+    const originalFailure = executionStatus === 'permission-blocked'
+      ? permissionBlockedFailure('No approved alternative is available.')
+      : agentExecutionStallFailure('max-rounds', 'The model requested an unavailable operation.');
+    const blocked = { ...stalledExecution('max-rounds', [denied]), failure: originalFailure };
+    const genuineFailure = failedExecution().toolCalls[0]!;
+    vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(blocked)
+      .mockResolvedValueOnce({ ...blocked, toolCalls: [genuineFailure, denied] });
+    await setup.runner.initialize();
+
+    const permissionOnly = await setup.runner.run(setup.input);
+    expect(permissionOnly.failure?.code).toBe(originalFailure.code);
+    expect(permissionOnly.testOutcomes.map((outcome) => outcome.status))
+      .toEqual([executionStatus === 'permission-blocked' ? 'denied' : 'skipped']);
+    const failedThenDenied = await setup.runner.run(setup.input);
+    expect(failedThenDenied.failure).toMatchObject({ code: 'test_command_failed',
+      details: { testFailures: [genuineFailure], executorFailure: originalFailure } });
+    },
+  );
+
+  it('hands the previous attempt\'s typed stall to the next Debug attempt', async () => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce(stalledExecution('read-only-loop'))
+      .mockResolvedValueOnce(failedExecution());
+    await setup.runner.initialize();
+
+    await setup.runner.run(setup.input);
+    const refreshed = BugTicketSchema.parse(await setup.repository.read(setup.bug.id));
+    await setup.runner.run({ ...setup.input, ticket: refreshed });
+
+    expect(execute.mock.calls[0]![0].debugContext?.previousFailure).toBeUndefined();
+    expect(execute.mock.calls[1]![0].debugContext?.previousFailure)
+      .toEqual({ code: 'agent_execution_stalled', stallKind: 'read-only-loop' });
+  });
+
+  it('gives the role the contract revisions this Phase has accepted', async () => {
+    const setup = await fixture();
+    const list = setup.repository.list.bind(setup.repository);
+    const changelistId = createObjectId();
+    const assessmentId = createObjectId();
+    const acceptedAt = new Date().toISOString();
+    const binding = { kind: 'canonical', boundAt: acceptedAt, relativePath: 'worktrees/master',
+      branch: 'master', revision: 'a'.repeat(40), reason: 'initial' };
+    const accepted = {
+      id: createObjectId(), objectType: 'ticket', type: 'change-request', changeKind: 'contract-change',
+      projectId: setup.graph.project.id, phaseId: setup.input.domainStep.phaseId, state: 'closed',
+      closedAt: acceptedAt, solution: { status: 'verified' }, targetStepId: setup.input.domainStep.id,
+      changelistIds: [changelistId], workspaceBinding: binding, workspaceBindingHistory: [binding],
+      commits: [{ kind: 'verified', revision: 'b'.repeat(40), stepId: setup.input.domainStep.id,
+        recordedAt: acceptedAt }],
+      applications: [{ stepId: setup.input.domainStep.id, outcome: 'applied', changelistId,
+        verificationAssessmentId: assessmentId, appliedAt: acceptedAt }],
+      contractDelta: { summary: 'Parse streamed input', before: [], after: ['The parser accepts streamed input.'], affectedArtifacts: [] },
+    };
+    const evidence = [accepted,
+      { id: changelistId, projectId: setup.graph.project.id, objectType: 'changelist', ticketId: accepted.id,
+        stepId: setup.input.domainStep.id, commit: 'b'.repeat(40) },
+      { id: assessmentId, projectId: setup.graph.project.id, objectType: 'quality-assessment', passed: true,
+        subject: { id: setup.input.domainStep.id, objectType: 'step' } },
+    ];
+    vi.spyOn(setup.repository, 'list').mockImplementation(async (options) => {
+      const objects = await list(options);
+      return [...objects, ...evidence.filter((entry) => entry.objectType === options?.objectType) as never[]];
+    });
+    const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
+
+    await setup.runner.initialize();
+    await setup.runner.run(setup.input);
+
+    expect(execute.mock.calls[0]![0].acceptedContractChanges)
+      .toEqual([{ summary: 'Parse streamed input', after: ['The parser accepts streamed input.'], source: {
+        ticketId: accepted.id, changelistId, verificationAssessmentId: assessmentId,
+        verifiedRevision: 'b'.repeat(40), acceptedAt, integration: { kind: 'canonical' },
+      } }]);
+  });
+
   it('keeps an ordinary Story attempt free of Bug knowledge and use records', async () => {
     const setup = await fixture();
     const search = vi.spyOn(setup.wiki, 'search');
@@ -236,12 +398,12 @@ async function fixture() {
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
   const draft = samplePlan();
-  const graph = compileProjectGraph({ draft, topic: 'Implement a parser.', projectName: 'wiki-wiring' });
+  const graph = materializeProjectGraph({ draft, topic: 'Implement a parser.', projectName: 'wiki-wiring' });
   await new ProjectGraphPersistenceService(repository).persistGraph(graph);
   const coding = graph.steps.find((step) => step.type === 'CODE')!;
   const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
   const bug = await new TicketWorkflow(repository).openBug({
-    creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+    creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
     failedStep: unit,
     targetStep: coding,
     verificationStep: unit,
@@ -288,7 +450,12 @@ async function fixture() {
       revertTo: async () => {},
     } as unknown as AttemptRunnerOptions['git'],
     sandbox: {} as AttemptRunnerOptions['sandbox'],
-    router: { for: () => ({}) } as unknown as AttemptRunnerOptions['router'],
+    router: {
+      forPool: () => ({}),
+      resolvePool: (modelPool: string, options: { inheritFallbacks?: boolean } = {}) => ({
+        modelPool, inheritFallbacks: options.inheritFallbacks ?? true, allowedProviders: ['fixture'],
+      }),
+    } as unknown as AttemptRunnerOptions['router'],
   }), 'typescript');
   return { container, repository, graph, bug, input, runner, wiki, installationWiki, projectWiki, wikiOptions, audit };
 }
@@ -337,6 +504,39 @@ async function readProjectEntry(projectWiki: string, entryId: string): Promise<D
   return YAML.parse(frontmatter![1]!) as DebugWikiEntry;
 }
 
+async function seedPriorSolution(setup: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+  const seed = new FileDebugWiki(setup.installationWiki, setup.wikiOptions);
+  const stored = await seed.recordResolution({
+    brief: failureBrief(setup.bug),
+    ticketId: createObjectId(),
+    stepId: setup.input.domainStep.id,
+    phase: 'CODE',
+    targetPhase: 'CODE',
+    language: 'typescript',
+    solution: priorSolution,
+    evidence: ['A previous parser repair passed its original failure test.'],
+  });
+  expect(stored.created).toBeDefined();
+  return stored.created!;
+}
+
+function stalledExecution(
+  stallKind: ExecutionStallKind,
+  toolCalls: ExecutorRunResult['toolCalls'] = [],
+): ExecutorRunResult {
+  return {
+    success: false,
+    rounds: 1,
+    error: 'agent stopped without applying a repair',
+    failure: agentExecutionStallFailure(stallKind, 'agent stopped without applying a repair'),
+    toolCalls,
+    metrics: {
+      rounds: 1, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 0,
+      progressRatio: 0, healthScore: 0, providers: [],
+    },
+  };
+}
+
 function failedExecution(): ExecutorRunResult {
   return {
     success: false,
@@ -369,7 +569,7 @@ function samplePlan(): Plan {
     createdAt: new Date(0).toISOString(),
     steps: STEP_TYPES.map((type, index) => ({
       id: `S${index + 1}`, iterationId: 'P1', phase: type, title: type, description: type,
-      systemPrompt: type, role: 'Coder', tools: ['write_file'], inputs: [],
+      systemPrompt: type, tools: ['write_file'], inputs: [],
       outputs: type === 'CODE' ? ['src/parser.ts', 'tests/unit/parser.test.ts'] : [`docs/${index + 1}.md`],
       dependsOn: index === 0 ? [] : [`S${index}`], acceptance: 'The parser contract passes.', maxAttempts: 3,
     })),

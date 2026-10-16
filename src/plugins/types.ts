@@ -1,6 +1,8 @@
 import type { ClarifyQuestion, PlannerInput } from '../agents/planner.js';
 import type { AuditLogger } from '../audit/audit.js';
-import type { Plan, PlanIntent, Role, Step } from '../domain/planning/execution_plan.js';
+import type { Plan, PlanIntent, Step } from '../domain/planning/execution_plan.js';
+import type { RoleId } from '../domain/workflow/role.js';
+import type { WorkId } from '../domain/workflow/work.js';
 import type { ChatMessage, ChatOptions } from '../llm/types.js';
 import type { AgentSkillMetadata, SkillSource } from '../skills/types.js';
 import type { Tool, ToolContext, ToolResult } from '../tools/types.js';
@@ -77,14 +79,20 @@ export interface HookContextMap {
   'step.attempt.before': {
     plan: Plan;
     step: Step;
-    role: Role;
+    /** The actor's role profile. */
+    role: RoleId;
+    /** The work being done; `repair.debug` replaces the former Debugger persona. */
+    work: WorkId;
     debug: boolean;
     retry: number;
   };
   'step.attempt.after': {
     plan: Plan;
     step: Step;
-    role: Role;
+    /** The actor's role profile. */
+    role: RoleId;
+    /** The work being done; `repair.debug` replaces the former Debugger persona. */
+    work: WorkId;
     debug: boolean;
     retry: number;
     outcome: StepAttemptOutcome;

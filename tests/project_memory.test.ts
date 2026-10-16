@@ -22,7 +22,6 @@ const step = (overrides: Partial<Step> = {}): Step =>
     title: 'Extend reporting service',
     description: 'Add invoice export orchestration to the reporting service.',
     systemPrompt: 'Implement the step.',
-    role: 'Coder',
     tools: ['write_file'],
     inputs: [],
     outputs: ['src/reporting/service.ts'],

@@ -44,7 +44,6 @@ const AUTO_EDIT_LINES_HARD_CAP = 2400;
 
 export interface EditGuardBudgetContext {
   phase?: string;
-  role?: string;
   debug?: boolean;
   tools?: readonly string[];
   outputs?: readonly string[];
@@ -90,7 +89,7 @@ export function resolveEditGuardMaxLines(
   targetBonus = Math.min(targetBonus, 640);
 
   const contextBonus = Math.min(Math.ceil((ctx.contextChars ?? 0) / 1200) * 40, 480);
-  const debugBonus = ctx.debug || ctx.role === 'Debugger' ? 260 : 0;
+  const debugBonus = ctx.debug ? 260 : 0;
   const dynamic =
     DEFAULT_EDIT_LINES_PER_STEP +
     (phaseBonus[ctx.phase ?? ''] ?? 160) +

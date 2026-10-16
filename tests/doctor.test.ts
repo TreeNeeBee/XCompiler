@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
-import { ROLES } from '../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../src/domain/workflow/role.js';
 import { runDoctor } from '../src/application/diagnostics/doctor.js';
 import { setLocale } from '../src/i18n/index.js';
 
@@ -11,12 +11,11 @@ setLocale('en');
 
 function allRoles(provider: string): Record<string, string[]> {
   return {
-    Planner: [provider],
-    Architect: [provider],
-    Coder: [provider],
-    Tester: [provider],
-    Debugger: [provider],
-    ProjectManager: [provider],
+    management: [provider],
+    planning: [provider],
+    design: [provider],
+    coding: [provider],
+    testing: [provider],
   };
 }
 
@@ -29,9 +28,8 @@ async function writeCfg(overrides: Record<string, unknown>): Promise<string> {
       providers: {
         ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
       },
-      roles: allRoles('ollama_code'),
+      pools: allRoles('ollama_code'),
       fallbacks: [],
-      role_fallbacks: {},
     },
     agent: {
       sandboxes: {
@@ -71,9 +69,8 @@ describe('doctor', () => {
         providers: {
           openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
-        roles: allRoles('openai'),
+        pools: allRoles('openai'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
@@ -92,9 +89,8 @@ describe('doctor', () => {
             model: 'openrouter/free',
           },
         },
-        roles: allRoles('openrouter_free'),
+        pools: allRoles('openrouter_free'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
@@ -114,9 +110,8 @@ describe('doctor', () => {
             model: 'local-model',
           },
         },
-        roles: allRoles('local_openai'),
+        pools: allRoles('local_openai'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
@@ -132,9 +127,8 @@ describe('doctor', () => {
           ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
           openai: { type: 'openai', api_key: '', base_url: 'https://api.openai.com/v1', model: 'gpt-4' },
         },
-        roles: allRoles('ollama_code'),
+        pools: allRoles('ollama_code'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const r = await runDoctor({ configPath: cfgPath, skipNetwork: true });
@@ -149,9 +143,8 @@ describe('doctor', () => {
         providers: {
           ollama_code: { type: 'ollama', api_key: '', base_url: 'http://localhost:11434', model: 'qwen' },
         },
-        roles: allRoles('ollama_code'),
+        pools: allRoles('ollama_code'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     await fs.writeFile(
@@ -164,7 +157,7 @@ describe('doctor', () => {
     expect(llm.items.some((i) => i.level === 'fail' && /no live provider/i.test(i.message))).toBe(true);
   });
 
-  it('does not report an unreachable OpenAI provider as live for any role', async () => {
+  it('does not report an unreachable OpenAI provider as live for any model pool', async () => {
     const cfgPath = await writeCfg({
       llm: {
         providers: {
@@ -176,19 +169,17 @@ describe('doctor', () => {
             connect_timeout_ms: 100,
           },
         },
-        roles: allRoles('unreachable'),
+        pools: allRoles('unreachable'),
         fallbacks: [],
-        role_fallbacks: {},
       },
     });
     const r = await runDoctor({ configPath: cfgPath, probeTimeoutMs: 100 });
     const llm = r.sections.find((s) => s.title === '[LLM]')!;
     expect(llm.items.some((i) => i.level === 'fail' && /models check failed/i.test(i.message))).toBe(true);
-    // One per configured role: the point is that an unreachable provider is reported for every
-    // role that names it, not that there happen to be a particular number of roles.
+    // One per configured pool: an unreachable provider is reported for every pool that names it.
     expect(llm.items.filter((i) => i.level === 'fail' && /no live provider/i.test(i.message)))
-      .toHaveLength(ROLES.length);
-    expect(llm.items.some((i) => i.level === 'ok' && /role .* ->/i.test(i.message))).toBe(false);
+      .toHaveLength(DEFAULT_MODEL_POOLS.length);
+    expect(llm.items.some((i) => i.level === 'ok' && /pool .* ->/i.test(i.message))).toBe(false);
   });
 
   it('checks node/npm/npx prerequisites for TypeScript subprocess sandbox', async () => {

@@ -25,7 +25,7 @@ function plannerWithClarificationPort(reply: string): Planner {
       return { text, provider: llm.name };
     },
   };
-  return new Planner(llm, undefined, 'python', false, undefined, undefined, undefined, port);
+  return new Planner(undefined, 'python', false, undefined, undefined, undefined, port);
 }
 
 const options = [

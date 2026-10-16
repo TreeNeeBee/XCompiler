@@ -15,22 +15,24 @@ import { createRuleSelectionDraft, finalizeRuleSelectionDraft } from '../src/app
 
 const logicalRequestId = 'abababab-abab-4bab-8bab-abababababab';
 const operationId = 'abababab-abab-4bab-8bab-abababababac';
-const legacyScenarioInput = {
+const pool = { modelPool: 'management', inheritFallbacks: true as const, allowedProviders: ['fixture'] };
+const scenarioInput = {
   schemaVersion: 1, logicalRequestId,
   owner: { kind: 'scenario-judgement', projectId: 'abababab-abab-7bab-8bab-abababababac',
-    phaseId: 'abababab-abab-7bab-8bab-abababababad', executionId: 'abababab-abab-4bab-8bab-abababababae' },
+    phaseId: 'abababab-abab-7bab-8bab-abababababad', executionId: 'abababab-abab-4bab-8bab-abababababae',
+    actorId: 'abababab-abab-7bab-8bab-abababababaa', role: 'project-manager', roleVersion: '1',
+    work: 'judge.scenario', ...pool },
   templateVersion: 'scenario-fixture/1', snapshotDigest: `sha256:${'a'.repeat(64)}`,
   outputProtocol: { id: 'scenario-fixture', version: '1', root: 'object', transformations: ['trailing-comma'] },
   messages: [{ role: 'user', content: 'Current scenario evidence\r\nPreserve # literal text.' }],
 };
-// Frozen v1 hashes are authored independently of the product validators; execution remains at G1.
-const legacyInputDigest = 'sha256:f00ec2c4ae4440ab256b8626670a5d9e34743c53bf194dc342c0cb0f0892cc1c';
-const legacyRecordDigest = 'sha256:2c543fc54d0480ee264cfa745c2012634af1a3fa298841c0e0c0a04d2aabba3c';
 const captureIdentity = { recordId: 'abababab-abab-4bab-8bab-abababababaf', createdAt: '2026-10-11T01:00:00.000Z' };
 const operations = ['clarification', 'phase-plan', 'phase-decomposition'] as const;
-const expectedRoles = { clarification: 'ProjectManager', 'phase-plan': 'Planner', 'phase-decomposition': 'Planner' } as const;
+const expectedRoles = { clarification: 'project-manager', 'phase-plan': 'planner', 'phase-decomposition': 'planner' } as const;
 const planningOwner = (operation: PlanningOperationOwner['operation']) => PlanningOperationOwnerSchema.parse({
-  kind: 'planning-operation', operationId, operation,
+  kind: 'planning-operation', operationId, operation, role: expectedRoles[operation], roleVersion: '1',
+  work: PLANNING_REQUEST_CONTEXTS[operation], ...pool,
+  modelPool: operation === 'clarification' ? 'management' : 'planning',
 });
 
 function snapshot(context: RuleContext, requestKind: 'business' | 'rule-selection' = 'business') {
@@ -49,41 +51,43 @@ function snapshot(context: RuleContext, requestKind: 'business' | 'rule-selectio
   }));
 }
 
-function attempt(inputRecord: ReturnType<typeof createBusinessRequestInputRecord>, role: 'ProjectManager' | 'Planner') {
+function attempt(inputRecord: ReturnType<typeof createBusinessRequestInputRecord>, role: 'project-manager' | 'planner') {
   return validateBusinessRequestAttempt({
     schemaVersion: 1, logicalRequestId, providerAttemptId: operationId, provider: 'fixture', model: 'fixture-model',
     role, preparedAt: '2026-10-12T01:00:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
     requestBinding: { schemaVersion: 1, kind: 'business-input', logicalRequestId,
       snapshotDigest: inputRecord.snapshotDigest, promptVersion: 'rule-business-request/1', requestDigest: `sha256:${'b'.repeat(64)}`,
       inputRecordId: inputRecord.recordId, inputRecordDigest: inputRecord.digest, inputDigest: inputRecord.inputDigest },
-    messages: legacyScenarioInput.messages,
+    messages: scenarioInput.messages,
   });
 }
 
 describe('business request operation ownership', () => {
   it.each(operations)('preserves the existing %s role without requiring a Domain identity', operation => {
     const owner = planningOwner(operation);
-    expect(owner).toEqual({ kind: 'planning-operation', operationId, operation });
+    expect(owner).toMatchObject({ kind: 'planning-operation', operationId, operation,
+      role: expectedRoles[operation], roleVersion: '1', work: PLANNING_REQUEST_CONTEXTS[operation],
+      inheritFallbacks: true, allowedProviders: ['fixture'] });
     expect(businessRequestRole(owner)).toBe(expectedRoles[operation]);
-    const retained = validateBusinessRequestInput({ ...legacyScenarioInput, owner });
+    const retained = validateBusinessRequestInput({ ...scenarioInput, owner });
     expect(retained.owner).toEqual(owner);
     expect(retained.owner).not.toHaveProperty('projectId');
     expect(retained.owner).not.toHaveProperty('phaseId');
-    expect(retained.owner).not.toHaveProperty('role');
+    expect(retained.owner).not.toHaveProperty('actorId');
     expect(Object.isFrozen(retained.owner)).toBe(true);
     expect(() => assertBusinessRequestSnapshotOwner(snapshot({
-      role: expectedRoles[operation], scenario: PLANNING_REQUEST_CONTEXTS[operation],
+      role: expectedRoles[operation], work: PLANNING_REQUEST_CONTEXTS[operation],
     }), owner)).not.toThrow();
   });
 
   it('normalizes operation UUID spelling without changing its typed purpose', () => {
-    expect(BusinessRequestOwnerSchema.parse({ kind: 'planning-operation',
-      operationId: operationId.toUpperCase(), operation: 'phase-plan' })).toEqual(planningOwner('phase-plan'));
+    expect(BusinessRequestOwnerSchema.parse({ ...planningOwner('phase-plan'),
+      operationId: operationId.toUpperCase() })).toEqual(planningOwner('phase-plan'));
     expect(Object.isFrozen(PLANNING_REQUEST_CONTEXTS)).toBe(true);
   });
 
   it('rejects rebinding a retained logical request to a different planning operation or purpose', () => {
-    const original = validateBusinessRequestInput({ ...legacyScenarioInput, owner: planningOwner('phase-plan') });
+    const original = validateBusinessRequestInput({ ...scenarioInput, owner: planningOwner('phase-plan') });
     const record = createBusinessRequestInputRecord(original, captureIdentity);
     for (const owner of [
       { ...planningOwner('phase-plan'), operationId: logicalRequestId },
@@ -99,12 +103,12 @@ describe('business request operation ownership', () => {
     { kind: 'planning-operation', operation: 'phase-plan' },
     { kind: 'planning-operation', operationId: '../escape', operation: 'phase-plan' },
     { kind: 'planning-operation', operationId, operation: 'unknown' },
-    { kind: 'planning-operation', operationId, operation: 'phase-plan', role: 'ProjectManager' },
-    { kind: 'planning-operation', operationId, operation: 'phase-plan', projectId: legacyScenarioInput.owner.projectId },
-    { kind: 'planning-operation', operationId, operation: 'phase-plan', phaseId: legacyScenarioInput.owner.phaseId },
-    { kind: 'planning-operation', operationId, operation: 'phase-plan', executionId: legacyScenarioInput.owner.executionId },
-    { ...legacyScenarioInput.owner, operationId },
-    { ...legacyScenarioInput.owner, projectId: operationId },
+    { kind: 'planning-operation', operationId, operation: 'phase-plan', role: 'project-manager' },
+    { kind: 'planning-operation', operationId, operation: 'phase-plan', projectId: scenarioInput.owner.projectId },
+    { kind: 'planning-operation', operationId, operation: 'phase-plan', phaseId: scenarioInput.owner.phaseId },
+    { kind: 'planning-operation', operationId, operation: 'phase-plan', executionId: scenarioInput.owner.executionId },
+    { ...scenarioInput.owner, operationId },
+    { ...scenarioInput.owner, projectId: operationId },
     { kind: 'unknown', operationId, operation: 'phase-plan' },
   ])('rejects an invalid or mixed ownership declaration: %j', owner => {
     expect(BusinessRequestOwnerSchema.safeParse(owner).success).toBe(false);
@@ -112,14 +116,14 @@ describe('business request operation ownership', () => {
 
   it.each(operations)('rejects a mismatched %s snapshot role, purpose or project scope', operation => {
     const owner = planningOwner(operation);
-    const context: RuleContext = { role: expectedRoles[operation], scenario: PLANNING_REQUEST_CONTEXTS[operation] };
+    const context: RuleContext = { role: expectedRoles[operation], work: PLANNING_REQUEST_CONTEXTS[operation] };
     const invalidContexts: RuleContext[] = [
-      { ...context, role: context.role === 'Planner' ? 'ProjectManager' : 'Planner' },
-      { ...context, role: 'Coder' },
+      { ...context, role: context.role === 'planner' ? 'project-manager' : 'planner' },
+      { ...context, role: 'python-developer' },
       { ...context, role: undefined },
-      { ...context, scenario: undefined },
-      { ...context, scenario: 'another-planning-purpose' },
-      { ...context, projectId: legacyScenarioInput.owner.projectId },
+      { ...context, work: undefined },
+      { ...context, work: 'judge.scenario' },
+      { ...context, projectId: scenarioInput.owner.projectId },
     ];
     for (const invalid of invalidContexts) {
       expect(() => assertBusinessRequestSnapshotOwner(snapshot(invalid), owner))
@@ -129,55 +133,93 @@ describe('business request operation ownership', () => {
       .toThrow(expect.objectContaining({ reason: 'snapshot_mismatch' }));
   });
 
-  it('keeps the scene purpose owned by its caller while preserving PM and Project binding', () => {
-    const owner = ScenarioJudgementOwnerSchema.parse(legacyScenarioInput.owner);
-    expect(businessRequestRole(owner)).toBe('ProjectManager');
-    expect(() => assertBusinessRequestSnapshotOwner(snapshot({ role: 'ProjectManager',
-      projectId: owner.projectId.toUpperCase(), scenario: 'caller-owned-scenario-purpose' }), owner)).not.toThrow();
+  it('binds a scene judgement to the PM role, the judgement work and its Project', () => {
+    const owner = ScenarioJudgementOwnerSchema.parse(scenarioInput.owner);
+    expect(businessRequestRole(owner)).toBe('project-manager');
+    expect(() => assertBusinessRequestSnapshotOwner(snapshot({ role: 'project-manager',
+      projectId: owner.projectId.toUpperCase(), work: 'judge.scenario' }), owner)).not.toThrow();
     for (const context of [
-      { role: 'Planner' as const, projectId: owner.projectId },
-      { role: 'ProjectManager' as const },
-      { role: 'ProjectManager' as const, projectId: 'abababab-abab-7bab-8bab-abababababaf' },
+      { role: 'planner' as const, projectId: owner.projectId, work: 'judge.scenario' as const },
+      { role: 'project-manager' as const, work: 'judge.scenario' as const },
+      { role: 'project-manager' as const, projectId: 'abababab-abab-7bab-8bab-abababababaf', work: 'judge.scenario' as const },
+      { role: 'project-manager' as const, projectId: owner.projectId, work: 'plan.clarify' as const },
+      { role: 'project-manager' as const, projectId: owner.projectId },
     ]) {
       expect(() => assertBusinessRequestSnapshotOwner(snapshot(context), owner))
         .toThrow(expect.objectContaining({ reason: 'snapshot_mismatch' }));
     }
   });
 
-  it('preserves v1 scenario input, metadata and final request hashes byte for byte', () => {
-    const material = validateBusinessRequestInput(legacyScenarioInput);
-    expect(material).toEqual(legacyScenarioInput);
-    expect(businessRequestInputDigest(material)).toBe(legacyInputDigest);
+  it('retains the original Actor and pool policy in input and metadata without copying prompt bytes into metadata', () => {
+    const material = validateBusinessRequestInput(scenarioInput);
+    expect(material).toEqual(scenarioInput);
     const record = createBusinessRequestInputRecord(material, captureIdentity);
-    const { messages: _messages, ...metadata } = legacyScenarioInput;
-    const expected = { ...metadata, ...captureIdentity, inputDigest: legacyInputDigest, digest: legacyRecordDigest };
-    expect(record).toEqual(expected);
-    expect(validateBusinessRequestInputRecord(expected, logicalRequestId)).toEqual(expected);
-    const final = createBusinessRequestAttemptRecord(attempt(record, 'ProjectManager'));
-    expect(final.finalRequestDigest).toBe('sha256:aabf1b4df15a44b576401834f8f4397d144789c280cce98a055ba1531473f5b8');
-    expect(final.digest).toBe('sha256:71bdde4ca0b5e6bd640b2bd9220569323b7faf33f9cd34fbb00fc1576b18970c');
+    expect(record.owner).toEqual(scenarioInput.owner);
+    expect(record.inputDigest).toBe(businessRequestInputDigest(material));
+    expect(record).not.toHaveProperty('messages');
+    expect(validateBusinessRequestInputRecord(record, logicalRequestId)).toEqual(record);
+    const final = createBusinessRequestAttemptRecord(attempt(record, 'project-manager'));
     expect(() => assertBusinessRequestAttemptInput(final, record)).not.toThrow();
+    for (const changed of [
+      { ...scenarioInput.owner, actorId: 'abababab-abab-7bab-8bab-abababababab' },
+      { ...scenarioInput.owner, roleVersion: '2' },
+      { ...scenarioInput.owner, modelPool: 'other-management' },
+      { ...scenarioInput.owner, inheritFallbacks: false },
+      { ...scenarioInput.owner, allowedProviders: ['other-provider'] },
+    ]) {
+      const modified = validateBusinessRequestInput({ ...material, owner: changed });
+      expect(businessRequestInputDigest(modified)).not.toBe(record.inputDigest);
+      expect(() => assertBusinessRequestInputRecord(record, modified)).toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
+    }
   });
 
   it.each(operations)('requires the %s attempt to use the operation role even with exact input hashes', operation => {
-    const material = validateBusinessRequestInput({ ...legacyScenarioInput, owner: planningOwner(operation) });
+    const material = validateBusinessRequestInput({ ...scenarioInput, owner: planningOwner(operation) });
     const record = createBusinessRequestInputRecord(material, captureIdentity);
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(attempt(record, expectedRoles[operation])), record))
       .not.toThrow();
-    const wrongRole = expectedRoles[operation] === 'Planner' ? 'ProjectManager' : 'Planner';
+    const wrongRole = expectedRoles[operation] === 'planner' ? 'project-manager' : 'planner';
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(attempt(record, wrongRole)), record))
       .toThrow(expect.objectContaining({ code: 'business_request_attempt_failed', reason: 'identity_conflict',
         details: expect.objectContaining({ field: 'input_binding', logicalRequestId, providerAttemptId: operationId }) }));
   });
 
   it('rejects execution roles on a PM scenario binding while accepting only registered role names', () => {
-    const record = createBusinessRequestInputRecord(validateBusinessRequestInput(legacyScenarioInput), captureIdentity);
-    const request = attempt(record, 'ProjectManager');
-    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'Planner' }), record))
+    const record = createBusinessRequestInputRecord(validateBusinessRequestInput(scenarioInput), captureIdentity);
+    const request = attempt(record, 'project-manager');
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'planner' }), record))
       .toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
-    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'Coder' }), record))
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({ ...request, role: 'python-developer' }), record))
       .toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
     expect(() => validateBusinessRequestAttempt({ ...request, role: 'UnregisteredRole' }))
       .toThrow(expect.objectContaining({ reason: 'invalid' }));
+  });
+
+  it.each(operations)('rejects a %s attempt outside its originally captured provider candidates', operation => {
+    const original = validateBusinessRequestInput({ ...scenarioInput, owner: planningOwner(operation) });
+    const record = createBusinessRequestInputRecord(original, captureIdentity);
+    const request = { ...attempt(record, expectedRoles[operation]), provider: 'not-in-original-pool' };
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(request), record))
+      .toThrow(expect.objectContaining({ code: 'business_request_attempt_failed', reason: 'identity_conflict' }));
+  });
+
+  it('requires registered scenario ownership and rejects a provider outside its original pool', () => {
+    const owner = ScenarioJudgementOwnerSchema.parse(scenarioInput.owner);
+    for (const field of ['actorId', 'role', 'roleVersion', 'work', 'modelPool', 'inheritFallbacks', 'allowedProviders'] as const) {
+      expect(ScenarioJudgementOwnerSchema.safeParse({ ...owner, [field]: undefined }).success).toBe(false);
+    }
+    const record = createBusinessRequestInputRecord(validateBusinessRequestInput(scenarioInput), captureIdentity);
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord({
+      ...attempt(record, 'project-manager'), provider: 'not-in-original-pool',
+    }), record)).toThrow(expect.objectContaining({ reason: 'identity_conflict' }));
+  });
+
+  it('rejects a pre-graph Actor or a role/work inconsistent with its typed operation', () => {
+    const owner = planningOwner('phase-plan');
+    for (const changed of [
+      { ...owner, actorId: scenarioInput.owner.actorId },
+      { ...owner, role: 'project-manager' }, { ...owner, work: 'plan.clarify' },
+      { ...owner, inheritFallbacks: false },
+    ]) expect(BusinessRequestOwnerSchema.safeParse(changed).success).toBe(false);
   });
 });

@@ -25,6 +25,8 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import { roleProfile } from '../domain/workflow/role.js';
+import { OperationActorBindingSchema, type OperationActorBinding } from '../application/execution/execution_turn_request.js';
 
 export class PhaseDecompositionProtocolError extends Error {
   readonly code = 'phase_decomposition_protocol_invalid';
@@ -38,19 +40,42 @@ export class PhaseDecompositionProtocolError extends Error {
 export function createRuntimePhaseDecompositionRequestPort(input: {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
   router: LLMRouter; audit: AuditLogger; projectId?: string;
+  /** PM resolves the registered planner only when an existing Project actually needs P03. */
+  resolveActor?: () => Promise<OperationActorBinding>;
 }): PhaseDecompositionRequestPort {
   const { config, container, recordReplay, router, audit, projectId } = input;
+  if ((projectId === undefined && input.resolveActor !== undefined)
+    || (projectId !== undefined && typeof input.resolveActor !== 'function')) {
+    throw new BusinessRequestInputError('invalid', { field: 'phase_decomposition_actor_binding' });
+  }
+  const resolveActor = input.resolveActor;
+  const profile = roleProfile('planner');
+  const preGraphPool = projectId === undefined ? router.resolvePool(profile.defaultPool) : undefined;
   return Object.freeze({
-    name: router.for('Planner').name,
+    name: preGraphPool ? router.forPool(preGraphPool, { label: profile.id }).name : 'project-planning:plan.decompose',
     async send(request: Parameters<PhaseDecompositionRequestPort['send']>[0]) {
       const signal = request.signal;
       signal?.throwIfAborted();
+      const parsedActor = projectId === undefined ? undefined : OperationActorBindingSchema.safeParse(await resolveActor!());
+      if (parsedActor !== undefined && !parsedActor.success) throw new BusinessRequestInputError('invalid', {
+        field: 'phase_decomposition_actor_binding',
+      }, { cause: parsedActor.error });
+      const actor = parsedActor?.data;
+      signal?.throwIfAborted();
+      if (actor !== undefined && actor.role !== 'planner') throw new BusinessRequestInputError('invalid', {
+        field: 'phase_decomposition_actor_role',
+      });
+      const modelPool = actor === undefined ? preGraphPool! : router.resolvePool(actor.modelPool ?? profile.defaultPool,
+        { inheritFallbacks: actor.modelPool === undefined });
       const owner = Object.freeze(projectId === undefined
         ? PlanningOperationOwnerSchema.parse({
           kind: 'planning-operation', operation: 'phase-decomposition', operationId: request.operationId,
+          role: profile.id, roleVersion: profile.version, work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'], ...modelPool,
         })
         : ProjectPlanningOperationOwnerSchema.parse({
           kind: 'project-planning-operation', operation: 'phase-decomposition', operationId: request.operationId, projectId,
+          actorId: actor!.actorId, role: actor!.role, roleVersion: actor!.roleVersion,
+          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'], ...modelPool,
         }));
       const logicalRequestId = randomUUID();
       const payload = validatePhaseDecompositionPayload(request.payload);
@@ -61,9 +86,9 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
         logicalRequestId, field: 'phase_decomposition_validator',
       });
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
-      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, logicalRequestId,
-        context: { role: 'Planner', language: payload.parseContext.language,
-          scenario: PLANNING_REQUEST_CONTEXTS['phase-decomposition'],
+      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
+        context: { role: 'planner', language: payload.parseContext.language,
+          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'],
           ...(owner.kind === 'project-planning-operation' ? { projectId: owner.projectId } : {}) }, required: [],
         taskSummary: payload.parseContext.rawRequirement, signal,
       });

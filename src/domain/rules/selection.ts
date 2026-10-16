@@ -1,13 +1,14 @@
 import { z } from 'zod';
 import { LANGUAGES } from '../planning/execution_plan.js';
-import { ROLES } from '../workflow/role.js';
+import { RoleIdSchema } from '../workflow/role.js';
+import { WorkIdSchema } from '../workflow/work.js';
 import type { RuleApplicability, RuleLookup } from './catalogue.js';
 
 export const RuleContextSchema = z.object({
   projectId: z.uuid().optional(),
   language: z.enum(LANGUAGES).optional(),
-  role: z.enum(ROLES).optional(),
-  scenario: z.string().min(1).optional(),
+  role: RoleIdSchema.optional(),
+  work: WorkIdSchema.optional(),
 }).strict();
 export type RuleContext = z.infer<typeof RuleContextSchema>;
 
@@ -50,7 +51,7 @@ export function ruleApplicability(entry: RuleSelectionEntry, context: RuleContex
     check(source, 'projectId', scope.projectIds);
     check(source, 'language', scope.languages);
     check(source, 'role', scope.roles);
-    check(source, 'scenario', scope.scenarios);
+    check(source, 'work', scope.works);
   };
   checkScope('list', entry.list.definition.applicability);
   checkScope('rule', entry.rule.applicability);

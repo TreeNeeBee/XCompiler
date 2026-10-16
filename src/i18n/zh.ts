@@ -46,7 +46,7 @@ P2+ 迭代把这些测试计划写到 \`docs/iterations/<iterationId>/tests/\`�
 5. 每个 CODE Step 必须被同迭代的 UNIT_TEST Step 覆盖。
 6. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN 拥有各自配对的基线测试但不输出 src/ 产品代码；CODE 拥有产品源码、运行时资产和单元测试；右侧阶段只能在 Runtime 声明的 verification supplement root 下写测试，禁止修改配对基线或 src/。
 7. outputs 路径全局唯一。DEBUG 运行时可修改依赖链文件，计划 Step 不要重复声明 outputs。
-8. id 形如 S001、S002；role 只能是 Planner / Architect / Coder / Tester / Debugger。
+8. id 形如 S001、S002；不要输出 role：Step 的工作由 phase 决定，执行角色由运行时按工作分派。
 9. 每个 Step 必须有 systemPrompt，明确范围、输入、产出、验收、禁令，以及左侧阶段的同步测试设计义务。
 10. projectType 由 LLM 在澄清后判定：application / library / mixed，不存在命令行 project-type 覆盖。
 11. complexityAssessment 由 plan 阶段评估：simple => P1；moderate => 至少 P1+P2；complex => 至少 P1+P2+P3。用户明确要求分阶段时必须 userForcedPhaseSplit=true。
@@ -78,7 +78,6 @@ P2+ 迭代把这些测试计划写到 \`docs/iterations/<iterationId>/tests/\`�
       "title": "string",
       "description": "string",
       "systemPrompt": "本 Step 专属提示：范围、输入、产出、验收、禁令",
-      "role": "Planner",
       "tools": ["skill:artifact-authoring", "skill:test-design"],
       "inputs": ["docs/topic.md"],
       "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"],
@@ -335,7 +334,7 @@ architectureModules 只能描述当前 phase 的产品/业务源码模块：
     { "id": "M001", "name": "模块名", "responsibility": "单一明确职责", "sourcePaths": ["src/example.py"], "assetPaths": ["src/templates/example.txt"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
   ],
   "steps": [
-    { "id": "S001", "iterationId": "P1", "phase": "REQUIREMENT_ANALYSIS", "title": "string", "description": "string", "systemPrompt": "范围、输入、产出、验收、禁令", "role": "Planner", "tools": ["skill:artifact-authoring", "skill:test-design"], "inputs": ["docs/topic.md"], "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"], "subTasks": [], "dependsOn": [], "acceptance": "string", "maxAttempts": 3 }
+    { "id": "S001", "iterationId": "P1", "phase": "REQUIREMENT_ANALYSIS", "title": "string", "description": "string", "systemPrompt": "范围、输入、产出、验收、禁令", "tools": ["skill:artifact-authoring", "skill:test-design"], "inputs": ["docs/topic.md"], "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"], "subTasks": [], "dependsOn": [], "acceptance": "string", "maxAttempts": 3 }
   ]
 }
 
@@ -348,8 +347,6 @@ function buildExecutorSystem(profile: LanguageProfile): string {
 
 const messages: Messages = {
   llm: {
-    coderDebuggerSameModel: (model, coderProvider, debuggerProvider) =>
-      `模型配置建议：Coder（${coderProvider}）和 Debugger（${debuggerProvider}）当前都使用 ${model}。建议配置不同模型，让调试阶段获得独立的推理路径。`,
     invalidBaseUrl: (raw, fallback) => `[xcompiler] base_url 无效（${raw}）；请配置有效的 HTTP(S) URL（默认值：${fallback}）`,
     providerValidationFailed: (role, model) => `[${role}] provider ${model} 输出契约校验失败`,
     providerValidationRetry: (role, model) => `[${role}] provider ${model} 在切换前携带契约错误原模型纠错重试`,
@@ -368,7 +365,7 @@ const messages: Messages = {
     scorePersistFailed: (message) => `持久化评分失败：${message}`,
     preflightOllamaReachable: (baseUrl, models) => `预检：Ollama ${baseUrl} 可达，发现 ${models} 个模型`,
     preflightOllamaUnreachable: (baseUrl, message) => `预检：Ollama ${baseUrl} 不可达：${message}`,
-    preflightAutoAdded: (providers, roles) => `预检：自动增加 ${providers} 个 provider，覆盖角色 [${roles}]`,
+    preflightAutoAdded: (providers, roles) => `预检：自动增加 ${providers} 个 provider，覆盖模型池 [${roles}]`,
     scoreFileHeader: '# XCompiler LLM provider 评分快照（由 ScoreStore 自动维护，请勿手工编辑）',
     scoreFileSemantics: '# 评分语义：这是动态评分快照；默认 1.0；自动评分范围 0.1～1.0；tags: [cluster] 的 provider 默认 0.2～0.5，除非 llm.cluster_score_min/max 扩宽；传输失败或归因质量缺口 -0.5；已验证的发现、修复或变更 +0.1。用户覆盖请写 llm_scores_user.yaml，0 表示禁用。',
   },
@@ -628,7 +625,7 @@ const messages: Messages = {
       `步骤=${total} 完成=${done} 就绪=${ready} 阻塞=${blocked} 运行中=${running}`,
     planReadFailed: (p, message) => `${p} — ${message}`,
     stepHeader: (id, phase, title, state, attempts, maxAttempts) => `${id} ${phase} ${title} ${state} 尝试=${attempts}/${maxAttempts}`,
-    stepRoleTools: (role, tools) => `角色=${role} 工具=[${tools}]`,
+    stepRoleTools: (type, tools) => `类型=${type} 工具=[${tools}]`,
     stepDependsOn: (ids) => `依赖：${ids}`,
     outputStatus: (exists, p) => `${exists ? '✓' : '✗'} ${p}`,
     auditEntry: (ts, kind, message) => `${ts} ${kind} ${message}`,
@@ -838,6 +835,10 @@ ${opts.phasePlan}
       '如果上一轮停滞在只读探测，不要重复定位；直接执行下一项有依据的修改或验证动作。' +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
+    executorAcceptedContractChangesBlock: (changes) =>
+      '\n\n## 已合入的契约变更（晚于上面的全局约束，二者不一致时以此为准）\n' +
+      changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
+        `  Source: ${JSON.stringify(change.source)}`].join('\n')).join('\n'),
     executorContextBlock: (context: string) => `\n\n# 已装配上下文\n${context}`,
     executorRoleBlock: (identity) => `\n\n## 你的角色\n${identity.rolePrompt}\n${identity.capabilityPrompt}`
       + (identity.prohibitions.length > 0
@@ -900,8 +901,8 @@ ${opts.phasePlan}
     openaiModelListMissing: (provider, model) =>
       `provider "${provider}"：/models 响应中未列出 "${model}"（若你的账号有访问权限仍可正常调用）`,
     providerScoreZero: (provider) => `provider "${provider}" 已禁用（score=0）`,
-    roleNoLiveProvider: (role) => `角色 "${role}" 没有可用 provider（候选列表全部不可达或被禁用）`,
-    roleOk: (role, provider) => `角色 "${role}" → ${provider}`,
+    roleNoLiveProvider: (role) => `模型池 "${role}" 没有可用 provider（候选列表全部不可达或被禁用）`,
+    roleOk: (role, provider) => `模型池 "${role}" → ${provider}`,
     sandboxKind: (kind) => `sandbox=${kind}`,
     sandboxNetworkPolicy: (policy, ports) =>
       `network=${policy}` + (ports.length ? `（expose_ports=[${ports.join(', ')}]）` : ''),

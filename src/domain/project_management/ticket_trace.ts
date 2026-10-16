@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ObjectEnvelopeSchema } from '../objects/object_envelope.js';
 import { ObjectIdSchema } from '../identity/object_id.js';
-import { DomainRoleSchema } from '../workflow/role.js';
+import { RoleIdSchema } from '../workflow/role.js';
 import { TICKET_STATES } from '../tickets/ticket.js';
 import { ASSIGNMENT_STATES } from './assignment.js';
 
@@ -43,7 +43,7 @@ export const TicketTraceEventSchema = ObjectEnvelopeSchema.extend({
   sequence: z.number().int().positive(),
   eventType: z.enum(TICKET_TRACE_EVENT_TYPES),
   initiatorActorId: ObjectIdSchema,
-  initiatorRole: DomainRoleSchema,
+  initiatorRole: RoleIdSchema,
   fromOwnerActorId: ObjectIdSchema.optional(),
   toOwnerActorId: ObjectIdSchema.optional(),
   fromTicketState: z.enum(TICKET_STATES).optional(),

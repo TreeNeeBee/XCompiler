@@ -1,3 +1,4 @@
+import { fixturePlanningOwner, fixtureScenarioOwner, fixturePool } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -12,7 +13,7 @@ import {
   type BusinessRequestInputCapture,
 } from '../../src/application/execution/business_request_input.js';
 import { createBusinessRequestAttemptRecord, validateBusinessRequestAttempt } from '../../src/application/execution/business_request_attempt.js';
-import { SCENARIO_OUTCOME_PROTOCOL, SCENARIO_OUTCOME_TEMPLATE_VERSION } from '../../src/application/execution/scenario_outcome_judge.js';
+import { SCENARIO_OUTCOME_PROTOCOL, SCENARIO_OUTCOME_TEMPLATE_VERSION, SCENARIO_OUTCOME_RULE } from '../../src/application/execution/scenario_outcome_judge.js';
 import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_encoding.js';
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { ruleBusinessRequestDigest } from '../../src/application/rules/rule_request_binding.js';
@@ -20,7 +21,7 @@ import { createRuleSelectionDraft, finalizeRuleSelectionDraft } from '../../src/
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { loadCompilerRuleCatalogue } from '../../src/infrastructure/rules/compiler_rule_catalogue.js';
 import { BusinessRequestAttemptAuditAdapter } from '../../src/infrastructure/llm/business_request_attempt_audit.js';
 import { FileBusinessRequestAttemptStore } from '../../src/infrastructure/llm/file_business_request_attempt_store.js';
@@ -76,10 +77,11 @@ async function endpoint(output = '{"retained":"original operation",}') {
 }
 
 async function persistSnapshot(container: ProjectContainer, logicalRequestId: string,
-  context: { role: 'Planner' | 'ProjectManager'; scenario: string; projectId?: string }) {
+  context: { role: 'planner' | 'project-manager'; work: string; projectId?: string }) {
   const catalogue = await loadCompilerRuleCatalogue(installationRoots.installedCompilerRulesRoot());
   const selector = new RuleSelector(catalogue);
-  const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
+  const prepared = selector.prepare({ requestKind: 'business', context,
+    required: context.work === 'judge.scenario' ? [SCENARIO_OUTCOME_RULE] : [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [], profile: { threshold: 0.8, maxCandidates: 20 } });
   const snapshot = finalizeRuleSelectionDraft(createRuleSelectionDraft({ prepared, ranked, logicalRequestId,
     requestKind: 'business', createdAt: '2026-10-14T00:00:00.000Z' }));
@@ -88,7 +90,7 @@ async function persistSnapshot(container: ProjectContainer, logicalRequestId: st
 }
 
 async function fixture(url: string, operation: Operation = 'phase-plan', options: {
-  context?: { role?: 'Planner' | 'ProjectManager'; scenario?: string; projectId?: string };
+  context?: { role?: 'planner' | 'project-manager'; work?: string; projectId?: string };
   redacted?: boolean;
 } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
@@ -98,7 +100,7 @@ async function fixture(url: string, operation: Operation = 'phase-plan', options
     providers: {
       planner: { type: 'openai', api_key: '', model: 'planner-model', base_url: url, context_window: 131072, request_timeout_ms: 1000 },
       pm: { type: 'openai', api_key: '', model: 'pm-model', base_url: url, context_window: 131072, request_timeout_ms: 1000 },
-    }, roles: Object.fromEntries(ROLES.map(role => [role, [role === 'Planner' ? 'planner' : 'pm']])), fallbacks: [],
+    }, pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, [role === 'planning' ? 'planner' : 'pm']])), fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root,
@@ -106,13 +108,13 @@ async function fixture(url: string, operation: Operation = 'phase-plan', options
   await audit.start();
   const router = new LLMRouter(config, audit);
   const logicalRequestId = randomUUID();
-  const request = { logicalRequestId, owner: { kind: 'planning-operation' as const, operation, operationId: randomUUID() },
+  const request = { logicalRequestId, owner: fixturePlanningOwner(operation, randomUUID(), router.resolvePool(operation === 'clarification' ? 'management' : 'planning')),
     templateVersion: `${operation}-fixture/1`, outputProtocol: structuredClone(protocol),
     messages: [{ role: 'system' as const, content: 'Return only the operation JSON.' },
       { role: 'user' as const, content: `Accepted ${operation} input.\r\nPreserve literal # context.` }] };
   const snapshot = await persistSnapshot(container, logicalRequestId, {
-    role: options.context?.role ?? (operation === 'clarification' ? 'ProjectManager' : 'Planner'),
-    scenario: options.context?.scenario ?? PLANNING_REQUEST_CONTEXTS[operation],
+    role: options.context?.role ?? (operation === 'clarification' ? 'project-manager' : 'planner'),
+    work: options.context?.work ?? PLANNING_REQUEST_CONTEXTS[operation],
     ...(options.context?.projectId ? { projectId: options.context.projectId } : {}),
   });
   const ledger = container.state.abs('llm', 'business-inputs');
@@ -141,16 +143,17 @@ async function writeEvents(target: string, events: AuditEvent[]): Promise<void> 
 // This batch composes request identity ports directly. It does not claim Planner/Build migration.
 describe('Runtime pre-domain planning request identity and role retention', () => {
   it.each([
-    { operation: 'clarification', role: 'ProjectManager', provider: 'pm', model: 'pm-model' },
-    { operation: 'phase-plan', role: 'Planner', provider: 'planner', model: 'planner-model' },
-    { operation: 'phase-decomposition', role: 'Planner', provider: 'planner', model: 'planner-model' },
+    { operation: 'clarification', role: 'project-manager', provider: 'pm', model: 'pm-model' },
+    { operation: 'phase-plan', role: 'planner', provider: 'planner', model: 'planner-model' },
+    { operation: 'phase-decomposition', role: 'planner', provider: 'planner', model: 'planner-model' },
   ] as const)(
     'sends $operation through its owning role and preserves operation identity in final request and adopted recovery', async ({ operation, role, provider, model }) => {
       const server = await endpoint();
       const current = await fixture(server.url, operation);
-      const forRole = vi.spyOn(current.router, 'for');
+      const forRole = vi.spyOn(current.router, 'forPool');
       const processed = await current.processSend();
-      expect(forRole).toHaveBeenCalledExactlyOnceWith(role);
+      expect(forRole).toHaveBeenCalledExactlyOnceWith({ modelPool: role === 'planner' ? 'planning' : 'management',
+        inheritFallbacks: true, allowedProviders: [provider] }, { label: role });
       expect(server.calls).toHaveLength(1);
       expect(server.calls[0]!.input.model).toBe(model);
       expect(processed.source.input.owner).toEqual(current.request.owner);
@@ -187,23 +190,23 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const logicalRequestId = randomUUID();
     const projectId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2';
     const scenarioRequest = { ...current.request, logicalRequestId,
-      owner: { kind: 'scenario-judgement' as const, projectId, phaseId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3', executionId: randomUUID() } };
-    await persistSnapshot(current.container, logicalRequestId, { role: 'ProjectManager', projectId, scenario: 'legacy-scene-fixture' });
+      owner: fixtureScenarioOwner({ projectId, phaseId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3', executionId: randomUUID() }, current.router.resolvePool('management')) };
+    await persistSnapshot(current.container, logicalRequestId, { role: 'project-manager', projectId, work: 'judge.scenario' });
     const scene = await sendRuntimeBusinessRequest({ ...current, request: scenarioRequest });
-    expect(planning.source.request.role).toBe('Planner');
-    expect(scene.source.request.role).toBe('ProjectManager');
+    expect(planning.source.request.role).toBe('planner');
+    expect(scene.source.request.role).toBe('project-manager');
     expect(server.calls.map(call => call.input.model)).toEqual(['planner-model', 'pm-model']);
     expect((await current.events()).filter(event => event.messageId === 'llm.provider_response')
-      .map(event => event.data?.role)).toEqual(['Planner', 'ProjectManager']);
+      .map(event => event.data?.role)).toEqual(['planner', 'project-manager']);
   });
 
   it.each(['role', 'project', 'purpose'] as const)('rejects a wrong snapshot %s before original-input audit or model selection', async damage => {
     const server = await endpoint();
-    const current = await fixture(server.url, 'phase-plan', { context: damage === 'role' ? { role: 'ProjectManager' }
+    const current = await fixture(server.url, 'phase-plan', { context: damage === 'role' ? { role: 'project-manager' }
       : damage === 'project' ? { projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2' }
-        : { scenario: PLANNING_REQUEST_CONTEXTS.clarification } });
+        : { work: PLANNING_REQUEST_CONTEXTS.clarification } });
     const before = await current.events();
-    const forRole = vi.spyOn(current.router, 'for');
+    const forRole = vi.spyOn(current.router, 'forPool');
     await expect(current.inputs.capture(current.request)).rejects.toMatchObject({ code: 'business_request_input_failed', reason: 'snapshot_mismatch' });
     await expect(current.send()).rejects.toMatchObject({ code: 'business_request_input_failed', reason: 'snapshot_mismatch' });
     expect(await current.events()).toEqual(before);
@@ -214,14 +217,14 @@ describe('Runtime pre-domain planning request identity and role retention', () =
 
   it.each(['role', 'project', 'purpose'] as const)('rejects a wrong retained-send snapshot %s even when all input record digests agree', async damage => {
     const server = await endpoint();
-    const current = await fixture(server.url, 'phase-plan', { context: damage === 'role' ? { role: 'ProjectManager' }
+    const current = await fixture(server.url, 'phase-plan', { context: damage === 'role' ? { role: 'project-manager' }
       : damage === 'project' ? { projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2' }
-        : { scenario: PLANNING_REQUEST_CONTEXTS.clarification } });
+        : { work: PLANNING_REQUEST_CONTEXTS.clarification } });
     const original = validateBusinessRequestInput({ ...current.request, schemaVersion: 1, snapshotDigest: current.snapshot.digest });
     const record = createBusinessRequestInputRecord(original);
     const events = await current.events();
     const location = { containerRoot: current.container.root, auditRoot: current.container.state.abs('audit') };
-    const sender = new LLMRuleBusinessRequest(current.router.for('Planner'), new RuleDecorator());
+    const sender = new LLMRuleBusinessRequest(current.router.forPool('planning', { label: 'planner' }), new RuleDecorator());
     await expect(sender.sendInput({ original, record, snapshot: current.snapshot, location,
       store: new FileBusinessRequestAttemptStore(current.container.state.abs('llm', 'business-inputs'), current.container.root),
       audit: new BusinessRequestAttemptAuditAdapter(current.audit, location.auditRoot, location.containerRoot),
@@ -261,7 +264,7 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const first = await current.send();
     const secondRequest = { ...current.request, logicalRequestId: randomUUID(),
       owner: { ...current.request.owner, operationId: randomUUID() } };
-    await persistSnapshot(current.container, secondRequest.logicalRequestId, { role: 'Planner', scenario: PLANNING_REQUEST_CONTEXTS['phase-plan'] });
+    await persistSnapshot(current.container, secondRequest.logicalRequestId, { role: 'planner', work: PLANNING_REQUEST_CONTEXTS['phase-plan'] });
     const second = await sendRuntimeBusinessRequest({ ...current, request: secondRequest });
     expect(first.source.input.logicalRequestId).not.toBe(second.source.input.logicalRequestId);
     expect(first.source.input.owner).toEqual(current.request.owner);
@@ -279,7 +282,7 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const before = await current.events();
     vi.spyOn(installationRoots, 'installedCompilerRulesRoot').mockImplementation(() => { throw new Error('Current rules must not be read during recovery'); });
     const selector = vi.spyOn(RuleSelector.prototype, 'prepare');
-    const forRole = vi.spyOn(current.router, 'for');
+    const forRole = vi.spyOn(current.router, 'forPool');
     const recovered = await createRuntimeBusinessRequestInputs(new ProjectContainer(current.container.root), current.audit)
       .resume({ logicalRequestId: current.logicalRequestId });
     expect(recovered).toMatchObject({ status: 'recovered',
@@ -304,10 +307,10 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const events = await current.events();
     const requestEvent = events.find(event => event.messageId === 'llm.business_request_attempt')!;
     const providerEvent = events.find(event => event.messageId === 'llm.provider_response')!;
-    const request = validateBusinessRequestAttempt({ ...sent.source.request, role: 'ProjectManager' });
+    const request = validateBusinessRequestAttempt({ ...sent.source.request, role: 'project-manager' });
     const record = createBusinessRequestAttemptRecord(request);
     requestEvent.data = { ...requestEvent.data, request, attemptRecordDigest: record.digest, finalRequestDigest: record.finalRequestDigest };
-    providerEvent.data = { ...providerEvent.data, role: 'ProjectManager' };
+    providerEvent.data = { ...providerEvent.data, role: 'project-manager' };
     await writeEvents(current.auditPath, events);
     await fs.writeFile(current.attemptPath(attemptId), JSON.stringify(record));
     await expect(fs.stat(current.responsePath)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -353,10 +356,10 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const current = await fixture(server.url);
     const logicalRequestId = randomUUID();
     const providerAttemptId = randomUUID();
-    const owner = { kind: 'scenario-judgement' as const, projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2',
-      phaseId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3', executionId: randomUUID() };
-    const snapshot = await persistSnapshot(current.container, logicalRequestId, { role: 'ProjectManager', projectId: owner.projectId,
-      scenario: 'historical-scene-fixture' });
+    const owner = fixtureScenarioOwner({ projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2',
+      phaseId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3', executionId: randomUUID() }, fixturePool('historical-management', ['historical-provider'], false));
+    const snapshot = await persistSnapshot(current.container, logicalRequestId, { role: 'project-manager', projectId: owner.projectId,
+      work: 'judge.scenario' });
     const input = { schemaVersion: 1 as const, logicalRequestId, owner, templateVersion: 'historical-scene/1',
       outputProtocol: structuredClone(protocol), snapshotDigest: snapshot.digest,
       messages: [{ role: 'user' as const, content: 'Historical scene material.\r\nPreserve # literals.' }] };
@@ -365,7 +368,7 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     const inputBody = { ...identity, recordId: randomUUID(), inputDigest: ruleEvidenceDigest(input), createdAt: '2026-10-11T00:00:00.000Z' };
     const inputRecord = { ...inputBody, digest: ruleEvidenceDigest(inputBody) };
     const request = { schemaVersion: 1 as const, logicalRequestId, providerAttemptId, provider: 'historical-provider', model: 'historical-model',
-      role: 'ProjectManager' as const, preparedAt: '2026-10-11T00:00:01.000Z', contextWindowTokens: 32768, maxTokens: 512,
+      role: 'project-manager' as const, preparedAt: '2026-10-11T00:00:01.000Z', contextWindowTokens: 32768, maxTokens: 512,
       requestBinding: { schemaVersion: 1 as const, kind: 'business-input' as const, logicalRequestId, snapshotDigest: snapshot.digest,
         promptVersion: 'rule-business-request/1', requestDigest: ruleBusinessRequestDigest('rule-business-request/1', protectAuditContent(input.messages, 'redacted')),
         inputRecordId: inputRecord.recordId, inputRecordDigest: inputRecord.digest, inputDigest: inputRecord.inputDigest },
@@ -401,9 +404,14 @@ describe('Runtime pre-domain planning request identity and role retention', () =
     { kind: 'planning-operation', operation: 'unknown-purpose', operationId: randomUUID() },
     { kind: 'planning-operation', operation: 'phase-plan', operationId: randomUUID(), projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2' },
     { kind: 'scenario-judgement', executionId: randomUUID() },
-  ])('rejects an invalid owner without weakening scenario fields or inventing domain identity', async owner => {
+  ])('rejects an invalid owner without weakening scenario fields or inventing domain identity', async invalid => {
     const server = await endpoint();
     const current = await fixture(server.url);
+    const owner = invalid.kind === 'scenario-judgement'
+      ? { ...fixtureScenarioOwner({ projectId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2',
+        phaseId: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3', executionId: randomUUID() }, current.router.resolvePool('management')),
+        ...invalid, projectId: undefined, phaseId: undefined }
+      : { ...current.request.owner, ...invalid };
     const before = await current.events();
     await expect(current.inputs.capture({ ...current.request, owner } as unknown as BusinessRequestInputCapture))
       .rejects.toMatchObject({ code: 'business_request_input_failed', reason: 'invalid' });

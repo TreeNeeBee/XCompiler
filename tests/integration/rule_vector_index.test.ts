@@ -33,7 +33,7 @@ const instruction = 'PRIVATE_RULE_BODY: preserve the complete operation evidence
 const identity: RuleEmbeddingIdentity = {
   provider: 'deterministic-test-provider', model: 'test-encoder', spaceVersion: 'test-space/1', dimensions: 2,
 };
-const context: RuleContext = { projectId: uuid(900), language: 'python', role: 'Coder', scenario: 'repair' };
+const context: RuleContext = { projectId: uuid(900), language: 'python', role: 'python-developer', work: 'repair.debug' };
 const query = { taskSummary: 'Inspect the failing operation.', errorSummary: 'The operation returned no result.', context };
 type EmbeddingResult = Awaited<ReturnType<RuleEmbeddingPort['embed']>>;
 

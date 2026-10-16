@@ -552,18 +552,6 @@ export function calibrateStepIds(steps: Step[]): Step[] {
 // 4. Step 形状补齐（兜底 schema 必填项）
 // =============================================================================
 
-/** 阶段 → 默认 role 兜底。 */
-const PHASE_DEFAULT_ROLE: Record<string, string> = {
-  REQUIREMENT_ANALYSIS: 'Planner',
-  HIGH_LEVEL_DESIGN: 'Architect',
-  DETAILED_DESIGN: 'Architect',
-  CODE: 'Coder',
-  UNIT_TEST: 'Tester',
-  INTEGRATION_TEST: 'Tester',
-  MODULE_TEST: 'Tester',
-  FUNCTIONAL_TEST: 'Tester',
-};
-
 /** 把 LLM 偶尔写错的 role 别名规范到合法白名单。 */
 const ROLE_ALIASES: Record<string, string> = {
   developer: 'Coder',
@@ -760,7 +748,7 @@ function inferPhase(rawPhase: unknown, role: string, outputs: string[]): string 
 
 /**
  * 补齐 Step schema 必填项，避免因 LLM 漏字段导致 Plan 整盘失败：
- *  - role 缺失 / 非法 → 用 PHASE_DEFAULT_ROLE 兜底；ROLE_ALIASES 做大小写&同义词修正
+ *  - 模型若仍输出 role，只作为推断缺失 phase 的提示；Step 不再携带 role
  *  - acceptance 缺失 / 空 → 用 description 截断或固定模板兜底
  *  - systemPrompt 长度不足 → 补齐到至少 20 字符
  *  - title / description 缺失 → 用阶段名兜底，避免空字符串
@@ -772,7 +760,7 @@ export function calibrateStepShape(steps: Step[]): Step[] {
     const s = raw as unknown as Record<string, unknown>;
     const outputs = Array.isArray(s.outputs) ? (s.outputs as string[]) : [];
 
-    // role 先粗算一遍（用于 phase 推断兜底）
+    // A role the model may still emit is only a hint for inferring a missing phase; Steps carry no role.
     let role = typeof s.role === 'string' ? s.role.trim() : '';
     if (!VALID_ROLES.has(role)) {
       const alias = ROLE_ALIASES[role.toLowerCase()];
@@ -784,11 +772,6 @@ export function calibrateStepShape(steps: Step[]): Step[] {
     const title = (typeof s.title === 'string' && s.title.trim()) || `${phase} Step`;
     const description = (typeof s.description === 'string' && s.description.trim()) || title;
 
-    // role 最终兜底：合法但与阶段职责不匹配也按 phase 默认收敛，避免 DLD=Coder 这类职能漂移。
-    const phaseDefaultRole = PHASE_DEFAULT_ROLE[phase] ?? 'Coder';
-    if (!VALID_ROLES.has(role) || role !== phaseDefaultRole) {
-      role = phaseDefaultRole;
-    }
 
     // acceptance 兜底
     let acceptance = typeof s.acceptance === 'string' ? s.acceptance.trim() : '';
@@ -812,7 +795,6 @@ export function calibrateStepShape(steps: Step[]): Step[] {
       title,
       description,
       systemPrompt,
-      role: role as Step['role'],
       tools: ensureEssentialToolRefs({
         phase: phase as Step['phase'],
         tools: Array.isArray(s.tools) ? (s.tools as string[]) : [],
@@ -1128,7 +1110,6 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
         `冻结“基线 + 补充”集合后运行测试，并写 ${unitTestDoc ?? 'UNIT_TEST report'}；` +
         `禁止修改配对基线测试与 src/**。\n` +
         `验收：测试完整性检查通过，冻结集合在 ${tsMode ? 'npm test / Vitest' : 'pytest'} 下全部通过。`,
-      role: 'Tester',
       tools: ['skill:test-execution', 'skill:record-replay-fixtures'],
       inputs: dedup(uncovered.flatMap((c) => c.outputs)),
       outputs: unitTestDoc ? [unitTestDoc] : [],

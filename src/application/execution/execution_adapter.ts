@@ -34,7 +34,6 @@ export function projectExecutionPlan(
       title: domain.title,
       description: domain.description,
       systemPrompt: domain.systemPrompt,
-      role: domain.agent,
       tools: domain.tools,
       inputs: domain.inputs,
       outputs: domain.outputs,

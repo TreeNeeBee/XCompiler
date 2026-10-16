@@ -5,6 +5,8 @@ import { compilePhaseMaterialization } from '../../domain/planning/compiler.js';
 import { ProjectPlanSchema } from '../../domain/planning/plan.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
+import { prepareProjectActorBindings } from '../planning/project_graph_persistence_service.js';
+import { extractObjectEnvelope } from '../../domain/objects/object_envelope.js';
 
 export class PhaseMaterializationService {
   constructor(private readonly repository: DomainObjectRepositoryPort) {}
@@ -36,13 +38,18 @@ export class PhaseMaterializationService {
       objectType: 'actor-registration',
       projectId: project.id,
     })).filter((object) => object.objectType === 'actor-registration');
+    if (!actors.some(actor => actor.id === project.pmActorId && actor.roleId === 'project-manager')) {
+      throw new Error(`Project ${project.id} has no registered Project Manager identity`);
+    }
+    const bindings = prepareProjectActorBindings({ draft: input.plan }, extractObjectEnvelope(project), actors);
+    const existingActorIds = new Set(actors.map(actor => actor.id));
     const materialization = compilePhaseMaterialization({
       draft: input.plan,
       project,
       phase,
       phasePlan,
       epic,
-      actors,
+      creatorActorIds: bindings.creatorActorIds,
     });
 
     const currentProjectPlan = await this.repository.read(project.projectPlanId);
@@ -56,6 +63,7 @@ export class PhaseMaterializationService {
     });
 
     await this.repository.commit([
+      ...bindings.actors.filter(actor => !existingActorIds.has(actor.id)),
       materialization.epic,
       ...materialization.steps,
       ...materialization.tickets,

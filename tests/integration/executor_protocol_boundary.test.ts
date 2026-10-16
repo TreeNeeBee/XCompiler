@@ -9,7 +9,9 @@ import { StepExecutor } from '../../src/agents/executor.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { ROLES, type Step } from '../../src/domain/planning/execution_plan.js';
+import { type Step } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
+import { defaultRoleForStep, stepWork, type WorkId } from '../../src/domain/workflow/work.js';
 import { LLMRouter } from '../../src/llm/router.js';
 import { ScoreStore } from '../../src/llm/scores.js';
 import type { ChatMessage } from '../../src/llm/types.js';
@@ -26,7 +28,7 @@ const servers: Server[] = [];
 const stores: ScoreStore[] = [];
 const scope = { projectId: '01952f27-7900-7000-8000-000000000001', phaseId: '01952f27-7900-7000-8000-000000000002',
   stepId: '01952f27-7900-7000-8000-000000000003', ticketId: '01952f27-7900-7000-8000-000000000004' };
-const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Current implementation',
+const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', title: 'Current implementation',
   description: 'Produce the declared implementation.', systemPrompt: 'Write only the declared output.',
   tools: ['write_file'], inputs: [], outputs: ['src/accepted.py'], dependsOn: [], acceptance: 'The output exists.', maxAttempts: 3 };
 const rejected = '{"thoughts":"complete action inside an incomplete turn","actions":[{"tool":"write_file",' +
@@ -88,7 +90,7 @@ async function fixture(url: string) {
   await fs.writeFile(configPath, YAML.stringify({ llm: {
     providers: { primary: { type: 'openai', api_key: '', model: 'requested-model', base_url: url,
       context_window: 131072, request_timeout_ms: 1000, stream_idle_timeout_ms: 1000 } },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['primary']])), fallbacks: [],
+    pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['primary']])), fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const audit = new AuditLogger({ root, stateRoot: container.state.root, command: 'executor-protocol-boundary', contentMode: 'full' });
@@ -101,8 +103,9 @@ async function fixture(url: string) {
   const recordReplay = createRuntimeRecordReplay(config, container.control, { mode: 'off' });
   const ctx: ToolContext = { ws, sandbox: undefined as never, audit, allowedWrites: ['src/'], stepId: step.id };
   return { ws, audit, decay, router, ctx, container,
-    executionRequest: (role: ExecutionRequestScope['role']) => createRuntimeExecutionTurnRequestPort({
-      config: config.rules, container, recordReplay, router, audit, scope: { ...scope, role, executionId: randomUUID() },
+    executionRequest: (role: ExecutionRequestScope['role'], work: WorkId = 'code.implement') => createRuntimeExecutionTurnRequestPort({
+      config: config.rules, container, recordReplay, router, audit, scope: { ...scope, role, work,
+        roleVersion: roleProfile(role).version, ...router.resolvePool(roleProfile(role).defaultPool), executionId: randomUUID() },
     }),
     events: async () => (await fs.readFile(container.state.abs('audit/audit.jsonl'), 'utf8')).split('\n')
       .filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
@@ -114,8 +117,8 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const server = await endpoint([rejected, accepted]);
     const current = await fixture(server.url);
     const permission = vi.fn(async () => ({ approved: true }));
-    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    const result = await new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 2 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     expect(result.success).toBe(true);
     expect(result.rounds).toBe(2);
@@ -150,8 +153,9 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
       const permission = vi.fn(async () => ({ approved: true }));
       const run = vi.fn(async () => ({ ok: true, summary: 'The automatic gate must not be invoked' }));
       const tool: Tool = { name: 'run_tests', description: 'Controlled automatic verification', argsSchema: {}, run };
-      const result = await new StepExecutor({ request: current.executionRequest('Tester'), llm: current.router.for('Tester'), maxRounds: 1 }).run({
-        step: { ...step, phase, role: 'Tester', tools: ['run_tests'], outputs: [] }, tools: [tool],
+      const role = defaultRoleForStep(phase, 'python');
+      const result = await new StepExecutor({ request: current.executionRequest(role, stepWork(phase)), maxRounds: 1 }).run({
+        step: { ...step, phase, tools: ['run_tests'], outputs: [] }, work: stepWork(phase), role, tools: [tool],
         ctx: { ...current.ctx, requestPermission: permission },
       });
       expect(result.success).toBe(false);
@@ -173,8 +177,8 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
       '"args":{"path":"src/accepted.py","content":"' + content + '"}},],"done":true,}\n```';
     const server = await endpoint([output]);
     const current = await fixture(server.url);
-    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 1 }).run({
-      step, tools: [writeFileTool], ctx: current.ctx,
+    const result = await new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 1 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: current.ctx,
     });
     expect(result.success).toBe(true);
     expect(result.toolCalls.filter(call => call.tool === 'write_file' && call.ok)).toHaveLength(1);
@@ -189,8 +193,8 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const complete = JSON.stringify({ thoughts: 'The native action is complete', actions: [], done: true });
     const server = await endpoint([native, complete]);
     const current = await fixture(server.url);
-    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
-      step, tools: [writeFileTool], ctx: current.ctx,
+    const result = await new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 2 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: current.ctx,
     });
     expect(result.success).toBe(true);
     expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'write_file', ok: true })]);
@@ -212,8 +216,8 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const waiting = new Promise<void>(resolve => { entered = resolve; });
     const decision = new Promise<ToolPermissionDecision>(resolve => { release = resolve; });
     const permission = vi.fn(async () => { entered(); return decision; });
-    const pending = new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    const pending = new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 2 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     await waiting;
     expect(server.calls).toHaveLength(1);
@@ -237,16 +241,17 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     const server = await endpoint([denied, rejected, accepted]);
     const current = await fixture(server.url);
     const permission = vi.fn(async () => ({ approved: false, outcome: 'denied' as const, reason: 'Controlled user denial' }));
-    const result = await new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 6 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    const result = await new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 6 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain('permission_blocked');
+    expect(result.failure).toMatchObject({ kind: 'infrastructure', code: 'permission_blocked' });
     expect(result.rounds).toBe(2);
     expect(server.calls).toHaveLength(2);
     expect(permission).toHaveBeenCalledTimes(1);
     expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'write_file', ok: false,
-      error: expect.stringContaining('permission denied') })]);
+      executionStatus: 'permission-blocked', error: expect.stringContaining('permission denied') })]);
     await expect(fs.stat(current.ws.abs('src/accepted.py'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.stat(current.ws.abs('src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });
     const events = await current.events();
@@ -271,8 +276,8 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
       if (data?.messageId === 'audit.executor_turn_protocol_rejected') throw failure;
       return original(kind, message, data, options);
     });
-    await expect(new StepExecutor({ request: current.executionRequest('Coder'), llm: current.router.for('Coder'), maxRounds: 2 }).run({
-      step, tools: [writeFileTool], ctx: current.ctx,
+    await expect(new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 2 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: current.ctx,
     })).rejects.toBe(failure);
     expect(server.calls).toHaveLength(1);
     await expect(fs.stat(current.ws.abs('src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });

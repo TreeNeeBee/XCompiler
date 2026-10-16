@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { RuleVectorRetriever } from '../../src/application/rules/rule_vector_retriever.js';
-import { SCENARIO_OUTCOME_CONTEXT, SCENARIO_OUTCOME_RULE } from '../../src/application/execution/scenario_outcome_judge.js';
+import { SCENARIO_OUTCOME_RULE } from '../../src/application/execution/scenario_outcome_judge.js';
 import { RuleListDefinitionSchema, type RuleListDefinition } from '../../src/domain/rules/catalogue.js';
 import { parseRuleSlot } from '../../src/domain/rules/slots.js';
 import {
@@ -70,8 +70,7 @@ describe('installed compiler Rule catalogue', () => {
       expect(selection.prepared.excluded).toEqual([{
         ruleId: SCENARIO_OUTCOME_RULE.ruleId,
         issues: [
-          { source: 'list', dimension: 'role', reason: 'missing-context' },
-          { source: 'list', dimension: 'scenario', reason: 'missing-context' },
+          { source: 'list', dimension: 'work', reason: 'missing-context' },
         ],
       }]);
       expect(selection.ranked.decision).toBe('no-candidates');
@@ -110,9 +109,9 @@ describe('installed compiler Rule catalogue', () => {
     expect(rubric.rule.version).toBe(SCENARIO_OUTCOME_RULE.version);
     expect(rubric.rule.category).toBe('scenario');
     expect(rubric.rule.level).toBe('required');
-    expect(rubric.list.definition.slot).toBe(0x0207);
+    expect(rubric.list.definition.slot).toBe(0x02A0);
     expect(rubric.list.definition.applicability).toEqual({
-      roles: ['ProjectManager'], scenarios: [SCENARIO_OUTCOME_CONTEXT],
+      works: ['judge.scenario'],
     });
     expect(rubric.rule.instruction).toContain('If evidence is insufficient to prove a contract change, choose bug/code.');
     const embed = vi.fn(async () => { throw new Error('Required scenario rubric must not request embedding'); });
@@ -120,7 +119,7 @@ describe('installed compiler Rule catalogue', () => {
     const create = vi.fn(async () => { throw new Error('Required scenario rubric must not create an index'); });
     const selector = new RuleSelector(catalogue);
     const selection = await selector.retrieve({
-      requestKind: 'business', context: { role: 'ProjectManager', scenario: SCENARIO_OUTCOME_CONTEXT },
+      requestKind: 'business', context: { role: 'project-manager', work: 'judge.scenario' as const },
       required: [SCENARIO_OUTCOME_RULE], taskSummary: 'Judge current scenario evidence',
       retriever: new RuleVectorRetriever({
         identity: { provider: 'fixture', model: 'unused', spaceVersion: '1', dimensions: 2 }, embed,
@@ -143,19 +142,19 @@ describe('installed compiler Rule catalogue', () => {
     const selected = payload.rules.filter((entry) => entry.ruleId === SCENARIO_OUTCOME_RULE.ruleId);
     expect(selected).toHaveLength(1);
     expect(selected[0]).toMatchObject({
-      ruleId: SCENARIO_OUTCOME_RULE.ruleId, slot: '0x0207', instruction: rubric.rule.instruction,
+      ruleId: SCENARIO_OUTCOME_RULE.ruleId, slot: '0x02a0', instruction: rubric.rule.instruction,
     });
-    expect(payload.rules.map((entry) => entry.slot)).toEqual(['0x0000', '0x0000', '0x0000', '0x0207']);
+    expect(payload.rules.map((entry) => entry.slot)).toEqual(['0x0000', '0x0000', '0x0000', '0x02a0']);
     expect(prompt).not.toContain('Compiler-maintained scenario rubric');
     expect(prompt).not.toContain(rubric.rule.retrievalDescription);
     expect(prompt).not.toContain(rulesRoot);
   });
 
   it.each([
-    { role: 'ProjectManager' as const },
-    { role: 'Coder' as const, scenario: SCENARIO_OUTCOME_CONTEXT },
-    { role: 'ProjectManager' as const, scenario: 'other-scenario' },
-  ])('keeps the rubric out of unrelated optional selection for $role / $scenario', async (context) => {
+    { role: 'project-manager' as const },
+    { role: 'python-developer' as const, work: 'code.implement' as const },
+    { role: 'project-manager' as const, work: 'code.implement' as const },
+  ])('keeps the rubric out of unrelated optional selection for $role / $work', async (context) => {
     const selector = new RuleSelector(await loadCompilerRuleCatalogue(rulesRoot));
     const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
     expect(prepared.required).toHaveLength(3);
@@ -163,6 +162,16 @@ describe('installed compiler Rule catalogue', () => {
     expect(prepared.excluded.map((entry) => entry.ruleId)).toEqual([SCENARIO_OUTCOME_RULE.ruleId]);
     expect(() => selector.prepare({ requestKind: 'business', context, required: [SCENARIO_OUTCOME_RULE] }))
       .toThrow(expect.objectContaining({ code: 'rule_selection_failed', reason: 'required_inapplicable' }));
+  });
+
+  it('binds the judgement rubric to its work independently of the speaking role', async () => {
+    const selector = new RuleSelector(await loadCompilerRuleCatalogue(rulesRoot));
+    const context = { role: 'python-developer' as const, work: 'judge.scenario' as const };
+    const optional = selector.prepare({ requestKind: 'business', context, required: [] });
+    expect(optional.optional.map(rule => rule.rule.id)).toEqual([SCENARIO_OUTCOME_RULE.ruleId]);
+    expect(optional.excluded).toEqual([]);
+    const required = selector.prepare({ requestKind: 'business', context, required: [SCENARIO_OUTCOME_RULE] });
+    expect(required.required.map(rule => rule.rule.id)).toContain(SCENARIO_OUTCOME_RULE.ruleId);
   });
 
   it.each(releasedSources)('accepts comments, layout and explicit defaults for released %s', async (source) => {
@@ -200,7 +209,7 @@ describe('installed compiler Rule catalogue', () => {
     { name: 'Rule identity', change: (list) => { list.rules[0]!.id = '3603a4d7-af71-4ed3-b0d6-ac791c01d87f'; } },
     { name: 'Rule version', change: (list) => { list.rules[0]!.version = '9.0.0'; } },
     { name: 'retrieval description', change: (list) => { list.rules[0]!.retrievalDescription += ' Changed.'; } },
-    { name: 'applicability', change: (list) => { list.rules[0]!.applicability = { roles: ['Coder'] }; } },
+    { name: 'applicability', change: (list) => { list.rules[0]!.applicability = { roles: ['python-developer'] }; } },
   ];
   it.each(releasedSources.flatMap((source) => changes.map((change) => ({ source, ...change }))))(
     'rejects an installed $source $name change outside the release manifest', async ({ source, change }) => {

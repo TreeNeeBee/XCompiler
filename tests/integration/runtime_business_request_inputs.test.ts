@@ -1,3 +1,4 @@
+import { fixtureScenarioOwner, fixturePool } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -42,7 +43,7 @@ const originalText = 'Expectation: preserve literal # content.\r\nEvidence: {"co
 const optionalDescription = 'Review the observed operation evidence';
 
 async function snapshot(container: ProjectContainer, options: {
-  lowScore?: boolean; instruction?: string; role?: 'ProjectManager' | 'Coder'; project?: string;
+  lowScore?: boolean; instruction?: string; role?: 'project-manager' | 'python-developer'; project?: string;
 } = {}): Promise<RuleRequestSnapshot> {
   const catalogue = new RuleCatalogue([
     {
@@ -64,8 +65,8 @@ async function snapshot(container: ProjectContainer, options: {
   ]);
   const selector = new RuleSelector(catalogue);
   const request = { requestKind: 'business' as const,
-    context: { projectId: options.project ?? projectId, role: options.role ?? 'ProjectManager' as const,
-      scenario: 'scenario-judgement' }, required: [] };
+    context: { projectId: options.project ?? projectId, role: options.role ?? 'project-manager' as const,
+      work: 'judge.scenario' }, required: [] };
   const prepared = selector.prepare(request);
   let selection: Awaited<ReturnType<RuleSelector['retrieve']>>;
   if (options.lowScore) {
@@ -91,7 +92,7 @@ async function snapshot(container: ProjectContainer, options: {
 
 async function fixture(options: {
   contentMode?: 'full' | 'redacted'; lowScore?: boolean;
-  role?: 'ProjectManager' | 'Coder'; project?: string;
+  role?: 'project-manager' | 'python-developer'; project?: string;
 } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
   await container.canonical().workspace.ensure('.');
@@ -104,7 +105,7 @@ async function fixture(options: {
     container, audit, retained,
     service: createRuntimeBusinessRequestInputs(container, audit),
     request: { logicalRequestId: requestId,
-      owner: { kind: 'scenario-judgement' as const, projectId, phaseId, executionId },
+      owner: fixtureScenarioOwner({ projectId, phaseId, executionId }, fixturePool('management', ['fixture'])),
       messages: [{ role: 'system' as const, content: 'Return the current judgement as JSON.' },
         { role: 'user' as const, content: originalText }],
       templateVersion: 'scenario-judgement-fixture/1', outputProtocol: structuredClone(protocol) },
@@ -274,7 +275,7 @@ describe('Runtime business input retention and exact read-only recovery', () => 
   });
 
   it.each(['project', 'role'] as const)('rejects a Rule snapshot with a different %s owner before input audit', async (change) => {
-    const f = await fixture(change === 'project' ? { project: objectId(999) } : { role: 'Coder' });
+    const f = await fixture(change === 'project' ? { project: objectId(999) } : { role: 'python-developer' });
     const before = await fs.readFile(f.auditPath, 'utf8');
     await expect(f.service.capture(f.request)).rejects.toThrow();
     expect(await fs.readFile(f.auditPath, 'utf8')).toBe(before);

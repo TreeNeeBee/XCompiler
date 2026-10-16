@@ -27,8 +27,6 @@ import {
 import type { PhasePlan } from '../../src/domain/planning/phase_plan_checkpoint.js';
 import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import { FilePlanStore } from '../../src/infrastructure/planning/file_plan_store.js';
-import type { LLMRouter } from '../../src/llm/router.js';
-import type { LLMClient } from '../../src/llm/types.js';
 import { Workspace } from '../../src/workspace/workspace.js';
 
 // All storage operations reach the real adapter. Observation preserves the original filesystem
@@ -105,18 +103,13 @@ describe('Phase progression persists its recovery checkpoint', () => {
       dependencies: ['pytest'],
       steps: vModelSteps('P2'),
     });
-    const client: LLMClient = {
-      name: 'deterministic-planner',
-      chat: vi.fn<LLMClient['chat']>(async () => { throw new Error('Phase decomposition must use the retained request port.'); }),
-    };
     const send = vi.fn<PhaseDecompositionRequestPort['send']>(async (request) => {
       await request.validate(reply);
-      return { text: reply, provider: client.name };
+      return { text: reply, provider: 'deterministic-planner' };
     });
-    const port: PhaseDecompositionRequestPort = { name: client.name, send };
-    const router = { for: vi.fn(() => client) } as unknown as LLMRouter;
+    const port: PhaseDecompositionRequestPort = { name: 'deterministic-planner', send };
     // The final Phase has no further decomposition and must work without a configured port.
-    const service = new PhaseProgressionService(workspace, state, control, store, router, audit, false,
+    const service = new PhaseProgressionService(workspace, state, control, store, audit, false,
       undefined, undefined, hasNextPhase ? port : undefined);
     const complete = () => service.completeAndPrepareNext({
       phasePlan,
@@ -127,7 +120,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
     const events = async (): Promise<AuditEvent[]> =>
       (await state.readFile('audit/audit.jsonl')).trim().split('\n')
         .map((line) => JSON.parse(line) as AuditEvent);
-    return { store, workspace, phasePlanPath, currentPlanPath, nextPlanPath, client, send, complete, events };
+    return { store, workspace, phasePlanPath, currentPlanPath, nextPlanPath, send, complete, events };
   }
 
   it('reopens the completed final Phase from disk without asking for another plan', async () => {
@@ -140,7 +133,6 @@ describe('Phase progression persists its recovery checkpoint', () => {
     expect(result.nextPlan).toBeUndefined();
     expect(restored).toEqual(result.phasePlan);
     expect(restored.phases.map((phase) => [phase.id, phase.status])).toEqual([['P1', 'complete']]);
-    expect(fixture.client.chat).not.toHaveBeenCalled();
     expect(fixture.send).not.toHaveBeenCalled();
     expect((await fixture.events()).filter((event) => event.kind === 'plan.persist'))
       .toMatchObject([{ messageId: 'execute.phase_completed', data: { phaseId: 'P1' } }]);
@@ -171,7 +163,6 @@ describe('Phase progression persists its recovery checkpoint', () => {
     expect(restored.plan.steps).toHaveLength(8);
     expect(restored.plan.steps.map((step) => step.phase)).toEqual(REQUIRED_V_MODEL_PHASES);
     expect(restored.plan.steps.every((step) => step.iterationId === 'P2')).toBe(true);
-    expect(fixture.client.chat).not.toHaveBeenCalled();
     expect(fixture.send).toHaveBeenCalledTimes(1);
     const request = fixture.send.mock.calls[0]![0];
     expect(request.payload).toMatchObject({ kind: 'planning-phase-decomposition', phaseId: 'P2',
@@ -252,28 +243,28 @@ function vModelSteps(iterationId: string): Step[] {
   const baseline = (kind: string) => `tests/test_${kind}_${iterationId.toLowerCase()}.py`;
   const doc = (phase: Phase) => phaseDocForIteration(phase, iterationId)!;
   const testPlan = (phase: Phase) => testPlanDocForIteration(phase, iterationId)!;
-  const specifications: Array<{ phase: Phase; role: Step['role']; outputs: string[]; inputs?: string[] }> = [
+  const specifications: Array<{ phase: Phase; outputs: string[]; inputs?: string[] }> = [
     {
-      phase: 'REQUIREMENT_ANALYSIS', role: 'Planner',
+      phase: 'REQUIREMENT_ANALYSIS',
       outputs: [doc('REQUIREMENT_ANALYSIS'), testPlan('FUNCTIONAL_TEST'), baseline('functional')],
     },
     {
-      phase: 'HIGH_LEVEL_DESIGN', role: 'Architect',
+      phase: 'HIGH_LEVEL_DESIGN',
       outputs: [doc('HIGH_LEVEL_DESIGN'), testPlan('MODULE_TEST'), baseline('module')],
     },
     {
-      phase: 'DETAILED_DESIGN', role: 'Architect',
+      phase: 'DETAILED_DESIGN',
       outputs: [doc('DETAILED_DESIGN'), testPlan('INTEGRATION_TEST'), baseline('integration')],
     },
     {
-      phase: 'CODE', role: 'Coder',
+      phase: 'CODE',
       outputs: ['src/main.py', testPlan('UNIT_TEST'), baseline('unit')],
     },
-    { phase: 'UNIT_TEST', role: 'Tester', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
-    { phase: 'INTEGRATION_TEST', role: 'Tester', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
-    { phase: 'MODULE_TEST', role: 'Tester', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
+    { phase: 'UNIT_TEST', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
+    { phase: 'INTEGRATION_TEST', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
+    { phase: 'MODULE_TEST', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
     {
-      phase: 'FUNCTIONAL_TEST', role: 'Tester',
+      phase: 'FUNCTIONAL_TEST',
       outputs: [...deliveryDocsForIteration('application', iterationId)], inputs: [baseline('functional')],
     },
   ];

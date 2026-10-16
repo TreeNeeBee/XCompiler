@@ -8,7 +8,6 @@ import {
 } from '../src/application/planning/phase_decomposition_request.js';
 import type { PhasePlanRequestPort } from '../src/application/planning/phase_plan_request.js';
 import { phaseDeliveryGate } from '../src/domain/quality/delivery_gate.js';
-import type { LLMClient } from '../src/llm/types.js';
 
 const originalInput: PlannerInput = {
   rawRequirement: 'Format an integer.', clarifications: [], userAddenda: '', baselineContext: '', intent: 'feature',
@@ -38,10 +37,8 @@ function phasePlan(duplicate = false, currentId = 'P1'): DraftPhasePlan {
 }
 
 function fixture(send: PhasePlanRequestPort['send']) {
-  const bare = vi.fn(async (): Promise<string> => { throw new Error('Unexpected bare Planner request.'); });
-  const llm: LLMClient = { name: 'bare-planner', chat: bare };
   const port: PhasePlanRequestPort = { name: 'retained-planner', send };
-  return { planner: new Planner(llm, undefined, 'python', false, undefined, undefined, port), bare };
+  return { planner: new Planner(undefined, 'python', false, undefined, undefined, port) };
 }
 
 describe('approved implementation Phase identity at planning boundaries', () => {
@@ -69,7 +66,6 @@ describe('approved implementation Phase identity at planning boundaries', () => 
     expect(seen[1]!.payload.repairFeedback).toContain((refusals[0] as Error).message);
     expect(seen[1]!.messages[0]).toEqual(seen[0]!.messages[0]);
     expect(seen[1]!.messages[1]!.content).toBe(seen[0]!.messages[1]!.content + seen[1]!.payload.repairFeedback);
-    expect(current.bare).not.toHaveBeenCalled();
   });
 
   it('never adopts or silently deduplicates ambiguous planned identities after the existing semantic budget', async () => {
@@ -81,7 +77,6 @@ describe('approved implementation Phase identity at planning boundaries', () => 
     const current = fixture(send);
     await expect(current.planner.planPhasePlan(originalInput)).rejects.toBeInstanceOf(PlannerContractViolation);
     expect(send).toHaveBeenCalledTimes(3);
-    expect(current.bare).not.toHaveBeenCalled();
   });
 
   it('preserves an independent failure following a duplicate refusal instead of retrying it as model content', async () => {
@@ -97,7 +92,6 @@ describe('approved implementation Phase identity at planning boundaries', () => 
     const current = fixture(send);
     await expect(current.planner.planPhasePlan(originalInput)).rejects.toBe(failure);
     expect(send).toHaveBeenCalledTimes(2);
-    expect(current.bare).not.toHaveBeenCalled();
   });
 
   it.each(['P1', 'P2'])('retains the same unique identities before P03 expands current %s', currentId => {

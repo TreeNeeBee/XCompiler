@@ -56,7 +56,7 @@ function config(primary: string, secondary?: string, wireProtocol: 'openai' | 'o
       primary: { type: wireProtocol, model: 'alias', base_url: primary, api_key: '',
         retry: { max_retries: 1, max_delay: 0, jitter: 'none' } },
       ...(secondary ? { secondary: { type: 'openai', model: 'other-model', base_url: secondary, api_key: '' } } : {}),
-    }, roles: { Coder: ['primary'] }, fallbacks: secondary ? ['secondary'] : [], role_fallbacks: {}, scores: {},
+    }, pools: { coding: ['primary'] }, fallbacks: secondary ? ['secondary'] : [], scores: {},
   } } as unknown as XCompilerConfig;
 }
 async function audit() {
@@ -120,7 +120,7 @@ describe('fixed original producer for protocol correction', () => {
     await expect(router.forProtocolCorrection(source).chat(prepared.messages, { ...prepared.options,
       onResponse: (response) => { captured = response; },
     })).resolves.toBe('{"count":1}');
-    await router.for('Coder').chat([{ role: 'user', content: 'Business request' }]);
+    await router.forPool('coding', { label: 'python-developer' }).chat([{ role: 'user', content: 'Business request' }]);
     expect(server.calls.map((call) => call.model)).toEqual(['actual-revision', 'alias']);
     expect(captured).toMatchObject({ logicalRequestId: id(3), provider: 'primary', model: `${wireProtocol}:actual-revision`,
       capture: { status: 'recorded', response: { requestedModel: 'actual-revision', reportedModels: ['actual-revision'] } } });
@@ -138,7 +138,7 @@ describe('fixed original producer for protocol correction', () => {
     const router = new LLMRouter(config(server.url), await audit(), undefined, undefined, undefined, probe);
     let captured: RoutedResponseEvidence | undefined;
     let validations = 0;
-    await router.for('Coder').chat([{ role: 'user', content: 'Return the fixture' }], {
+    await router.forPool('coding', { label: 'python-developer' }).chat([{ role: 'user', content: 'Return the fixture' }], {
       logicalRequestId: id(12).toUpperCase(),
       validate() { if (++validations === 1) throw new Error('Fixture rejected once'); },
       onResponse: (response) => { captured = response; },

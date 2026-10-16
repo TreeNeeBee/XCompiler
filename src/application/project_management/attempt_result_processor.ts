@@ -39,7 +39,8 @@ export interface AttemptTransitionEvent {
   creatorRole?: string;
   assigneeActorId?: ObjectId;
   assigneeRole?: string;
-  assigneeAgent?: string;
+  /** The work the routed Ticket asks for. */
+  work?: string;
   correlationId: ObjectId;
   causationId?: ObjectId;
   message: string;

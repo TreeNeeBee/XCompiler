@@ -123,8 +123,7 @@ async function checkLlm(
 
   const referencedProviders = new Set<string>([
     ...(cfg.llm.fallbacks ?? []),
-    ...Object.values(cfg.llm.roles ?? {}).flat(),
-    ...Object.values(cfg.llm.role_fallbacks ?? {}).flat(),
+    ...Object.values(cfg.llm.pools ?? {}).flat(),
   ]);
 
   // Group ollama providers by base_url so we only probe each server once.
@@ -236,13 +235,10 @@ async function checkLlm(
     }
   }
 
-  // 2d) role coverage
-  const roles = new Set<string>([
-    ...Object.keys(cfg.llm.roles ?? {}),
-    ...Object.keys(cfg.llm.role_fallbacks ?? {}),
-  ]);
-  for (const role of roles) {
-    const cands = candidatesForRole(cfg, role);
+  // 2d) model pool coverage
+  const pools = new Set<string>(Object.keys(cfg.llm.pools ?? {}));
+  for (const role of pools) {
+    const cands = candidatesForPool(cfg, role);
     const live = cands.find((n) => {
       if (scores.get(n) === 0) return false;
       const prov = cfg.llm.providers[n];
@@ -275,10 +271,8 @@ function httpStatusFromError(message: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
-  const explicit = cfg.llm.role_fallbacks?.[role];
-  if (explicit && explicit.length > 0) return explicit;
-  return [...(cfg.llm.roles?.[role] ?? []), ...(cfg.llm.fallbacks ?? [])];
+function candidatesForPool(cfg: XCompilerConfig, pool: string): string[] {
+  return [...(cfg.llm.pools?.[pool] ?? []), ...(cfg.llm.fallbacks ?? [])];
 }
 
 function openAIEndpointRequiresApiKey(baseUrl: string): boolean {

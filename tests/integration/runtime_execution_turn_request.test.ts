@@ -18,7 +18,8 @@ import {
 } from '../../src/application/execution/execution_turn_request.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
-import { ROLES, type Step } from '../../src/domain/planning/execution_plan.js';
+import { type Step } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
 import { LLMRouter } from '../../src/llm/router.js';
 import * as protocolCandidates from '../../src/llm/protocol_candidate.js';
 import { ScoreStore } from '../../src/llm/scores.js';
@@ -42,9 +43,11 @@ const scope: ExecutionRequestScope = {
   projectId: '01952f27-7900-7000-8000-000000000001', phaseId: '01952f27-7900-7000-8000-000000000002',
   stepId: '01952f27-7900-7000-8000-000000000003', ticketId: '01952f27-7900-7000-8000-000000000004',
   actorId: '01952f27-7900-7000-8000-000000000005', assignmentId: '01952f27-7900-7000-8000-000000000006',
-  executionId: 'a3dbd0c9-2df4-4b89-80eb-b526a2715fe7', role: 'Coder', providerPool: ['primary'],
+  executionId: 'a3dbd0c9-2df4-4b89-80eb-b526a2715fe7', role: 'python-developer',
+  work: 'code.implement', roleVersion: roleProfile('python-developer').version,
+  modelPool: 'coding', inheritFallbacks: false, allowedProviders: ['primary'],
 };
-const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Implement the current accepted output',
+const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', title: 'Implement the current accepted output',
   description: 'Produce the declared output.', systemPrompt: 'Preserve the accepted requirement and literal # text.',
   tools: ['write_file'], inputs: [], outputs: ['src/accepted.py'], dependsOn: [], acceptance: 'The output exists.', maxAttempts: 3 };
 const valid = JSON.stringify({ thoughts: 'Deliver the current output', actions: [
@@ -107,7 +110,7 @@ function plugin(hooks: {
 }
 
 async function fixture(url: string, options: { plugins?: PluginHost; currentScope?: ExecutionRequestScope;
-  secondary?: { url: string; window?: number }; primaryWindow?: number } = {}) {
+  secondary?: { url: string; window?: number }; primaryWindow?: number; globalFallbacks?: string[] } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
   const ws = container.canonical().workspace;
   await ws.ensure('.');
@@ -117,7 +120,9 @@ async function fixture(url: string, options: { plugins?: PluginHost; currentScop
   await fs.writeFile(configPath, YAML.stringify({ llm: {
     providers: { primary: provider, ...(options.secondary ? { secondary: { ...provider, model: 'secondary-model',
       base_url: options.secondary.url, context_window: options.secondary.window ?? 131072 } } : {}) },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['primary']])), fallbacks: options.secondary ? ['secondary'] : [],
+    pools: { ...Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['primary']])),
+      ...(options.secondary ? { assigned: ['secondary'] } : {}) },
+    fallbacks: options.globalFallbacks ?? (options.secondary ? ['secondary'] : []),
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'execution-turn', contentMode: 'full' });
@@ -132,10 +137,10 @@ async function fixture(url: string, options: { plugins?: PluginHost; currentScop
   const router = new LLMRouter(config, audit, scores, undefined, options.plugins,
     async () => ({ ok: true, latencyMs: 0, detail: 'Loopback fixture' }), recordReplay);
   const currentScope = options.currentScope ?? scope;
-  const forRole = vi.spyOn(router, 'for');
+  const forPool = vi.spyOn(router, 'forPool');
   const port = createRuntimeExecutionTurnRequestPort({ config: config.rules, container, recordReplay, router, audit, scope: currentScope });
   const ctx: ToolContext = { ws, sandbox: undefined as never, audit, allowedWrites: ['src/'], stepId: scope.stepId };
-  return { container, ws, config, audit, boost, decay, router, forRole, port, ctx,
+  return { container, ws, config, audit, boost, decay, router, forPool, port, ctx,
     events: async (): Promise<AuditEvent[]> => (await container.state.readFile('audit/audit.jsonl')).split('\n')
       .filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
   };
@@ -144,7 +149,8 @@ async function fixture(url: string, options: { plugins?: PluginHost; currentScop
 function request(overrides: Partial<ExecutionTurnPayload> = {}) {
   const payload = validateExecutionTurnPayload({ schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
     locale: 'en', parseContext: { language: 'python' }, round: 1,
-    promptContext: { step, ctx: { allowedWrites: ['src/'], readChunkBytes: 2048, writeChunkBytes: 2048 } },
+    promptContext: { step, work: 'code.implement', role: 'python-developer',
+      ctx: { allowedWrites: ['src/'], readChunkBytes: 2048, writeChunkBytes: 2048 } },
     initialMissingOutputs: ['src/accepted.py'],
     tools: [{ name: writeFileTool.name, description: writeFileTool.description, argsSchema: writeFileTool.argsSchema }],
     validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,
@@ -168,22 +174,24 @@ describe('Runtime retained Executor requests', () => {
   it('uses the assigned Actor pool and retains an actual Tool request without successful-turn score boosts', async () => {
     const primary = await endpoint();
     const assigned = await endpoint();
-    const current = await fixture(primary.url, { secondary: { url: assigned.url }, currentScope: { ...scope, providerPool: ['secondary'] } });
+    const current = await fixture(primary.url, { secondary: { url: assigned.url },
+      globalFallbacks: ['primary'], currentScope: { ...scope, modelPool: 'assigned', allowedProviders: ['secondary'] } });
     const permission = vi.fn(async () => ({ approved: true }));
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), request: current.port, maxRounds: 1 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    const result = await new StepExecutor({ request: current.port, maxRounds: 1 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     });
     expect(result.success).toBe(true);
     expect(primary.calls).toHaveLength(0);
     expect(assigned.calls).toHaveLength(1);
-    expect(current.forRole).toHaveBeenCalledWith('Coder', expect.objectContaining({ providerPool: ['secondary'] }));
+    expect(current.forPool).toHaveBeenCalledWith({ modelPool: 'assigned', inheritFallbacks: false,
+      allowedProviders: ['secondary'] }, { label: 'python-developer' });
     expect(permission).toHaveBeenCalledTimes(1);
     expect(await current.ws.readFile('src/accepted.py')).toBe('original\r\n');
     expect(current.boost).not.toHaveBeenCalled();
     expect(current.decay).not.toHaveBeenCalled();
     const events = await current.events();
     const input = retainedInput(events);
-    expect(input.owner).toMatchObject({ kind: 'step-execution', ...scope, providerPool: ['secondary'] });
+    expect(input.owner).toMatchObject({ kind: 'step-execution', ...scope, modelPool: 'assigned', allowedProviders: ['secondary'] });
     expect(events.find(event => event.messageId === 'llm.execution_turn_judgement')?.data).toMatchObject({ logicalRequestId: input.logicalRequestId });
     const prepared = events.find(event => event.messageId === 'llm.business_request_attempt');
     expect(prepared).toBeDefined();
@@ -216,6 +224,22 @@ describe('Runtime retained Executor requests', () => {
     expect(await current.ws.exists('src/accepted.py')).toBe(false);
   });
 
+  it('does not escape an assigned pool through global fallbacks when its only provider fails', async () => {
+    const global = await endpoint();
+    const assigned = await endpoint(() => ({ output: '', status: 400 }));
+    const current = await fixture(global.url, { secondary: { url: assigned.url }, globalFallbacks: ['primary'],
+      currentScope: { ...scope, modelPool: 'assigned', allowedProviders: ['secondary'] } });
+
+    await expect(current.port.send(request())).rejects.toBeInstanceOf(Error);
+
+    expect(assigned.calls).toHaveLength(1);
+    expect(global.calls).toHaveLength(0);
+    expect(retainedInput(await current.events()).owner).toMatchObject({
+      modelPool: 'assigned', inheritFallbacks: false, allowedProviders: ['secondary'],
+    });
+    expect(await current.ws.exists('src/accepted.py')).toBe(false);
+  });
+
   it.each(['length', 'content_filter', 'tool_calls'])(
     'rejects %s producer termination before business validation and retains the original complete output', async finish => {
       const server = await endpoint(() => ({ output: valid, finish }));
@@ -245,9 +269,9 @@ describe('Runtime retained Executor requests', () => {
 
   it('retains the existing candidate regeneration only when its original business condition enabled it', async () => {
     const server = await endpoint();
-    const current = await fixture(server.url, { currentScope: { ...scope, role: 'Debugger' } });
+    const current = await fixture(server.url, { currentScope: { ...scope, work: 'repair.debug' } });
     const original = request();
-    const payload = { ...original.payload, promptContext: { ...original.payload.promptContext, executionRole: 'Debugger' as const },
+    const payload = { ...original.payload, promptContext: { ...original.payload.promptContext, work: 'repair.debug' as const },
       validation: { ...original.payload.validation, debuggerRecovery: true } };
     const docs = payload.tools.map(tool => `- ${tool.name}: ${describeToolForStep(tool, payload.promptContext.ctx, payload.promptContext.step)} args=${JSON.stringify(tool.argsSchema)}`).join('\n');
     const messages = [original.messages[0]!, { role: 'user' as const,
@@ -310,8 +334,8 @@ describe('Runtime retained Executor requests', () => {
     const server = await endpoint();
     const current = await fixture(server.url, { plugins: plugin({ after(event) { event.response = '{"done":true,"actions":[]}'; } }) });
     const permission = vi.fn(async () => ({ approved: true }));
-    await expect(new StepExecutor({ llm: current.router.for('Coder'), request: current.port, maxRounds: 1 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    await expect(new StepExecutor({ request: current.port, maxRounds: 1 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     })).rejects.toMatchObject({ code: 'execution_turn_request_failed', cause: {
       code: 'rule_business_request_failed', reason: 'response_evidence_invalid',
     } });
@@ -344,9 +368,9 @@ describe('Runtime retained Executor requests', () => {
   it('rejects content inserted after the trusted provider projection even when the old required-message subsequence remains', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
-    const originalFor = LLMRouter.prototype.for.bind(current.router);
-    current.forRole.mockImplementation((role, options) => {
-      const client = originalFor(role, options);
+    const originalFor = LLMRouter.prototype.forPool.bind(current.router);
+    current.forPool.mockImplementation((pool, options) => {
+      const client = originalFor(pool, options);
       return { name: client.name, chat: (messages, chatOptions) => client.chat(messages, {
         ...chatOptions,
         prepareProviderRequest: actual => {
@@ -374,8 +398,8 @@ describe('Runtime retained Executor requests', () => {
       return original(kind, message, data, options);
     });
     const permission = vi.fn(async () => ({ approved: true }));
-    await expect(new StepExecutor({ llm: current.router.for('Coder'), request: current.port, maxRounds: 4 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    await expect(new StepExecutor({ request: current.port, maxRounds: 4 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     })).rejects.toBe(failure);
     expect(server.calls).toHaveLength(0);
     expect(permission).not.toHaveBeenCalled();
@@ -402,8 +426,8 @@ describe('Runtime retained Executor requests', () => {
       return original(kind, message, data, options);
     });
     const permission = vi.fn(async () => ({ approved: true }));
-    await expect(new StepExecutor({ llm: current.router.for('Coder'), request: current.port, maxRounds: 4 }).run({
-      step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
+    await expect(new StepExecutor({ request: current.port, maxRounds: 4 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission },
     })).rejects.toBe(failure);
     expect(judgementWrites).toBe(1);
     expect(server.calls).toHaveLength(1);
@@ -428,12 +452,12 @@ describe('Runtime retained Executor requests', () => {
     });
     const business = vi.fn();
     const permission = vi.fn(async () => ({ approved: true }));
-    await expect(new StepExecutor({ llm: current.router.for('Coder'), maxRounds: 1, request: {
+    await expect(new StepExecutor({ maxRounds: 1, request: {
       name: current.port.name, send: input => current.port.send({ ...input, validate: text => {
         business(text);
         return input.validate(text);
       } }),
-    } }).run({ step, tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission } }))
+    } }).run({ step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: { ...current.ctx, requestPermission: permission } }))
       .rejects.toMatchObject({ code: 'execution_turn_request_failed', cause: {
         code: 'business_response_failed', reason: 'invalid', details: { field: 'normalization_proof' },
       } });
@@ -452,7 +476,7 @@ describe('Runtime retained Executor requests', () => {
     const primary = await endpoint(() => ({ output: '', status: 400 }));
     const fallback = await endpoint();
     const current = await fixture(primary.url, { secondary: { url: fallback.url, window: 32768 },
-      currentScope: { ...scope, providerPool: ['primary', 'secondary'] } });
+      currentScope: { ...scope, inheritFallbacks: true, allowedProviders: ['primary', 'secondary'] } });
     const windows: SkillOperationWindow[] = [];
     const original = request();
     const history: ChatMessage[] = [{ role: 'assistant', content: '{"thoughts":"original history","actions":[],"done":false}' },
@@ -498,11 +522,12 @@ describe('Runtime retained Executor requests', () => {
     const fallback = await endpoint(() => ({ output: JSON.stringify({ thoughts: 'Read the current file through the actual provider window',
       actions: [{ tool: 'read_file', args: { path: 'src/current.txt', maxBytes: 100000 } }], done: true }) }));
     const current = await fixture(primary.url, { secondary: { url: fallback.url, window: 32768 },
-      currentScope: { ...scope, providerPool: ['primary', 'secondary'] } });
+      currentScope: { ...scope, inheritFallbacks: true, allowedProviders: ['primary', 'secondary'] } });
     await current.ws.writeFile('src/current.txt', 'x'.repeat(100000));
     Object.assign(current.ctx, { contextWindowTokens: 131072, readChunkBytes: 50000 });
-    const result = await new StepExecutor({ llm: current.router.for('Coder'), request: current.port, maxRounds: 1 }).run({
-      step: { ...step, tools: ['read_file'], outputs: [] }, tools: [readFileTool], ctx: current.ctx,
+    const result = await new StepExecutor({ request: current.port, maxRounds: 1 }).run({
+      step: { ...step, tools: ['read_file'], outputs: [] }, work: 'code.implement', role: 'python-developer',
+      tools: [readFileTool], ctx: current.ctx,
     });
     expect(primary.calls).toHaveLength(1);
     expect(fallback.calls).toHaveLength(1);

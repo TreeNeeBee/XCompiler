@@ -35,7 +35,7 @@ export interface PreflightResult {
  *     全量 tags，把每个模型注册为合成 provider `auto_<sanitized>`，加入到所有现存角色的
  *     候选数组里。完成后再次校验：若仍有角色为空，抛错让 CLI 退出（exit code 7）。
  *
- * 该函数会**就地更新** cfg.llm.providers 与 cfg.llm.roles 中的当前运行候选。
+ * 该函数会**就地更新** cfg.llm.providers 与 cfg.llm.pools 中的当前运行候选。
  */
 export async function preflightProviders(
   cfg: XCompilerConfig,
@@ -117,7 +117,7 @@ export async function preflightProviders(
     const reachable = baseUrls.filter((u) => result.tags[u] && result.tags[u]!.length > 0);
     if (reachable.length === 0) {
       throw new Error(
-        `LLM preflight failed: 角色 [${rolesNeedingRescue.join(', ')}] 没有可用的 provider，` +
+        `LLM preflight failed: 模型池 [${rolesNeedingRescue.join(', ')}] 没有可用的 provider，` +
           `且没有任何 ollama 服务器可达。请检查 config.yaml 的 base_url / 启动 ollama 服务后重试。`,
       );
     }
@@ -142,12 +142,12 @@ export async function preflightProviders(
     }
     // 4b) 把合成 provider 追加到所有需要救援的角色
     for (const role of rolesNeedingRescue) {
-      const cur = cfg.llm.roles[role] ?? [];
+      const cur = cfg.llm.pools[role] ?? [];
       const merged = [...cur];
       for (const synthName of Object.keys(result.autoAdded)) {
         if (!merged.includes(synthName)) merged.push(synthName);
       }
-      cfg.llm.roles[role] = merged;
+      cfg.llm.pools[role] = merged;
     }
     await audit?.event('llm.score', t().llm.preflightAutoAdded(Object.keys(result.autoAdded).length, rolesNeedingRescue.join(', ')), {
       messageId: 'llm.preflight_auto_added',
@@ -158,7 +158,7 @@ export async function preflightProviders(
     const stillEmpty = listRolesWithoutLiveProvider(cfg, scores, unavailable);
     if (stillEmpty.length > 0) {
       throw new Error(
-        `LLM preflight failed: ollama server ${sourceUrl} 已加载，但角色 [${stillEmpty.join(', ')}] ` +
+        `LLM preflight failed: ollama server ${sourceUrl} 已加载，但模型池 [${stillEmpty.join(', ')}] ` +
           `仍无可用 provider（自动导入后评分仍全为 0）。`,
       );
     }
@@ -167,11 +167,9 @@ export async function preflightProviders(
   return result;
 }
 
-/** 角色 → 候选 provider 数组（模型选择必须手动指定；roles[role] + fallbacks，无隐式 default）。 */
-function candidatesForRole(cfg: XCompilerConfig, role: string): string[] {
-  const explicit = cfg.llm.role_fallbacks?.[role];
-  if (explicit && explicit.length > 0) return explicit;
-  return [...(cfg.llm.roles?.[role] ?? []), ...(cfg.llm.fallbacks ?? [])];
+/** 模型池 → 候选 provider 数组（pools[pool] + fallbacks，无隐式 default）。 */
+function candidatesForRole(cfg: XCompilerConfig, pool: string): string[] {
+  return [...(cfg.llm.pools?.[pool] ?? []), ...(cfg.llm.fallbacks ?? [])];
 }
 
 function listRolesWithoutLiveProvider(
@@ -179,11 +177,8 @@ function listRolesWithoutLiveProvider(
   scores: ScoreStore,
   unavailable: ReadonlySet<string> = new Set(),
 ): string[] {
-  // 检查所有显式声明过的角色
-  const rolesToCheck = new Set<string>([
-    ...Object.keys(cfg.llm.roles ?? {}),
-    ...Object.keys(cfg.llm.role_fallbacks ?? {}),
-  ]);
+  // 检查所有声明过的模型池
+  const rolesToCheck = new Set<string>(Object.keys(cfg.llm.pools ?? {}));
   const out: string[] = [];
   for (const r of rolesToCheck) {
     const cands = candidatesForRole(cfg, r);

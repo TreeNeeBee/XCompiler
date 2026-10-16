@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ContextService } from '../src/application/context/context_service.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
@@ -20,7 +20,7 @@ describe('context record survives a repository round trip', () => {
     const container = new ProjectContainer(root);
     const repo = new DomainObjectRepository(container.state);
     await repo.load();
-    const graph = compileProjectGraph({ draft: plan(), topic: 't', projectName: 'p' });
+    const graph = materializeProjectGraph({ draft: plan(), topic: 't', projectName: 'p' });
     await new ProjectGraphPersistenceService(repo).persistGraph(graph);
     const svc = new ContextService(repo);
     const rec = await svc.ensure(graph.project.id, 'project', graph.project.id);

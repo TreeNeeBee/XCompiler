@@ -22,7 +22,7 @@ function snapshot(requestKind: 'business' | 'rule-selection' = 'business') {
     rules: [{ id: id(2), version: '1', category: 'general', level: 'announce',
       instruction: 'Retain the current evidence.', retrievalDescription: 'Base declaration' }],
   } }]));
-  const prepared = selector.prepare({ requestKind, context: { role: 'Coder' }, required: [] });
+  const prepared = selector.prepare({ requestKind, context: { role: 'python-developer' }, required: [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [] });
   return finalizeRuleSelectionDraft(createRuleSelectionDraft({
     logicalRequestId: requestId, requestKind, createdAt: '2026-10-04T01:00:00.000Z', prepared, ranked,

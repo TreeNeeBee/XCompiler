@@ -14,7 +14,6 @@ export const OBJECT_TYPES = [
   'merge-request',
   'merge-gate-run',
   'context-record',
-  'role-definition',
   'project-management-plan',
   'risk-record',
   'decision-record',

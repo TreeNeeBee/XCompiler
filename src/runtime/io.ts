@@ -99,7 +99,8 @@ export interface RuntimeWorkflowEvent extends RuntimeEventEnvelope {
   creatorRole?: string;
   assigneeActorId?: string;
   assigneeRole?: string;
-  assigneeAgent?: string;
+  /** The work the routed Ticket asks for. */
+  work?: string;
   correlationId: string;
   causationId?: string;
   message?: string;

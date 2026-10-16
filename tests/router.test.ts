@@ -4,7 +4,6 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { LLMRouter } from '../src/llm/router.js';
-import { findSharedCoderDebuggerModel, reportRoleModelAdvice } from '../src/llm/role_advice.js';
 import {
   LLM_DYNAMIC_SCORES_FILE,
   LLM_USER_SCORES_FILE,
@@ -22,9 +21,8 @@ function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
         ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
         openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
       },
-      roles: { Coder: ['ollama_code'], Planner: ['ollama_design'] },
+      pools: { coding: ['ollama_code'], planning: ['ollama_design'] },
       fallbacks: [],
-      role_fallbacks: {},
       scores: {},
       ...partial,
     },
@@ -54,7 +52,7 @@ describe('LLMRouter fallback chain', () => {
   it('falls back to next provider when primary throws', async () => {
     const cfg = mkCfg({ fallbacks: ['openai'] });
     const router = new LLMRouter(cfg);
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
 
     // Replace inner clients via prototype hack: we cannot easily inject; instead patch fetch.
     // Simpler: stub the chain by replacing client.chat through duck-typing — verify name structure.
@@ -64,7 +62,7 @@ describe('LLMRouter fallback chain', () => {
   it('uses single provider (no chain wrapper) when no fallbacks set', async () => {
     const cfg = mkCfg({});
     const router = new LLMRouter(cfg);
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     expect(client.name).toBe('ollama:qwen');
   });
 
@@ -74,36 +72,79 @@ describe('LLMRouter fallback chain', () => {
         any_vendor_name: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8080/v1', model: 'local' },
         another_local_server: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:8081/v1', model: 'mlx' },
       },
-      roles: { Coder: ['any_vendor_name'] },
+      pools: { coding: ['any_vendor_name'] },
     });
     const router = new LLMRouter(cfg);
-    expect(router.for('Coder').name).toBe('openai:local');
+    expect(router.forPool('coding').name).toBe('openai:local');
   });
 
-  it('role_fallbacks overrides global', async () => {
-    const cfg = mkCfg({
-      fallbacks: ['openai'],
-      role_fallbacks: { Coder: ['openai', 'ollama_code'] },
-    });
+  it('resolves a pool as its own providers followed by the global fallbacks', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
     const router = new LLMRouter(cfg);
-    const client = router.for('Coder');
-    expect(client.name).toBe('chain[openai:gpt>ollama:qwen]');
+    expect(router.forPool('coding').name).toBe('chain[ollama:qwen>openai:gpt]');
   });
 
-  it('an actor provider pool overrides the role pool and does not inherit global fallbacks', () => {
-    const cfg = mkCfg({
-      fallbacks: ['openai'],
-      role_fallbacks: { Coder: ['ollama_code'] },
-    });
+  it('keeps an explicit Actor pool independent of global fallbacks, even when it names the default pool', () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
     const router = new LLMRouter(cfg);
-    // Neither the role pool, the role fallbacks, nor the global fallbacks contribute: the bound
-    // actor gets exactly the providers it was bound to.
-    expect(router.for('Coder', { providerPool: ['ollama_design'] }).name).toBe('ollama:gemma');
-    expect(router.for('Coder', { providerPool: ['openai', 'ollama_design'] }).name)
-      .toBe('chain[openai:gpt>ollama:gemma]');
-    // An absent or empty binding leaves the configured resolution untouched.
-    expect(router.for('Coder', {}).name).toBe('ollama:qwen');
-    expect(router.for('Coder', { providerPool: [] }).name).toBe('ollama:qwen');
+    expect(router.forPool('planning').name).toBe('chain[ollama:gemma>openai:gpt]');
+    const override = router.resolvePool('planning', { inheritFallbacks: false });
+    expect(override).toEqual({ modelPool: 'planning', inheritFallbacks: false, allowedProviders: ['ollama_design'] });
+    expect(router.forPool(override, { label: 'planner' }).name).toBe('ollama:gemma');
+  });
+
+  it.each([
+    { pools: { coding: ['ollama_code'] }, pool: 'undefined-pool', reason: 'unknown_pool' },
+    { pools: { coding: [] }, pool: 'coding', reason: 'empty_pool' },
+  ])('rejects $reason before global fallbacks can hide it', ({ pools, pool, reason }) => {
+    const router = new LLMRouter(mkCfg({ pools, fallbacks: ['openai'] }));
+    for (const inheritFallbacks of [true, false]) {
+      expect(() => router.resolvePool(pool, { inheritFallbacks })).toThrow(expect.objectContaining({
+        failure: expect.objectContaining({ code: 'provider_not_configured', retryable: false, switchProvider: false,
+          details: { stage: 'model-pool', reason, pool } }),
+      }));
+    }
+    expect(() => router.forPool(pool)).toThrow(expect.objectContaining({
+      failure: expect.objectContaining({ code: 'provider_not_configured' }),
+    }));
+  });
+
+  it('retains original candidates independently of later pool and fallback edits', () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const router = new LLMRouter(cfg);
+    const original = router.resolvePool('coding');
+    cfg.llm.pools.coding = ['ollama_design'];
+    cfg.llm.fallbacks = [];
+    expect(router.forPool('coding').name).toBe('ollama:gemma');
+    expect(router.forPool(original).name).toBe('chain[ollama:qwen>openai:gpt]');
+    expect(original.allowedProviders).toEqual(['ollama_code', 'openai']);
+    expect(Object.isFrozen(original)).toBe(true);
+    expect(Object.isFrozen(original.allowedProviders)).toBe(true);
+  });
+
+  it('does not borrow a high-scoring global candidate for a healthy explicit override', () => {
+    const scores = new ScoreStore('/tmp/x/config.yaml');
+    scores.set('ollama_code', 0.1);
+    scores.set('openai', 1);
+    const router = new LLMRouter(mkCfg({ fallbacks: ['openai'] }), undefined, scores);
+    expect(router.forPool('coding').name).toBe('chain[openai:gpt>ollama:qwen]');
+    const override = router.resolvePool('coding', { inheritFallbacks: false });
+    expect(router.forPool(override).name).toBe('ollama:qwen');
+    expect(router.primarySelection(override)).toEqual({ provider: 'ollama_code', model: 'qwen' });
+  });
+
+  it('keeps a failed explicit pool outside the global candidate chain', async () => {
+    const router = new LLMRouter(mkCfg({ fallbacks: ['openai'] }), undefined, undefined, undefined, undefined, stubProbe);
+    const clients = (router as unknown as { clients: Map<string, LLMClient> }).clients;
+    const primary = vi.fn(async () => { throw new Error('Original override failure.'); });
+    const global = vi.fn(async () => 'Unexpected global response.');
+    clients.set('ollama_code', { name: 'override', chat: primary });
+    clients.set('openai', { name: 'global', chat: global });
+    const override = router.resolvePool('coding', { inheritFallbacks: false });
+    await expect(router.forPool(override).chat([{ role: 'user', content: 'Current work.' }]))
+      .rejects.toThrow('Original override failure.');
+    expect(primary).toHaveBeenCalledTimes(1);
+    expect(global).not.toHaveBeenCalled();
   });
 
   it('FallbackClient.chat tries each provider in order', async () => {
@@ -128,7 +169,7 @@ describe('LLMRouter fallback chain', () => {
         return 'ok';
       },
     });
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     let selectedProvider: string | undefined;
     const out = await client.chat([{ role: 'user', content: 'hi' }], {
       onProvider: (name) => { selectedProvider = name; },
@@ -162,7 +203,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }]))
+    await expect(router.forPool('coding').chat([{ role: 'user', content: 'hi' }]))
       .rejects.toThrow('CLI task cancelled by SIGINT');
     expect(secondaryCalls).toBe(0);
     expect(scores.get('ollama_code')).toBe(ScoreStore.DEFAULT);
@@ -186,7 +227,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }]))
+    await expect(router.forPool('coding').chat([{ role: 'user', content: 'hi' }]))
       .rejects.toThrow(/all LLM providers failed.*ollama_code\/fake-primary.*openai\/fake-secondary.*429/su);
   });
 
@@ -218,7 +259,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+    const out = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
       onToken: () => {},
     });
 
@@ -236,7 +277,7 @@ describe('LLMRouter fallback chain', () => {
         ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
         openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
       },
-      roles: { Coder: ['ollama_code'] },
+      pools: { coding: ['ollama_code'] },
       fallbacks: ['ollama_design', 'openai'],
     });
     const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, async (name) => (
@@ -265,7 +306,7 @@ describe('LLMRouter fallback chain', () => {
       chat: async () => 'ok',
     });
 
-    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }]);
+    const out = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }]);
 
     expect(out).toBe('ok');
     // 切换目标探测不可达且后面还有候选 → 直接跳过，不浪费必然超时的 chat 请求。
@@ -298,7 +339,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }))
+    await expect(router.forPool('coding').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }))
       .rejects.toThrow(/all LLM providers failed/);
     expect(primaryCalls).toBe(1);
     expect(secondaryCalls).toBe(1);
@@ -327,7 +368,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    const output = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+    const output = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
       validate: (text) => {
         if (text.includes('read-only')) throw new Error('low-quality read-only response');
       },
@@ -365,7 +406,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    const output = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+    const output = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
       validate: (text) => {
         if (text.includes('read-only')) throw new Error('low-quality read-only response');
       },
@@ -393,7 +434,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    const output = await router.for('Coder').chat([{ role: 'user', content: 'repair' }], {
+    const output = await router.forPool('coding').chat([{ role: 'user', content: 'repair' }], {
       validate: (text) => {
         if (text.startsWith('rejected')) throw new Error('incomplete JSON turn');
       },
@@ -417,7 +458,7 @@ describe('LLMRouter fallback chain', () => {
       chat: async () => 'syntactically valid but not yet task success',
     });
 
-    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+    const out = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
       scoreSuccess: false,
     });
 
@@ -460,7 +501,7 @@ describe('LLMRouter fallback chain', () => {
 
     const starts: string[] = [];
     let selectedProvider: string | undefined;
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     const out = await client.chat([{ role: 'user', content: 'hi' }], {
       onProviderStart: (name) => { starts.push(name); },
       onProvider: (name) => { selectedProvider = name; },
@@ -491,7 +532,7 @@ describe('LLMRouter fallback chain', () => {
     });
 
     const chunks: string[] = [];
-    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+    const out = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
       onToken: (chunk) => chunks.push(chunk),
     });
 
@@ -519,7 +560,7 @@ describe('LLMRouter fallback chain', () => {
     });
 
     await expect(
-      router.for('Coder').chat([{ role: 'user', content: 'hi' }], {
+      router.forPool('coding').chat([{ role: 'user', content: 'hi' }], {
         onToken: () => {},
       }),
     ).rejects.toThrow(/before first token/u);
@@ -543,7 +584,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    await expect(router.for('Coder').chat([{ role: 'user', content: 'hi' }]))
+    await expect(router.forPool('coding').chat([{ role: 'user', content: 'hi' }]))
       .resolves.toBe('ok');
     expect(calls).toBe(2);
   });
@@ -566,7 +607,7 @@ describe('LLMRouter fallback chain', () => {
     });
 
     await expect(
-      router.for('Coder').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
+      router.forPool('coding').chat([{ role: 'user', content: 'hi' }], { onToken: () => {} }),
     ).resolves.toBe('ok');
     expect(sawStreaming).toEqual([true, false]);
   });
@@ -593,7 +634,7 @@ describe('LLMRouter fallback chain', () => {
       },
     });
 
-    const out = await router.for('Coder').chat([{ role: 'user', content: 'hi' }]);
+    const out = await router.forPool('coding').chat([{ role: 'user', content: 'hi' }]);
 
     expect(out).toBe('ok');
     expect(firstCalls).toBe(1);
@@ -618,7 +659,7 @@ describe('LLMRouter fallback chain', () => {
           context_window: 256 * 1024,
         },
       },
-      roles: { Coder: ['small', 'large'] },
+      pools: { coding: ['small', 'large'] },
       fallbacks: [],
     });
     const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
@@ -641,7 +682,7 @@ describe('LLMRouter fallback chain', () => {
     });
     const starts: Array<{ name: string; context: number; switched: boolean }> = [];
 
-    const result = await router.for('Coder').chat([{ role: 'user', content: 'work' }], {
+    const result = await router.forPool('coding').chat([{ role: 'user', content: 'work' }], {
       onProviderStart(name, _model, window) {
         starts.push({
           name,
@@ -657,24 +698,24 @@ describe('LLMRouter fallback chain', () => {
       { name: 'large', context: 256 * 1024, switched: true },
     ]);
     expect(maxTokens[1]).toBeGreaterThan(maxTokens[0]!);
-    expect(router.primaryContextWindow('Coder')).toBe(32 * 1024);
+    expect(router.primaryContextWindow('coding')).toBe(32 * 1024);
   });
 });
 
 describe('LLMRouter score-sorted chain', () => {
   it('skips providers marked unreachable for the current run', () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code', 'openai'] } });
     const router = new LLMRouter(cfg, undefined, undefined, new Set(['ollama_code']));
-    expect(router.for('Coder').name).toBe('openai:gpt');
+    expect(router.forPool('coding').name).toBe('openai:gpt');
   });
 
   it('orders candidates by score descending', () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     scores.set('ollama_code', 0.5, 'flaky');
     scores.set('openai', 0.9, 'rocking');
     const router = new LLMRouter(cfg, undefined, scores);
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     expect(client.name).toBe('chain[openai:gpt>ollama:qwen]');
   });
 
@@ -690,35 +731,35 @@ describe('LLMRouter score-sorted chain', () => {
           tags: ['cluster'],
         },
       },
-      roles: { Coder: ['ollama_code', 'openrouter_free'] },
+      pools: { coding: ['ollama_code', 'openrouter_free'] },
     });
     const scores = new ScoreStore('/tmp/x/config.yaml', undefined, scoreStoreOptionsFromConfig(cfg.llm));
     const router = new LLMRouter(cfg, undefined, scores);
-    expect(router.for('Coder').name).toBe('chain[ollama:qwen>openai:openrouter/free]');
+    expect(router.forPool('coding').name).toBe('chain[ollama:qwen>openai:openrouter/free]');
   });
 
   it('skips providers with score=0', () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     scores.set('ollama_code', 0, 'disabled');
     const router = new LLMRouter(cfg, undefined, scores);
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     expect(client.name).toBe('openai:gpt');
   });
 
   it('throws when all candidates have score=0', () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     scores.set('ollama_code', 0, 'disabled');
     scores.set('ollama_design', 0, 'disabled');
     scores.set('openai', 0, 'disabled');
     const router = new LLMRouter(cfg, undefined, scores);
-    expect(() => router.for('Coder')).toThrow(/score=0|No usable LLM provider/);
+    expect(() => router.forPool('coding')).toThrow(/score=0|No usable LLM provider/);
   });
 
   it('uses llm_scores_user.yaml overrides when ranking providers', async () => {
     const dir = await tmpDir();
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code', 'openai'] } });
     await fs.writeFile(path.join(dir, LLM_DYNAMIC_SCORES_FILE), YAML.stringify({
       ollama_code: 1,
       openai: 0.1,
@@ -731,11 +772,11 @@ describe('LLMRouter score-sorted chain', () => {
     await scores.load();
     const router = new LLMRouter(cfg, undefined, scores);
 
-    expect(router.for('Coder').name).toBe('openai:gpt');
+    expect(router.forPool('coding').name).toBe('openai:gpt');
   });
 
   it('decays score on chat error and boosts on success', async () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code', 'openai'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code', 'openai'] } });
     const scores = new ScoreStore('/tmp/x/config.yaml');
     const router = new LLMRouter(cfg, undefined, scores, undefined, undefined, stubProbe);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -748,67 +789,20 @@ describe('LLMRouter score-sorted chain', () => {
       name: 'fake-secondary',
       chat: async () => 'ok',
     });
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     await client.chat([{ role: 'user', content: 'hi' }]);
     expect(scores.get('ollama_code')).toBeCloseTo(ScoreStore.DEFAULT - ScoreStore.DECAY, 5);
     expect(scores.get('openai')).toBe(ScoreStore.DEFAULT);
   });
 
   it('accepts the canonical single-element role array', () => {
-    const cfg = mkCfg({ roles: { Coder: ['ollama_code'] } });
+    const cfg = mkCfg({ pools: { coding: ['ollama_code'] } });
     const router = new LLMRouter(cfg);
-    const client = router.for('Coder');
+    const client = router.forPool('coding');
     expect(client.name).toBe('ollama:qwen');
   });
 });
 
-describe('Coder and Debugger model advice', () => {
-  it('detects when both roles resolve to the same primary model', () => {
-    const cfg = mkCfg({
-      roles: { Coder: ['ollama_code'], Debugger: ['ollama_code'] },
-    });
-    const advice = findSharedCoderDebuggerModel(new LLMRouter(cfg));
-    expect(advice).toEqual({
-      coder: { provider: 'ollama_code', model: 'qwen' },
-      debugger: { provider: 'ollama_code', model: 'qwen' },
-    });
-  });
-
-  it('does not advise when Coder and Debugger use different models', () => {
-    const cfg = mkCfg({
-      roles: { Coder: ['ollama_code'], Debugger: ['ollama_design'] },
-    });
-    expect(findSharedCoderDebuggerModel(new LLMRouter(cfg))).toBeUndefined();
-  });
-
-  it('compares the score-selected primary providers', () => {
-    const cfg = mkCfg({
-      roles: {
-        Coder: ['ollama_code'],
-        Debugger: ['ollama_code', 'ollama_design'],
-        ProjectManager: ['ollama_code', 'ollama_design'],
-      },
-    });
-    const scores = new ScoreStore('/tmp/x/config.yaml');
-    scores.set('ollama_code', 0.5, 'lower coder score');
-    scores.set('ollama_design', 1, 'preferred debugger');
-    expect(findSharedCoderDebuggerModel(new LLMRouter(cfg, undefined, scores))).toBeUndefined();
-  });
-
-  it('prints a non-blocking suggestion when the selected models match', async () => {
-    const cfg = mkCfg({
-      roles: { Coder: ['ollama_code'], Debugger: ['ollama_code'] },
-    });
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      await expect(reportRoleModelAdvice(new LLMRouter(cfg))).resolves.toBeDefined();
-      expect(log).toHaveBeenCalledOnce();
-      expect(String(log.mock.calls[0]?.[1])).toMatch(/different models|不同模型/);
-    } finally {
-      log.mockRestore();
-    }
-  });
-});
 
 /**
  * A recovery attempt does not get a fresh request's budget.
@@ -905,7 +899,7 @@ describe('rate-limited providers back off instead of burning the chain', () => {
           ...(retry ? { retry: { max_retries: 3, max_delay: 32_000, jitter: 'none', ...retry } } : {}),
         },
       },
-      roles: { Coder: ['only'] },
+      pools: { coding: ['only'] },
     } as never);
     const router = new LLMRouter(cfg);
     (router as unknown as { clients: Map<string, LLMClient> }).clients.set('only', client);
@@ -915,14 +909,14 @@ describe('rate-limited providers back off instead of burning the chain', () => {
   it('retries the same provider until the limit lifts', async () => {
     const stub = limitedThen(3);
     // max_delay 0 keeps the test instant; the decision under test is whether it retries at all.
-    const client = routerWith(stub.client, { max_delay: 0 }).for('Coder');
+    const client = routerWith(stub.client, { max_delay: 0 }).forPool('coding');
     await expect(client.chat([{ role: 'user', content: 'x' }])).resolves.toBe('ok');
     expect(stub.calls()).toBe(3);
   });
 
   it('gives up after max_retries', async () => {
     const stub = limitedThen(99);
-    const client = routerWith(stub.client, { max_retries: 2, max_delay: 0 }).for('Coder');
+    const client = routerWith(stub.client, { max_retries: 2, max_delay: 0 }).forPool('coding');
     await expect(client.chat([{ role: 'user', content: 'x' }])).rejects.toThrow();
     expect(stub.calls()).toBe(3);
   });
@@ -933,7 +927,7 @@ describe('rate-limited providers back off instead of burning the chain', () => {
       name: 'stub:spent',
       chat: async () => { calls += 1; throw new Error('OpenAI HTTP 429: insufficient credits'); },
     } as unknown as LLMClient;
-    const client = routerWith(spent, { max_delay: 0 }).for('Coder');
+    const client = routerWith(spent, { max_delay: 0 }).forPool('coding');
     await expect(client.chat([{ role: 'user', content: 'x' }])).rejects.toThrow();
     expect(calls).toBe(1);
   });

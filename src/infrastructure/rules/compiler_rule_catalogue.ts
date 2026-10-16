@@ -17,9 +17,9 @@ export const COMPILER_RULE_MANIFEST = Object.freeze([
   Object.freeze({
     relativePath: 'scenario-outcome.yaml',
     listId: 'de4378d5-8731-4f17-8e9c-3e973f6ad7fd',
-    listVersion: '1.0.0',
-    slot: 0x0207,
-    definitionDigest: 'sha256:ed19fcd5fc746572baf178dac4b07182507f282f409d2b3e4d6f62658e258489',
+    listVersion: '2.0.0',
+    slot: 0x02A0,
+    definitionDigest: 'sha256:344b49f5dc689ccac3c9c5b56a9dd4a20650b884879a845abc0dc2067c02674b',
   }),
 ]);
 

@@ -443,6 +443,10 @@ function structuredFailureEvidence(value: unknown): DebugBriefInput['typedFailur
     category: record.category as NonNullable<DebugBriefInput['typedFailure']>['category'],
     code: record.code,
     ...(typeof record.statusCode === 'number' ? { statusCode: record.statusCode } : {}),
+    ...(record.details && typeof record.details === 'object' && !Array.isArray(record.details) &&
+      typeof (record.details as Record<string, unknown>).stallKind === 'string'
+      ? { stallKind: (record.details as Record<string, unknown>).stallKind as string }
+      : {}),
   };
 }
 

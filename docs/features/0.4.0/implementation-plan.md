@@ -1,5 +1,7 @@
 # 0.4.0 implementation plan and overall assessment
 
+> **2026-10-16 起**：批次顺序与剩余工作以 [变更清单](2026-10-15-review-change-list.md) 第 3 节为准（M-0→M-A→M-B→M-R→M-C→M-D→M-E→G1→验证→P1）。
+
 Updated: 2026-10-15. This development stage extends `a20dae0` (P01 retained PM clarification requests)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; feature development proceeds to complete
 functional milestones before their verification, and release preparation follows last.

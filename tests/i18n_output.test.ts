@@ -3,13 +3,6 @@ import { promises as fs } from 'node:fs';
 import { tFor } from '../src/i18n/index.js';
 
 describe('user-visible output i18n catalog', () => {
-  it('provides localized Coder/Debugger model advice', () => {
-    const en = tFor('en').llm.coderDebuggerSameModel('qwen', 'code', 'debug');
-    const zh = tFor('zh').llm.coderDebuggerSameModel('qwen', 'code', 'debug');
-    expect(en).toContain('Prefer different models');
-    expect(zh).toContain('建议配置不同模型');
-    expect(en).not.toBe(zh);
-  });
 
   it('localizes audit templates and score-file headers', () => {
     expect(tFor('en').audit.toolDenied('write_file')).toBe('denied tool write_file');

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { Plan } from '../src/domain/planning/execution_plan.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../src/application/project_management/orchestrator.js';
 import type { AttemptInput, AttemptResult } from '../src/application/execution/attempt_runner.js';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { QualityAssessmentService } from '../src/application/execution/quality_assessment_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import type { Step } from '../src/domain/steps/step.js';
@@ -132,17 +132,17 @@ describe('ProjectOrchestrator', () => {
     expect(resumed.failedStepId, JSON.stringify(resumed)).toBeUndefined();
   });
 
-  it('hands each attempt the provider binding of the actor that was assigned the work', async () => {
+  it('hands each attempt the model pool of the actor that was assigned the work', async () => {
     const setup = await fixture();
-    const developer = setup.graph.actors.find((actor) => actor.role === 'developer')!;
+    const developer = setup.graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!;
     await setup.repository.update(reviseActor(developer, {
-      llmBinding: { providerPool: ['bound_provider'] },
+      modelPool: 'bound_pool',
     }));
-    const seen = new Map<string, readonly string[] | undefined>();
+    const seen = new Map<string, string | undefined>();
     const runner = {
       initialize: async () => undefined,
       run: async (input: AttemptInput): Promise<AttemptResult> => {
-        seen.set(input.domainStep.name, input.assignee?.actor.llmBinding?.providerPool);
+        seen.set(input.domainStep.name, input.assignee?.actor.modelPool);
         return passingAttempt(setup.repository, input.domainStep);
       },
     };
@@ -150,14 +150,14 @@ describe('ProjectOrchestrator', () => {
     await engine.run(setup.graph.phases[0]!.id);
 
     const steps = await Promise.all(setup.graph.steps.map((step) => setup.repository.read(step.id)));
-    const developerSteps = steps.filter((step) => step.objectType === 'step' && step.role === 'developer');
+    const developerSteps = steps.filter((step) => step.objectType === 'step' && step.type === 'CODE');
     expect(developerSteps.length).toBeGreaterThan(0);
     for (const step of developerSteps) {
-      expect(seen.get(step.name), step.name).toEqual(['bound_provider']);
+      expect(seen.get(step.name), step.name).toBe('bound_pool');
     }
-    // Every other role is unbound, so nothing overrides the configured pool for their attempts.
+    // Every other actor keeps its role's default pool, so nothing overrides it for their attempts.
     for (const step of steps) {
-      if (step.objectType !== 'step' || step.role === 'developer') continue;
+      if (step.objectType !== 'step' || step.type === 'CODE') continue;
       expect(seen.get(step.name), step.name).toBeUndefined();
     }
   });
@@ -310,7 +310,7 @@ describe('ProjectOrchestrator', () => {
       objectType: 'actor-registration',
       projectId: setup.graph.project.id,
     })).filter((actor) => actor.objectType === 'actor-registration');
-    const pm = actors.find((actor) => actor.role === 'project-manager');
+    const pm = actors.find((actor) => actor.roleId === 'project-manager');
     expect(pm).toBeDefined();
     const intakeTickets = tickets.filter((ticket) => ticket.source.kind === 'pm-intake');
     expect(intakeTickets.length).toBeGreaterThanOrEqual(4);
@@ -963,7 +963,7 @@ async function fixture() {
   const repository = new DomainObjectRepository(workspace);
   await repository.load();
   const plan = samplePlan();
-  const graph = compileProjectGraph({ draft: plan, topic: 'Build a TS service.', projectName: 'service' });
+  const graph = materializeProjectGraph({ draft: plan, topic: 'Build a TS service.', projectName: 'service' });
   await new ProjectGraphPersistenceService(repository).persistGraph(graph);
   return { workspace, repository, plan, graph };
 }

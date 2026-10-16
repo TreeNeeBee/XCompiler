@@ -8,7 +8,7 @@ const id = (label: string) => ObjectIdSchema.parse(`01952f27-7900-7000-8000-${cr
 function envelope(label: string, description: string, acceptance: string[] = [description]) {
   return { id: id(label), name: label, objectType: 'ticket', projectId: id('executor-project'), phaseId: id('P1'),
     schemaVersion: 1, revision: 1, createdAt: now, updatedAt: now, submittedAt: now,
-    state: 'in_progress', role: 'developer', agent: 'Debugger', creatorActorId: id('discovering-actor'),
+    state: 'in_progress', creatorActorId: id('discovering-actor'),
     priority: 128, rootTicketId: id(label), source: { kind: 'runtime', correlationId: id('executor-correlation') },
     description, acceptance };
 }

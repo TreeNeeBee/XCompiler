@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
-import { reportRoleModelAdvice } from '../llm/role_advice.js';
 import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { ProjectContainer } from '../workspace/project_container.js';
@@ -35,8 +34,6 @@ import {
 } from '../application/planning/phase_plan_files.js';
 import { updateProjectFile } from '../infrastructure/project/project_manifest.js';
 import {
-  compileProjectExtension,
-  compileProjectGraph,
   rebaseDraftPlanPhases,
   type CompiledProjectExtension,
   type CompiledProjectGraph,
@@ -60,11 +57,12 @@ import {
 } from './io.js';
 import { createRuntimeRecordReplay } from './record_replay.js';
 import type { RecordReplayMode } from '../application/record_replay/types.js';
-import { ProjectGraphPersistenceService } from '../application/planning/project_graph_persistence_service.js';
+import {
+  materializeProjectExtension, materializeProjectGraph, ProjectGraphPersistenceService,
+} from '../application/planning/project_graph_persistence_service.js';
 import { ProjectPlanningGovernanceService } from '../application/planning/project_planning_governance_service.js';
 import { FileProjectProjectionWriter } from '../infrastructure/projections/index.js';
 import { Workspace } from '../workspace/workspace.js';
-import { defaultRoleTemplatePath, loadRoleTemplates } from '../infrastructure/roles/role_template_store.js';
 import {
   formatClarificationQuestion,
   resolveClarificationAnswer,
@@ -180,7 +178,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     intent: opts.intent ?? 'greenfield',
     baselinePlanFile: opts.baselinePlanFile ?? '',
     yes: !!opts.yes,
-    roles: cfg.llm.roles,
+    pools: cfg.llm.pools,
   });
   const pluginHost = new PluginHost({
     plugins: opts.plugins,
@@ -228,7 +226,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     recordReplay,
     cfgPath,
   );
-  await reportRoleModelAdvice(router, audit, (message) => runtimeLog(io, 'warning', message));
   const baseline =
     isIncrementalIntent(intent)
       ? await loadIncrementalBaseline(ws, container.state, {
@@ -245,11 +242,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   if (baseline.summary) {
     await runtimeLog(io, 'success', M.compile.baselineLoaded(intent, baseline.sources.join(', ')));
   }
-  const plannerClient = router.for('Planner');
-  // Everything the user is asked or told comes from PM. It owns the project's conversation with
-  // its owner; a Step-executing role talking to the user is that role negotiating its own scope.
-  const pmClient = router.for('ProjectManager');
-
   const trace = (msg: string) => {
     if (xcEnv('TRACE') === '1') {
       void runtimeLog(io, 'dim', t().audit.traceLine('xcompiler-trace', msg));
@@ -301,7 +293,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
   if (!opts.yes && !topicMode) {
     const clarifyPlanner = new Planner(
-      pmClient,
       audit,
       initialLanguage.language,
       io.terminalOutput === true,
@@ -462,7 +453,6 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   let draft;
   try {
     const planner = new Planner(
-      plannerClient,
       audit,
       language,
       io.terminalOutput === true,
@@ -704,7 +694,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     const actors = actorObjects.filter(
       (object) => object.objectType === 'actor-registration',
     );
-    const extension = compileProjectExtension({
+    const extension = materializeProjectExtension({
       draft: persistedPlan,
       topic: finalTopicMd,
       topicSourceRef: DOC_NAMES.topic,
@@ -719,14 +709,13 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     await graphPersistence.persistExtension(extension);
     graph = extension;
   } else {
-    const compiled = compileProjectGraph({
+    const compiled = materializeProjectGraph({
       draft: persistedPlan,
       topic: finalTopicMd,
       topicSourceRef: DOC_NAMES.topic,
       // The container directory is the fallback, never the working copy underneath it: that is
       // always the canonical branch, so naming a Project after it would call every project "master".
       projectName: opts.name ?? path.basename(container.root) ?? 'project',
-      roleTemplates: await loadRoleTemplates(defaultRoleTemplatePath(ws.root)),
     });
     await graphPersistence.persistGraph(compiled);
     if (previousProject) await repository.retireProject(previousProject.id);

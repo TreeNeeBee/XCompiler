@@ -25,6 +25,7 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeValidatedBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import { roleProfile } from '../domain/workflow/role.js';
 
 export class PhasePlanProtocolError extends Error {
   readonly code = 'phase_plan_protocol_invalid';
@@ -40,13 +41,16 @@ export function createRuntimePhasePlanRequestPort(input: {
   router: LLMRouter; audit: AuditLogger;
 }): PhasePlanRequestPort {
   const { config, container, recordReplay, router, audit } = input;
+  const profile = roleProfile('planner');
+  const modelPool = router.resolvePool(profile.defaultPool);
   return Object.freeze({
-    name: router.for('Planner').name,
+    name: router.forPool(modelPool, { label: profile.id }).name,
     async send(request: Parameters<PhasePlanRequestPort['send']>[0]) {
       const signal = request.signal;
       signal?.throwIfAborted();
       const owner = Object.freeze(PlanningOperationOwnerSchema.parse({
         kind: 'planning-operation', operation: 'phase-plan', operationId: request.operationId,
+        role: profile.id, roleVersion: profile.version, work: PLANNING_REQUEST_CONTEXTS['phase-plan'], ...modelPool,
       }));
       const logicalRequestId = randomUUID();
       const payload = validatePhasePlanPayload(request.payload);
@@ -57,9 +61,9 @@ export function createRuntimePhasePlanRequestPort(input: {
         logicalRequestId, field: 'phase_plan_validator',
       });
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
-      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, logicalRequestId,
-        context: { role: 'Planner', language: payload.parseContext.language,
-          scenario: PLANNING_REQUEST_CONTEXTS['phase-plan'] }, required: [],
+      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
+        context: { role: 'planner', language: payload.parseContext.language,
+          work: PLANNING_REQUEST_CONTEXTS['phase-plan'] }, required: [],
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
       signal?.throwIfAborted();

@@ -36,10 +36,25 @@ Infrastructure，也不读取文件或启动进程。Infrastructure 还可实现
 
 Adapter 只负责参数或协议、配置、交互、输出和退出码。它不得直接调用 Planner、Agent、Tool、Plugin、Memory、文件系统或命令执行实现。
 
-模型角色只有一份清单：`Planner`、`Architect`、`Coder`、`Tester`、`Debugger`、`ProjectManager`。
-每个角色在 `llm.roles` 下独立配置 provider 链，Router 如何在链内调度是它自己的事，其余部分不依赖。
-`ProjectManager` 代表项目判定交付结果，它不执行 Step；把它做成独立角色而不是借用 Planner 的注册，
-是为了让它以自己的身份配置和发声。
+0.4 区分角色、工作和执行者。安装级 `RoleProfile` 说明身份、能力和专长；工作由 Step 类型与
+Ticket 类型推导，非 Step 工作由 Runtime 指定。PM 在运行时组装并登记 Actor，记录角色 ID、
+角色版本和可选模型池覆盖。计划不再指定角色，Actor 与指派从对象注册表恢复。
+
+| 角色 ID | 默认模型池 |
+| --- | --- |
+| `project-manager` | `management` |
+| `planner`、`requirements-analyst` | `planning` |
+| `system-architect` | `design` |
+| `python-developer`、`typescript-developer` | `coding` |
+| `test-engineer`、`integration-test-engineer` | `testing` |
+
+模型配置改用具名 `llm.pools`，替代 `llm.roles` 和 `llm.role_fallbacks`。五个默认池必须存在且非空。
+使用角色默认池时，候选范围包含全局 `llm.fallbacks`；Actor 显式设置 `modelPool` 时只使用该池，
+即使覆盖值与角色默认池同名也不继承全局 fallback。Router 只在固定允许范围内按有效评分调度。
+Debug 是 `repair.debug` 工作，沿用 Step 执行者的角色和模型池，不再切换到 Debugger 人格。
+
+`project-manager` 执行者代表项目判定交付结果，不执行技术 Step。已有 Project 的 J06 和 P03
+使用登记 Actor 的身份与模型池；建图前的 P01–P03 保留无 Project/Actor 的操作身份，并固定其角色默认池。
 
 
 ## 3. 统一对象模型
@@ -74,7 +89,7 @@ interface ObjectEnvelope {
 | Checkpoint | 不可变的对象快照引用和事件序号 |
 | Deliverable / Report | 交付路径、验收条件和阶段/项目报告 |
 | Log / AuditEvent | Ticket 日志及带 correlation/causation 的领域审计 |
-| ActorRegistration / Assignment | 角色能力注册、Ticket 所有权和容量 |
+| ActorRegistration / Assignment | 角色版本和可选模型池引用、Ticket 所有权和容量 |
 | ProjectManagementPlan | PM 范围基线、状态、风险、决策和交互索引 |
 | Decision / Risk / InteractionRequest | PM 决策、风险控制和用户授权证据 |
 | TicketTraceEvent | 只追加、哈希链保护的 Ticket 流转调用链 |
@@ -91,7 +106,9 @@ interface ObjectEnvelope {
 - Planner Step 使用 `S001` 等局部标签，包含 prompt、工具、输入、输出和最多两层子任务。
 - Planner 文件不包含运行状态、重试状态或恢复游标。
 
-Build 通过 Planning Compiler 一次性创建当前领域图，并由 PM 立即注册全部 Ticket、记录活动 Phase 选择、导入澄清记录并刷新项目状态投影：
+Build 的 Application/PM 边界先准备 Project 与 Actor 身份，再由 Planning Compiler 物化工作图。
+编译器不创建 Actor；Task 的创建人仍是技术执行者，Epic 和 Story 由 PM 创建。执行者和工作图原子保存后，
+PM 立即注册全部 Ticket、记录活动 Phase 选择、导入澄清记录并刷新项目状态投影：
 
 ```text
 Project
@@ -171,7 +188,7 @@ Bug 额外持久化结构化 `failure.identity`、`verificationContract` 和只�
 
 Change Request 使用 `changeKind` 区分纠正传播、依赖变更和已接受契约变更，使用 `sourceTicketIds[]` 保存全部来源、`originFailures[]` 保存全部起因失败，并以 `propagationStepIds[]` 明确本链的受影响 Step。传播范围必须从当前目标 Step 开始，只包含同一 Project/Phase 内唯一且按 V 模型顺序递增的 Step；非法范围在创建任何 Ticket、关系或生命周期变更前拒绝。相同纠正传播跳可以折叠多个来源，但不能丢弃任一来源、契约差异、changelist 或验证要求。最终跳关闭前必须一次性重放所有仍活动源 Bug 的原始验证契约；少一个失败用例都整体拒绝关闭，不能先关闭 CR 再留下半数源票。
 
-Phase 真实场景的进程状态、40X/50X、重定向、超时、异常和空结果只作为现场证据。ProjectManager LLM 根据已接受需求、场景预期与完整证据判断：契约仍有效而实现错误时创建 Bug；满足预期必须调整需求、能力、接口、依赖、数据源或设计前提时直接创建 `contract-change` CR 并从归属 Step 向下游传播。LLM 判定缺少合法 Ticket 类型或归属 Step 时门禁失败，不允许静默通过或默认归类。
+Phase 真实场景的进程状态、40X/50X、重定向、超时、异常和空结果只作为现场证据。`project-manager` 执行者根据已接受需求、场景预期与完整证据判断：契约仍有效而实现错误时创建 Bug；满足预期必须调整需求、能力、接口、依赖、数据源或设计前提时直接创建 `contract-change` CR 并从归属 Step 向下游传播。LLM 判定缺少合法 Ticket 类型或归属 Step 时门禁失败，不允许静默通过或默认归类。
 
 Ticket 状态机：
 

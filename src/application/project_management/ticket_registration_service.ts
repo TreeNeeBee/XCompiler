@@ -50,11 +50,11 @@ export class TicketRegistrationService {
       {
         eventType: 'created',
         initiatorActorId: creator.id,
-        initiatorRole: creator.role,
+        initiatorRole: creator.roleId,
         reasonCode: pmIntake ? 'pm.problem_report_materialized' : 'ticket.created_by_context_owner',
         reason: pmIntake
           ? `Project Manager created ${ticket.type} from a validated external problem report.`
-          : `${creator.role} created ${ticket.type} with source context.`,
+          : `${creator.roleId} created ${ticket.type} with source context.`,
         correlationId: ticket.source.correlationId,
         causationId: ticket.source.causationId,
         occurredAt: ticket.submittedAt,
@@ -62,7 +62,7 @@ export class TicketRegistrationService {
       {
         eventType: 'submitted',
         initiatorActorId: creator.id,
-        initiatorRole: creator.role,
+        initiatorRole: creator.roleId,
         reasonCode: pmIntake ? 'pm.problem_report_accepted' : 'ticket.submitted_to_pm',
         reason: pmIntake
           ? 'Project Manager accepted the report into the Phase Ticket workflow.'
@@ -190,7 +190,7 @@ export class TicketRegistrationService {
         const built = await this.traces.build(ticket, [{
           eventType: 'queued',
           initiatorActorId: pm.id,
-          initiatorRole: pm.role,
+          initiatorRole: pm.roleId,
           reasonCode: 'pm.delivery_gate_batch_order',
           reason: `${ticket.name} waits for ${predecessor.name} so corrective V-model chains do not overlap.`,
           evidenceRefs: [predecessor.id],
@@ -267,7 +267,7 @@ export class TicketRegistrationService {
       capacityConsumed: !parentAssignment && options.administrative !== true,
       state: 'accepted',
       requiredCapabilities: routingRequirement(ticket, step).capabilities,
-      reason: `Selected ${assignee.role} by capability, readiness, capacity, quality, and stable tie-break.`,
+      reason: `Selected ${assignee.roleId} by capability, readiness, capacity, quality, and stable tie-break.`,
       proposedAt: now,
       acceptedAt: now,
     });
@@ -276,7 +276,7 @@ export class TicketRegistrationService {
         ? [{
             eventType: 'reassigned' as const,
             initiatorActorId: pm.id,
-            initiatorRole: pm.role,
+            initiatorRole: pm.roleId,
             assignmentId: releasedAssignment.id,
             fromOwnerActorId: releasedAssignment.assigneeActorId,
             toOwnerActorId: assignee.id,
@@ -293,7 +293,7 @@ export class TicketRegistrationService {
       {
         eventType: 'routed',
         initiatorActorId: pm.id,
-        initiatorRole: pm.role,
+        initiatorRole: pm.roleId,
         assignmentId: assignment.id,
         toOwnerActorId: assignee.id,
         reasonCode: 'pm.capability_route',
@@ -304,7 +304,7 @@ export class TicketRegistrationService {
       {
         eventType: 'assignment_proposed',
         initiatorActorId: pm.id,
-        initiatorRole: pm.role,
+        initiatorRole: pm.roleId,
         assignmentId: assignment.id,
         toOwnerActorId: assignee.id,
         toAssignmentState: 'proposed',
@@ -316,7 +316,7 @@ export class TicketRegistrationService {
       {
         eventType: 'accepted',
         initiatorActorId: assignee.id,
-        initiatorRole: assignee.role,
+        initiatorRole: assignee.roleId,
         assignmentId: assignment.id,
         toOwnerActorId: assignee.id,
         fromAssignmentState: 'proposed',
@@ -333,8 +333,8 @@ export class TicketRegistrationService {
       activeAssignmentId: assignment.id,
     });
     const routingOptions = (await this.roles.routingActors(ticket.projectId))
-      .filter(({ actor, definition }) =>
-        actor.state === 'active' && definition.supportedTicketTypes.includes(ticket.type))
+      .filter(({ actor, profile }) =>
+        actor.state === 'active' && profile.supportedTicketTypes.includes(ticket.type))
       .map(({ actor }) => actor.name);
     const routingDecision = await this.governance.prepareDecision({
       projectId: ticket.projectId,
@@ -435,9 +435,7 @@ export class TicketRegistrationService {
   async discovererActorIdForStep(stepId: ObjectId): Promise<ObjectId> {
     const object = await this.repository.read(stepId);
     if (object.objectType !== 'step') throw new Error(`Object ${stepId} is not a Step`);
-    const actor = (await this.roles.actors(object.projectId)).find(
-      (candidate) => candidate.role === object.role && candidate.state === 'active',
-    );
+    const actor = await this.roles.workOwnerFor(object);
     if (!actor) throw new Error(`Step ${object.name} has no active discovering actor`);
     return actor.id;
   }
@@ -459,7 +457,7 @@ export class TicketRegistrationService {
 
   private async projectManager(projectId: ObjectId): Promise<ActorRegistration> {
     const actors = await this.roles.actors(projectId);
-    const pm = actors.find((actor) => actor.role === 'project-manager' && actor.state === 'active');
+    const pm = actors.find((actor) => actor.roleId === 'project-manager' && actor.state === 'active');
     if (!pm) throw new Error(`Project ${projectId} has no active Project Manager`);
     return pm;
   }
@@ -467,10 +465,10 @@ export class TicketRegistrationService {
   private assertCreationAuthority(ticket: Ticket, creator: ActorRegistration): void {
     const pmIntake = ticket.source.kind === 'pm-intake';
     const pmOwned = ticket.type === 'epic' || ticket.type === 'story' || pmIntake;
-    if (pmOwned && creator.role !== 'project-manager') {
+    if (pmOwned && creator.roleId !== 'project-manager') {
       throw new Error(`${ticket.type} ${ticket.name} must be created by Project Manager`);
     }
-    if (!pmOwned && creator.role === 'project-manager') {
+    if (!pmOwned && creator.roleId === 'project-manager') {
       throw new Error(`${ticket.type} ${ticket.name} must be created by its context-owning source, not Project Manager`);
     }
     if (creator.projectId !== ticket.projectId) {
@@ -493,17 +491,10 @@ export class TicketRegistrationService {
     actorId: ObjectId,
     step: Parameters<RoleRegistry['eligible']>[1],
   ): Promise<ActorRegistration> {
-    const { actor, definition } = await this.roles.resolve(actorId);
-    const required = new Set(ticket.requiredCapabilities);
     // Deliberately not a capacity check: an inherited assignment consumes none, so refusing a parent
     // owner who is already at capacity would strand its own sub-Ticket.
-    if (
-      actor.state !== 'active' ||
-      actor.role !== ticket.role ||
-      !definition.supportedTicketTypes.includes(ticket.type) ||
-      (step && definition.supportedStepTypes.length > 0 && !definition.supportedStepTypes.includes(step.type)) ||
-      [...required].some((capability) => !definition.capabilities.includes(capability))
-    ) {
+    const { actor, reason } = await this.roles.ineligibilityOf(actorId, ticket, step, { ignoreCapacity: true });
+    if (reason) {
       throw new Error(`Parent Ticket owner ${actor.name} cannot inherit ${ticket.name}`);
     }
     return actor;

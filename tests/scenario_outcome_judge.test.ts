@@ -1,3 +1,4 @@
+import { fixtureAcceptedContractSource } from './support/accepted_contract_fixture.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildScenarioOutcomeMessages,
@@ -220,6 +221,15 @@ describe('pinned scenario framework input', () => {
       .not.toHaveProperty('requirementDigest');
   });
 
+  it('carries accepted contract revisions beside the planned digest, and omits an empty list', () => {
+    const accepted = [{ source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['The accepted design reads the archive API.'] }];
+    const withChanges = readScenarioOutcomeMessages(buildScenarioOutcomeMessages({ ...input, acceptedContractChanges: accepted }));
+    expect(withChanges.acceptedContractChanges).toEqual(accepted);
+    expect(withChanges.requirementDigest).toBe(input.requirementDigest);
+    const withoutChanges = readScenarioOutcomeMessages(buildScenarioOutcomeMessages({ ...input, acceptedContractChanges: [] }));
+    expect(withoutChanges).not.toHaveProperty('acceptedContractChanges');
+  });
+
   it('rejects modified framework roles, templates, versions and payload shape distinctly', () => {
     const original = buildScenarioOutcomeMessages(input);
     const invalid = [
@@ -227,7 +237,7 @@ describe('pinned scenario framework input', () => {
       [{ ...original[0]!, content: 'different output schema' }, original[1]!],
       [...original, { role: 'assistant' as const, content: 'extra' }],
       [original[0]!, { role: 'user' as const, content: 'not JSON' }],
-      [original[0]!, { role: 'user' as const, content: JSON.stringify({ ...readScenarioOutcomeMessages(original), templateVersion: 'scenario-outcome/2' }) }],
+      [original[0]!, { role: 'user' as const, content: JSON.stringify({ ...readScenarioOutcomeMessages(original), templateVersion: 'scenario-outcome/1' }) }],
       [original[0]!, { role: 'user' as const, content: JSON.stringify({ ...readScenarioOutcomeMessages(original), currentArtifact: 'replacement' }) }],
     ];
     for (const messages of invalid) {

@@ -30,7 +30,7 @@ function fixture() {
     } },
   ]);
   const selector = new RuleSelector(catalogue);
-  const prepared = selector.prepare({ requestKind: 'rule-selection', context: { role: 'Coder', scenario: 'repair' }, required: [] });
+  const prepared = selector.prepare({ requestKind: 'rule-selection', context: { role: 'python-developer', work: 'repair.debug' }, required: [] });
   const ranked = selector.rank({ prepared, query: [0, 1], vectors: [{ ruleId: id(21), vector: [1, 0] }] });
   const documents = vectorDocuments(prepared.optional);
   const vectors = [[1, 0]] as const;
@@ -40,7 +40,7 @@ function fixture() {
     retrieval: {
       index: { schemaVersion: 1, id: ruleVectorIndexId(identity, documents), vectorDigest: ruleEvidenceDigest(vectors),
         inputVersion: 'rule-retrieval/1', identity, documents, vectors: [...vectors] },
-      indexDisposition: 'reused', queryText: JSON.stringify({ inputVersion: 'rule-retrieval/1', taskSummary: 'Review task', errorSummary: 'Evidence is incomplete.', context: { role: 'Coder', scenario: 'repair' } }), queryVector: [0, 1],
+      indexDisposition: 'reused', queryText: JSON.stringify({ inputVersion: 'rule-retrieval/1', taskSummary: 'Review task', errorSummary: 'Evidence is incomplete.', context: { role: 'python-developer', work: 'repair.debug' } }), queryVector: [0, 1],
     },
   });
 }

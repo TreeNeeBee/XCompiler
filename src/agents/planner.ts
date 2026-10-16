@@ -42,7 +42,7 @@ import {
   pathCoveredByOutputs,
   validateArchitectureContract,
 } from '../domain/planning/architecture_policy.js';
-import type { ChatMessage, LLMClient } from '../llm/types.js';
+import type { ChatMessage } from '../llm/types.js';
 import type { RuleBusinessChatOptions } from '../llm/rule_business_request.js';
 import { isContentRejectionExhausted, ResponseValidationRejection } from '../llm/errors.js';
 import {
@@ -143,7 +143,6 @@ export class Planner {
   private readonly skills: SkillRegistry;
 
   constructor(
-    _llm: LLMClient,
     private readonly audit?: AuditLogger,
     private readonly language: Language = 'python',
     private readonly streamOutput = false,

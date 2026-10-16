@@ -1,5 +1,7 @@
 # XCompiler Project Constraints
 
+> **2026-10-16 修改合同**：0.4 的角色模型、RuleChain 分段、模型池配置、业务 Rule 推迟和协议校准范围以 [变更清单](features/0.4.0/2026-10-15-review-change-list.md) D-1–D-20 为准；下文对应段落已同步或标注。
+
 This document is the current source of truth for XCompiler-specific architecture, ownership,
 lifecycle, repository-layout, and verification constraints. `AGENTS.md` governs how coding agents
 work; this document governs what they must preserve in XCompiler.
@@ -35,7 +37,10 @@ Confirmed by the user on 2026-09-07:
 ## Project Manager boundary
 
 - PM advances Project, Phase, and V-model work, registers every Ticket, monitors project state, and
-  routes executable work by registered role capability.
+  routes executable work by capability: a work definition states what it requires, a role profile
+  states what it provides, and PM assembles an actor (role profile plus model pool) at runtime and
+  registers it in the object registry. Plans record work only; they never choose a role. Eligibility
+  and actor selection are deterministic business-layer policy, never RuleChain content.
 - PM creates only Project-context Epic and V-model Story Tickets. Inside a Phase, the actor or gate
   with the technical context creates Task, Bug, Enhancement, and Change Request Tickets.
 - Data, failures, or observations originating outside a Phase enter through PM's problem-intake
@@ -197,6 +202,12 @@ threshold, use at most one logical selection review through the caller's configu
 Empty optional candidates or an explicit no-match result continue with required Rules only;
 service/index/review failures remain distinct errors. Transport retries and fallback do not reset
 the review allowance.
+
+**Superseded 2026-10-16 (change list D-2):** the controlled automatic business-Rule maintenance
+described in the next paragraph is deferred to 0.5 and designed together with Story/V+V. 0.4 does
+not enable the business range `0x1000+`; the project-owner catalogue capability stays unused.
+Contract-change CRs instead append their accepted `contractDelta.after` to the project-global
+constraints and the J06 input deterministically (D-8). The paragraph is kept as decision history.
 
 The user then selected controlled automatic business-Rule maintenance (optimized B). XCompiler
 derives candidates with provenance from accepted project requirements/changes. Candidates apply

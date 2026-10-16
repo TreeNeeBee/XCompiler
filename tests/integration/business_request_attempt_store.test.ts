@@ -25,7 +25,7 @@ afterEach(async () => { await fs.rm(container, { recursive: true, force: true })
 function request(changes: Partial<BusinessRequestAttempt> = {}): BusinessRequestAttempt {
   return validateBusinessRequestAttempt({
     schemaVersion: 1, logicalRequestId, providerAttemptId, provider: 'fixture', model: 'fixture-model',
-    role: 'ProjectManager', preparedAt: '2026-10-12T01:00:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
+    role: 'project-manager', preparedAt: '2026-10-12T01:00:00.000Z', contextWindowTokens: 32768, maxTokens: 1024,
     requestBinding: { schemaVersion: 1, kind: 'business-input', logicalRequestId, snapshotDigest: digest('a'),
       promptVersion: 'rule-business-request/1', requestDigest: digest('b'),
       inputRecordId: 'abababab-abab-4bab-8bab-abababababaf', inputRecordDigest: digest('c'), inputDigest: digest('d') },

@@ -1,14 +1,13 @@
 import { computeRetryDelayMs, DEFAULT_PROVIDER_RETRY, type ProviderRetryPolicy } from './retry.js';
 import { randomUUID } from 'node:crypto';
 import type { XCompilerConfig } from '../config/config.js';
-import type { Role } from '../domain/planning/execution_plan.js';
 import type { AuditKind, AuditLogger } from '../audit/audit.js';
 import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
 import { AuditPersistenceError } from '../audit/errors.js';
 import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
 import type { ScoreStore } from './scores.js';
-import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
+import { ModelPoolBindingSchema, type ChatMessage, type ChatOptions, type LLMClient, type ModelPoolBinding } from './types.js';
 import { t } from '../i18n/index.js';
 import type { PluginHost } from '../plugins/host.js';
 import {
@@ -114,9 +113,9 @@ export class LLMRouter {
   }
 
   /**
-   * 返回某角色的 LLM 客户端：自动包含按评分排序的候选链。
+   * 返回某模型池的 LLM 客户端：自动包含按评分排序的候选链。
    *
-   * 候选集合：roles[role] (数组) ∪ role_fallbacks[role] ∪ fallbacks，去重。
+   * 默认池的候选集合：pools[pool] ∪ fallbacks；显式 Actor 覆盖池只使用池内候选。
    * 模型选择必须在配置中手动指定；不再存在隐式的 default provider。
    * 排序：按 ScoreStore 的评分降序；评分 = 0 的 provider 直接剔除。
    * 链中第一个调用成功即返回；失败 → 自动降评分并尝试下一个。
@@ -163,17 +162,18 @@ export class LLMRouter {
     }
   }
 
-  for(role: Role, options: { providerPool?: readonly string[] } = {}): LLMClient {
-    const candidates = this.resolveChain(role, options.providerPool);
-    if (candidates.length === 0) {
-      throw new LLMRequestError(`LLM provider not configured for role: ${role}`, {
-        code: 'provider_not_configured', mode: 'router', retryable: false, switchProvider: false,
-      });
-    }
+  /**
+   * The client for a named model pool. `label` names the caller in audit and Plugin hooks — normally
+   * the role id of the actor speaking — and defaults to the pool name.
+   */
+  forPool(pool: string | ModelPoolBinding, options: { label?: string } = {}): LLMClient {
+    const binding = this.poolBinding(pool);
+    const role = options.label ?? binding.modelPool;
+    const candidates = binding.allowedProviders;
     const ranked = this.rankByScore(candidates);
     if (ranked.length === 0) {
       throw new LLMRequestError(
-        `No usable LLM provider for role ${role}: candidates [${candidates.join(', ')}] ` +
+        `No usable LLM provider for pool ${binding.modelPool} (${role}): candidates [${candidates.join(', ')}] ` +
           `are disabled or unreachable in this run. Run preflight or restore at least one provider in config.`,
         { code: 'provider_unavailable', mode: 'router', retryable: true, switchProvider: true },
       );
@@ -187,7 +187,7 @@ export class LLMRouter {
       }))
       .filter((x): x is ChainEntry => !!x.client);
     if (clients.length === 0) {
-      throw new LLMRequestError(`No usable LLM provider in chain for role ${role}: [${ranked.join(', ')}]`, {
+      throw new LLMRequestError(`No usable LLM provider in chain for pool ${binding.modelPool} (${role}): [${ranked.join(', ')}]`, {
         code: 'provider_unavailable', mode: 'router', retryable: true, switchProvider: true,
       });
     }
@@ -264,9 +264,9 @@ export class LLMRouter {
     };
   }
 
-  /** 返回某角色按当前评分/可用性解析后的首选 provider 与模型，供启动诊断使用。 */
-  primarySelection(role: Role): { provider: string; model: string } | undefined {
-    const ranked = this.rankByScore(this.resolveChain(role));
+  /** 返回某模型池按当前评分/可用性解析后的首选 provider 与模型，供启动诊断使用。 */
+  primarySelection(pool: string | ModelPoolBinding): { provider: string; model: string } | undefined {
+    const ranked = this.rankByScore(this.poolBinding(pool).allowedProviders);
     for (const provider of ranked) {
       const config = this.cfg.llm.providers[provider];
       if (config && this.clients.has(provider)) return { provider, model: config.model };
@@ -275,8 +275,8 @@ export class LLMRouter {
   }
 
   /** Context window for the currently ranked primary provider. */
-  primaryContextWindow(role: Role): number {
-    const ranked = this.rankByScore(this.resolveChain(role));
+  primaryContextWindow(pool: string | ModelPoolBinding): number {
+    const ranked = this.rankByScore(this.poolBinding(pool).allowedProviders);
     const provider = ranked.find((name) => this.clients.has(name));
     return normalizeContextWindowTokens(provider ? this.cfg.llm.providers[provider]?.context_window : undefined);
   }
@@ -303,31 +303,41 @@ export class LLMRouter {
     }
   }
 
-  private resolveChain(role: Role, providerPool?: readonly string[]): string[] {
-    const out: string[] = [];
-    const push = (n: string | undefined) => {
-      if (n && !out.includes(n)) out.push(n);
-    };
-    // An actor bound to specific providers is authoritative and does not inherit the global
-    // fallback chain: binding a model to one of several parallel actors is meaningless if the run
-    // may silently substitute a different one.
-    if (providerPool && providerPool.length > 0) {
-      for (const n of providerPool) push(n);
-      return out;
+  /** Capture once; a retained request must never resolve its pool against later configuration. */
+  resolvePool(pool: string, options: { inheritFallbacks?: boolean } = {}): ModelPoolBinding {
+    const declared = this.cfg.llm.pools?.[pool];
+    const reason = !Object.hasOwn(this.cfg.llm.pools ?? {}, pool) ? 'unknown_pool'
+      : !Array.isArray(declared) || declared.length === 0 ? 'empty_pool' : undefined;
+    if (reason) throw new LLMRequestError(`LLM provider not configured for model pool: ${pool}`, {
+      code: 'provider_not_configured', mode: 'router', retryable: false, switchProvider: false,
+      details: { stage: 'model-pool', reason, pool },
+    });
+    const inheritFallbacks = options.inheritFallbacks ?? true;
+    const allowedProviders = [...new Set([
+      ...declared!, ...(inheritFallbacks ? this.cfg.llm.fallbacks ?? [] : []),
+    ])];
+    return this.poolBinding({ modelPool: pool, inheritFallbacks, allowedProviders });
+  }
+
+  private poolBinding(pool: string | ModelPoolBinding): ModelPoolBinding {
+    if (typeof pool === 'string') return this.resolvePool(pool);
+    const parsed = ModelPoolBindingSchema.safeParse(pool);
+    if (!parsed.success) throw new LLMRequestError('Invalid captured model pool binding', {
+      code: 'provider_not_configured', mode: 'router', retryable: false, switchProvider: false,
+      details: { stage: 'model-pool', reason: 'invalid_pool_binding' },
+    }, { cause: parsed.error });
+    for (const provider of parsed.data.allowedProviders) {
+      if (!Object.hasOwn(this.cfg.llm.providers, provider)) throw new LLMRequestError(
+        `Captured model pool ${parsed.data.modelPool} references unconfigured provider: ${provider}`, {
+          code: 'provider_not_configured', mode: 'router', retryable: false, switchProvider: false,
+          provider, details: { stage: 'model-pool', reason: 'unknown_provider', pool: parsed.data.modelPool },
+        });
     }
-    const explicit = this.cfg.llm.role_fallbacks?.[role];
-    if (explicit && explicit.length > 0) {
-      for (const n of explicit) push(n);
-      return out;
-    }
-    // roles[role] 现已是数组形式（schema transform 强制）
-    for (const n of this.cfg.llm.roles?.[role] ?? []) push(n);
-    for (const f of this.cfg.llm.fallbacks ?? []) push(f);
-    return out;
+    return Object.freeze({ ...parsed.data, allowedProviders: Object.freeze(parsed.data.allowedProviders) });
   }
 
   /** 按评分降序排序；评分 = 0 的剔除；并列保持声明顺序（稳定排序）。 */
-  private rankByScore(names: string[]): string[] {
+  private rankByScore(names: readonly string[]): string[] {
     if (!this.scores) return names.filter((name) => !this.unavailable.has(name));
     const scored = names.map((n, i) => ({ n, i, s: this.scores!.get(n) }));
     return scored

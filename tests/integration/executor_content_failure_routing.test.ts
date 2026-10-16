@@ -11,8 +11,9 @@ import { DomainAttemptRunner, type AttemptResult } from '../../src/application/e
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../../src/application/project_management/orchestrator.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
-import { ROLES, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
+import { type Phase } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { phaseDocForIteration, testPlanDocForIteration } from '../../src/domain/planning/document_contract.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
 import { LLMRouter } from '../../src/llm/router.js';
@@ -24,12 +25,18 @@ import { GitService } from '../../src/workspace/git.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 
 describe('candidate content failure through Runtime, Runner and PM', () => {
-  it('retains malformed model output on the original Ticket without creating a product Bug', async () => {
+  it.each(['malformed', 'permission-denied', 'tool-not-allowed'] as const)('retains %s on the original Ticket without creating a product Bug', async kind => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-content-routing-')));
     const envKeys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
     const requests: unknown[] = [];
     const malformed = '{"thoughts":"malformed complete provider response","actions":[],"done":false';
+    const deniedTest = JSON.stringify({ thoughts: 'Request verification through its permission boundary',
+      actions: [{ tool: 'run_program', args: { args: ['-m', 'pytest', 'tests/test_functional.py'] } }], done: false });
+    const unavailableTest = JSON.stringify({ thoughts: 'Request a gate that Runtime deliberately deferred',
+      actions: [{ tool: 'run_tests', args: { args: ['tests/test_functional.py'] } }], done: false });
+    const retainedEvent = kind === 'permission-denied'
+      ? 'domain.permission_blocked_deferred' : 'domain.agent_execution_stall_retained';
     const server = createServer((request, response) => {
       if (request.method === 'GET') {
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -43,7 +50,8 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
         requests.push(input);
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.end(`data: ${JSON.stringify({ model: input.model,
-          choices: [{ index: 0, delta: { content: malformed }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+          choices: [{ index: 0, delta: { content: kind === 'malformed' ? malformed
+            : kind === 'permission-denied' ? deniedTest : unavailableTest }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
       });
     });
     try {
@@ -56,13 +64,17 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       await workspace.ensure('.');
       const plan = samplePlan();
       const first = plan.steps[0]!;
+      // The initial design Step deliberately defers its mandatory gate and cannot expose run_tests.
+      // An explicitly available program invocation exercises the same test/permission boundary.
+      if (kind === 'permission-denied') first.tools = ['run_program'];
+      if (kind === 'tool-not-allowed') first.tools = ['run_tests'];
       expect(first.qualityGate).toBeDefined();
       for (const output of first.outputs) {
         await workspace.writeFile(output, output.endsWith('.py')
           ? 'def test_accepted_contract():\n    assert 1 + 1 == 2\n'
           : '# Accepted requirement\nPreserve the calculation contract.\n');
       }
-      const graph = compileProjectGraph({ draft: plan, topic: 'Deliver an accepted calculation.', projectName: 'content-routing' });
+      const graph = materializeProjectGraph({ draft: plan, topic: 'Deliver an accepted calculation.', projectName: 'content-routing' });
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
@@ -71,7 +83,7 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
         providers: { local: { type: 'openai', api_key: '', model: 'fixture-model',
           base_url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
           context_window: 131072, request_timeout_ms: 1000, stream_idle_timeout_ms: 1000 } },
-        roles: Object.fromEntries(ROLES.map(role => [role, ['local']])), fallbacks: [],
+        pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['local']])), fallbacks: [],
       }, agent: {} }));
       const { config } = await loadConfigWithPath(configPath);
       const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root,
@@ -87,13 +99,16 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       const controller = new AbortController();
       const stop = new Error('Stop after the real PM disposition.');
       const originalEvent = audit.event.bind(audit);
-      vi.spyOn(audit, 'event').mockImplementation(async (kind, message, data, options) => {
-        await originalEvent(kind, message, data, options);
-        if (data?.messageId === 'domain.agent_execution_stall_retained') controller.abort(stop);
+      vi.spyOn(audit, 'event').mockImplementation(async (eventKind, message, data, options) => {
+        await originalEvent(eventKind, message, data, options);
+        if (data?.messageId === retainedEvent) controller.abort(stop);
       });
       const options: ProjectOrchestratorOptions = { workspace, git: new GitService(workspace), sandbox, router, audit,
         repository, plugins, maxRoundsPerStep: 2, abortSignal: controller.signal, recordReplay,
-        requestPermission: async () => ({ approved: true }),
+        requestPermission: async permission => {
+          const approved = kind !== 'permission-denied' || permission.operationType !== 'shell_command';
+          return { approved, outcome: approved ? 'approved' : 'denied', reason: 'Controlled user decision.' };
+        },
         executionRequests: scope => createRuntimeExecutionTurnRequestPort({ config: config.rules, container,
           recordReplay, router, audit, scope }),
         onTransition: event => { if (event.ticketType === 'bug') controller.abort(stop); },
@@ -107,28 +122,50 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
         return result;
       });
       const engine = new ProjectOrchestrator({ ...options, attemptRunner: runner }, plan);
-      await expect(engine.run(graph.phases[0]!.id)).rejects.toBe(stop);
+      const outcome = await engine.run(graph.phases[0]!.id).then(result => result, error => error);
+      const failureContext = JSON.stringify(attempts.map(attempt => ({ reason: attempt.reason, code: attempt.failure?.code })));
+      if (kind === 'permission-denied') expect(outcome, failureContext).toMatchObject({ executedSteps: 1, failedStepId: expect.any(String) });
+      else expect(outcome, failureContext).toBe(stop);
       const tickets = await repository.list({ objectType: 'ticket', projectId: graph.project.id });
-      expect(tickets.filter(ticket => ticket.objectType === 'ticket' && ticket.type === 'bug')).toHaveLength(0);
+      expect(tickets.filter(ticket => ticket.objectType === 'ticket' && ticket.type === 'bug'),
+        JSON.stringify(attempts.map(attempt => ({ failure: attempt.failure, calls: attempt.executor?.toolCalls }))))
+        .toHaveLength(0);
       expect(attempts).toHaveLength(1);
-      expect(attempts[0]!.failure).toMatchObject({ kind: 'execution', category: 'internal', code: 'agent_execution_stalled' });
-      expect(requests).toHaveLength(4);
+      expect(attempts[0]!.failure).toMatchObject(kind === 'permission-denied'
+        ? { kind: 'infrastructure', category: 'internal', code: 'permission_blocked' }
+        : { kind: 'execution', category: 'internal', code: 'agent_execution_stalled' });
+      if (kind === 'permission-denied') {
+        expect(attempts[0]!.executor?.toolCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ tool: 'run_program', executionStatus: 'permission-blocked', ok: false }),
+        ]));
+        expect(attempts[0]!.testOutcomes.every(outcome => outcome.status === 'denied')).toBe(true);
+      }
+      if (kind === 'tool-not-allowed') {
+        expect(attempts[0]!.executor?.toolCalls).toHaveLength(2);
+        expect(attempts[0]!.executor?.toolCalls.every(call => call.tool === 'run_tests' &&
+          call.executionStatus === 'tool-not-allowed' && !call.ok)).toBe(true);
+        expect(attempts[0]!.testOutcomes.map(outcome => outcome.status)).toEqual(['skipped', 'skipped']);
+      }
+      expect(requests).toHaveLength(kind === 'malformed' ? 4 : 2);
       expect(effects).not.toHaveBeenCalled();
       const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(line => line.trim())
         .map(line => JSON.parse(line) as AuditEvent);
       const refused = events.filter(event => event.messageId === 'llm.provider_validation_failed');
-      expect(refused).toHaveLength(4);
-      expect(refused.every(event => event.data?.output === malformed)).toBe(true);
-      expect(events.some(event => event.messageId === 'domain.agent_execution_stall_retained')).toBe(true);
+      expect(refused).toHaveLength(kind === 'malformed' ? 4 : 0);
+      if (kind === 'malformed') expect(refused.every(event => event.data?.output === malformed)).toBe(true);
+      expect(events.some(event => event.messageId === retainedEvent)).toBe(true);
       const logs = await repository.list({ objectType: 'log', projectId: graph.project.id });
       const failure = logs.find(log => log.objectType === 'log' && log.level === 'error');
       const structured = failure?.objectType === 'log' && failure.data.structuredFailure;
-      expect(structured).toMatchObject({
+      if (kind === 'malformed') expect(structured).toMatchObject({
         code: 'agent_execution_stalled', details: { cause: { failure: { code: 'all_providers_failed',
           details: { contentRejectedOnly: true } }, cause: { cause: { assessment: { completion: {
             logicalRequestId: expect.any(String), providerAttemptId: expect.any(String), provider: 'local', model: 'openai:fixture-model',
           } } } } } },
       });
+      else expect(structured).toMatchObject(kind === 'permission-denied'
+        ? { kind: 'infrastructure', code: 'permission_blocked' }
+        : { code: 'agent_execution_stalled', details: { stallKind: 'max-rounds' } });
     } finally {
       vi.restoreAllMocks();
       server.closeAllConnections();
@@ -140,16 +177,16 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
 });
 
 function samplePlan() {
-  const specification: Array<{ phase: Phase; role: Step['role']; outputs: string[]; inputs?: string[] }> = [
-    { phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: [phaseDocForIteration('REQUIREMENT_ANALYSIS', 'P1')!,
+  const specification: Array<{ phase: Phase; outputs: string[]; inputs?: string[] }> = [
+    { phase: 'REQUIREMENT_ANALYSIS', outputs: [phaseDocForIteration('REQUIREMENT_ANALYSIS', 'P1')!,
       testPlanDocForIteration('FUNCTIONAL_TEST', 'P1')!, 'tests/test_functional.py'] },
-    { phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: [phaseDocForIteration('HIGH_LEVEL_DESIGN', 'P1')!, 'tests/test_module.py'] },
-    { phase: 'DETAILED_DESIGN', role: 'Architect', outputs: [phaseDocForIteration('DETAILED_DESIGN', 'P1')!, 'tests/test_integration.py'] },
-    { phase: 'CODE', role: 'Coder', outputs: ['src/main.py', 'tests/test_unit.py'] },
-    { phase: 'UNIT_TEST', role: 'Tester', outputs: [phaseDocForIteration('UNIT_TEST', 'P1')!], inputs: ['tests/test_unit.py'] },
-    { phase: 'INTEGRATION_TEST', role: 'Tester', outputs: [phaseDocForIteration('INTEGRATION_TEST', 'P1')!], inputs: ['tests/test_integration.py'] },
-    { phase: 'MODULE_TEST', role: 'Tester', outputs: [phaseDocForIteration('MODULE_TEST', 'P1')!], inputs: ['tests/test_module.py'] },
-    { phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: [phaseDocForIteration('FUNCTIONAL_TEST', 'P1')!], inputs: ['tests/test_functional.py'] },
+    { phase: 'HIGH_LEVEL_DESIGN', outputs: [phaseDocForIteration('HIGH_LEVEL_DESIGN', 'P1')!, 'tests/test_module.py'] },
+    { phase: 'DETAILED_DESIGN', outputs: [phaseDocForIteration('DETAILED_DESIGN', 'P1')!, 'tests/test_integration.py'] },
+    { phase: 'CODE', outputs: ['src/main.py', 'tests/test_unit.py'] },
+    { phase: 'UNIT_TEST', outputs: [phaseDocForIteration('UNIT_TEST', 'P1')!], inputs: ['tests/test_unit.py'] },
+    { phase: 'INTEGRATION_TEST', outputs: [phaseDocForIteration('INTEGRATION_TEST', 'P1')!], inputs: ['tests/test_integration.py'] },
+    { phase: 'MODULE_TEST', outputs: [phaseDocForIteration('MODULE_TEST', 'P1')!], inputs: ['tests/test_module.py'] },
+    { phase: 'FUNCTIONAL_TEST', outputs: [phaseDocForIteration('FUNCTIONAL_TEST', 'P1')!], inputs: ['tests/test_functional.py'] },
   ];
   return buildPlan({ requirementDigest: 'Deliver an accepted calculation.', globalPrompt: '', projectType: 'application',
     complexityAssessment: { level: 'simple', rationale: 'One calculation module.', splitRecommended: false, userForcedPhaseSplit: false },

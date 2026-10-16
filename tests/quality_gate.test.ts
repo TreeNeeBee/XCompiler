@@ -199,7 +199,7 @@ describe('preconditions a Step does not own', () => {
   it('do not fail the gate, while a real gap still does', () => {
     const step = {
       id: 'S003', phase: 'DETAILED_DESIGN', title: 'x', description: 'x',
-      systemPrompt: 'x', role: 'Architect', tools: [], inputs: [], outputs: [],
+      systemPrompt: 'x', tools: [], inputs: [], outputs: [],
       dependsOn: [], acceptance: 'ok',
     } as unknown as Step;
     const base = {
@@ -274,7 +274,7 @@ describe('preconditions a Step does not own', () => {
 describe('a gap about a tool the Step does not have', () => {
   const codeStep = (tools: string[]) => ({
     id: 'S004', phase: 'CODE', title: 'x', description: 'x', systemPrompt: 'x',
-    role: 'Coder', tools, inputs: [], outputs: [], dependsOn: [], acceptance: 'ok',
+    tools, inputs: [], outputs: [], dependsOn: [], acceptance: 'ok',
   } as unknown as Step);
   const base = {
     completion: 1,

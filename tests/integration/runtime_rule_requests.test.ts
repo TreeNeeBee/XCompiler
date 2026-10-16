@@ -8,7 +8,7 @@ import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { roleProfile, DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { loadYamlRuleCatalogue } from '../../src/infrastructure/rules/yaml_rule_catalogue.js';
 import { FileRuleRequestStateStore } from '../../src/infrastructure/rules/file_rule_request_state_store.js';
 import { LLMRouter } from '../../src/llm/router.js';
@@ -56,7 +56,8 @@ async function fixture(options: {
         model: 'role-model', context_window: 131072, request_timeout_ms: 1000 },
       ...(options.assignedEndpoint ? { assignedReview: { type: 'openai', base_url: options.assignedEndpoint,
         model: 'assigned-review-model', context_window: 131072, request_timeout_ms: 1000 } } : {}) },
-      roles: Object.fromEntries(ROLES.map((role) => [role, ['roleProvider']])),
+      pools: { ...Object.fromEntries(DEFAULT_MODEL_POOLS.map((role) => [role, ['roleProvider']])),
+        ...(options.assignedEndpoint ? { assigned: ['assignedReview'] } : {}) },
     },
     agent: {},
     rules: {
@@ -94,7 +95,7 @@ async function fixture(options: {
   return {
     config: config.rules, container, router, recordReplay, audit,
     logicalRequestId: id(800), loadCatalogue,
-    context: { role: 'Coder' as const, language: 'python' as const }, required: [],
+    context: { role: 'python-developer' as const, language: 'python' as const }, required: [],
     taskSummary: 'Inspect the current operation.', errorSummary: 'No result was returned.',
   };
 }
@@ -128,7 +129,7 @@ async function endpoint(reviewOutput = JSON.stringify({ selectedRuleIds: [id(4)]
 describe('Runtime Rule preparation through configured adapters and persistent recovery', () => {
   it('loads installed genesis by default and pins it without a model, embedding config or project rule discovery', async () => {
     const input = await fixture();
-    const role = vi.spyOn(input.router, 'for');
+    const role = vi.spyOn(input.router, 'forPool');
     await input.container.canonical().workspace.ensure('rules');
     await input.container.canonical().workspace.writeFile('rules/genesis.yaml', 'untrusted project rules: [');
     const snapshot = await prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined });
@@ -146,7 +147,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
 
   it('rejects altered installed sources for fresh requests but restores already pinned material', async () => {
     const input = await fixture();
-    const role = vi.spyOn(input.router, 'for');
+    const role = vi.spyOn(input.router, 'forPool');
     const installed = path.join(root, 'installation', 'rules');
     await fs.cp(installationRoots.installedCompilerRulesRoot(), installed, { recursive: true });
     vi.spyOn(installationRoots, 'installedCompilerRulesRoot').mockReturnValue(installed);
@@ -171,7 +172,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
 
   it('persists required-only material and recovers it without loading current rules or requiring embedding', async () => {
     const input = await fixture();
-    const role = vi.spyOn(input.router, 'for');
+    const role = vi.spyOn(input.router, 'forPool');
     const snapshot = await prepareRuntimeRuleRequest(input);
     expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
     expect(snapshot.ranking).toMatchObject({ decision: 'no-candidates', profile: { maxCandidates: 1 } });
@@ -215,10 +216,10 @@ describe('Runtime Rule preparation through configured adapters and persistent re
   it.each([false, true])('uses the pinned caller role for one low-score review (empty result: %s)', async (empty) => {
     const server = await endpoint(JSON.stringify({ selectedRuleIds: empty ? [] : [id(4)] }));
     const input = await fixture({ optional: true, endpoint: server.url });
-    const forRole = vi.spyOn(input.router, 'for');
+    const forRole = vi.spyOn(input.router, 'forPool');
     const snapshot = await prepareRuntimeRuleRequest(input);
     expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual(empty ? [id(2)] : [id(2), id(4)]);
-    expect(forRole).toHaveBeenCalledExactlyOnceWith('Coder');
+    expect(forRole).toHaveBeenCalledExactlyOnceWith('coding', { label: 'python-developer' });
     expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings', '/v1/chat/completions']);
     const review = server.calls[2]!.input;
     expect(review.model).toBe('role-model');
@@ -244,11 +245,12 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     const defaultService = await endpoint();
     const assigned = await endpoint();
     const input = await fixture({ optional: true, endpoint: defaultService.url, assignedEndpoint: assigned.url });
-    const forRole = vi.spyOn(input.router, 'for');
-    const snapshot = await prepareRuntimeRuleRequest({ ...input, providerPool: ['assignedReview'] });
+    const forRole = vi.spyOn(input.router, 'forPool');
+    const binding = input.router.resolvePool('assigned', { inheritFallbacks: false });
+    const snapshot = await prepareRuntimeRuleRequest({ ...input, modelPool: binding });
     expect(snapshot.ranking.decision).toBe('review-required');
     expect(snapshot.rules.map(rule => rule.ruleId)).toEqual([id(2), id(4)]);
-    expect(forRole).toHaveBeenCalledExactlyOnceWith('Coder', { providerPool: ['assignedReview'] });
+    expect(forRole).toHaveBeenCalledExactlyOnceWith(binding, { label: 'python-developer' });
     expect(defaultService.calls.map(call => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
     expect(assigned.calls).toHaveLength(1);
     expect(assigned.calls[0]!.path).toBe('/v1/chat/completions');
@@ -267,13 +269,14 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     vi.spyOn(compilerCatalogue, 'loadCompilerRuleCatalogue').mockImplementation(input.loadCatalogue);
     const scope = validateExecutionRequestScope({
       projectId: createObjectId(), phaseId: createObjectId(), stepId: createObjectId(), ticketId: createObjectId(),
-      actorId: createObjectId(), assignmentId: createObjectId(), executionId: randomUUID(), role: 'Coder',
-      providerPool: ['assignedReview'],
+      actorId: createObjectId(), assignmentId: createObjectId(), executionId: randomUUID(), role: 'python-developer',
+      work: 'code.implement', roleVersion: roleProfile('python-developer').version,
+      ...input.router.resolvePool('assigned', { inheritFallbacks: false }),
     });
     const payload = validateExecutionTurnPayload({
       schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
       locale: 'en', parseContext: { language: 'python' }, round: 1,
-      promptContext: { step: { id: scope.stepId, iterationId: 'P1', phase: 'CODE', role: 'Coder',
+      promptContext: { work: 'code.implement', role: 'python-developer', step: { id: scope.stepId, iterationId: 'P1', phase: 'CODE',
         title: 'Inspect the current operation', description: input.taskSummary, systemPrompt: 'Preserve the current scope.',
         tools: [], inputs: [], outputs: [], dependsOn: [], acceptance: 'Inspect current evidence.', maxAttempts: 3 },
       ctx: { allowedWrites: [] } }, initialMissingOutputs: [], tools: [],
@@ -297,7 +300,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
       .map(line => JSON.parse(line) as AuditEvent);
     const review = events.find(event => event.messageId === 'llm.provider_response'
       && event.data?.requestBinding && (event.data.requestBinding as RuleSelectionAuditBinding).kind === 'rule-selection');
-    expect(review?.data).toMatchObject({ provider: 'assignedReview', role: 'Coder' });
+    expect(review?.data).toMatchObject({ provider: 'assignedReview', role: 'python-developer' });
     expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(false);
   });
 
@@ -322,14 +325,14 @@ describe('Runtime Rule preparation through configured adapters and persistent re
       throw interrupted;
     });
     await expect(prepareRuntimeRuleRequest(input)).rejects.toBe(interrupted);
-    const role = vi.spyOn(input.router, 'for');
+    const role = vi.spyOn(input.router, 'forPool');
     input.loadCatalogue.mockRejectedValue(new Error('A restored draft must not reselect rules'));
     const snapshot = await prepareRuntimeRuleRequest({
-      ...input, config: { retrieval: input.config.retrieval }, context: { role: 'Tester', language: 'python' },
+      ...input, config: { retrieval: input.config.retrieval }, context: { role: 'test-engineer', language: 'python' },
     });
-    expect(snapshot.context.role).toBe('Coder');
+    expect(snapshot.context.role).toBe('python-developer');
     expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2), id(4)]);
-    expect(role).toHaveBeenCalledExactlyOnceWith('Coder');
+    expect(role).toHaveBeenCalledExactlyOnceWith('coding', { label: 'python-developer' });
     expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings', '/v1/chat/completions']);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
   });
@@ -452,7 +455,7 @@ describe('Runtime review evidence before publication and recovery', () => {
   const changedEvidence: { name: string; change: (data: ReviewAuditData) => void }[] = [
     { name: 'provider', change: (data) => { data.provider = 'foreign-provider'; } },
     { name: 'model', change: (data) => { data.model = 'foreign-model'; } },
-    { name: 'role', change: (data) => { data.role = 'Tester'; } },
+    { name: 'role', change: (data) => { data.role = 'test-engineer'; } },
     { name: 'nested attempt', change: (data) => { data.responseEvidence = { ...data.responseEvidence, providerAttemptId: id(999) }; } },
     { name: 'nested output', change: (data) => { data.responseEvidence = { ...data.responseEvidence, output: '{"selectedRuleIds":[]}' }; } },
     { name: 'selected rules', change: (data) => {

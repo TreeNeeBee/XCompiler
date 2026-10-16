@@ -5,7 +5,7 @@ import { z } from 'zod';
 import 'dotenv/config';
 import { xcEnv } from './env.js';
 import { RuleEmbeddingBaseUrlSchema, RuleIdentityStringSchema } from './rule_embedding.js';
-import { ROLES } from '../domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../domain/workflow/role.js';
 import { RuleRetrievalProfileSchema } from '../domain/rules/selection.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../llm/window.js';
 import { DEFAULT_PROVIDER_RETRY } from '../llm/retry.js';
@@ -234,15 +234,14 @@ const SandboxesSchema = z
 const LlmSchema = z.object({
   providers: z.record(z.string(), ProviderSchema),
   /**
-   * 角色 → provider 数组的映射。
-   * 数组形式 `Coder: [ollama_code, openai]` 表示该角色的候选 LLM 池；
-   * 实际选择顺序由 ScoreStore 有效评分降序决定；有效评分为用户覆盖优先，否则使用动态评分。
+   * Named model pools: pool name -> ordered provider candidates. A role profile names its default
+   * pool and an actor may override it with another configured pool; the order inside a pool is
+   * re-ranked by ScoreStore at call time. Pools are not roles: several roles may share one.
    */
-  roles: z.record(z.string(), z.array(z.string())).default({}),
-  /** 全局 fallback 链：当主 provider 调用报错时依次尝试 */
+  pools: z.record(z.string().refine(value => value.trim().length > 0),
+    z.array(z.string().refine(value => value.trim().length > 0)).min(1)).default({}),
+  /** 默认角色池包含这些候选并按评分排序；Actor 显式覆盖池独立，不继承此列表。 */
   fallbacks: z.array(z.string()).default([]),
-  /** 可选：按角色指定 fallback 链（覆盖全局） */
-  role_fallbacks: z.record(z.string(), z.array(z.string())).default({}),
   /**
    * Providers tagged `cluster` (for example aggregated free routes) use this
    * narrower dynamic score range so they naturally remain backup choices.
@@ -259,18 +258,30 @@ const LlmSchema = z.object({
    */
   stall_diagnosis_after_ms: z.number().int().nonnegative().default(600_000),
 }).strict().superRefine((llm, ctx) => {
-  for (const role of ROLES) {
-    const explicit = llm.role_fallbacks[role] ?? [];
-    const pool = llm.roles[role] ?? [];
-    if (explicit.length === 0 && pool.length === 0) {
+  for (const pool of DEFAULT_MODEL_POOLS) {
+    if ((llm.pools[pool] ?? []).length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['roles', role],
+        path: ['pools', pool],
         message:
-          `llm.roles.${role} must list at least one provider: ` +
-          'model selection is manual (llm.default has been removed).',
+          `llm.pools.${pool} must list at least one provider: a built-in role uses it by default ` +
+          '(model selection is manual; llm.roles was replaced by llm.pools).',
       });
     }
+  }
+  for (const [pool, providers] of Object.entries(llm.pools)) {
+    for (const [index, provider] of providers.entries()) {
+      if (!Object.hasOwn(llm.providers, provider)) ctx.addIssue({
+        code: z.ZodIssueCode.custom, path: ['pools', pool, index],
+        message: `llm.pools.${pool} references an unconfigured provider: ${provider}`,
+      });
+    }
+  }
+  for (const [index, provider] of llm.fallbacks.entries()) {
+    if (!Object.hasOwn(llm.providers, provider)) ctx.addIssue({
+      code: z.ZodIssueCode.custom, path: ['fallbacks', index],
+      message: `llm.fallbacks references an unconfigured provider: ${provider}`,
+    });
   }
   const min = llm.cluster_score_min ?? 0.2;
   const max = llm.cluster_score_max ?? 0.5;

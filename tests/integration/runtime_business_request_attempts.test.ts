@@ -1,3 +1,4 @@
+import { fixtureScenarioOwner } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -15,7 +16,7 @@ import {
 import { createRuleSelectionDraft, finalizeRuleSelectionDraft } from '../../src/application/rules/rule_request_snapshot.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
-import { ROLES } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { RuleCatalogue } from '../../src/domain/rules/catalogue.js';
 import { FileBusinessRequestAttemptStore } from '../../src/infrastructure/llm/file_business_request_attempt_store.js';
 import { FileRecordReplayStore } from '../../src/infrastructure/record_replay/file_store.js';
@@ -78,14 +79,19 @@ async function endpoint(output = rawOutput) {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, calls };
 }
 
-async function fixture(options: { endpoint: string; plugins?: PluginHost; record?: boolean; redacted?: boolean }) {
+async function fixture(options: {
+  endpoint: string; outsideEndpoint?: string; plugins?: PluginHost; record?: boolean; redacted?: boolean;
+}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
   await container.canonical().workspace.ensure('.');
   const configPath = path.join(container.root, 'test-config.yaml');
   await fs.writeFile(configPath, YAML.stringify({
     llm: { providers: { primary: { type: 'openai', model: 'requested-model', base_url: options.endpoint,
-      context_window: 131072, request_timeout_ms: 1000 } },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['primary']])), fallbacks: [] },
+      context_window: 131072, request_timeout_ms: 1000 },
+      ...(options.outsideEndpoint ? { outside: { type: 'openai', model: 'outside-model', base_url: options.outsideEndpoint,
+        context_window: 131072, request_timeout_ms: 1000 } } : {}) },
+    pools: { ...Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['primary']])),
+      ...(options.outsideEndpoint ? { outside: ['outside'] } : {}) }, fallbacks: [] },
     agent: {}, record_replay: { path: 'recordings' },
   }));
   const { config } = await loadConfigWithPath(configPath);
@@ -96,8 +102,8 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; record
         instruction: 'PINNED_RULE: inspect only the current evidence.', retrievalDescription: 'Current evidence declaration' }] },
   }]);
   const selector = new RuleSelector(catalogue);
-  const prepared = selector.prepare({ requestKind: 'business', context: { projectId, role: 'ProjectManager',
-    scenario: 'scenario-judgement' }, required: [] });
+  const prepared = selector.prepare({ requestKind: 'business', context: { projectId, role: 'project-manager',
+    work: 'judge.scenario' }, required: [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [], profile: { threshold: 0.8, maxCandidates: 20 } });
   const snapshot = finalizeRuleSelectionDraft(createRuleSelectionDraft({ prepared, ranked,
     logicalRequestId, requestKind: 'business', createdAt: '2026-10-12T00:00:00.000Z' }));
@@ -110,7 +116,7 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; record
   const router = new LLMRouter(config, audit, undefined, undefined, options.plugins,
     async () => ({ ok: true, latencyMs: 0, detail: 'loopback fixture' }), recordReplay);
   const request = { logicalRequestId,
-    owner: { kind: 'scenario-judgement' as const, projectId, phaseId, executionId },
+    owner: fixtureScenarioOwner({ projectId, phaseId, executionId }, router.resolvePool('management')),
     templateVersion: 'scenario-fixture/1', messages: structuredClone(messages),
     outputProtocol: { id: 'scenario-fixture', version: '1', root: 'object' as const, transformations: ['trailing-comma' as const] } };
   const auditPath = container.state.abs('audit', 'audit.jsonl');
@@ -132,6 +138,31 @@ async function writeEvents(target: string, events: AuditEvent[]) {
 }
 
 describe('Runtime business input dispatch and explicit attempt recovery', () => {
+  it('refuses an unauthorized routed provider at final preparation before either HTTP endpoint receives a request', async () => {
+    const primary = await endpoint();
+    const outside = await endpoint();
+    const current = await fixture({ endpoint: primary.url, outsideEndpoint: outside.url });
+    expect(current.request.owner.allowedProviders).toEqual(['primary']);
+    // Keep the role valid and use a real Router client so only the original candidate boundary
+    // rejects this substituted route, at LLMRuleBusinessRequest's actual final-send callback.
+    const unauthorized = current.router.forPool('outside', { label: 'project-manager' });
+    const route = vi.spyOn(current.router, 'forPool').mockReturnValue(unauthorized);
+    await expect(current.send()).rejects.toMatchObject({
+      code: 'business_request_attempt_failed', reason: 'identity_conflict',
+      details: { logicalRequestId, providerAttemptId: expect.any(String), field: 'input_binding' },
+    });
+    expect(route).toHaveBeenCalledExactlyOnceWith({ modelPool: 'management', inheritFallbacks: true,
+      allowedProviders: ['primary'] }, { label: 'project-manager' });
+    expect(primary.calls).toHaveLength(0);
+    expect(outside.calls).toHaveLength(0);
+    const events = await current.events();
+    expect(events.find(event => event.messageId === 'llm.business_request_input')?.data).toMatchObject({
+      input: { owner: current.request.owner },
+    });
+    expect(events.some(event => event.messageId === 'llm.business_request_attempt')).toBe(false);
+    expect(events.some(event => event.messageId === 'llm.provider_response')).toBe(false);
+  });
+
   it('binds the final post-Plugin request and returns the raw response without claiming a business verdict', async () => {
     const server = await endpoint();
     const added: ChatMessage = { role: 'user', content: 'Additional Plugin evidence.' };
@@ -168,7 +199,7 @@ describe('Runtime business input dispatch and explicit attempt recovery', () => 
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
     const result = await current.send();
-    const forRole = vi.spyOn(current.router, 'for');
+    const forRole = vi.spyOn(current.router, 'forPool');
     const recovered = await current.resume(result.response.providerAttemptId);
     expect(recovered.status).toBe('recovered');
     if (recovered.status !== 'recovered') throw new Error('Expected retained attempt response');
@@ -292,7 +323,7 @@ describe('Runtime business input dispatch and explicit attempt recovery', () => 
     const server = await endpoint();
     const current = await fixture({ endpoint: server.url });
     const forbidden = vi.fn();
-    const forRole = vi.spyOn(current.router, 'for');
+    const forRole = vi.spyOn(current.router, 'forPool');
     for (const options of [null, [], false, { validate: forbidden }]) {
       await expect(sendRuntimeBusinessRequest({ ...current, options: options as unknown as RuleBusinessChatOptions }))
         .rejects.toMatchObject({ code: 'rule_business_request_failed', reason: 'invalid_input' });

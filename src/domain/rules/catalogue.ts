@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { LANGUAGES } from '../planning/execution_plan.js';
-import { ROLES } from '../workflow/role.js';
+import { RoleIdSchema } from '../workflow/role.js';
+import { WorkIdSchema } from '../workflow/work.js';
 import { assertRuleListSlotConsistency, isRuleListSlot, parseRuleSlot, RULE_SLOTS } from './slots.js';
 
 export const RULE_LEVELS = ['mandatory', 'forbidden', 'required', 'advised', 'announce'] as const;
@@ -11,8 +12,8 @@ const Version = Text;
 export const RuleApplicabilitySchema = z.object({
   projectIds: z.array(z.uuid()).min(1).optional(),
   languages: z.array(z.enum(LANGUAGES)).min(1).optional(),
-  roles: z.array(z.enum(ROLES)).min(1).optional(),
-  scenarios: z.array(Text).min(1).optional(),
+  roles: z.array(RoleIdSchema).min(1).optional(),
+  works: z.array(WorkIdSchema).min(1).optional(),
 }).strict();
 
 export const RuleDefinitionSchema = z.object({

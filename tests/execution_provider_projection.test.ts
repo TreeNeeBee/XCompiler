@@ -12,9 +12,10 @@ afterEach(() => { setLocale(initialLocale); });
 function payload(debug = false, locale: 'en' | 'zh' = 'en'): ExecutionTurnPayload {
   return validateExecutionTurnPayload({ schemaVersion: 1, kind: 'step-execution-turn', templateVersion: 'execution-turn/1',
     locale, parseContext: { language: 'python' }, round: 2,
-    promptContext: { step: { id: 'S004', iterationId: 'P1', phase: 'CODE', role: 'Coder', title: 'Current implementation',
+    promptContext: { step: { id: 'S004', iterationId: 'P1', phase: 'CODE', title: 'Current implementation',
       description: 'Preserve the declared contract.', systemPrompt: 'Original Step instructions.', tools: ['read_file', 'write_file'],
       inputs: ['docs/current.md'], outputs: ['src/current.py'], dependsOn: [], acceptance: 'Original gate evidence.', maxAttempts: 3 },
+    work: debug ? 'repair.debug' : 'code.implement',
     ctx: { allowedWrites: ['src/'], preserveExistingFiles: true, rewriteExistingFiles: ['src/current.py'],
       contextWindowTokens: 131072, readChunkBytes: 3000, writeChunkBytes: 4000, responseTokenBudget: 4096, feedbackCharBudget: 9000 },
     ...(debug ? { debugContext: { reason: 'Original failure.', failureLog: 'Original immutable failure evidence.' },

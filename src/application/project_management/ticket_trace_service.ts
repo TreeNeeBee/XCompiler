@@ -2,7 +2,7 @@ import { createObjectEnvelope, reviseObjectEnvelope } from '../../domain/objects
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { TicketSchema, type Ticket, type TicketState } from '../../domain/tickets/ticket.js';
-import type { DomainRole } from '../../domain/workflow/role.js';
+import type { RoleId } from '../../domain/workflow/role.js';
 import {
   TicketTraceEventSchema,
   hashTicketTraceEvent,
@@ -15,7 +15,7 @@ import {
 export interface TicketTraceAppendInput {
   eventType: TicketTraceEventType;
   initiatorActorId: ObjectId;
-  initiatorRole: DomainRole;
+  initiatorRole: RoleId;
   assignmentId?: ObjectId;
   fromOwnerActorId?: ObjectId;
   toOwnerActorId?: ObjectId;

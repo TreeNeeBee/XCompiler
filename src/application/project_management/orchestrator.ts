@@ -33,6 +33,7 @@ import { isCancellationError } from '../../util/cancellation.js';
 import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import type { TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import { QualityAssessmentService } from '../execution/quality_assessment_service.js';
+import { workFor } from '../../domain/workflow/work.js';
 
 interface MergeIntegrationResult {
   status: 'merged' | 'nothing-to-merge' | 'failed' | 'blocked' | 'awaiting-authorization';
@@ -97,7 +98,8 @@ export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, '
     creatorRole?: string;
     assigneeActorId?: ObjectId;
     assigneeRole?: string;
-    assigneeAgent?: string;
+    /** The work the routed Ticket asks for. */
+    work?: string;
     correlationId: ObjectId;
     causationId?: ObjectId;
     message?: string;
@@ -492,13 +494,13 @@ export class ProjectOrchestrator {
             ticketName: routed.ticket.name,
             ticketType: routed.ticket.type,
             creatorActorId: creator.id,
-            creatorRole: creator.role,
+            creatorRole: creator.roleId,
             assigneeActorId: assigned.id,
-            assigneeRole: assigned.role,
-            assigneeAgent: routed.ticket.agent,
+            assigneeRole: assigned.roleId,
+            work: workFor(work.step.type, routed.ticket.type),
             correlationId: routed.ticket.source.correlationId,
             causationId: routed.ticket.source.causationId,
-            message: `${creator.role} created ${routed.ticket.name}; PM routed it to ${assigned.role}/${routed.ticket.agent}`,
+            message: `${creator.roleId} created ${routed.ticket.name}; PM routed ${workFor(work.step.type, routed.ticket.type)} to ${assigned.roleId}`,
           });
         }
         work = await this.scheduler.start(work);

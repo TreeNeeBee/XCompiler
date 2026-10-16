@@ -8,7 +8,6 @@ import { ProjectContainer } from '../workspace/project_container.js';
 import { GitService } from '../workspace/git.js';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
-import { reportRoleModelAdvice } from '../llm/role_advice.js';
 import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
@@ -47,6 +46,7 @@ import { hasXcEnv } from '../config/env.js';
 import type { ProjectAuditResult } from '../application/delivery/project_audit.js';
 import type { ToolExecutionEvent, ToolPermissionRequest } from '../tools/types.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
+import { acceptedContractChanges } from '../application/execution/accepted_contract_changes.js';
 import { DomainAuditTrail } from '../application/observability/domain_audit_trail.js';
 import { FileProjectProjectionWriter } from '../infrastructure/projections/index.js';
 import {
@@ -69,6 +69,8 @@ import { isCancellationError } from '../util/cancellation.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
 import { createRuntimeExecutionTurnRequestPort } from './execution_turn_request.js';
+import { defaultRoleForStep } from '../domain/workflow/work.js';
+import { RoleRegistry } from '../application/project_management/role_registry.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -299,21 +301,24 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     recordReplay,
     cfgPath,
   );
+  const operationProjectId = domainProject.id;
   const phaseProgression = new PhaseProgressionService(
     ws,
     container.state,
     container.control,
     planStore,
-    router,
     audit,
     io.terminalOutput === true,
     opts.abortSignal,
     capabilities.skills,
     createRuntimePhaseDecompositionRequestPort({
       config: cfg.rules, container, recordReplay, router, audit, projectId: domainProject.id,
+      resolveActor: async () => {
+        const { actor } = await new RoleRegistry(domainRepository).ensureOperationActor(operationProjectId, 'plan.decompose');
+        return { actorId: actor.id, role: actor.roleId, roleVersion: actor.roleVersion, modelPool: actor.modelPool };
+      },
     }),
   );
-  await reportRoleModelAdvice(router, audit, (message) => runtimeLog(io, 'warning', message));
   if (recoverUnadvancedPhase) {
     if (!target.phasePlan || !target.phasePlanPath || !domainProject.currentPhaseId) {
       throw new Error(
@@ -418,7 +423,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
             scope: 'development',
             projectId: domainProject.id,
             phaseId: input.domainStep.phaseId,
-            roleId: input.domainStep.role,
+            roleId: defaultRoleForStep(input.domainStep.type, domainProject.language),
           }
         : { scope: 'canonical', projectId: domainProject.id },
     );
@@ -674,7 +679,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           creatorRole: event.creatorRole,
           assigneeActorId: event.assigneeActorId,
           assigneeRole: event.assigneeRole,
-          assigneeAgent: event.assigneeAgent,
+          work: event.work,
           message: event.message,
         },
       });
@@ -732,6 +737,10 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       // schema mismatch produced — with no retry and nothing said about which scenario it was.
       // The Phase stays open instead, so the next run judges it again.
       let auditResult;
+      // Read once per gate run: the judge compares the scene with the contract as it stands now.
+      const phaseContractChanges = await acceptedContractChanges(domainRepository, {
+        projectId: domainProject.id, phaseId: domainPhase.id,
+      });
       try {
         auditResult = await runProjectAudit({
         ws,
@@ -741,7 +750,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         scenarios: phaseGate.scenarios,
         runLiveScenario: (operation) => recordReplay.runWithMode('off', operation),
         snapshotArtifacts,
-        judgeScenarioOutcome: ({ scenario, scene, before }) => judgeRuntimeScenarioOutcome({
+        judgeScenarioOutcome: async ({ scenario, scene, before }) => judgeRuntimeScenarioOutcome({
           config: cfg.rules,
           container,
           recordReplay,
@@ -749,11 +758,14 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           router,
           projectId: domainProject.id,
           phaseId: domainPhase.id,
+          actor: await new RoleRegistry(domainRepository).ensureOperationActor(domainProject.id, 'judge.scenario')
+            .then(({ actor }) => ({ actorId: actor.id, role: actor.roleId, roleVersion: actor.roleVersion, modelPool: actor.modelPool })),
           signal: opts.abortSignal,
           before,
           scenario,
           scene,
           requirementDigest: plan.requirementDigest,
+          acceptedContractChanges: phaseContractChanges,
           artifacts: {
             snapshot: snapshotArtifacts,
             read: async (relative, maxBytes) => {

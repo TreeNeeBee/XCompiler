@@ -56,12 +56,13 @@ llm:
       request_timeout_ms: 900000
       stream_first_token_timeout_ms: 300000
       stream_idle_timeout_ms: 60000
-  roles:
-    Planner:   [openrouter_free]
-    Architect: [openrouter_free]
-    Coder:     [openrouter_free]
-    Tester:    [openrouter_free]
-    Debugger:  [openrouter_free]
+  pools:
+    management: [openrouter_free]
+    planning:   [openrouter_free]
+    design:     [openrouter_free]
+    coding:     [openrouter_free]
+    testing:    [openrouter_free]
+  fallbacks: []
   cluster_score_min: 0.2
   cluster_score_max: 0.5
 ```
@@ -69,6 +70,11 @@ llm:
 `type: openai` means XCompiler will use the OpenAI-compatible chat completions client. This is also the correct type for local `/v1` endpoints such as vLLM or mlx-server.
 `tags: [cluster]` marks the provider as an aggregated route. XCompiler scores those providers in a lower default band (`0.2..0.5`) so they behave as backups rather than replacing dedicated role models too early.
 OpenRouter requires `OPENROUTER_API_KEY`. Local OpenAI-compatible endpoints may leave `api_key` empty when they run without authentication.
+
+The 0.4 configuration uses named `llm.pools`, replacing `llm.roles` and `llm.role_fallbacks`.
+All five default pools shown above must be defined and nonempty. Role profiles name their default
+pool; several roles can share one pool. Debugging uses the Step actor's pool through the
+`repair.debug` work, so there is no separate Debugger pool.
 
 If an OpenAI-compatible request fails, XCompiler reports the provider, model, base URL, request mode, HTTP status/body when available, and a concrete hint such as setting `OPENROUTER_API_KEY`, changing `json_response_format`, checking quota/rate limits, or switching provider.
 
@@ -107,16 +113,25 @@ If one free model returns quota, availability, or capability errors, pick anothe
 
 ## 4. Engineering Recommendation
 
-For real development runs, avoid relying on a single aggregated route as the only model. Use a role-specific primary model, then append `openrouter_free` as the last fallback for every role:
+For development runs with dedicated models, define their provider aliases under `llm.providers`
+and select them in the named pools. A shared backup can be declared in `llm.fallbacks`:
 
 ```yaml
-roles:
-  Planner:   [openrouter_planner, openrouter_free]
-  Architect: [openrouter_architect, openrouter_free]
-  Coder:     [openrouter_coder, openrouter_free]
-  Tester:    [openrouter_tester, openrouter_free]
-  Debugger:  [openrouter_debugger, openrouter_free]
+llm:
+  pools:
+    management: [openrouter_management]
+    planning:   [openrouter_planner]
+    design:     [openrouter_architect]
+    coding:     [openrouter_coder]
+    testing:    [openrouter_tester]
+  fallbacks: [openrouter_free]
 ```
+
+When an actor uses its role's default pool, the allowed candidates include global fallbacks.
+An explicit `ActorRegistration.modelPool` override is independent and uses only that named pool,
+even when its name matches the role default. Put any backup needed by that actor inside the
+override pool itself. The Router ranks allowed candidates by effective score; YAML order breaks
+score ties, so `fallbacks` is not an unconditional last-place priority.
 
 Keep the default cluster score band (`cluster_score_min: 0.2`, `cluster_score_max: 0.5`) when `openrouter/free` is a safety net. Raise `cluster_score_max` toward `1.0` only when you intentionally want the aggregated route to compete with dedicated models.
 
@@ -155,7 +170,7 @@ ollama_code:
   think: false
 ```
 
-Add backups to `roles` or `fallbacks` only after the provider block is enabled.
+Add backups to the relevant `llm.pools.<name>` or `llm.fallbacks` only after the provider block is enabled.
 
 ## 6. Validate
 

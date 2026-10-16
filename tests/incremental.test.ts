@@ -21,7 +21,6 @@ const baseStep = (over: Partial<Step> = {}): Step =>
     title: 'Requirement',
     description: 'Capture the requirement.',
     systemPrompt: 'Document the requirement clearly.',
-    role: 'Planner',
     tools: ['write_file'],
     inputs: [],
     outputs: ['docs/01-requirement-analysis.md'],

@@ -57,8 +57,12 @@ function input(postGraph = false): BusinessRequestInput {
   return {
     schemaVersion: 1, logicalRequestId: id(1),
     owner: postGraph
-      ? { kind: 'project-planning-operation', operationId: id(2), operation: 'phase-decomposition', projectId: projectId(20) }
-      : { kind: 'planning-operation', operationId: id(2), operation: 'phase-decomposition' },
+      ? { kind: 'project-planning-operation', operationId: id(2), operation: 'phase-decomposition', projectId: projectId(20),
+        actorId: projectId(21), role: 'planner', roleVersion: '1', work: 'plan.decompose',
+        modelPool: 'planning', inheritFallbacks: true, allowedProviders: ['fixture'] }
+      : { kind: 'planning-operation', operationId: id(2), operation: 'phase-decomposition',
+        role: 'planner', roleVersion: '1', work: 'plan.decompose',
+        modelPool: 'planning', inheritFallbacks: true, allowedProviders: ['fixture'] },
     templateVersion: PHASE_DECOMPOSITION_TEMPLATE_VERSION, outputProtocol: PHASE_DECOMPOSITION_PROTOCOL,
     snapshotDigest: `sha256:${'a'.repeat(64)}`, auditContext: payload(),
     messages: [{ role: 'system', content: 'Original system.' }, { role: 'user', content: 'Original user.' }],
@@ -66,7 +70,7 @@ function input(postGraph = false): BusinessRequestInput {
 }
 
 function snapshot(context: RuleContext = {
-  language: 'python', role: 'Planner', scenario: 'planning-phase-decomposition',
+  language: 'python', role: 'planner', work: 'plan.decompose',
 }) {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: 'rules/base.yaml' },
@@ -213,7 +217,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     expect(record).not.toHaveProperty('messages');
     expect(retained.messages).toEqual(original.messages);
     expect(record.owner).toEqual(original.owner);
-    expect(businessRequestRole(retained.owner)).toBe('Planner');
+    expect(businessRequestRole(retained.owner)).toBe('planner');
     const originalPayload = payload();
     for (const changed of [
       { ...originalPayload, availableSkillNames: ['workspace.read'] },
@@ -248,20 +252,23 @@ describe('Phase decomposition ownership and audit binding', () => {
     ]) expect(ProjectPlanningOperationOwnerSchema.safeParse(changed).success).toBe(false);
     const { projectId: _project, ...missingProject } = ProjectPlanningOperationOwnerSchema.parse(owner);
     expect(ProjectPlanningOperationOwnerSchema.safeParse(missingProject).success).toBe(false);
+    for (const field of ['actorId', 'role', 'roleVersion', 'work', 'modelPool', 'inheritFallbacks', 'allowedProviders'] as const) {
+      expect(ProjectPlanningOperationOwnerSchema.safeParse({ ...owner, [field]: undefined }).success).toBe(false);
+    }
   });
 
   it('rejects Project scope on pre-graph planning and missing/different scope after graph registration', () => {
     const pre = input();
     const post = input(true);
     expect(() => assertBusinessRequestSnapshotOwner(snapshot(), pre.owner, pre.auditContext)).not.toThrow();
-    const projectSnapshot = snapshot({ role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition',
+    const projectSnapshot = snapshot({ role: 'planner', language: 'python', work: 'plan.decompose',
       projectId: projectId(20) });
     expect(() => assertBusinessRequestSnapshotOwner(projectSnapshot, post.owner, post.auditContext)).not.toThrow();
     expect(() => assertBusinessRequestSnapshotOwner(projectSnapshot, pre.owner, pre.auditContext))
       .toThrow(BusinessRequestInputError);
     for (const context of [
-      { role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition' },
-      { role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition', projectId: projectId(21) },
+      { role: 'planner', language: 'python', work: 'plan.decompose' },
+      { role: 'planner', language: 'python', work: 'plan.decompose', projectId: projectId(21) },
     ] satisfies RuleContext[]) {
       expect(() => assertBusinessRequestSnapshotOwner(snapshot(context), post.owner, post.auditContext))
         .toThrow(BusinessRequestInputError);
@@ -272,10 +279,10 @@ describe('Phase decomposition ownership and audit binding', () => {
 
   it.each([false, true])('rejects wrong language, role and purpose at capture before input audit/storage, postGraph=%s', async postGraph => {
     const source = input(postGraph);
-    const context: RuleContext = { role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition',
+    const context: RuleContext = { role: 'planner', language: 'python', work: 'plan.decompose',
       ...(postGraph ? { projectId: projectId(20) } : {}) };
     for (const change of [
-      { language: 'typescript' as const }, { role: 'ProjectManager' as const }, { scenario: 'planning-phase-plan' },
+      { language: 'typescript' as const }, { role: 'project-manager' as const }, { work: 'plan.phase' },
     ]) {
       const write = vi.fn();
       const create = vi.fn();
@@ -296,7 +303,7 @@ describe('Phase decomposition ownership and audit binding', () => {
 
   it.each([false, true])('captures the matching frozen P03 ownership and original audit input, postGraph=%s', async postGraph => {
     const source = input(postGraph);
-    const pinned = snapshot({ role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition',
+    const pinned = snapshot({ role: 'planner', language: 'python', work: 'plan.decompose',
       ...(postGraph ? { projectId: projectId(20) } : {}) });
     const write = vi.fn(async () => {});
     const verify = vi.fn(async () => {});
@@ -333,7 +340,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     ]) expect(() => validateBusinessRequestInput({ ...source, ...changed })).toThrow(BusinessRequestInputError);
   });
 
-  it('preserves historical context-free and P02 input material and digests', () => {
+  it('hashes context-free and P02 inputs with their pinned role and pool ownership', () => {
     const source = input();
     const { auditContext: _context, ...contextFree } = source;
     const retained = validateBusinessRequestInput(contextFree);
@@ -347,13 +354,17 @@ describe('Phase decomposition ownership and audit binding', () => {
       semanticAttempt: 1, repairFeedback: '',
     };
     const oldP02: BusinessRequestInput = {
-      ...source, owner: { kind: 'planning-operation', operationId: id(2), operation: 'phase-plan' },
+      ...source, owner: { kind: 'planning-operation', operationId: id(2), operation: 'phase-plan',
+        role: 'planner', roleVersion: '1', work: 'plan.phase', modelPool: 'planning',
+        inheritFallbacks: true, allowedProviders: ['fixture'] },
       auditContext: phasePlan, templateVersion: PHASE_PLAN_TEMPLATE_VERSION, outputProtocol: PHASE_PLAN_PROTOCOL,
     };
     expect(validateBusinessRequestInput(oldP02)).toEqual(oldP02);
     expect(businessRequestInputDigest(oldP02)).toBe(ruleEvidenceDigest(oldP02));
     const scenario: BusinessRequestInput = {
-      ...contextFree, owner: { kind: 'scenario-judgement', projectId: projectId(30), phaseId: projectId(31), executionId: id(32) },
+      ...contextFree, owner: { kind: 'scenario-judgement', projectId: projectId(30), phaseId: projectId(31), executionId: id(32),
+        actorId: projectId(33), role: 'project-manager', roleVersion: '1', work: 'judge.scenario',
+        modelPool: 'management', inheritFallbacks: true, allowedProviders: ['fixture'] },
       templateVersion: 'scenario-outcome/1',
       outputProtocol: { id: 'scenario-outcome', version: '1', root: 'object', transformations: [] },
     };

@@ -191,8 +191,6 @@ function registryParentId(object: PersistedDomainObject): ObjectId | undefined {
       return object.mergeRequestId;
     case 'context-record':
       return object.scope === 'project' ? object.projectId : object.ownerId;
-    case 'role-definition':
-      return object.projectId;
     case 'project-management-plan':
       return object.projectId;
     case 'file-tree':

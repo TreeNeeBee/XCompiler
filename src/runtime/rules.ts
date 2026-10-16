@@ -23,7 +23,8 @@ import { LLMRuleReviewEvidenceVerifier } from '../llm/rule_review_evidence.js';
 import { installedCompilerRulesRoot } from '../config/installation_root.js';
 import { loadCompilerRuleCatalogue } from '../infrastructure/rules/compiler_rule_catalogue.js';
 import { LLMRuleBusinessRequest, type RuleBusinessChatOptions } from '../llm/rule_business_request.js';
-import type { ChatMessage } from '../llm/types.js';
+import type { ChatMessage, ModelPoolBinding } from '../llm/types.js';
+import { roleProfile } from '../domain/workflow/role.js';
 
 export class RuntimeRuleConfigurationError extends Error {
   readonly code = 'runtime_rule_configuration_failed';
@@ -49,7 +50,7 @@ export async function sendRuntimeRuleRequest(input: Parameters<typeof prepareRun
   if (!role) throw new RuntimeRuleConfigurationError('business_role_missing', {
     logicalRequestId: snapshot.logicalRequestId,
   });
-  return new LLMRuleBusinessRequest(input.router.for(role), new RuleDecorator()).send({
+  return new LLMRuleBusinessRequest(input.router.forPool(input.modelPool ?? roleProfile(role).defaultPool, { label: role }), new RuleDecorator()).send({
     snapshot, messages: input.messages, options: input.options, signal: input.signal,
   });
 }
@@ -92,7 +93,8 @@ export async function prepareRuntimeRuleRequest(input: {
   container: ProjectContainer;
   recordReplay: RecordReplayController;
   router: LLMRouter;
-  providerPool?: readonly string[];
+  /** The original pool policy and candidates; low-score review uses the same binding as business. */
+  modelPool?: ModelPoolBinding;
   logicalRequestId: string;
   context: RuleContext;
   required: readonly { ruleId: string; version: string }[];
@@ -110,7 +112,7 @@ export async function prepareRuntimeRuleRequest(input: {
       if (!role) throw new RuntimeRuleConfigurationError('review_role_missing', {
         logicalRequestId: review.draft.logicalRequestId,
       });
-      const client = input.providerPool ? input.router.for(role, { providerPool: [...input.providerPool] }) : input.router.for(role);
+      const client = input.router.forPool(input.modelPool ?? roleProfile(role).defaultPool, { label: role });
       return new LLMRuleSelectionReviewer(client, new RuleDecorator()).review(review);
     },
   }, new LLMRuleReviewEvidenceVerifier(

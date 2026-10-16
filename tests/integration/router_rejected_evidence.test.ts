@@ -37,9 +37,8 @@ function routerWithProviders(
         primary: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:1/v1', model: 'primary' },
         secondary: { type: 'openai', api_key: '', base_url: 'http://127.0.0.1:1/v1', model: 'secondary' },
       },
-      roles: { Coder: ['primary'] },
+      pools: { coding: ['primary'] },
       fallbacks: ['secondary'],
-      role_fallbacks: {},
       scores: {},
     },
   } as unknown as XCompilerConfig;
@@ -101,7 +100,7 @@ describe('rejected provider evidence in the raw audit', () => {
       chat: async () => { secondaryCalls++; return 'accepted'; },
     }, scores);
 
-    const error: unknown = await router.for('Coder').chat(
+    const error: unknown = await router.forPool('coding', { label: 'python-developer' }).chat(
       [{ role: 'user', content: 'Inspect the full rejected response.' }],
       { validate: validateAccepted },
     ).then(() => undefined, (reason: unknown) => reason);
@@ -176,7 +175,7 @@ describe('rejected provider evidence in the raw audit', () => {
       },
     });
 
-    await expect(router.for('Coder').chat(messages, { validate: validateAccepted }))
+    await expect(router.forPool('coding', { label: 'python-developer' }).chat(messages, { validate: validateAccepted }))
       .resolves.toBe('accepted');
 
     expect(primaryCalls).toBe(2);
@@ -184,7 +183,7 @@ describe('rejected provider evidence in the raw audit', () => {
     expect(persistedBeforeRetry).toHaveLength(1);
     const redactedOutput = rejected.replace('synthetic-output-credential', '[REDACTED]');
     expect(persistedBeforeRetry[0]?.data).toMatchObject({
-      role: 'Coder',
+      role: 'python-developer',
       provider: 'primary',
       model: 'fixture-primary-model',
       output: redactedOutput,
@@ -245,7 +244,7 @@ describe('rejected provider evidence in the raw audit', () => {
       provider('primary', primaryOutputs),
       provider('secondary', secondaryOutputs),
     );
-    const client = router.for('Coder');
+    const client = router.forPool('coding', { label: 'python-developer' });
     const initialMessages: ChatMessage[] = [{ role: 'user', content: 'First logical request.' }];
     await expect(client.chat(initialMessages, { validate: validateAccepted })).resolves.toBe('accepted');
     const firstRequestFailures = await rejectedEvents();
@@ -262,7 +261,7 @@ describe('rejected provider evidence in the raw audit', () => {
       const attempt = attempts[index]!;
       expect(event.kind).toBe('llm.error');
       expect(event.data).toMatchObject({
-        role: 'Coder',
+        role: 'python-developer',
         provider: attempt.provider,
         model: attempt.model,
         requestMessages: attempt.messages,
@@ -283,7 +282,7 @@ describe('rejected provider evidence in the raw audit', () => {
     expect(allFailures).toHaveLength(4);
     expect(allFailures.slice(0, 3)).toEqual(firstRequestFailures);
     expect(allFailures[3]?.data).toMatchObject({
-      role: 'Coder',
+      role: 'python-developer',
       provider: 'primary',
       model: 'fixture-primary-model',
       requestMessages: nextMessages,

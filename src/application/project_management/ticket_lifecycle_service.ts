@@ -112,7 +112,7 @@ export class TicketLifecycleService {
       const trace: TicketTraceAppendInput = {
         eventType: traceEventForTransition(fromState, toState),
         initiatorActorId: initiator.id,
-        initiatorRole: initiator.role,
+        initiatorRole: initiator.roleId,
         assignmentId: assignment?.id,
         fromOwnerActorId: assignment?.assigneeActorId,
         toOwnerActorId: isFinal && assignmentNext ? undefined : assignment?.assigneeActorId,

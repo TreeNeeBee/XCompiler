@@ -40,8 +40,10 @@ export function createRuntimeExecutionTurnRequestPort(input: {
   const { config, container, recordReplay, router, audit } = input;
   const scope = validateExecutionRequestScope(input.scope);
   const owner = Object.freeze(StepExecutionOwnerSchema.parse({ kind: 'step-execution', ...scope }));
+  const modelPool = Object.freeze({ modelPool: scope.modelPool, inheritFallbacks: scope.inheritFallbacks,
+    allowedProviders: scope.allowedProviders });
   return Object.freeze({
-    name: router.for(scope.role, { providerPool: scope.providerPool }).name,
+    name: router.forPool(modelPool, { label: scope.role }).name,
     async send(request: Parameters<ExecutionTurnRequestPort['send']>[0]) {
       const signal = request.signal;
       signal?.throwIfAborted();
@@ -58,13 +60,13 @@ export function createRuntimeExecutionTurnRequestPort(input: {
         outputProtocol: EXECUTION_TURN_PROTOCOL, auditContext: payload });
       const candidateValidationEnabled = payload.validation.completionQuality || payload.validation.debuggerRecovery;
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
-      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, providerPool: scope.providerPool,
+      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool,
         logicalRequestId, context: { role: scope.role, language: payload.parseContext.language,
-          scenario: 'step-execution', projectId: scope.projectId }, required: [],
+          work: scope.work, projectId: scope.projectId }, required: [],
         taskSummary: payload.promptContext.step.description, errorSummary: payload.promptContext.debugContext?.reason, signal });
       signal?.throwIfAborted();
       const sent = await sendRuntimeExecutionBusinessRequest({ container, audit, router, options,
-        providerPool: scope.providerPool, request: { logicalRequestId, owner,
+        request: { logicalRequestId, owner,
           templateVersion: EXECUTION_TURN_TEMPLATE_VERSION, outputProtocol: EXECUTION_TURN_PROTOCOL,
           auditContext: payload, messages: [...messages], signal },
         prepareProviderRequest: (actual) => {

@@ -1,3 +1,4 @@
+import { fixtureAcceptedContractSource } from '../support/accepted_contract_fixture.js';
 import { promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -5,16 +6,19 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { reviseActor } from '../../src/domain/project_management/index.js';
 import { buildPlan } from '../../src/agents/planner.js';
 import type { AuditEvent } from '../../src/audit/audit.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import type { ProjectOrchestratorOptions } from '../../src/application/project_management/orchestrator.js';
-import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { deliveryDocsForIteration, phaseDocForIteration, testPlanDocForIteration } from '../../src/domain/planning/document_contract.js';
-import { ROLES, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import { FilePlanStore } from '../../src/infrastructure/planning/file_plan_store.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
+import { acceptedContractChanges } from '../../src/application/execution/accepted_contract_changes.js';
 import { runExecute } from '../../src/runtime/run.js';
 import { silentRuntimeIO } from '../../src/runtime/io.js';
 import { createSandbox } from '../../src/sandbox/factory.js';
@@ -28,6 +32,12 @@ vi.mock('../../src/llm/preflight.js', () => ({
   preflightProviders: vi.fn(async () => ({ zeroed: [], unreachable: [], revived: [], autoAdded: {}, tags: {} })),
 }));
 vi.mock('../../src/sandbox/factory.js', () => ({ createSandbox: vi.fn() }));
+// The collector reads closed Change Requests from the registry and has its own tests; here only the
+// Runtime-to-judge wiring is under test, so its answer is controlled.
+vi.mock('../../src/application/execution/accepted_contract_changes.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/application/execution/accepted_contract_changes.js')>();
+  return { ...actual, acceptedContractChanges: vi.fn(actual.acceptedContractChanges) };
+});
 // Step execution is supplied at the public Orchestrator construction boundary. Its finalGate is
 // still the real Runtime callback, including project audit, scenario command, Rules and HTTP model.
 vi.mock('../../src/application/project_management/orchestrator.js', () => ({
@@ -73,7 +83,7 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function endpoint(output: string, finishReason = 'stop') {
+async function endpoint(output: string, finishReason = 'stop', status = 200) {
   const calls: Array<{ url: string; input: { messages: Array<{ role: string; content: string }> } }> = [];
   const probes: string[] = [];
   const server = createServer((request, response) => {
@@ -92,7 +102,7 @@ async function endpoint(output: string, finishReason = 'stop') {
     request.on('data', chunk => { body += String(chunk); });
     request.on('end', () => {
       calls.push({ url: request.url!, input: JSON.parse(body) });
-      response.writeHead(200, { 'content-type': 'application/json' });
+      response.writeHead(status, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ model: 'actual-model', choices: [{ index: 0,
         message: { content: output }, finish_reason: finishReason }] }));
     });
@@ -102,16 +112,19 @@ async function endpoint(output: string, finishReason = 'stop') {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, calls, probes };
 }
 
-async function fixture(url: string) {
+async function fixture(url: string, overrideUrl?: string) {
   const container = new ProjectContainer(path.join(root, 'project'));
   const workspace = container.canonical().workspace;
   await workspace.ensure('.');
   const plan = runtimePlan();
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
-  await new ProjectGraphPersistenceService(repository).persistGraph(compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: plan, topic: 'Deliver the accepted utility.', projectName: 'scenario-gate-wiring',
-  }));
+  });
+  await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+  const pm = graph.actors.find(actor => actor.id === graph.project.pmActorId)!;
+  if (overrideUrl) await repository.update(reviseActor(pm, { modelPool: 'assigned-management' }));
   const originalTickets = (await repository.list({ objectType: 'ticket' })).map(ticket => ticket.id).sort();
   const planPath = container.control.abs('plan.P1.json');
   await new FilePlanStore().savePlan(planPath, plan);
@@ -127,12 +140,17 @@ async function fixture(url: string) {
       : relative.endsWith('.py') ? 'print("Fixture utility output")\n' : 'Accepted utility deliverable.\n');
   }
   const config = YAML.parse(await fs.readFile(path.resolve('config.example.yaml'), 'utf8')) as {
-    llm: { providers: Record<string, unknown>; roles: Record<string, string[]>; fallbacks: string[] };
+    llm: { providers: Record<string, unknown>; pools: Record<string, string[]>; fallbacks: string[] };
   };
   config.llm.providers = { local: { type: 'openai', api_key: '', base_url: url, model: 'requested-model',
     context_window: '128K', request_timeout_ms: 1000, connect_timeout_ms: 1000 } };
-  config.llm.roles = Object.fromEntries(ROLES.map(role => [role, ['local']]));
-  config.llm.fallbacks = [];
+  config.llm.pools = Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['local']]));
+  config.llm.fallbacks = overrideUrl ? ['local'] : [];
+  if (overrideUrl) {
+    config.llm.providers.assigned = { type: 'openai', api_key: '', base_url: overrideUrl,
+      model: 'assigned-model', context_window: '128K', request_timeout_ms: 1000, connect_timeout_ms: 1000 };
+    config.llm.pools['assigned-management'] = ['assigned'];
+  }
   const configPath = path.join(root, 'config.yaml');
   await fs.writeFile(configPath, YAML.stringify(config));
   const success: ExecResult = { exitCode: 0, stdout: 'Observed utility result.', stderr: '', timedOut: false, durationMs: 1 };
@@ -145,7 +163,7 @@ async function fixture(url: string) {
     runTests: vi.fn(async () => ({ ...success })), installDeps: vi.fn(async () => ({ ...success })),
   };
   vi.mocked(createSandbox).mockReturnValue(sandbox);
-  return { container, sandbox, originalTickets,
+  return { container, sandbox, originalTickets, pm,
     run: () => runExecute({ workspace: container.root, planPath, configPath, permissionMode: 'auto',
       debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'), io: silentRuntimeIO, recordReplayMode: 'off' }),
     events: async () => (await container.state.readFile('audit/audit.jsonl')).split('\n')
@@ -190,6 +208,46 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     expect(server.probes).toContain('/v1/models');
   });
 
+  it('uses the registered PM override at the actual Run gate and creates no unused planner', async () => {
+    const fallback = await endpoint('{"ok":true,"reason":"Global model output"}');
+    const assigned = await endpoint('{"ok":true,"reason":"Assigned model output"}');
+    const current = await fixture(fallback.url, assigned.url);
+    await current.run();
+    expect(assigned.calls).toHaveLength(1);
+    expect(fallback.calls).toHaveLength(0);
+    const events = await current.events();
+    expect(events.find(event => event.messageId === 'llm.scenario_outcome_judgement')?.data?.owner).toMatchObject({
+      actorId: current.pm.id, role: 'project-manager', roleVersion: current.pm.roleVersion,
+      modelPool: 'assigned-management', inheritFallbacks: false, allowedProviders: ['assigned'],
+    });
+    const repository = new DomainObjectRepository(current.container.state);
+    await repository.load();
+    const actors = await repository.list({ objectType: 'actor-registration' });
+    expect(actors.filter(actor => actor.roleId === 'planner')).toEqual([]);
+  });
+
+  it('keeps an unavailable PM override independent of a healthy global fallback', async () => {
+    const fallback = await endpoint('{"ok":true,"reason":"Global model output"}');
+    const assigned = await endpoint('{"error":{"message":"Controlled unavailable assigned model"}}', 'stop', 503);
+    const current = await fixture(fallback.url, assigned.url);
+    await current.run();
+    expect(assigned.calls.length).toBeGreaterThan(0);
+    expect(fallback.calls).toHaveLength(0);
+    expect((await current.events()).some(event => event.messageId === 'llm.scenario_outcome_judgement')).toBe(false);
+  });
+
+  it('judges the scene against contract revisions this Phase has already accepted', async () => {
+    const accepted = [{ source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['The utility reads the archive API.'] }];
+    vi.mocked(acceptedContractChanges).mockResolvedValueOnce(accepted);
+    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract."}');
+    const current = await fixture(server.url);
+    await current.run();
+    const payload = JSON.parse(server.calls[0]!.input.messages.at(-1)!.content) as Record<string, unknown>;
+    expect(payload).toMatchObject({ requirementDigest: 'Deliver the accepted utility.', acceptedContractChanges: accepted });
+    expect(vi.mocked(acceptedContractChanges)).toHaveBeenCalledWith(expect.anything(),
+      { projectId: expect.any(String), phaseId: expect.any(String) });
+  });
+
   it.each([
     { name: 'old first-brace salvage', output: 'Model explanation: {"ok":true,"reason":"This object alone is insufficient"}' },
     { name: 'incomplete transport', output: '{"ok":true,"reason":"Complete-looking text"}', finishReason: 'length' },
@@ -220,15 +278,15 @@ function runtimePlan() {
   const baseline = (kind: string) => `tests/test_${kind}_p1.py`;
   const doc = (phase: Phase) => phaseDocForIteration(phase, iterationId)!;
   const testPlan = (phase: Phase) => testPlanDocForIteration(phase, iterationId)!;
-  const specifications: Array<{ phase: Phase; role: Step['role']; outputs: string[]; inputs?: string[] }> = [
-    { phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: [doc('REQUIREMENT_ANALYSIS'), testPlan('FUNCTIONAL_TEST'), baseline('functional')] },
-    { phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: [doc('HIGH_LEVEL_DESIGN'), testPlan('MODULE_TEST'), baseline('module')] },
-    { phase: 'DETAILED_DESIGN', role: 'Architect', outputs: [doc('DETAILED_DESIGN'), testPlan('INTEGRATION_TEST'), baseline('integration')] },
-    { phase: 'CODE', role: 'Coder', outputs: ['src/main.py', testPlan('UNIT_TEST'), baseline('unit')] },
-    { phase: 'UNIT_TEST', role: 'Tester', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
-    { phase: 'INTEGRATION_TEST', role: 'Tester', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
-    { phase: 'MODULE_TEST', role: 'Tester', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
-    { phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: [...deliveryDocsForIteration('application', iterationId)], inputs: [baseline('functional')] },
+  const specifications: Array<{ phase: Phase; outputs: string[]; inputs?: string[] }> = [
+    { phase: 'REQUIREMENT_ANALYSIS', outputs: [doc('REQUIREMENT_ANALYSIS'), testPlan('FUNCTIONAL_TEST'), baseline('functional')] },
+    { phase: 'HIGH_LEVEL_DESIGN', outputs: [doc('HIGH_LEVEL_DESIGN'), testPlan('MODULE_TEST'), baseline('module')] },
+    { phase: 'DETAILED_DESIGN', outputs: [doc('DETAILED_DESIGN'), testPlan('INTEGRATION_TEST'), baseline('integration')] },
+    { phase: 'CODE', outputs: ['src/main.py', testPlan('UNIT_TEST'), baseline('unit')] },
+    { phase: 'UNIT_TEST', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
+    { phase: 'INTEGRATION_TEST', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
+    { phase: 'MODULE_TEST', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
+    { phase: 'FUNCTIONAL_TEST', outputs: [...deliveryDocsForIteration('application', iterationId)], inputs: [baseline('functional')] },
   ];
   return buildPlan({ requirementDigest: 'Deliver the accepted utility.', globalPrompt: 'Preserve the utility contract.',
     projectType: 'application', complexityAssessment: { level: 'simple', rationale: 'One utility iteration.',

@@ -84,7 +84,7 @@ export class TicketWorkflow {
       throw new Error(`Bug ${original.name} is not an active authoritative duplicate target`);
     }
     const pm = await this.repository.read(pmActorId);
-    if (pm.objectType !== 'actor-registration' || pm.role !== 'project-manager') {
+    if (pm.objectType !== 'actor-registration' || pm.roleId !== 'project-manager') {
       throw new Error(`Routing duplicate ${incoming.name} requires a registered Project Manager`);
     }
     const prepared = await this.lifecycle.prepareTransition(incoming, 'pending', {
@@ -170,8 +170,6 @@ export class TicketWorkflow {
       type: 'bug',
       phaseId: input.targetStep.phaseId,
       stepId: input.failedStep.id,
-      role: input.targetStep.role,
-      agent: 'Debugger',
       creatorActorId: input.creatorActorId,
       requiredCapabilities: capabilitiesForStep(input.targetStep.type, 'bug'),
       priority: severityPriority(input.severity),
@@ -306,8 +304,6 @@ export class TicketWorkflow {
       type: 'enhancement',
       phaseId: input.targetStep.phaseId,
       stepId: input.sourceStep.id,
-      role: input.targetStep.role,
-      agent: input.targetStep.agent,
       creatorActorId: input.creatorActorId,
       requiredCapabilities: capabilitiesForStep(input.targetStep.type, 'enhancement'),
       priority: TICKET_PRIORITY.high,
@@ -416,8 +412,6 @@ export class TicketWorkflow {
       changeKind: 'dependency',
       phaseId: input.targetStep.phaseId,
       stepId: input.targetStep.id,
-      role: input.targetStep.role,
-      agent: input.targetStep.agent,
       creatorActorId: input.creatorActorId,
       requiredCapabilities: capabilitiesForStep(input.targetStep.type, 'change-request'),
       priority: TICKET_PRIORITY.high,
@@ -599,8 +593,6 @@ export class TicketWorkflow {
       // The CR works on its target Step, so it is routed to whoever owns that Step — not to the
       // role that happened to open it. A chain crosses roles by design.
       stepId: input.targetStepId,
-      role: target.role,
-      agent: target.agent,
       creatorActorId: input.creatorActorId,
       requiredCapabilities: capabilitiesForStep(target.type, 'change-request'),
       priority: source.priority,
@@ -782,7 +774,7 @@ export class TicketWorkflow {
     const built = await this.traces.build(ticket, [{
       eventType,
       initiatorActorId: initiator.id,
-      initiatorRole: initiator.role,
+      initiatorRole: initiator.roleId,
       assignmentId: ticket.activeAssignmentId,
       fromOwnerActorId: initiator.id,
       toOwnerActorId: initiator.id,
@@ -835,13 +827,13 @@ export class TicketWorkflow {
       throw new Error(`Attempt extension for ${input.ticket.name} must increase maxAttempts`);
     }
     const pm = await this.repository.read(input.pmActorId);
-    if (pm.objectType !== 'actor-registration' || pm.role !== 'project-manager') {
+    if (pm.objectType !== 'actor-registration' || pm.roleId !== 'project-manager') {
       throw new Error(`Attempt extension for ${input.ticket.name} requires a registered Project Manager`);
     }
     const built = await this.traces.build(input.ticket, [{
       eventType: 'escalated',
       initiatorActorId: pm.id,
-      initiatorRole: pm.role,
+      initiatorRole: pm.roleId,
       assignmentId: input.ticket.activeAssignmentId,
       fromOwnerActorId: input.ticket.activeAssignmentId
         ? (await this.processingActor(input.ticket)).id
@@ -919,7 +911,7 @@ export class TicketWorkflow {
     const built = await this.traces.build(ticket, [{
       eventType: ticket.type === 'change-request' ? 'handed_off' : 'resolution_proposed',
       initiatorActorId: initiator.id,
-      initiatorRole: initiator.role,
+      initiatorRole: initiator.roleId,
       assignmentId: ticket.activeAssignmentId,
       fromOwnerActorId: initiator.id,
       toOwnerActorId: initiator.id,
@@ -1554,7 +1546,7 @@ export class TicketWorkflow {
     if (ticket.duplicateOfTicketId !== originalId) return;
     const actors = await this.repository.list({ objectType: 'actor-registration', projectId: ticket.projectId });
     const pm = actors.find((object) => object.objectType === 'actor-registration' &&
-      object.role === 'project-manager' && object.state === 'active');
+      object.roleId === 'project-manager' && object.state === 'active');
     if (!pm || pm.objectType !== 'actor-registration') {
       throw new Error(`Project ${ticket.projectId} has no active Project Manager for duplicate reconciliation`);
     }
@@ -1663,7 +1655,7 @@ export class TicketWorkflow {
       beforeTrace: [{
         eventType: 'handed_off',
         initiatorActorId: actor.id,
-        initiatorRole: actor.role,
+        initiatorRole: actor.roleId,
         assignmentId: source.activeAssignmentId,
         fromOwnerActorId: actor.id,
         toOwnerActorId: actor.id,

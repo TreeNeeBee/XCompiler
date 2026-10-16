@@ -9,7 +9,7 @@ import { TicketChangeSetService } from '../../src/application/workspace/ticket_c
 import { GitRepositoryService } from '../../src/infrastructure/git/git_repository_service.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
-import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { PLAN_VERSION, type Plan } from '../../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../../src/domain/steps/step.js';
@@ -45,7 +45,6 @@ function samplePlan(): Plan {
       title: `${type} step`,
       description: `${type} work`,
       systemPrompt: `Do the ${type} work.`,
-      role: 'Coder' as const,
       tools: ['write_file'],
       inputs: [],
       outputs: [`docs/${type.toLowerCase()}.md`],
@@ -71,7 +70,7 @@ async function fixture() {
   const projectContainer = new ProjectContainer(container);
   const repository = new DomainObjectRepository(projectContainer.state);
   await repository.load();
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a TypeScript application.',
     projectName: 'fixture',

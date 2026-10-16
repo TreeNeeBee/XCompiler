@@ -120,16 +120,16 @@ describe('Rule selection and instruction aggregation', () => {
 
   const projectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const otherProject = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-  const matchingContext: RuleContext = { projectId, language: 'python', role: 'Tester', scenario: 'bug-repair' };
+  const matchingContext: RuleContext = { projectId, language: 'python', role: 'test-engineer', work: 'repair.debug' };
   function projectSelector() {
     return new RuleSelector(catalogue(list(1, 0x1001, [rule(1, {
       category: 'business',
-      applicability: { languages: ['python'], roles: ['Tester'], scenarios: ['bug-repair'] },
+      applicability: { languages: ['python'], roles: ['test-engineer'], works: ['repair.debug'] },
     })], {
       owner: { kind: 'project', projectId },
       applicability: {
         projectIds: [projectId.toUpperCase()], languages: ['typescript', 'python'],
-        roles: ['Coder', 'Tester'], scenarios: ['scenario-check', 'bug-repair'],
+        roles: ['python-developer', 'test-engineer'], works: ['judge.scenario', 'repair.debug'],
       },
     })));
   }
@@ -151,10 +151,10 @@ describe('Rule selection and instruction aggregation', () => {
     { name: 'missing language', changes: { language: undefined }, source: 'list', dimension: 'language', reason: 'missing-context' },
     { name: 'narrower Rule language', changes: { language: 'typescript' as const }, source: 'rule', dimension: 'language', reason: 'outside-scope' },
     { name: 'missing role', changes: { role: undefined }, source: 'rule', dimension: 'role', reason: 'missing-context' },
-    { name: 'narrower Rule role', changes: { role: 'Coder' as const }, source: 'rule', dimension: 'role', reason: 'outside-scope' },
-    { name: 'missing scenario', changes: { scenario: undefined }, source: 'rule', dimension: 'scenario', reason: 'missing-context' },
-    { name: 'narrower Rule scenario', changes: { scenario: 'scenario-check' }, source: 'rule', dimension: 'scenario', reason: 'outside-scope' },
-    { name: 'outside list scenario', changes: { scenario: 'other' }, source: 'list', dimension: 'scenario', reason: 'outside-scope' },
+    { name: 'narrower Rule role', changes: { role: 'python-developer' as const }, source: 'rule', dimension: 'role', reason: 'outside-scope' },
+    { name: 'missing work', changes: { work: undefined }, source: 'rule', dimension: 'work', reason: 'missing-context' },
+    { name: 'narrower Rule work', changes: { work: 'judge.scenario' as const }, source: 'rule', dimension: 'work', reason: 'outside-scope' },
+    { name: 'outside list work', changes: { work: 'plan.phase' as const }, source: 'list', dimension: 'work', reason: 'outside-scope' },
   ])('excludes optional content and rejects required content for $name', ({ changes, source, dimension, reason }) => {
     const selector = projectSelector();
     const context = { ...matchingContext, ...changes };

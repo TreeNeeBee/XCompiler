@@ -29,7 +29,7 @@ const uuid = (value: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${value.toString(16).pa
 const logicalRequestId = uuid(800);
 const createdAt = '2026-09-19T01:02:03.000Z';
 const instruction = '  保留 # 正文与 "引号"。\r\n    literal \\n and \\path\n\n';
-const context: RuleContext = { projectId: uuid(900), language: 'python', role: 'Coder', scenario: 'repair' };
+const context: RuleContext = { projectId: uuid(900), language: 'python', role: 'python-developer', work: 'repair.debug' };
 const identity: RuleEmbeddingIdentity = {
   provider: 'deterministic-test-provider', model: 'test-encoder', spaceVersion: 'snapshot-test/1', dimensions: 2,
 };
@@ -80,7 +80,7 @@ function catalogue(options: FixtureOptions): RuleCatalogue {
       references: [{ ruleListId: uuid(20), version: '1.0.0' }],
       rules: [rule(31, {
         version: options.version ?? '1.0.0', category: 'business', instruction: options.instruction ?? instruction,
-        retrievalDescription: projectDescription, applicability: { roles: ['Coder'], scenarios: ['repair'] },
+        retrievalDescription: projectDescription, applicability: { roles: ['python-developer'], works: ['repair.debug'] },
         conflicts: options.conflict ? [{ key: 'code.indent', value: 4 }] : [],
       })],
     },
@@ -171,7 +171,7 @@ describe('Rule request capture and recovery through the real immutable file stor
       expect(recovered?.sources.find((entry) => entry.ruleId === uuid(31))).toEqual({
         ruleId: uuid(31), category: 'business',
         source: { owner: { kind: 'project', projectId: uuid(900) }, location: path.join(root, 'project/业务 rules.yaml') },
-        ruleApplicability: { roles: ['Coder'], scenarios: ['repair'] },
+        ruleApplicability: { roles: ['python-developer'], works: ['repair.debug'] },
         listApplicability: { projectIds: [uuid(900)], languages: ['python'] },
         references: [{ ruleListId: uuid(20), version: '1.0.0' }],
       });
@@ -234,7 +234,7 @@ describe('Rule request capture and recovery through the real immutable file stor
     const selected = await fixture();
     const actual = selected.selection.retrieval!;
     const query = JSON.parse(actual.queryText) as { context: RuleContext };
-    query.context = { ...query.context, scenario: 'a-different-operation' };
+    query.context = { ...query.context, work: 'change.apply' };
     await expect(selected.selector.captureSnapshot({
       ...selected.request, retrieval: { ...actual, queryText: JSON.stringify(query) }, store: store(),
     })).rejects.toMatchObject({ code: 'rule_snapshot_failed', reason: 'invalid', cause: expect.any(Error) });

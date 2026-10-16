@@ -168,7 +168,6 @@ function incompletePlan(): Plan {
       title: 'Requirement',
       description: 'Capture the accepted utility requirement.',
       systemPrompt: 'Document the requirement, its boundaries, and observable acceptance criteria.',
-      role: 'Planner',
       tools: ['write_file'],
       inputs: [],
       outputs: ['docs/01-requirement-analysis.md'],

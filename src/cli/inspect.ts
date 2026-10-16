@@ -49,7 +49,7 @@ export async function runShow(opts: ShowOptions): Promise<void> {
   console.log(t().inspect.stepHeader(
     chalk.cyan(`${step.name} (${step.id})`), chalk.yellow(step.type), chalk.bold(step.title), statusBadge(step.state), step.attempts, step.maxAttempts,
   ));
-  console.log(t().inspect.stepRoleTools(step.role, step.tools.join(', ')));
+  console.log(t().inspect.stepRoleTools(step.type, step.tools.join(', ')));
   if (step.dependencyStepIds.length > 0) console.log(t().inspect.stepDependsOn(step.dependencyStepIds.join(', ')));
   console.log('');
   console.log(chalk.gray(t().inspect.secDescription));

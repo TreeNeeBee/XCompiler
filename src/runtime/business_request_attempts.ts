@@ -15,8 +15,8 @@ import { BusinessRequestAttemptAuditAdapter } from '../infrastructure/llm/busine
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 
 type RuntimeBusinessSend = {
-  container: ProjectContainer; audit: AuditLogger; router: Pick<LLMRouter, 'for'>;
-  request: BusinessRequestInputCapture; options?: RuleBusinessChatOptions; providerPool?: readonly string[];
+  container: ProjectContainer; audit: AuditLogger; router: Pick<LLMRouter, 'forPool'>;
+  request: BusinessRequestInputCapture; options?: RuleBusinessChatOptions;
 };
 
 /** Internal retained send. The caller owns the operation and its already persisted Rule selection. */
@@ -51,8 +51,10 @@ async function sendCapturedRuntimeBusinessRequest(input: RuntimeBusinessSend, va
   const captured = await inputs.capture(input.request);
   signal?.throwIfAborted();
   const location = Object.freeze({ auditRoot: container.state.abs('audit'), containerRoot: container.root });
+  // The captured owner fixes both the speaking role and its pool; nothing later can switch them.
   const role = businessRequestRole(captured.input.owner);
-  const client = input.providerPool ? router.for(role, { providerPool: [...input.providerPool] }) : router.for(role);
+  const { modelPool, inheritFallbacks, allowedProviders } = captured.input.owner;
+  const client = router.forPool({ modelPool, inheritFallbacks, allowedProviders }, { label: role });
   const sender = new LLMRuleBusinessRequest(client, new RuleDecorator());
   const prepared = {
     snapshot: captured.snapshot, original: captured.input, record: captured.record, options, signal, location,

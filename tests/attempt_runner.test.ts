@@ -28,13 +28,35 @@ import {
   advisoryFailuresForStage,
 } from '../src/application/execution/attempt_runner.js';
 import type { DomainLog } from '../src/domain/observability/records.js';
-import { classifyAttemptFailure, classifyFailure } from '../src/application/execution/failure_classification.js';
+import { agentExecutionStallFailure, classifyAttemptFailure, classifyFailure } from '../src/application/execution/failure_classification.js';
 import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
 import type { Ticket } from '../src/domain/tickets/ticket.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { computeIncrementalAllowedWrites } from '../src/application/execution/execution_context.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
+import { unresolvedTestFailures } from '../src/application/execution/test_outcome.js';
+
+describe('attempt verification evidence', () => {
+  it('replaces only the same run_program test invocation and ignores ordinary programs', () => {
+    const failing = { tool: 'run_program', ok: false, args: { args: ['-m', 'pytest', 'tests/unit'] },
+      error: 'The unit contract failed.', data: { exitCode: 1 } };
+    const passing = { ...failing, ok: true, error: undefined,
+      args: { ...failing.args, timeoutMs: 30_000 }, data: { exitCode: 0 } };
+    const product = { tool: 'run_program', ok: false, args: { args: ['src/main.py'] }, error: 'Entry failed.' };
+
+    expect(unresolvedTestFailures([failing, product])).toEqual([failing]);
+    expect(unresolvedTestFailures([failing, passing, product])).toEqual([]);
+  });
+
+  it('does not infer that a different tool invocation proves an earlier test contract', () => {
+    const failedGate = { tool: 'run_tests', ok: false, args: { args: ['tests/unit'] },
+      data: { effectiveArgs: ['tests/unit'], exitCode: 1 } };
+    const passedProgram = { tool: 'run_program', ok: true, args: { args: ['npx', 'vitest', 'run', 'tests/unit'] },
+      data: { exitCode: 0 } };
+    expect(unresolvedTestFailures([failedGate, passedProgram])).toEqual([failedGate]);
+  });
+});
 
 describe('corrective write scope', () => {
   it('limits a focused Enhancement to its structured affected test artifact', () => {
@@ -339,15 +361,20 @@ describe('attempt failure classification', () => {
     expect(classifyFailure(subjectOutput, { trustProviderText: true }).kind).toBe('infrastructure');
   });
 
-  it('classifies model no-progress loops as agent stalls rather than project defects', () => {
-    expect(classifyFailure(
-      'repeated read-only/probe actions without progress for 3 rounds',
-    )).toMatchObject({
+  it('marks agent stalls only through the producer-set kind, never through message text', () => {
+    // The Executor names the stall at the exit that detects it. Rewording that message must not
+    // move the attempt between the stall path and the defect path.
+    expect(classifyFailure('repeated read-only/probe actions without progress for 3 rounds').code)
+      .toBe('unclassified_execution_failure');
+    expect(classifyFailure('permission_blocked: no permitted alternative').code)
+      .toBe('unclassified_execution_failure');
+    expect(agentExecutionStallFailure('read-only-loop', 'any wording')).toMatchObject({
       kind: 'execution',
       category: 'internal',
       code: 'agent_execution_stalled',
       retryable: true,
       switchProvider: true,
+      details: { stallKind: 'read-only-loop' },
     });
   });
 });
@@ -673,12 +700,12 @@ describe('deferred source quality evidence', () => {
 function fixturePlan(): Plan {
   const code: Step = {
     id: 'code-id', iterationId: 'P1', phase: 'CODE', title: 'Code', description: 'Implement.',
-    systemPrompt: 'Implement.', role: 'Coder', tools: ['write_file'], inputs: ['docs/design.md'],
+    systemPrompt: 'Implement.', tools: ['write_file'], inputs: ['docs/design.md'],
     outputs: ['src/core.ts', 'tests/unit/core.test.ts'], dependsOn: [], acceptance: 'implemented', maxAttempts: 3,
   };
   const unit: Step = {
     id: 'unit-id', iterationId: 'P1', phase: 'UNIT_TEST', title: 'Unit', description: 'Verify.',
-    systemPrompt: 'Verify.', role: 'Tester', tools: ['run_tests'], inputs: ['tests/unit/core.test.ts'],
+    systemPrompt: 'Verify.', tools: ['run_tests'], inputs: ['tests/unit/core.test.ts'],
     outputs: ['reports/unit.md'], dependsOn: ['code-id'], acceptance: 'tests pass', maxAttempts: 3,
   };
   return {
@@ -856,7 +883,7 @@ function contractRunner(workspace: Workspace): DomainAttemptRunner {
         revparse: async () => 'a'.repeat(40),
       }),
     },
-    sandbox: {}, router: {}, repository: {}, audit: { event: async () => {} },
+    sandbox: {}, router: {}, repository: { list: async () => [] }, audit: { event: async () => {} },
     plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-attempt-contract-wiki'),
   } as never), 'typescript');
   (runner as unknown as { recordTicketRevision: () => Promise<void> }).recordTicketRevision = async () => {};
@@ -1070,7 +1097,7 @@ describe('failed attempts keep the work they produced', () => {
  */
 describe('the prompt states this Step\'s metric contract', () => {
   const stepWith = (metrics: Record<string, number>) => ({
-    id: 'S004', title: 'implement', phase: 'CODE', role: 'Coder',
+    id: 'S004', title: 'implement', phase: 'CODE',
     acceptance: 'a', description: 'd', outputs: [], inputs: [], tools: [],
     qualityGate: { metrics },
   }) as never;

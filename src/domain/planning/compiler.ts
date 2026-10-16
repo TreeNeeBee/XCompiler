@@ -5,7 +5,7 @@ import type {
   PlanDraftStep as DraftStep,
   PlanDraftTask as DraftTask,
 } from './plan_draft.js';
-import { createObjectEnvelope, extractObjectEnvelope, reviseObjectEnvelope } from '../objects/object_envelope.js';
+import { createObjectEnvelope, extractObjectEnvelope, reviseObjectEnvelope, type ObjectEnvelope } from '../objects/object_envelope.js';
 import type { ObjectId } from '../identity/object_id.js';
 import { ProjectSchema, transitionProject, type Project } from '../projects/project.js';
 import { PhaseSchema, type Phase } from '../phases/phase.js';
@@ -36,16 +36,8 @@ import {
   type ProjectPlan,
 } from './plan.js';
 import { assertDomainGraph, type DomainGraph } from '../workflow/domain_graph.js';
-import { DOMAIN_ROLES, type DomainRole } from '../workflow/role.js';
-import { capabilitiesForStep, roleForStepType } from '../workflow/role_profile.js';
+import { capabilitiesForStep } from '../workflow/role_profile.js';
 import {
-  RoleDefinitionSchema,
-  seedRoleDefinition,
-  type RoleDefinition,
-  type RoleTemplateOverlay,
-} from '../workflow/role_definition.js';
-import {
-  ActorRegistrationSchema,
   ProjectManagementPlanSchema,
   reviseManagementPlan,
   type ActorRegistration,
@@ -57,7 +49,6 @@ export interface CompiledProjectGraph extends DomainGraph {
   phasePlans: PhasePlan[];
   kpis: Kpi[];
   deliverables: Deliverable[];
-  roleDefinitions: RoleDefinition[];
   actors: ActorRegistration[];
   managementPlan: ProjectManagementPlan;
 }
@@ -67,8 +58,14 @@ export interface CompileProjectGraphInput {
   topic: string;
   topicSourceRef?: string;
   projectName: string;
-  /** Installation-level role identity overrides, read outside the Domain and passed in. */
-  roleTemplates?: RoleTemplateOverlay;
+}
+
+/** Application/PM prepares identities before canonical Tickets are materialized. */
+export interface ProjectGraphActorBindings {
+  projectEnvelope: ObjectEnvelope;
+  actors: readonly ActorRegistration[];
+  pmActorId: ObjectId;
+  creatorActorIds: Readonly<Record<StepType, ObjectId>>;
 }
 
 export interface CompiledPhaseMaterialization {
@@ -125,7 +122,10 @@ export function compileProjectExtension(input: CompileProjectGraphInput & {
   predecessorEpic: WorkTicket;
   actors: ActorRegistration[];
   managementPlan: ProjectManagementPlan;
-}): CompiledProjectExtension {
+}, bindings: ProjectGraphActorBindings): CompiledProjectExtension {
+  if (bindings.projectEnvelope.id !== input.project.id || bindings.pmActorId !== input.project.pmActorId) {
+    throw new Error('Incremental Plan must retain its canonical Project and PM identities');
+  }
   if (input.project.language !== input.draft.language) {
     throw new Error(
       `Incremental Plan language ${input.draft.language} does not match Project language ${input.project.language}`,
@@ -137,8 +137,7 @@ export function compileProjectExtension(input: CompileProjectGraphInput & {
   if (input.predecessorPhase.state !== 'closed' || input.predecessorEpic.state !== 'closed') {
     throw new Error('Incremental Phase requires a closed predecessor Phase and Epic');
   }
-  const generated = compileProjectGraph(input);
-  const actorByRole = new Map(input.actors.map((actor) => [actor.role, actor]));
+  const generated = compileProjectGraph(input, bindings);
   const firstPhaseId = generated.projectPlan.activePhaseId;
   const phases = generated.phases.map((phase) => PhaseSchema.parse({
     ...phase,
@@ -157,9 +156,6 @@ export function compileProjectExtension(input: CompileProjectGraphInput & {
   const tickets = generated.tickets.map((ticket) => TicketSchema.parse({
     ...ticket,
     projectId: input.project.id,
-    creatorActorId: ticket.type === 'epic' || ticket.type === 'story'
-      ? input.project.pmActorId
-      : requireActor(actorByRole, ticket.role).id,
     dependencyTicketIds: ticket.type === 'epic' && ticket.phaseId === firstPhaseId
       ? [...new Set([...ticket.dependencyTicketIds, input.predecessorEpic.id])]
       : ticket.dependencyTicketIds,
@@ -207,6 +203,7 @@ export function compileProjectExtension(input: CompileProjectGraphInput & {
   const managementPlan = reviseManagementPlan(input.managementPlan, {
     milestonePhaseIds: [...input.managementPlan.milestonePhaseIds, ...phases.map((phase) => phase.id)],
     scopeBaseline: [...input.managementPlan.scopeBaseline, input.draft.requirementDigest],
+    actorRegistrationIds: [...new Set([...input.managementPlan.actorRegistrationIds, ...bindings.actors.map(actor => actor.id)])],
     status: 'baselined',
     baselinedAt: new Date().toISOString(),
   });
@@ -219,12 +216,15 @@ export function compilePhaseMaterialization(input: {
   phase: Phase;
   phasePlan: PhasePlan;
   epic: WorkTicket;
-  actors: ActorRegistration[];
+  creatorActorIds: Readonly<Record<StepType, ObjectId>>;
 }): CompiledPhaseMaterialization {
   if (input.phase.state !== 'created' || input.phase.stepIds.length > 0) {
     throw new Error(`Phase ${input.phase.name} is already materialized or has started`);
   }
   if (input.phasePlan.materialized) throw new Error(`PhasePlan ${input.phasePlan.name} is already materialized`);
+  if (STEP_TYPES.some(type => !input.creatorActorIds[type] || input.creatorActorIds[type] === input.project.pmActorId)) {
+    throw new Error('Phase materialization requires technical Task creator identities');
+  }
   const draftPhase = input.draft.implementationPhases.find((phase) => phase.id === input.phase.name);
   if (!draftPhase) throw new Error(`Planner output does not contain Phase ${input.phase.name}`);
   if (input.draft.phaseId !== draftPhase.id) {
@@ -236,7 +236,7 @@ export function compilePhaseMaterialization(input: {
     phaseId: input.phase.id,
     projectId: input.project.id,
     epicEnvelope: extractObjectEnvelope(input.epic),
-    actorByRole: new Map(input.actors.map((actor) => [actor.role, actor])),
+    creatorActorIds: input.creatorActorIds,
     pmActorId: input.project.pmActorId,
     now: new Date().toISOString(),
   });
@@ -281,20 +281,19 @@ export function compilePhaseMaterialization(input: {
   return { ...compiled, phase, phasePlan, epic };
 }
 
-export function compileProjectGraph(input: CompileProjectGraphInput): CompiledProjectGraph {
+export function compileProjectGraph(input: CompileProjectGraphInput, bindings: ProjectGraphActorBindings): CompiledProjectGraph {
+  const projectEnvelope = bindings.projectEnvelope;
+  if (projectEnvelope.objectType !== 'project' || projectEnvelope.id !== projectEnvelope.projectId) {
+    throw new Error('Project materialization requires its prepared Project envelope');
+  }
   const now = new Date().toISOString();
-  const projectEnvelope = createObjectEnvelope({
-    name: input.projectName,
-    objectType: 'project',
-    now,
-  });
   const projectId = projectEnvelope.id;
-  const roleDefinitions = DOMAIN_ROLES.map(
-    (role) => createRoleDefinition(projectId, role, now, input.roleTemplates ?? {}),
-  );
-  const actors = roleDefinitions.map((definition) => createActorRegistration(projectId, definition, now));
-  const actorByRole = new Map(actors.map((actor) => [actor.role, actor]));
-  const pmActor = requireActor(actorByRole, 'project-manager');
+  const actors = [...bindings.actors];
+  const actorIds = new Set(actors.map(actor => actor.id));
+  if (actors.some(actor => actor.projectId !== projectId) || !actorIds.has(bindings.pmActorId)
+    || STEP_TYPES.some(type => !actorIds.has(bindings.creatorActorIds[type]) || bindings.creatorActorIds[type] === bindings.pmActorId)) {
+    throw new Error('Project materialization requires prepared PM and technical creator identities from its Project');
+  }
   const projectPlanEnvelope = createObjectEnvelope({
     name: 'phasePlan',
     objectType: 'plan',
@@ -341,8 +340,8 @@ export function compileProjectGraph(input: CompileProjectGraphInput): CompiledPr
     phaseId: activePhaseEnvelope.id,
     projectId,
     epicEnvelope: epicEnvelopes.get(activeDraftPhase.id)!,
-    actorByRole,
-    pmActorId: pmActor.id,
+    creatorActorIds: bindings.creatorActorIds,
+    pmActorId: bindings.pmActorId,
     now,
   });
 
@@ -354,9 +353,7 @@ export function compileProjectGraph(input: CompileProjectGraphInput): CompiledPr
       ...epic,
       type: 'epic',
       phaseId: phase.id,
-      role: 'project-manager',
-      agent: 'Planner',
-      creatorActorId: pmActor.id,
+      creatorActorId: bindings.pmActorId,
       requiredCapabilities: ['project-management', 'phase-control'],
       priority: TICKET_PRIORITY.high,
       rootTicketId: epic.id,
@@ -455,14 +452,14 @@ export function compileProjectGraph(input: CompileProjectGraphInput): CompiledPr
     projectType: input.draft.projectType,
     projectPlanId: projectPlan.id,
     managementPlanId: managementPlanEnvelope.id,
-    pmActorId: pmActor.id,
+    pmActorId: bindings.pmActorId,
     phaseIds: phases.map((phase) => phase.id),
     currentPhaseId: activePhaseEnvelope.id,
   });
 
   const managementPlan = ProjectManagementPlanSchema.parse({
     ...managementPlanEnvelope,
-    pmActorId: pmActor.id,
+    pmActorId: bindings.pmActorId,
     objective: input.draft.requirementDigest,
     scopeBaseline: draftPhases.flatMap((phase) => phase.scope.length > 0 ? phase.scope : [phase.objective]),
     successCriteria: draftPhases.map((phase) => phaseGateAcceptance(phase)[0]!),
@@ -483,7 +480,6 @@ export function compileProjectGraph(input: CompileProjectGraphInput): CompiledPr
     tickets,
     kpis,
     deliverables,
-    roleDefinitions,
     actors,
     managementPlan,
   };
@@ -497,7 +493,7 @@ function compileActivePhase(input: {
   phaseId: ObjectId;
   projectId: ObjectId;
   epicEnvelope: ReturnType<typeof createObjectEnvelope>;
-  actorByRole: Map<DomainRole, ActorRegistration>;
+  creatorActorIds: Readonly<Record<StepType, ObjectId>>;
   pmActorId: ObjectId;
   now: string;
 }): { steps: Step[]; tickets: Ticket[]; kpis: Kpi[]; deliverables: Deliverable[] } {
@@ -533,12 +529,6 @@ function compileActivePhase(input: {
       type,
       title: draftStep.title,
       description: draftStep.description,
-      // The V-model position decides who owns a Step; the planner's agent hint only decides which
-      // prompt persona runs it. Deriving the role from the hint instead let a plan hand requirement
-      // analysis to a developer, contradicting both the role's supportedStepTypes and the
-      // capabilities its Tickets demand.
-      role: roleForStepType(type),
-      agent: draftStep.role,
       state: 'created',
       dependencyStepIds: draftStep.dependsOn.map((name) => stepEnvelopes.get(name)?.id).filter(isObjectId),
       pairedStepId: pairedDraft ? stepEnvelopes.get(pairedDraft.id)?.id : undefined,
@@ -598,8 +588,6 @@ function compileActivePhase(input: {
       type: 'story',
       phaseId: input.phaseId,
       stepId: step.id,
-      role: step.role,
-      agent: step.agent,
       creatorActorId: input.pmActorId,
       requiredCapabilities: capabilitiesForStep(step.type),
       priority: TICKET_PRIORITY.high,
@@ -622,7 +610,7 @@ function compileActivePhase(input: {
       story,
       input.epicEnvelope.id,
       tickets,
-      requireActor(input.actorByRole, step.role).id,
+      input.creatorActorIds[step.type],
       input.now,
     );
   }
@@ -645,8 +633,6 @@ function compileActivePhase(input: {
     ...deliveryEnvelope,
     type: 'story',
     phaseId: input.phaseId,
-    role: 'project-manager',
-    agent: 'Planner',
     creatorActorId: input.pmActorId,
     requiredCapabilities: ['project-management', 'delivery-control'],
     priority: TICKET_PRIORITY.high,
@@ -695,8 +681,6 @@ function registerTasks(
       type: 'task',
       phaseId: step.phaseId,
       stepId: step.id,
-      role: step.role,
-      agent: step.agent,
       creatorActorId,
       requiredCapabilities: capabilitiesForStep(step.type),
       priority: TICKET_PRIORITY.normal,
@@ -729,51 +713,6 @@ function normalizeStepType(type: DraftStep['phase']): StepType {
 
 function isDevelopmentStepType(type: StepType): type is keyof typeof SOURCE_TO_VERIFICATION_STEP {
   return Object.hasOwn(SOURCE_TO_VERIFICATION_STEP, type);
-}
-
-function createRoleDefinition(
-  projectId: ObjectId,
-  role: DomainRole,
-  now: string,
-  templates: RoleTemplateOverlay,
-): RoleDefinition {
-  return RoleDefinitionSchema.parse({
-    ...createObjectEnvelope({
-      name: `role-${role}`,
-      objectType: 'role-definition',
-      projectId,
-      now,
-    }),
-    ...seedRoleDefinition(role, templates),
-  });
-}
-
-function createActorRegistration(
-  projectId: ObjectId,
-  definition: RoleDefinition,
-  now: string,
-): ActorRegistration {
-  const role = definition.role;
-  return ActorRegistrationSchema.parse({
-    ...createObjectEnvelope({ name: `actor-${role}`, objectType: 'actor-registration', projectId, now }),
-    actorKind: 'llm-agent',
-    role,
-    roleDefinitionId: definition.id,
-    agent: definition.defaultAgent,
-    state: 'active',
-    capacity: role === 'project-manager' ? 255 : 1,
-    activeAssignmentIds: [],
-    registeredAt: now,
-  });
-}
-
-function requireActor(
-  actors: ReadonlyMap<DomainRole, ActorRegistration>,
-  role: DomainRole,
-): ActorRegistration {
-  const actor = actors.get(role);
-  if (!actor) throw new Error(`Project role ${role} has not registered an actor`);
-  return actor;
 }
 
 function defaultKpis(type: StepType): Array<{

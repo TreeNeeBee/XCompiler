@@ -14,7 +14,8 @@ import { validatePhaseDecompositionPayload } from '../../src/application/plannin
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
 import { deliveryDocsForIteration, phaseDocForIteration, testPlanDocForIteration } from '../../src/domain/planning/document_contract.js';
-import { REQUIRED_V_MODEL_PHASES, ROLES, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { REQUIRED_V_MODEL_PHASES, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
 import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import * as i18n from '../../src/i18n/index.js';
 import { FileRuleRequestStateStore } from '../../src/infrastructure/rules/file_rule_request_state_store.js';
@@ -49,6 +50,7 @@ afterEach(async () => {
 
 const projectId = '01952f27-7900-7000-8000-000000000001';
 const otherProjectId = '01952f27-7900-7000-8000-000000000002';
+const plannerActorId = '01952f27-7900-7000-8000-000000000003';
 const requirement = 'Format a single integer with a small Python command.';
 const plannerInput: PlannerInput = { rawRequirement: requirement, clarifications: [],
   userAddenda: ' Preserve literal # content.\r\n', baselineContext: 'The original number is unchanged.', intent: 'greenfield' };
@@ -81,7 +83,7 @@ function stepPlan(phaseId = 'P1', skill = 'old-skill') {
     if (phase === 'CODE') outputs.push('src/main.py');
     return { id: `S${String(index + 1).padStart(3, '0')}`, iterationId: phaseId, phase,
       title: `${phase} formatting slice`, description: 'Deliver the formatting slice.',
-      systemPrompt: 'Produce the declared formatting deliverables and paired test assets.', role: 'Coder',
+      systemPrompt: 'Produce the declared formatting deliverables and paired test assets.',
       tools: phase === 'CODE' ? [`skill:${skill}`, 'read_file'] : [],
       inputs: ['UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST'].includes(phase) ? [testPath(phase)] : [], outputs,
       dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
@@ -123,7 +125,7 @@ async function fixture(url: string, scope?: string) {
   const configPath = path.join(container.root, 'config.yaml');
   await fs.writeFile(configPath, YAML.stringify({ llm: {
     providers: { planner: { type: 'openai', api_key: '', base_url: url, model: 'planner-model', context_window: 131072, request_timeout_ms: 1000 } },
-    roles: Object.fromEntries(ROLES.map(role => [role, ['planner']])), fallbacks: [],
+    pools: Object.fromEntries(DEFAULT_MODEL_POOLS.map(role => [role, ['planner']])), fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'phase-decomposition-fixture' });
@@ -142,11 +144,13 @@ async function fixture(url: string, scope?: string) {
   await fs.mkdir(skillDirectory, { recursive: true });
   await fs.writeFile(path.join(skillDirectory, 'SKILL.md'), '---\nname: old-skill\ndescription: Formatting skill metadata.\nallowed-tools: read_file\n---\n\nOriginal formatting instructions.\n');
   skills.registerDirectory(skillDirectory, { kind: 'project', ...(scope ? { projectId: scope } : {}) });
-  const port = createRuntimePhaseDecompositionRequestPort({ config: config.rules, container, recordReplay, router, audit, projectId: scope });
-  const planner = new Planner(router.for('Planner'), audit, 'python', false, undefined, skills, undefined, undefined, port);
+  const resolveActor = vi.fn(async () => ({ actorId: plannerActorId, role: 'planner' as const, roleVersion: roleProfile('planner').version }));
+  const port = createRuntimePhaseDecompositionRequestPort({ config: config.rules, container, recordReplay, router, audit,
+    projectId: scope, ...(scope ? { resolveActor } : {}) });
+  const planner = new Planner(audit, 'python', false, undefined, skills, undefined, undefined, port);
   const auditPath = container.state.abs('audit', 'audit.jsonl');
   const events = async () => (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as AuditEvent);
-  return { config, container, recordReplay, router, audit, scores, boost, decay, skills, skillDirectory, port, planner, auditPath, events,
+  return { config, container, recordReplay, router, audit, scores, boost, decay, skills, skillDirectory, port, planner, resolveActor, auditPath, events,
     decompose: (input = plannerInput, plan = phasePlan()) => planner.decomposePhase(input, plan, plan.implementationPhases.find(phase => phase.status === 'current')!.id),
     resume: (logicalRequestId: string) => resumeRuntimePhaseDecompositionRequest({ container: new ProjectContainer(container.root), audit, logicalRequestId }) };
 }
@@ -171,6 +175,7 @@ describe('P03 retained Phase decomposition through Runtime', () => {
     'binds the actual owner and approved current $phaseId while sending the original prompt plus required genesis', async ({ scope, phaseId }) => {
       const server = await endpoint(() => ({ output: JSON.stringify(stepPlan(phaseId)) }));
       const current = await fixture(server.url, scope);
+      expect(current.resolveActor).not.toHaveBeenCalled();
       const result = await current.decompose({ ...plannerInput, intent: phaseId === 'P1' ? 'greenfield' : 'feature' }, phasePlan(phaseId));
       expect(result.steps).toHaveLength(8);
       expect(result.steps.every(step => step.iterationId === phaseId)).toBe(true);
@@ -181,7 +186,16 @@ describe('P03 retained Phase decomposition through Runtime', () => {
       expect(original.owner).toMatchObject({ kind: scope ? 'project-planning-operation' : 'planning-operation',
         operation: 'phase-decomposition', operationId: expect.any(String), ...(scope ? { projectId: scope } : {}) });
       expect(original.owner).not.toHaveProperty('phaseId');
-      if (!scope) expect(original.owner).not.toHaveProperty('projectId');
+      expect(original.owner).toMatchObject({ role: 'planner', roleVersion: roleProfile('planner').version,
+        work: 'plan.decompose', modelPool: 'planning', inheritFallbacks: true, allowedProviders: ['planner'] });
+      if (!scope) {
+        expect(original.owner).not.toHaveProperty('projectId');
+        expect(original.owner).not.toHaveProperty('actorId');
+        expect(current.resolveActor).not.toHaveBeenCalled();
+      } else {
+        expect(original.owner).toMatchObject({ actorId: plannerActorId });
+        expect(current.resolveActor).toHaveBeenCalledTimes(1);
+      }
       expect(original.auditContext).toMatchObject({ kind: 'planning-phase-decomposition', phaseId,
         parseContext: { rawRequirement: requirement, baselineSummary: plannerInput.baselineContext }, availableSkillNames: expect.arrayContaining(['old-skill']) });
       expect(original.messages).toEqual(server.calls[0]!.messages.slice(1));
@@ -191,13 +205,13 @@ describe('P03 retained Phase decomposition through Runtime', () => {
       expect(original.messages[1]!.content).not.toContain('"availableSkillNames"');
       expect(server.calls[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
       const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
-      expect(snapshot).toMatchObject({ context: { role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition', ...(scope ? { projectId: scope } : {}) } });
+      expect(snapshot).toMatchObject({ context: { role: 'planner', language: 'python', work: 'plan.decompose', ...(scope ? { projectId: scope } : {}) } });
       expect(snapshot!.requiredRuleIds).toHaveLength(3);
       if (!scope) expect(snapshot!.context).not.toHaveProperty('projectId');
       await expect(fs.stat(current.container.state.abs('rules', 'indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(records.filter(event => event.messageId === 'llm.phase_decomposition_judgement')).toHaveLength(1);
       expect(records.filter(event => event.messageId === 'llm.business_response_retained')).toHaveLength(1);
-      expect(current.boost).toHaveBeenCalledExactlyOnceWith('planner', 'success in role Planner');
+      expect(current.boost).toHaveBeenCalledExactlyOnceWith('planner', 'success in role planner');
     },
   );
 
@@ -292,7 +306,7 @@ describe('P03 retained Phase decomposition through Runtime', () => {
     const logicalRequestId = randomUUID();
     await prepareRuntimeRuleRequest({ config: current.config.rules, container: current.container,
       recordReplay: current.recordReplay, router: current.router, logicalRequestId,
-      context: { role: 'Planner', language: 'python', scenario: 'planning-phase-decomposition', projectId: otherProjectId },
+      context: { role: 'planner', language: 'python', work: 'plan.decompose', projectId: otherProjectId },
       required: [], taskSummary: requirement });
     const before = await stateBytes(current.container);
     await expect(createRuntimeBusinessRequestInputs(current.container, current.audit).capture({

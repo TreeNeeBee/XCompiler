@@ -1,5 +1,7 @@
 # 0.4.0: Scope and impact review
 
+> **2026-10-16**：I02（角色映射）由 [变更清单](2026-10-15-review-change-list.md) D-10/D-11 解决；I06 由 M-A4 修正；I08 的回退容量由 D-5 处理；I09 的正文分类由 D-7 收敛。
+
 Status: static review, 2026-09-04, source baseline `77ff6e2`. Recommendations and implementation
 choices below are not approval. No runtime changes or paid-model validation were performed.
 Updated 2026-09-05 for LLM-assisted output calibration, including a parser-only reproduction;

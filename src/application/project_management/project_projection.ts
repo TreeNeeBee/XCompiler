@@ -3,7 +3,7 @@ import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.j
 import type { ProjectState } from '../../domain/projects/project.js';
 import type { PhaseState } from '../../domain/phases/phase.js';
 import type { TicketState, TicketType } from '../../domain/tickets/ticket.js';
-import type { DomainRole } from '../../domain/workflow/role.js';
+import type { RoleId } from '../../domain/workflow/role.js';
 import { createHash } from 'node:crypto';
 import { TicketFlowMetricsService, type TicketFlowMetrics } from './ticket_flow_metrics.js';
 
@@ -22,14 +22,14 @@ export interface ProjectStatusProjection {
     name: string;
     type: TicketType;
     state: TicketState;
-    role: DomainRole;
+    ownerRole?: RoleId;
     ownerActorId?: ObjectId;
     ownerName?: string;
   }>;
   actors: Array<{
     id: ObjectId;
     name: string;
-    role: DomainRole;
+    roleId: RoleId;
     state: string;
     activeAssignments: number;
     capacity: number;
@@ -128,7 +128,7 @@ export class ProjectStatusProjectionService {
           name: ticket.name,
           type: ticket.type,
           state: ticket.state,
-          role: ticket.role,
+          ownerRole: owner?.roleId,
           ownerActorId: owner?.id,
           ownerName: owner?.name,
         };
@@ -136,7 +136,7 @@ export class ProjectStatusProjectionService {
       actors: actors.filter((actor) => actor.objectType === 'actor-registration').map((actor) => ({
         id: actor.id,
         name: actor.name,
-        role: actor.role,
+        roleId: actor.roleId,
         state: actor.state,
         activeAssignments: actor.activeAssignmentIds.length,
         capacity: actor.capacity,

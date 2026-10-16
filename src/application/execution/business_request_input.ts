@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ObjectIdSchema } from '../../domain/identity/object_id.js';
-import type { Role } from '../../domain/workflow/role.js';
+import { RoleIdSchema, type RoleId } from '../../domain/workflow/role.js';
+import { WorkIdSchema, type WorkId } from '../../domain/workflow/work.js';
 import { workStepId } from '../../domain/tickets/ticket.js';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import { JsonOutputProtocolSchema } from '../../llm/protocol_json.js';
@@ -20,22 +21,37 @@ import {
   PhaseDecompositionPayloadSchema, PHASE_DECOMPOSITION_PROTOCOL,
 } from '../planning/phase_decomposition_request.js';
 import {
-  EXECUTION_TURN_PROTOCOL, ExecutionRequestScopeSchema, ExecutionTurnPayloadSchema,
+  EXECUTION_TURN_PROTOCOL, ExecutionRequestScopeSchema, ExecutionTurnPayloadSchema, ModelPoolBindingSchema,
 } from './execution_turn_request.js';
 
 const UUID = z.uuid().transform((value) => value.toLowerCase());
 const ObjectId = ObjectIdSchema.transform((value) => ObjectIdSchema.parse(value.toLowerCase()));
 const Text = z.string().refine((value) => value.trim().length > 0);
-export const ScenarioJudgementOwnerSchema = z.object({
+/** The work each planning operation performs; it is also the Rule-selection context's work. */
+export const PLANNING_REQUEST_CONTEXTS = Object.freeze({
+  clarification: 'plan.clarify',
+  'phase-plan': 'plan.phase',
+  'phase-decomposition': 'plan.decompose',
+} as const satisfies Record<string, WorkId>);
+export const ScenarioJudgementOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('scenario-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
+  actorId: ObjectId, role: z.literal('project-manager'), roleVersion: Text, work: z.literal('judge.scenario'),
 }).strict();
-export const PlanningOperationOwnerSchema = z.object({
+export const PlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('planning-operation'), operationId: UUID,
   operation: z.enum(['clarification', 'phase-plan', 'phase-decomposition']),
-}).strict();
-export const ProjectPlanningOperationOwnerSchema = z.object({
+  role: RoleIdSchema, roleVersion: Text, work: WorkIdSchema, inheritFallbacks: z.literal(true),
+}).strict().superRefine((owner, ctx) => {
+  const role = owner.operation === 'clarification' ? 'project-manager' : 'planner';
+  const work = PLANNING_REQUEST_CONTEXTS[owner.operation];
+  if (owner.role !== role || owner.work !== work) ctx.addIssue({
+    code: z.ZodIssueCode.custom, path: ['operation'], message: 'Planning owner role and work must match its operation',
+  });
+});
+export const ProjectPlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('project-planning-operation'), operationId: UUID,
   operation: z.literal('phase-decomposition'), projectId: ObjectId,
+  actorId: ObjectId, role: z.literal('planner'), roleVersion: Text, work: z.literal('plan.decompose'),
 }).strict();
 export const StepExecutionOwnerSchema = ExecutionRequestScopeSchema.extend({ kind: z.literal('step-execution') }).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
@@ -46,11 +62,6 @@ export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema
 export type ProjectPlanningOperationOwner = z.infer<typeof ProjectPlanningOperationOwnerSchema>;
 export type StepExecutionOwner = z.infer<typeof StepExecutionOwnerSchema>;
 export type BusinessRequestOwner = z.infer<typeof BusinessRequestOwnerSchema>;
-export const PLANNING_REQUEST_CONTEXTS = Object.freeze({
-  clarification: 'planning-clarification',
-  'phase-plan': 'planning-phase-plan',
-  'phase-decomposition': 'planning-phase-decomposition',
-} as const);
 const Identity = z.object({
   schemaVersion: z.literal(1), logicalRequestId: UUID,
   // Correlation declared by the caller, not an alternate Domain lifecycle store.
@@ -91,33 +102,28 @@ export class BusinessRequestInputError extends Error {
 }
 
 /** Typed operation ownership is fixed by the caller contract, never by a model or Plugin. */
-export function businessRequestRole(owner: BusinessRequestOwner): Role {
-  switch (owner.kind) {
-    case 'scenario-judgement': return 'ProjectManager';
-    case 'project-planning-operation': return 'Planner';
-    case 'step-execution': return owner.role;
-    case 'planning-operation':
-      switch (owner.operation) {
-        case 'clarification': return 'ProjectManager';
-        case 'phase-plan':
-        case 'phase-decomposition': return 'Planner';
-      }
-  }
-  throw new BusinessRequestInputError('invalid', { field: 'owner' });
+export function businessRequestRole(owner: BusinessRequestOwner): RoleId {
+  return owner.role;
+}
+
+/** The work a request performs; Rule selection and snapshots are scoped by it. */
+export function businessRequestWork(owner: BusinessRequestOwner): WorkId {
+  return owner.work;
+}
+
+/** Every owner pins its original resolved pool; recovery never consults the current role catalogue. */
+export function businessRequestPool(owner: BusinessRequestOwner): string {
+  return owner.modelPool;
 }
 
 /** These materials are already validated; this checks their shared request ownership boundary. */
 export function assertBusinessRequestSnapshotOwner(
   snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: BusinessRequestAuditContext,
 ): void {
-  const scopeMatches = owner.kind === 'scenario-judgement'
-    ? snapshot.context.projectId?.toLowerCase() === owner.projectId
-    : owner.kind === 'step-execution'
-      ? snapshot.context.projectId?.toLowerCase() === owner.projectId && snapshot.context.scenario === 'step-execution'
-    : owner.kind === 'project-planning-operation'
-      ? snapshot.context.projectId?.toLowerCase() === owner.projectId
-        && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation]
-      : snapshot.context.projectId === undefined && snapshot.context.scenario === PLANNING_REQUEST_CONTEXTS[owner.operation];
+  const projectMatches = owner.kind === 'planning-operation'
+    ? snapshot.context.projectId === undefined
+    : snapshot.context.projectId?.toLowerCase() === owner.projectId;
+  const scopeMatches = projectMatches && snapshot.context.work === businessRequestWork(owner);
   if (snapshot.requestKind !== 'business' || snapshot.context.role !== businessRequestRole(owner) || !scopeMatches
     || (auditContext !== undefined && snapshot.context.language !== auditContext.parseContext.language)) {
     throw new BusinessRequestInputError('snapshot_mismatch', {
@@ -302,7 +308,7 @@ export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInp
     const executingStepId = ticket === undefined ? undefined : workStepId(ticket);
     if (owner.kind !== 'step-execution'
       || context.step.id.toLowerCase() !== owner.stepId
-      || owner.role !== (context.executionRole ?? context.step.role)
+      || owner.work !== context.work || (context.role !== undefined && owner.role !== context.role)
       || input.templateVersion !== input.auditContext.templateVersion
       || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(EXECUTION_TURN_PROTOCOL)
       || (ticket !== undefined && (ticket.id.toLowerCase() !== owner.ticketId

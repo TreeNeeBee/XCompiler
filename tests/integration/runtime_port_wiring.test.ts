@@ -16,15 +16,20 @@ import { ProjectGraphPersistenceService } from '../../src/application/planning/p
 import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/phase_plan_files.js';
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
 import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
+import { RoleRegistry } from '../../src/application/project_management/role_registry.js';
 import * as projectReports from '../../src/application/reporting/project_report.js';
-import { compileProjectGraph } from '../../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { createObjectId } from '../../src/domain/identity/object_id.js';
 import {
   deliveryDocsForIteration,
   phaseDocForIteration,
   testPlanDocForIteration,
 } from '../../src/domain/planning/document_contract.js';
-import { ROLES, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { type Phase } from '../../src/domain/planning/execution_plan.js';
+import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
+import { defaultRoleForStep, stepWork } from '../../src/domain/workflow/work.js';
+import { reviseActor } from '../../src/domain/project_management/actor.js';
+import { LLM_USER_SCORES_FILE } from '../../src/llm/scores.js';
 import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import { FileDebugWiki } from '../../src/infrastructure/knowledge/file_debug_wiki.js';
 import { FilePlanStore } from '../../src/infrastructure/planning/file_plan_store.js';
@@ -83,10 +88,10 @@ describe('Runtime initializes the configured knowledge store', () => {
       const container = new ProjectContainer(path.join(root, 'project'));
       const workspace = container.canonical().workspace;
       await workspace.ensure('.');
-      const graph = compileProjectGraph({ draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-executor' });
+      const graph = materializeProjectGraph({ draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-executor' });
       const domainStep = graph.steps.find(candidate => candidate.type === 'REQUIREMENT_ANALYSIS')!;
-      const actor = graph.actors.find(candidate => candidate.role === domainStep.role)!;
-      actor.llmBinding = { providerPool: ['assigned'] };
+      const actor = graph.actors.find(candidate => candidate.roleId === defaultRoleForStep(domainStep.type, draft.language))!;
+      actor.modelPool = 'assigned';
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
@@ -99,11 +104,11 @@ describe('Runtime initializes the configured knowledge store', () => {
           category: 'contract', code: 'artifact_missing', retryable: true, switchProvider: false, correlationId: createObjectId(),
           ...bugContracts(domainStep, domainStep, domainStep, { category: 'contract', code: 'artifact_missing',
             artifactTargets: domainStep.outputs }) });
-      const definition = graph.roleDefinitions.find(candidate => candidate.id === actor.roleDefinitionId)!;
       const projection = projectExecutionPlan(draft, phase, graph.steps);
       const attempt: AttemptInput = { plan: projection.plan, executionStep: projection.byDomainStepId.get(domainStep.id)!,
-        domainStep, ticket, mode, assignee: { actor, definition } };
-      const actualRole = mode === 'debug' ? 'Debugger' : domainStep.agent;
+        domainStep, ticket, mode, assignee: { actor, profile: roleProfile(actor.roleId) } };
+      const actualRole = actor.roleId;
+      const work = mode === 'debug' ? 'repair.debug' as const : stepWork(domainStep.type);
       const unexpectedExecution = vi.fn(async (): Promise<never> => { throw new Error('This pre-CODE wiring case must not run a sandbox process'); });
       const sandbox: Sandbox = { kind: 'subprocess', build: vi.fn(async () => ({ rebuilt: false, reason: 'Controlled local preparation' })),
         exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution };
@@ -119,7 +124,7 @@ describe('Runtime initializes the configured knowledge store', () => {
         // Keep Run composition and the production environment/request invocation real. The surrounding
         // lifecycle is stopped here because this test checks wiring, not Step delivery.
         const environment = await internal.buildEnvironment(internal.canonicalScope(), attempt);
-        const executed = await environment.executor.run({ step: attempt.executionStep, executionRole: actualRole,
+        const executed = await environment.executor.run({ step: attempt.executionStep, role: actualRole, work,
           tools: environment.tools, ctx: environment.context, skillHints: environment.hints, baselineTestExecution: 'defer',
           baselineTestExecutionReason: mode === 'debug' ? 'pre-code-correction' : 'initial-pre-code',
           ...(mode === 'debug' ? { debugContext: { bugTicketId: ticket.id, reason: 'The owned requirement artifacts are missing before CODE.',
@@ -132,6 +137,7 @@ describe('Runtime initializes the configured knowledge store', () => {
       const configPath = await writeConfig(root, `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
       const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
       configuration.llm.providers.assigned = { ...configuration.llm.providers.local, model: 'assigned-actor-model' };
+      configuration.llm.pools.assigned = ['assigned'];
       await fs.writeFile(configPath, YAML.stringify(configuration));
       const result = await runExecute({ workspace: container.root, planPath, configPath,
         debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'), io: silentRuntimeIO, recordReplayMode: 'off' });
@@ -144,7 +150,8 @@ describe('Runtime initializes the configured knowledge store', () => {
         .map(line => JSON.parse(line) as { messageId?: string; data?: Record<string, unknown> });
       const retained = events.find(event => event.messageId === 'llm.business_request_input')?.data?.input as BusinessRequestInput;
       expect(retained.owner).toMatchObject({ kind: 'step-execution', projectId: graph.project.id, phaseId: phase.id,
-        stepId: domainStep.id, ticketId: ticket.id, role: actualRole, actorId: actor.id, providerPool: ['assigned'] });
+        stepId: domainStep.id, ticketId: ticket.id, role: actualRole, roleVersion: actor.roleVersion, work,
+        actorId: actor.id, modelPool: 'assigned', inheritFallbacks: false, allowedProviders: ['assigned'] });
       expect(events.filter(event => event.messageId === 'llm.provider_response')).toEqual(expect.arrayContaining([
         expect.objectContaining({ data: expect.objectContaining({ provider: 'assigned', role: actualRole }) }),
       ]));
@@ -176,7 +183,7 @@ describe('Runtime initializes the configured knowledge store', () => {
       const draft = runtimePlan();
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
-      await new ProjectGraphPersistenceService(repository).persistGraph(compileProjectGraph({
+      await new ProjectGraphPersistenceService(repository).persistGraph(materializeProjectGraph({
         draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-wiki',
       }));
       const planPath = container.control.abs('plan.P1.json');
@@ -241,7 +248,8 @@ describe('Runtime initializes the configured knowledge store', () => {
 });
 
 describe('Runtime preserves the Phase checkpoint across orchestration outcomes', () => {
-  it('retains the next Phase decomposition under the canonical Project at the actual run boundary', async () => {
+  it.each(['role-default', 'actor-override-with-disabled-default'] as const)(
+    'retains the next Phase decomposition under the canonical Project at the actual run boundary (%s)', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-next-phase-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
@@ -274,10 +282,14 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
       const plan = runtimePlan();
       plan.complexityAssessment = { level: 'moderate', rationale: 'Core followed by presentation polish.', splitRecommended: true, userForcedPhaseSplit: false };
       plan.implementationPhases.push({ ...nextPlan.implementationPhases[0]!, status: 'planned', dependsOn: ['P1'] });
-      const graph = compileProjectGraph({ draft: plan, topic: 'Deliver a small reporting utility.', projectName: 'runtime-next-phase' });
+      const graph = materializeProjectGraph({ draft: plan, topic: 'Deliver a small reporting utility.', projectName: 'runtime-next-phase' });
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      const plannerActor = mode === 'actor-override-with-disabled-default'
+        ? (await new RoleRegistry(repository).ensureOperationActor(graph.project.id, 'plan.decompose')).actor
+        : undefined;
+      if (plannerActor) await repository.update(reviseActor(plannerActor, { modelPool: 'assigned-planner' }), plannerActor.state);
       const planPath = container.control.abs('plan.P1.json');
       const phasePlanPath = container.control.abs('phasePlan.json');
       const store = new FilePlanStore();
@@ -292,18 +304,32 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
       const stop = new Error('Stop after retained next-Phase preparation.');
       const report = vi.spyOn(projectReports, 'generateProjectDevelopmentReport').mockRejectedValue(stop);
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+      const configPath = await writeConfig(root, url);
+      if (plannerActor) {
+        const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
+        configuration.llm.providers.assignedPlanner = { ...configuration.llm.providers.local, model: 'registered-planner-model' };
+        configuration.llm.pools['assigned-planner'] = ['assignedPlanner'];
+        configuration.llm.fallbacks = [];
+        await fs.writeFile(configPath, YAML.stringify(configuration));
+        await fs.writeFile(path.join(root, LLM_USER_SCORES_FILE), 'local: 0\nassignedPlanner: 1\n');
+      }
       const result = await runExecute({ workspace: container.root, planPath: phasePlanPath,
-        configPath: await writeConfig(root, url), debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'),
+        configPath, debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'),
         io: silentRuntimeIO, recordReplayMode: 'off' });
       expect(result).toMatchObject({ status: 'error', exitCode: 5, message: stop.message });
       expect(run).toHaveBeenCalledTimes(1);
       expect(report).toHaveBeenCalledTimes(1);
       expect(unexpectedExecution).not.toHaveBeenCalled();
       expect(calls).toHaveLength(1);
+      expect(calls[0]!.model).toBe(plannerActor ? 'registered-planner-model' : 'initialization-only');
       const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(Boolean)
         .map(line => JSON.parse(line) as { messageId?: string; data?: { input?: BusinessRequestInput } });
       const original = events.find(event => event.messageId === 'llm.business_request_input')!.data!.input!;
-      expect(original.owner).toMatchObject({ kind: 'project-planning-operation', operation: 'phase-decomposition', projectId: graph.project.id });
+      expect(original.owner).toMatchObject({ kind: 'project-planning-operation', operation: 'phase-decomposition',
+        projectId: graph.project.id, actorId: plannerActor?.id ?? expect.any(String), role: 'planner',
+        roleVersion: plannerActor?.roleVersion ?? roleProfile('planner').version, work: 'plan.decompose',
+        modelPool: plannerActor ? 'assigned-planner' : 'planning', inheritFallbacks: !plannerActor,
+        allowedProviders: [plannerActor ? 'assignedPlanner' : 'local'] });
       expect(original.owner).not.toHaveProperty('phaseId');
       expect(original.auditContext).toMatchObject({ kind: 'planning-phase-decomposition', phaseId: 'P2', parseContext: { language: 'python', intent: 'feature' } });
       expect(original.messages).toEqual(calls[0]!.messages.slice(1));
@@ -337,7 +363,7 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
       const plan = runtimePlan();
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
-      await new ProjectGraphPersistenceService(repository).persistGraph(compileProjectGraph({
+      await new ProjectGraphPersistenceService(repository).persistGraph(materializeProjectGraph({
         draft: plan, topic: 'Deliver a small reporting utility.', projectName: 'runtime-checkpoint',
       }));
       const planPath = container.control.abs('plan.P1.json');
@@ -406,7 +432,7 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
 
 async function writeConfig(root: string, baseUrl = 'http://127.0.0.1:1/v1'): Promise<string> {
   const config = YAML.parse(await fs.readFile(path.resolve('config.example.yaml'), 'utf8')) as {
-    llm: { providers: Record<string, unknown>; roles: Record<string, string[]> };
+    llm: { providers: Record<string, unknown>; pools: Record<string, string[]> };
   };
   config.llm.providers = {
     local: {
@@ -415,7 +441,7 @@ async function writeConfig(root: string, baseUrl = 'http://127.0.0.1:1/v1'): Pro
       stream_first_token_timeout_ms: 1_000, stream_idle_timeout_ms: 1_000,
     },
   };
-  config.llm.roles = Object.fromEntries(ROLES.map((role) => [role, ['local']]));
+  config.llm.pools = Object.fromEntries(DEFAULT_MODEL_POOLS.map((role) => [role, ['local']]));
   const configPath = path.join(root, 'config.yaml');
   await fs.writeFile(configPath, YAML.stringify(config));
   return configPath;
@@ -425,15 +451,15 @@ function runtimePlan(iterationId = 'P1') {
   const baseline = (kind: string) => `tests/test_${kind}_${iterationId.toLowerCase()}.py`;
   const doc = (phase: Phase) => phaseDocForIteration(phase, iterationId)!;
   const testPlan = (phase: Phase) => testPlanDocForIteration(phase, iterationId)!;
-  const specifications: Array<{ phase: Phase; role: Step['role']; outputs: string[]; inputs?: string[] }> = [
-    { phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: [doc('REQUIREMENT_ANALYSIS'), testPlan('FUNCTIONAL_TEST'), baseline('functional')] },
-    { phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: [doc('HIGH_LEVEL_DESIGN'), testPlan('MODULE_TEST'), baseline('module')] },
-    { phase: 'DETAILED_DESIGN', role: 'Architect', outputs: [doc('DETAILED_DESIGN'), testPlan('INTEGRATION_TEST'), baseline('integration')] },
-    { phase: 'CODE', role: 'Coder', outputs: ['src/main.py', testPlan('UNIT_TEST'), baseline('unit')] },
-    { phase: 'UNIT_TEST', role: 'Tester', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
-    { phase: 'INTEGRATION_TEST', role: 'Tester', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
-    { phase: 'MODULE_TEST', role: 'Tester', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
-    { phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: [...deliveryDocsForIteration('application', iterationId)], inputs: [baseline('functional')] },
+  const specifications: Array<{ phase: Phase; outputs: string[]; inputs?: string[] }> = [
+    { phase: 'REQUIREMENT_ANALYSIS', outputs: [doc('REQUIREMENT_ANALYSIS'), testPlan('FUNCTIONAL_TEST'), baseline('functional')] },
+    { phase: 'HIGH_LEVEL_DESIGN', outputs: [doc('HIGH_LEVEL_DESIGN'), testPlan('MODULE_TEST'), baseline('module')] },
+    { phase: 'DETAILED_DESIGN', outputs: [doc('DETAILED_DESIGN'), testPlan('INTEGRATION_TEST'), baseline('integration')] },
+    { phase: 'CODE', outputs: ['src/main.py', testPlan('UNIT_TEST'), baseline('unit')] },
+    { phase: 'UNIT_TEST', outputs: [doc('UNIT_TEST')], inputs: [baseline('unit')] },
+    { phase: 'INTEGRATION_TEST', outputs: [doc('INTEGRATION_TEST')], inputs: [baseline('integration')] },
+    { phase: 'MODULE_TEST', outputs: [doc('MODULE_TEST')], inputs: [baseline('module')] },
+    { phase: 'FUNCTIONAL_TEST', outputs: [...deliveryDocsForIteration('application', iterationId)], inputs: [baseline('functional')] },
   ];
   return buildPlan({
     requirementDigest: 'Deliver a small reporting utility.',

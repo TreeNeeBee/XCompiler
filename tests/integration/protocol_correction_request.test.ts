@@ -78,7 +78,7 @@ async function fixture(options: { replies?: readonly Reply[]; plugins?: PluginHo
   const cfg = { llm: {
     providers: { primary: { type: 'openai', model: 'requested-alias', base_url: wire.url, api_key: '',
       retry: { max_retries: 0, max_delay: 0, jitter: 'none' } } },
-    roles: { Coder: ['primary'] }, fallbacks: [], role_fallbacks: {}, scores: {},
+    pools: { coding: ['primary'] }, fallbacks: [], scores: {},
   } } as unknown as XCompilerConfig;
   const audit = new AuditLogger({ root, command: 'protocol-correction-request', contentMode: 'redacted' });
   await audit.start();
@@ -89,7 +89,7 @@ async function fixture(options: { replies?: readonly Reply[]; plugins?: PluginHo
   const originalRouter = options.originalAudit === false
     ? new LLMRouter(cfg, undefined, undefined, undefined, undefined, probe) : router;
   let original: RoutedResponseEvidence | undefined;
-  await originalRouter.for('Coder').chat([{ role: 'user', content: 'Return the current count.' }], {
+  await originalRouter.forPool('coding', { label: 'python-developer' }).chat([{ role: 'user', content: 'Return the current count.' }], {
     scoreSuccess: false, onResponse: (response) => { original = response; },
   });
   if (!original) throw new Error('Fixture requires the real Router response callback');

@@ -29,6 +29,8 @@ export interface DebugBriefInput {
     category: 'llm-provider' | 'tool' | 'test' | 'quality' | 'contract' | 'internal';
     code: string;
     statusCode?: number;
+    /** Set by the Executor on `agent_execution_stalled`; read-only loops are tool loops. */
+    stallKind?: string;
   };
 }
 
@@ -89,6 +91,7 @@ function typedFailureCategory(failure: NonNullable<DebugBriefInput['typedFailure
   if (failure.code.includes('dependency')) return 'dependency_error';
   if (failure.code.includes('network') || failure.code.includes('http')) return 'network_api_failure';
   if (failure.code.includes('loop')) return 'tool_loop';
+  if (failure.stallKind === 'read-only-loop' || failure.stallKind === 'read-only-recovery-loop') return 'tool_loop';
   return 'exception';
 }
 

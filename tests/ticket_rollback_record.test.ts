@@ -30,8 +30,6 @@ function ticket(): Ticket {
     workKind: 'planned-work',
     projectId: '019fd0e5-5210-7e03-9b5e-4876a0541eff',
     phaseId: '019fd0e5-5210-7e03-9b5e-4876a0541efa',
-    role: 'developer',
-    agent: 'Coder',
     creatorActorId: '019fd0e5-5210-7e03-9b5e-4876a0541efb',
     rootTicketId: '019fd0e5-5210-7e03-9b5e-4876a0541efd',
     priority: 128,

@@ -7,14 +7,14 @@ import {
 } from '../src/application/execution/execution_turn_request.js';
 import {
   BusinessRequestInputError, StepExecutionOwnerSchema, assertBusinessRequestInputRecord,
-  assertBusinessRequestSnapshotOwner, businessRequestInputDigest, businessRequestRole,
+  assertBusinessRequestSnapshotOwner, businessRequestInputDigest, businessRequestRole, businessRequestWork,
   createBusinessRequestInputRecord, validateBusinessRequestInput, type BusinessRequestInput,
 } from '../src/application/execution/business_request_input.js';
 import {
   assertBusinessRequestAttemptInput, createBusinessRequestAttemptRecord, validateBusinessRequestAttempt,
 } from '../src/application/execution/business_request_attempt.js';
 import { PLAN_VERSION, PlanSchema, StepSchema } from '../src/domain/planning/execution_plan.js';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
 import { projectExecutionPlan } from '../src/application/execution/execution_adapter.js';
 import { BugTicketSchema, ChangeRequestTicketSchema, EnhancementTicketSchema, WorkTicketSchema } from '../src/domain/tickets/ticket.js';
@@ -32,7 +32,8 @@ const stamp = '2026-10-15T01:02:03.000Z';
 
 function scope(): ExecutionRequestScope {
   return { projectId: objectId(1), phaseId: objectId(2), stepId: objectId(3), ticketId: objectId(4),
-    executionId: id(5), role: 'Coder', actorId: objectId(6), assignmentId: objectId(7), providerPool: ['assigned-provider'] };
+    executionId: id(5), role: 'python-developer', work: 'code.implement', actorId: objectId(6), assignmentId: objectId(7),
+    roleVersion: '1', modelPool: 'coding', inheritFallbacks: false, allowedProviders: ['assigned-provider'] };
 }
 
 function payload(): ExecutionTurnPayload {
@@ -41,13 +42,13 @@ function payload(): ExecutionTurnPayload {
     promptContext: {
       step: { ...StepSchema.parse({ id: 'S004', phase: 'CODE', title: 'Implement approved calculation',
         description: 'Implement the accepted design.', systemPrompt: 'Keep # literal.\r\nPreserve scope.',
-        role: 'Coder', tools: ['write_file'], inputs: ['docs/design.md'], outputs: ['src/calculation.py'],
+        tools: ['write_file'], inputs: ['docs/design.md'], outputs: ['src/calculation.py'],
         acceptance: 'Accepted calculation works.' }), id: scope().stepId },
-      executionRole: 'Coder', baselineTestExecution: 'execute', baselineTestExecutionReason: 'code-step',
+      work: 'code.implement', role: 'python-developer', baselineTestExecution: 'execute', baselineTestExecutionReason: 'code-step',
       contextSnippets: [{ path: 'docs/design.md', content: 'Original design.\r\nKeep "quoted" inputs.' }],
       ticket: WorkTicketSchema.parse({ id: objectId(4), projectId: objectId(1), name: 'Implementation task',
         objectType: 'ticket', schemaVersion: 1, revision: 1, createdAt: stamp, updatedAt: stamp,
-        type: 'task', phaseId: objectId(2), stepId: objectId(3), role: 'developer', agent: 'Coder',
+        type: 'task', phaseId: objectId(2), stepId: objectId(3),
         creatorActorId: objectId(8), priority: 1, rootTicketId: objectId(4), description: 'Implement calculation.',
         acceptance: ['Calculation works.'], state: 'in_progress', source: { kind: 'plan', correlationId: objectId(9) },
         submittedAt: stamp, workKind: 'planned-work', activeAssignmentId: objectId(7) }),
@@ -92,11 +93,11 @@ describe('retained execution turn materials', () => {
         status: 'current', scope: ['Calculation'], deliverables: ['Calculation module'], dependsOn: [] }],
       globalPrompt: '', createdAt: stamp, steps: STEP_TYPES.map((phase, index) => ({
         id: `S${String(index + 1).padStart(3, '0')}`, phase, iterationId: 'P1', title: phase,
-        description: `Deliver ${phase}.`, systemPrompt: 'Keep the accepted scope.', role: 'Coder', tools: ['write_file'],
+        description: `Deliver ${phase}.`, systemPrompt: 'Keep the accepted scope.', tools: ['write_file'],
         inputs: [], outputs: [`docs/${index + 1}.md`], dependsOn: index === 0 ? [] : [`S${String(index).padStart(3, '0')}`],
         acceptance: 'The owned contract passes.',
       })) });
-    const graph = compileProjectGraph({ draft, topic: 'Deliver the accepted calculation.', projectName: 'execution-projection' });
+    const graph = materializeProjectGraph({ draft, topic: 'Deliver the accepted calculation.', projectName: 'execution-projection' });
     const phase = graph.phases[0]!;
     const coding = graph.steps.find(step => step.type === 'CODE')!;
     const ticket = graph.tickets.find(candidate => candidate.type === 'story' && candidate.stepId === coding.id)!;
@@ -107,12 +108,13 @@ describe('retained execution turn materials', () => {
     expect(StepSchema.safeParse(step).success).toBe(false);
     const retained = payload();
     retained.promptContext.step = step;
-    retained.promptContext.executionRole = coding.agent;
+    retained.promptContext.work = 'code.implement';
     retained.promptContext.ticket = ticket;
     expect(validateExecutionTurnPayload(retained).promptContext.step).toEqual(step);
     const captured = validateBusinessRequestInput({ ...input(), auditContext: retained, owner: {
       kind: 'step-execution', projectId: graph.project.id, phaseId: phase.id, stepId: coding.id,
-      ticketId: ticket.id, executionId: id(5), role: coding.agent,
+      ticketId: ticket.id, executionId: id(5), role: 'python-developer', roleVersion: '1', work: 'code.implement',
+      modelPool: 'coding', inheritFallbacks: false, allowedProviders: ['assigned-provider'],
     } });
     expect(captured.owner).toMatchObject({ stepId: coding.id, ticketId: ticket.id });
   });
@@ -149,7 +151,7 @@ describe('retained execution turn materials', () => {
     (value: ExecutionTurnPayload) => ({ ...value, round: 0 }),
     (value: ExecutionTurnPayload) => ({ ...value, round: 1.5 }),
     (value: ExecutionTurnPayload) => ({ ...value, locale: 'fr' }),
-    (value: ExecutionTurnPayload) => ({ ...value, providerPool: ['unbound-provider'] }),
+    (value: ExecutionTurnPayload) => ({ ...value, modelPool: 'unbound-pool' }),
     (value: ExecutionTurnPayload) => ({ ...value, parseContext: { language: 'unknown' } }),
     (value: ExecutionTurnPayload) => ({ ...value, tools: [...value.tools, value.tools[0]] }),
     (value: ExecutionTurnPayload) => ({ ...value, tools: [{ ...value.tools[0], name: '  ' }] }),
@@ -191,30 +193,36 @@ describe('retained execution turn materials', () => {
 
 describe('execution request ownership', () => {
   it('pins canonical scope and the assigned Actor pool independently of mutable request input', () => {
-    const original = scope();
+    const original = { ...scope(), allowedProviders: [...scope().allowedProviders] };
     const retained = validateExecutionRequestScope(original);
-    original.providerPool![0] = 'unassigned-provider';
-    expect(retained.providerPool).toEqual(['assigned-provider']);
-    expect(Object.isFrozen(retained.providerPool)).toBe(true);
+    original.modelPool = 'unassigned-pool';
+    original.allowedProviders.push('unassigned-provider');
+    expect(retained.modelPool).toBe('coding');
+    expect(retained.allowedProviders).toEqual(['assigned-provider']);
+    expect(Object.isFrozen(retained.allowedProviders)).toBe(true);
+    expect(Object.isFrozen(retained)).toBe(true);
     expect(validateExecutionRequestScope({ ...scope(), projectId: scope().projectId.toUpperCase(),
       executionId: scope().executionId.toUpperCase() })).toEqual(scope());
     expect(StepExecutionOwnerSchema.parse(input().owner)).toEqual({ kind: 'step-execution', ...scope() });
     for (const field of ['projectId', 'phaseId', 'stepId', 'ticketId', 'actorId', 'assignmentId'] as const) {
       expect(() => validateExecutionRequestScope({ ...scope(), [field]: id(1) })).toThrow(ExecutionTurnRequestInputError);
     }
-    for (const changed of [{ role: 'ProjectManager' }, { executionId: 'S004' }, { stepId: 'S004' },
-      { providerPool: [] }, { providerPool: ['  '] }, { domainState: 'in_progress' }]) {
+    for (const changed of [{ role: 'Coder' }, { work: 'Debugger' }, { executionId: 'S004' }, { stepId: 'S004' },
+      { modelPool: '' }, { modelPool: '  ' }, { roleVersion: '' }, { inheritFallbacks: undefined },
+      { allowedProviders: undefined }, { allowedProviders: [] }, { allowedProviders: ['assigned-provider', 'assigned-provider'] },
+      { providerPool: ['legacy'] }, { domainState: 'in_progress' }]) {
       expect(() => validateExecutionRequestScope({ ...scope(), ...changed })).toThrow(ExecutionTurnRequestInputError);
     }
   });
 
-  it('binds request scope, template, protocol and original execution role before capture', () => {
+  it('binds request scope, template, protocol and original work before capture', () => {
     const original = input();
-    expect(businessRequestRole(validateBusinessRequestInput(original).owner)).toBe('Coder');
+    expect(businessRequestRole(validateBusinessRequestInput(original).owner)).toBe('python-developer');
     for (const changed of [
       { auditContext: undefined }, { templateVersion: 'execution-turn/2' },
       { outputProtocol: { ...EXECUTION_TURN_PROTOCOL, transformations: [] } },
-      { owner: { ...original.owner, role: 'Debugger' } },
+      { owner: { ...original.owner, work: 'repair.debug' } },
+      { owner: { ...original.owner, role: 'typescript-developer' } },
       { owner: { ...original.owner, ticketId: objectId(14) } },
       { owner: { ...original.owner, projectId: objectId(11) } },
       { owner: { ...original.owner, phaseId: objectId(12) } },
@@ -224,17 +232,17 @@ describe('execution request ownership', () => {
         step: { ...payload().promptContext.step, id: 'S004' } } } },
     ]) expect(() => validateBusinessRequestInput({ ...original, ...changed })).toThrow(BusinessRequestInputError);
     const debug = payload();
-    debug.promptContext.executionRole = 'Debugger';
-    expect(businessRequestRole(validateBusinessRequestInput({ ...original,
-      owner: { ...original.owner, role: 'Debugger' }, auditContext: debug }).owner)).toBe('Debugger');
+    debug.promptContext.work = 'repair.debug';
+    expect(businessRequestWork(validateBusinessRequestInput({ ...original,
+      owner: { ...original.owner, work: 'repair.debug' }, auditContext: debug }).owner)).toBe('repair.debug');
   });
 
-  it('requires the actual Project, language, execution role and fixed scenario in the Rule snapshot', () => {
+  it('requires the actual Project, language, role and work in the Rule snapshot', () => {
     const original = input();
-    const context: RuleContext = { projectId: objectId(1), role: 'Coder', language: 'python', scenario: 'step-execution' };
+    const context: RuleContext = { projectId: objectId(1), role: 'python-developer', language: 'python', work: 'code.implement' };
     expect(() => assertBusinessRequestSnapshotOwner(snapshot(context), original.owner, original.auditContext)).not.toThrow();
-    for (const changed of [{ projectId: undefined }, { projectId: objectId(11) }, { role: 'Planner' },
-      { language: 'typescript' as const }, { scenario: 'planning-phase-decomposition' }]) {
+    for (const changed of [{ projectId: undefined }, { projectId: objectId(11) }, { role: 'planner' as const },
+      { language: 'typescript' as const }, { work: 'plan.decompose' as const }]) {
       expect(() => assertBusinessRequestSnapshotOwner(snapshot({ ...context, ...changed }), original.owner, original.auditContext))
         .toThrow(BusinessRequestInputError);
     }
@@ -315,7 +323,10 @@ describe('execution request ownership', () => {
     expect(record.owner).toEqual(original.owner);
     for (const changed of [
       { ...original, owner: { ...original.owner, executionId: id(15) } },
-      { ...original, owner: { ...original.owner, providerPool: ['different-original-pool'] } },
+      { ...original, owner: { ...original.owner, modelPool: 'different-original-pool' } },
+      { ...original, owner: { ...original.owner, roleVersion: '2' } },
+      { ...original, owner: { ...original.owner, inheritFallbacks: true } },
+      { ...original, owner: { ...original.owner, allowedProviders: ['different-original-provider'] } },
       { ...original, auditContext: { ...payload(), round: 2 } },
       { ...original, auditContext: { ...payload(), validation: { ...payload().validation, completionQuality: true } } },
       { ...original, auditContext: { ...payload(), initialMissingOutputs: [] } },
@@ -330,17 +341,17 @@ describe('execution request ownership', () => {
     const original = input();
     const record = createBusinessRequestInputRecord(original, { recordId: id(30), createdAt: stamp });
     const attempt = validateBusinessRequestAttempt({ schemaVersion: 1, logicalRequestId: original.logicalRequestId,
-      providerAttemptId: id(31), provider: 'assigned-provider', model: 'actual-model', role: 'Coder', preparedAt: stamp,
+      providerAttemptId: id(31), provider: 'assigned-provider', model: 'actual-model', role: 'python-developer', preparedAt: stamp,
       contextWindowTokens: 32768, maxTokens: 4096, messages: original.messages,
       requestBinding: { schemaVersion: 1, kind: 'business-input', logicalRequestId: original.logicalRequestId,
         snapshotDigest: record.snapshotDigest, promptVersion: 'rule-business-request/1', requestDigest: `sha256:${'b'.repeat(64)}`,
         inputRecordId: record.recordId, inputRecordDigest: record.digest, inputDigest: record.inputDigest } });
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(attempt), record)).not.toThrow();
-    const wrongRole = validateBusinessRequestAttempt({ ...attempt, role: 'Debugger' });
+    const wrongRole = validateBusinessRequestAttempt({ ...attempt, role: 'typescript-developer' });
     expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(wrongRole), record))
       .toThrow(expect.objectContaining({ code: 'business_request_attempt_failed', reason: 'identity_conflict' }));
-    const unassignedProvider = validateBusinessRequestAttempt({ ...attempt, provider: 'unassigned-provider' });
-    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(unassignedProvider), record))
+    const wrongProvider = validateBusinessRequestAttempt({ ...attempt, provider: 'unassigned-provider' });
+    expect(() => assertBusinessRequestAttemptInput(createBusinessRequestAttemptRecord(wrongProvider), record))
       .toThrow(expect.objectContaining({ code: 'business_request_attempt_failed', reason: 'identity_conflict' }));
   });
 });

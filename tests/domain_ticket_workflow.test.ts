@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
 import { CorrectiveWorkflowService } from '../src/application/project_management/corrective_workflow_service.js';
@@ -24,7 +24,7 @@ describe('TicketWorkflow', () => {
     const { graph, repository, workflow, registration } = await setup();
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const open = (summary: string) => workflow.openBug({
       creatorActorId: tester.id,
       failedStep: integration,
@@ -110,7 +110,7 @@ describe('TicketWorkflow', () => {
     await repository.update(boundStory, boundStory.state);
 
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'developer')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -143,7 +143,7 @@ describe('TicketWorkflow', () => {
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
 
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -175,7 +175,7 @@ describe('TicketWorkflow', () => {
     await attachPassingAssessment(repository, detailed);
     const request = await workflow.openChangeRequest({
       sourceTicketIds: [bug.id],
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       triggerStepId: integration.id,
       sourceStepId: detailed.id,
       targetStepId: integration.id,
@@ -246,7 +246,7 @@ describe('TicketWorkflow', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const functional = graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const bug = await workflow.openBug({
       creatorActorId: tester.id,
       failedStep: integration,
@@ -350,7 +350,7 @@ describe('TicketWorkflow', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -378,7 +378,7 @@ describe('TicketWorkflow', () => {
     });
 
     await expect(workflow.openChangeRequest({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       sourceTicketIds: [bug.id],
       triggerStepId: integration.id,
       sourceStepId: detailed.id,
@@ -418,7 +418,7 @@ describe('TicketWorkflow', () => {
       switchProvider: false,
     };
     const routeArgs = {
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStepId: integration.id,
       message: 'adapter returned undefined',
       summary: 'adapter returned undefined',
@@ -455,7 +455,7 @@ describe('TicketWorkflow', () => {
       repository,
       graph,
       [integration.id],
-      graph.actors.find((actor) => actor.role === 'tester')!.id,
+      graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
     );
     const routedParent = await registration.routeAndAssign(parent.id);
     await state.transitionTicketPath(routedParent.ticket, ['in_progress']);
@@ -484,7 +484,7 @@ describe('TicketWorkflow', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -546,7 +546,7 @@ describe('TicketWorkflow', () => {
     const { graph, repository, workflow, registration } = await setup();
     const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const coding = graph.steps.find((step) => step.type === 'CODE')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!.id;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id;
     const enhancement = await workflow.openEnhancement({
       creatorActorId: tester,
       sourceStep: unit,
@@ -614,7 +614,7 @@ describe('TicketWorkflow', () => {
     const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const coding = graph.steps.find((step) => step.type === 'CODE')!;
     const enhancement = await workflow.openEnhancement({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       sourceStep: unit,
       targetStep: coding,
       verificationStep: unit,
@@ -633,7 +633,7 @@ describe('TicketWorkflow', () => {
     });
     await attachPassingAssessment(repository, coding);
     const request = await workflow.openChangeRequest({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       sourceTicketIds: [enhancement.id],
       triggerStepId: unit.id,
       sourceStepId: coding.id,
@@ -716,7 +716,7 @@ describe('TicketWorkflow', () => {
       requestingStepId: coding.id,
       packages: ['zod', 'nanoid'],
       reason: 'The parser needs schema validation.',
-      creatorActorId: graph.actors.find((actor) => actor.role === 'developer')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!.id,
       correlationId: createObjectId(),
     });
 
@@ -737,7 +737,7 @@ describe('TicketWorkflow', () => {
       requestingStepId: coding.id,
       packages: ['nanoid', 'zod'],
       reason: 'still needed',
-      creatorActorId: graph.actors.find((actor) => actor.role === 'developer')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!.id,
       correlationId: createObjectId(),
     });
     expect(again.id).toBe(request.id);
@@ -902,7 +902,7 @@ describe('TicketWorkflow', () => {
     const state = new ProjectStateService(repository);
     const design = graph.steps.find((step) => step.type === 'HIGH_LEVEL_DESIGN')!;
     const coding = graph.steps.find((step) => step.type === 'CODE')!;
-    const developer = graph.actors.find((actor) => actor.role === 'developer')!;
+    const developer = graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!;
     for (const step of [design, coding]) {
       let current = await state.requireStep(step.id);
       current = await state.transitionStep(current, 'in_progress');
@@ -980,7 +980,7 @@ describe('TicketWorkflow', () => {
       requestingStepId: coding.id,
       packages: ['zod'],
       reason: 'schema validation',
-      creatorActorId: graph.actors.find((actor) => actor.role === 'developer')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId.endsWith('-developer'))!.id,
       correlationId: createObjectId(),
     });
 
@@ -1022,7 +1022,7 @@ describe('TicketWorkflow', () => {
     expect(owner.activeAssignmentIds).toContain(routed.assignment.id);
 
     await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: unit,
       targetStep: coding,
       verificationStep: unit,
@@ -1059,7 +1059,7 @@ describe('TicketWorkflow', () => {
     await new ProjectStateService(repository).transitionTicketPath(story, ['in_progress', 'resolved']);
 
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -1090,7 +1090,7 @@ describe('TicketWorkflow', () => {
     const state = new ProjectStateService(repository);
     const routedStory = await registration.routeAndAssign(story.id, { forStepId: coding.id });
     await state.transitionTicketPath(routedStory.ticket, ['in_progress', 'resolved', 'closed']);
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const parent = await openChangeRequestFor(repository, graph, [unit.id], tester.id);
     await registration.register(parent.id);
     const routedParent = await registration.routeAndAssign(parent.id, { forStepId: unit.id });
@@ -1124,7 +1124,7 @@ describe('TicketWorkflow', () => {
     const design = graph.steps.find((step) => step.type === 'HIGH_LEVEL_DESIGN')!;
     const functional = graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
     const moduleTest = graph.steps.find((step) => step.type === 'MODULE_TEST')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const bug = await workflow.openBug({
       creatorActorId: tester.id,
       failedStep: functional,
@@ -1178,7 +1178,7 @@ describe('TicketWorkflow', () => {
     await state.transitionTicketPath(routedCoding.ticket, ['in_progress', 'resolved', 'closed']);
     const routedUnit = await registration.routeAndAssign(unitStory.id, { forStepId: unit.id });
     await state.transitionTicketPath(routedUnit.ticket, ['in_progress', 'resolved', 'closed']);
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const parent = await openChangeRequestFor(repository, graph, [unit.id], tester.id);
     await registration.register(parent.id);
     const routedParent = await registration.routeAndAssign(parent.id, { forStepId: unit.id });
@@ -1219,7 +1219,7 @@ describe('TicketWorkflow', () => {
     const moduleTest = graph.steps.find((step) => step.type === 'MODULE_TEST')!;
     const design = graph.steps.find((step) => step.type === 'HIGH_LEVEL_DESIGN')!;
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: moduleTest,
       targetStep: design,
       verificationStep: moduleTest,
@@ -1290,7 +1290,7 @@ describe('TicketWorkflow', () => {
     ]);
 
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -1318,7 +1318,7 @@ describe('TicketWorkflow', () => {
     const { graph, repository, workflow, registration } = await setup();
     const unit = graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const coding = graph.steps.find((step) => step.type === 'CODE')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const parent = await openChangeRequestFor(repository, graph, [unit.id], tester.id);
     const bug = await workflow.openBug({
       creatorActorId: tester.id,
@@ -1377,7 +1377,7 @@ describe('TicketWorkflow', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const functional = graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
-    const tester = graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const bug = await workflow.openBug({
       creatorActorId: tester.id,
       failedStep: integration,
@@ -1473,7 +1473,7 @@ async function setup() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-ticket-workflow-'));
   const repository = new DomainObjectRepository(new Workspace(root));
   await repository.load();
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a TypeScript service.',
     projectName: 'service',
@@ -1624,7 +1624,7 @@ describe('Change Request hop merging', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
     const bug = await workflow.openBug({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: integration,
       targetStep: detailed,
       verificationStep: integration,
@@ -1657,7 +1657,7 @@ describe('Change Request hop merging', () => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
     return {
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       triggerStepId: integration.id,
       sourceStepId: detailed.id,
       targetStepId: graph.steps.find((step) => step.type === targetType)!.id,
@@ -1950,7 +1950,7 @@ describe('verification supplement routing', () => {
       '1 failed, 36 passed',
     ].join('\n');
     const bug = await controller.routeFailure({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStepId: functional.id,
       message: evidence,
       summary: 'FUNCTIONAL_TEST executable test gate failed',
@@ -1975,7 +1975,7 @@ describe('verification supplement routing', () => {
       '1 failed, 36 passed',
     ].join('\n');
     const bug = await controller.routeFailure({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStepId: functional.id,
       message: evidence,
       summary: 'FUNCTIONAL_TEST executable test gate failed',
@@ -2003,7 +2003,7 @@ describe('verification supplement routing', () => {
       '2 failed, 35 passed',
     ].join('\n');
     const bug = await controller.routeFailure({
-      creatorActorId: graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStepId: functional.id,
       message: evidence,
       summary: 'FUNCTIONAL_TEST executable test gate failed',

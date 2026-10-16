@@ -12,7 +12,7 @@ import { workModeFor } from '../src/application/project_management/work_schedule
 import { TicketRegistrationService } from '../src/application/project_management/ticket_registration_service.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { createObjectEnvelope } from '../src/domain/objects/object_envelope.js';
-import { compileProjectGraph } from '../src/domain/planning/compiler.js';
+import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketSchema } from '../src/domain/tickets/ticket.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../src/workspace/workspace.js';
@@ -135,7 +135,7 @@ describe('PM WorkScheduler', () => {
     const unitStep = fixture.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const unitStory = fixture.graph.tickets.find((ticket) =>
       ticket.type === 'story' && ticket.stepId === unitStep.id)!;
-    const tester = fixture.graph.actors.find((actor) => actor.role === 'tester')!;
+    const tester = fixture.graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const {
       workKind: _workKind,
       verificationTicketId: _verificationTicketId,
@@ -197,7 +197,7 @@ describe('PM WorkScheduler', () => {
     const step = fixture.graph.steps.find((candidate) => candidate.type === 'REQUIREMENT_ANALYSIS')!;
     const story = fixture.graph.tickets.find((ticket) =>
       ticket.type === 'story' && ticket.stepId === step.id)!;
-    const creator = fixture.graph.actors.find((actor) => actor.role === 'requirements-engineer')!;
+    const creator = fixture.graph.actors.find((actor) => actor.roleId === 'requirements-analyst')!;
     const {
       workKind: _workKind,
       verificationTicketId: _verificationTicketId,
@@ -342,7 +342,7 @@ describe('PM WorkScheduler', () => {
     await state.transitionStep(await state.requireStep(design.id), 'reopened');
 
     const bug = await new TicketWorkflow(fixture.repository).openBug({
-      creatorActorId: fixture.graph.actors.find((actor) => actor.role === 'tester')!.id,
+      creatorActorId: fixture.graph.actors.find((actor) => actor.roleId === 'test-engineer')!.id,
       failedStep: await state.requireStep(late.id),
       targetStep: await state.requireStep(repaired.id),
       verificationStep: await state.requireStep(late.id),
@@ -379,7 +379,7 @@ async function setup() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-pm-scheduler-'));
   const repository = new DomainObjectRepository(new Workspace(root));
   await repository.load();
-  const graph = compileProjectGraph({
+  const graph = materializeProjectGraph({
     draft: samplePlan(),
     topic: 'Build a TypeScript service.',
     projectName: 'service',

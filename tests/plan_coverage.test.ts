@@ -26,9 +26,9 @@ function mkStep(over: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
 describe('calibratePlanCoverage', () => {
   it('appends a synthetic UNIT_TEST step covering all uncovered CODE steps when planner forgot UNIT_TEST entirely', () => {
     const steps: Step[] = [
-      mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
-      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
-      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
+      mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
+      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
       mkStep({ id: 'S004', phase: 'CODE', outputs: ['src/dbc_parser.py'], dependsOn: ['S003'] }),
       mkStep({ id: 'S005', phase: 'CODE', outputs: ['src/excel_exporter.py'], dependsOn: ['S004'] }),
     ];
@@ -36,7 +36,7 @@ describe('calibratePlanCoverage', () => {
     expect(out.length).toBe(6);
     const test = out[5]!;
     expect(test.phase).toBe('UNIT_TEST');
-    expect(test.role).toBe('Tester');
+    expect(test).not.toHaveProperty('role');
     expect(test.id).toBe('S006');
     expect(test.dependsOn).toEqual(['S004', 'S005']);
     expect(test.outputs).toEqual(['docs/05-unit-test.md']);
@@ -54,7 +54,7 @@ describe('calibratePlanCoverage', () => {
       mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/a.py'] }),
       mkStep({ id: 'S002', phase: 'CODE', outputs: ['src/b.py'], dependsOn: ['S001'] }),
       // chain-style: only one UNIT_TEST that depends on S002 — covers S001 transitively
-      mkStep({ id: 'S003', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_b.py'], dependsOn: ['S002'] }),
+      mkStep({ id: 'S003', phase: 'UNIT_TEST', outputs: ['tests/test_b.py'], dependsOn: ['S002'] }),
     ];
     const out = calibratePlanCoverage(steps);
     expect(out.length).toBe(3);
@@ -68,7 +68,7 @@ describe('calibratePlanCoverage', () => {
     const steps: Step[] = [
       mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/a.py'] }),
       mkStep({ id: 'S002', phase: 'CODE', outputs: ['src/b.py'] }),
-      mkStep({ id: 'S003', phase: 'UNIT_TEST', role: 'Tester', outputs: ['tests/test_a.py'], dependsOn: ['S001'] }),
+      mkStep({ id: 'S003', phase: 'UNIT_TEST', outputs: ['tests/test_a.py'], dependsOn: ['S001'] }),
     ];
     const out = calibratePlanCoverage(steps);
     expect(out.length).toBe(4);
@@ -80,21 +80,18 @@ describe('calibratePlanCoverage', () => {
       mkStep({
         id: 'S000',
         phase: 'DETAILED_DESIGN',
-        role: 'Architect',
         outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'],
       }),
       mkStep({ id: 'S001', phase: 'CODE', outputs: ['src/app.py'] }),
       mkStep({
         id: 'S002',
         phase: 'UNIT_TEST',
-        role: 'Tester',
         outputs: ['docs/05-unit-test.md', 'reports/unit-test-report.md'],
         dependsOn: ['S001'],
       }),
       mkStep({
         id: 'S003',
         phase: 'INTEGRATION_TEST',
-        role: 'Tester',
         outputs: ['docs/06-integration-test.md'],
         dependsOn: ['S002'],
       }),
@@ -132,7 +129,6 @@ describe('calibratePlanCoverage', () => {
       mkStep({
         id: 'S002',
         phase: 'UNIT_TEST',
-        role: 'Tester',
         inputs: [
           'tests/test_app.py',
           'tests/supplements/unit-supplement.py',
@@ -165,14 +161,14 @@ describe('calibratePlanCoverage', () => {
 
   it('rewires downstream test phases to the synthetic UNIT_TEST step so the calibrated plan fully passes lint', () => {
     const steps: Step[] = [
-      mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', role: 'Planner', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
-      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', role: 'Architect', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
-      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', role: 'Architect', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
+      mkStep({ id: 'S001', phase: 'REQUIREMENT_ANALYSIS', outputs: ['docs/01-requirement-analysis.md', 'docs/tests/functional-test-plan.md'] }),
+      mkStep({ id: 'S002', phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md'], dependsOn: ['S001'] }),
+      mkStep({ id: 'S003', phase: 'DETAILED_DESIGN', outputs: ['docs/03-detailed-design.md', 'docs/tests/integration-test-plan.md'], dependsOn: ['S002'] }),
       mkStep({ id: 'S004', phase: 'CODE', outputs: ['src/dbc_parser.py', 'docs/tests/unit-test-plan.md'], dependsOn: ['S003'] }),
       mkStep({ id: 'S005', phase: 'CODE', outputs: ['src/excel_exporter.py'], dependsOn: ['S004'] }),
-      mkStep({ id: 'S006', phase: 'INTEGRATION_TEST', role: 'Tester', outputs: ['docs/06-integration-test.md'], dependsOn: ['S005'] }),
-      mkStep({ id: 'S007', phase: 'MODULE_TEST', role: 'Tester', outputs: ['docs/07-module-test.md'], dependsOn: ['S006'] }),
-      mkStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', role: 'Tester', outputs: [...baseDeliveryDocs], dependsOn: ['S007'] }),
+      mkStep({ id: 'S006', phase: 'INTEGRATION_TEST', outputs: ['docs/06-integration-test.md'], dependsOn: ['S005'] }),
+      mkStep({ id: 'S007', phase: 'MODULE_TEST', outputs: ['docs/07-module-test.md'], dependsOn: ['S006'] }),
+      mkStep({ id: 'S008', phase: 'FUNCTIONAL_TEST', outputs: [...baseDeliveryDocs], dependsOn: ['S007'] }),
     ];
     const calibrated = calibratePlanCoverage(steps);
     const plan: Plan = {

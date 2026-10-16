@@ -6,7 +6,7 @@ import {
 } from '../application/execution/business_request_input.js';
 import {
   judgeScenarioOutcome, readScenarioOutcomeMessages, consumeScenarioOutcomeProtocol,
-  SCENARIO_OUTCOME_CONTEXT, SCENARIO_OUTCOME_RULE,
+  SCENARIO_OUTCOME_RULE,
   SCENARIO_OUTCOME_TEMPLATE_VERSION, SCENARIO_OUTCOME_PROTOCOL,
   type ScenarioArtifactReader,
 } from '../application/execution/scenario_outcome_judge.js';
@@ -22,6 +22,9 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 import { createRuntimeBusinessRequestRecovery, sendRuntimeBusinessResponse } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
+import { OperationActorBindingSchema, type OperationActorBinding } from '../application/execution/execution_turn_request.js';
+import { roleProfile } from '../domain/workflow/role.js';
 
 /** A new execution is judged from current evidence; a scenario name never grants verdict reuse. */
 export async function judgeRuntimeScenarioOutcome(input: {
@@ -32,28 +35,42 @@ export async function judgeRuntimeScenarioOutcome(input: {
   audit: AuditLogger;
   projectId: string;
   phaseId: string;
+  actor: OperationActorBinding;
   before: readonly ScenarioArtifactSnapshot[];
   scenario: DeliveryGateScenario;
   scene: DeliveryGateScene;
   requirementDigest?: string;
+  acceptedContractChanges?: readonly AcceptedContractChange[];
   artifacts?: ScenarioArtifactReader;
   signal?: AbortSignal;
 }) {
   const { container, audit, router, signal } = input;
   signal?.throwIfAborted();
   const logicalRequestId = randomUUID();
+  const parsedActor = OperationActorBindingSchema.safeParse(input.actor);
+  if (!parsedActor.success) throw new BusinessRequestInputError('invalid', {
+    logicalRequestId, field: 'scenario_actor_binding',
+  }, { cause: parsedActor.error });
+  const actor = parsedActor.data;
+  if (actor.role !== 'project-manager') throw new BusinessRequestInputError('invalid', {
+    logicalRequestId, field: 'scenario_actor_role',
+  });
+  const modelPool = router.resolvePool(actor.modelPool ?? roleProfile(actor.role).defaultPool,
+    { inheritFallbacks: actor.modelPool === undefined });
   const owner = Object.freeze(ScenarioJudgementOwnerSchema.parse({
     kind: 'scenario-judgement', projectId: input.projectId, phaseId: input.phaseId, executionId: randomUUID(),
+    actorId: actor.actorId, role: actor.role, roleVersion: actor.roleVersion, work: 'judge.scenario', ...modelPool,
   }));
   let processed: Awaited<ReturnType<typeof sendRuntimeBusinessResponse>> | undefined;
   const verdict = await judgeScenarioOutcome({
     before: input.before, scenario: input.scenario, scene: input.scene,
-    requirementDigest: input.requirementDigest, artifacts: input.artifacts, signal,
+    requirementDigest: input.requirementDigest, acceptedContractChanges: input.acceptedContractChanges,
+    artifacts: input.artifacts, signal,
     send: async (messages) => {
       const payload = readScenarioOutcomeMessages(messages);
       const snapshot = await prepareRuntimeRuleRequest({
-        config: input.config, container, recordReplay: input.recordReplay, router, logicalRequestId,
-        context: { projectId: owner.projectId, role: 'ProjectManager', scenario: SCENARIO_OUTCOME_CONTEXT },
+        config: input.config, container, recordReplay: input.recordReplay, router, modelPool, logicalRequestId,
+        context: { projectId: owner.projectId, role: 'project-manager', work: 'judge.scenario' },
         required: [SCENARIO_OUTCOME_RULE], taskSummary: payload.expectation, signal,
       });
       signal?.throwIfAborted();
@@ -114,9 +131,9 @@ function assertScenarioInput(input: BusinessRequestInput): asserts input is Busi
 
 function assertScenarioSnapshot(snapshot: RuleRequestSnapshot, projectId: string, version?: string): void {
   const matching = snapshot.rules.filter((rule) => rule.ruleId.toLowerCase() === SCENARIO_OUTCOME_RULE.ruleId);
-  if (snapshot.requestKind !== 'business' || snapshot.context.role !== 'ProjectManager'
+  if (snapshot.requestKind !== 'business' || snapshot.context.role !== 'project-manager'
     || snapshot.context.projectId?.toLowerCase() !== projectId
-    || snapshot.context.scenario !== SCENARIO_OUTCOME_CONTEXT
+    || snapshot.context.work !== 'judge.scenario'
     || !snapshot.requiredRuleIds.some((id) => id.toLowerCase() === SCENARIO_OUTCOME_RULE.ruleId)
     || matching.length !== 1 || (version !== undefined && matching[0]!.ruleVersion !== version)) {
     throw new BusinessRequestInputError('snapshot_mismatch', {

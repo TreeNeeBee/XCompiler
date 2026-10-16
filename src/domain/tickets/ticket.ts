@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { assertStateTransition, type StateTransitions } from '../../util/state_machine.js';
 import { ObjectEnvelopeSchema, reviseObjectEnvelope } from '../objects/object_envelope.js';
 import { ObjectIdSchema, type ObjectId } from '../identity/object_id.js';
-import { DomainRoleSchema, ExecutingRoleSchema } from '../workflow/role.js';
 import { PendingReasonSchema } from '../workflow/pending_reason.js';
 import { STEP_TYPES } from '../steps/step.js';
 import { WORKSPACE_KINDS } from '../workspace/change_set.js';
@@ -162,8 +161,6 @@ const TicketBaseSchema = ObjectEnvelopeSchema.extend({
   type: z.enum(TICKET_TYPES),
   phaseId: ObjectIdSchema,
   stepId: ObjectIdSchema.optional(),
-  role: DomainRoleSchema,
-  agent: ExecutingRoleSchema,
   creatorActorId: ObjectIdSchema,
   requiredCapabilities: z.array(z.string().min(1)).default([]),
   priority: z.number().int().min(TICKET_PRIORITY_MIN).max(TICKET_PRIORITY_MAX),

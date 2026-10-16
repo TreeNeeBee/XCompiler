@@ -48,10 +48,17 @@ cp .env.example .env
 cp config.example.yaml config.yaml
 # 关键字段（详见 README.md 与 docs/openrouter.md）：
 #   llm.providers.<name>.type: openai | ollama
-#   llm.roles.{Planner|Architect|Coder|Tester|Debugger}: provider 名数组
+#   llm.pools.{management|planning|design|coding|testing}: provider 名数组
+#   llm.fallbacks: 角色默认池共用的可选 provider 名数组
 #   agent.sandboxes.python.mode / agent.sandboxes.typescript.mode: subprocess | docker
 #   agent.max_rounds_per_step / max_debug_rounds_per_step
 ```
+
+0.4 开发分支使用具名模型池，旧的 `llm.roles` 和 `llm.role_fallbacks` 配置需要改写。
+五个默认池都必须存在且非空；多个角色可以共用同一个池，池中的 provider 必须先在
+`llm.providers` 定义。角色默认池包含全局 `fallbacks`，Router 按有效评分选择允许的候选。
+执行者的 `modelPool` 显式覆盖则只使用覆盖池，不继承全局 fallback，即使覆盖池与默认池同名也是如此；
+它需要的备用 provider 应直接写进覆盖池。Debug 不再单独配置模型池，而是沿用 Step 执行者的池。
 
 ### 1.3 构建并安装为全局命令
 

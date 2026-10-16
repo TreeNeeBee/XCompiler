@@ -144,21 +144,20 @@ describe('OllamaClient streaming', () => {
       res.write(JSON.stringify({ message: { role: 'assistant', content: '{"requirementDigest":"x",' } }) + '\n');
       res.write(JSON.stringify({ message: { role: 'assistant', content: '"globalPrompt":"","dependencies":[],' } }) + '\n');
       const steps = [
-        ['S001', 'REQUIREMENT_ANALYSIS', 'Planner', ['docs/01-requirement-analysis.md']],
-        ['S002', 'HIGH_LEVEL_DESIGN', 'Architect', ['docs/02-high-level-design.md']],
-        ['S003', 'DETAILED_DESIGN', 'Architect', ['docs/03-detailed-design.md']],
-        ['S004', 'CODE', 'Coder', ['src/main.py']],
-        ['S005', 'UNIT_TEST', 'Tester', ['docs/05-unit-test.md']],
-        ['S006', 'INTEGRATION_TEST', 'Tester', ['docs/06-integration-test.md']],
-        ['S007', 'MODULE_TEST', 'Tester', ['docs/07-module-test.md']],
-        ['S008', 'FUNCTIONAL_TEST', 'Tester', ['docs/08-functional-test.md']],
-      ].map(([id, phase, role, outputs], index) => ({
+        ['S001', 'REQUIREMENT_ANALYSIS', ['docs/01-requirement-analysis.md']],
+        ['S002', 'HIGH_LEVEL_DESIGN', ['docs/02-high-level-design.md']],
+        ['S003', 'DETAILED_DESIGN', ['docs/03-detailed-design.md']],
+        ['S004', 'CODE', ['src/main.py']],
+        ['S005', 'UNIT_TEST', ['docs/05-unit-test.md']],
+        ['S006', 'INTEGRATION_TEST', ['docs/06-integration-test.md']],
+        ['S007', 'MODULE_TEST', ['docs/07-module-test.md']],
+        ['S008', 'FUNCTIONAL_TEST', ['docs/08-functional-test.md']],
+      ].map(([id, phase, outputs], index) => ({
         id,
         title: String(phase),
         description: 'd',
         systemPrompt: 'p',
         phase,
-        role,
         tools: [],
         inputs: [],
         outputs,

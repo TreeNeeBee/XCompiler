@@ -1,15 +1,7 @@
 import type { StepType } from '../steps/step.js';
 import type { TicketType } from '../tickets/ticket.js';
-import type { DomainRole, Role } from './role.js';
-
-const ROLE_CAPABILITIES: Readonly<Record<DomainRole, readonly string[]>> = {
-  'project-manager': ['project-management', 'phase-control', 'ticket-routing', 'delivery-control'],
-  'requirements-engineer': ['requirement-analysis', 'functional-test-design'],
-  'system-engineer': ['high-level-design', 'detailed-design', 'module-test-design', 'integration-test-design'],
-  integrator: ['integration-verification', 'contract-verification', 'risk-test-supplement'],
-  developer: ['code', 'unit-test-design', 'debug', 'change-implementation'],
-  tester: ['unit-verification', 'module-verification', 'functional-verification', 'risk-test-supplement'],
-};
+import { ROLE_PROFILES, type RoleId } from './role.js';
+import { defaultRoleForStep } from './work.js';
 
 /**
  * What each Step actually demands, as opposed to everything its role can do.
@@ -35,56 +27,26 @@ const TICKET_TYPE_CAPABILITY: Partial<Readonly<Record<TicketType, string>>> = {
   'change-request': 'change-implementation',
 };
 
-export function capabilitiesForRole(role: DomainRole): string[] {
-  return [...ROLE_CAPABILITIES[role]];
+export function capabilitiesForRole(role: RoleId): string[] {
+  return [...ROLE_PROFILES[role].capabilities];
 }
 
 /**
  * The capabilities a Ticket against `type` must demand of its assignee.
  *
- * Always a subset of the owning role's declared capabilities, so narrowing can never make a Ticket
- * unroutable to the role that owns its Step.
+ * Always a subset of the capabilities of the role that does the Step's work by default, so
+ * narrowing can never make a Ticket unroutable to that role.
  */
 export function capabilitiesForStep(type: StepType, ticketType?: TicketType): string[] {
-  const declared = ROLE_CAPABILITIES[roleForStepType(type)];
+  // Both developer profiles share one capability set; the language only chooses between them.
+  const declared = ROLE_PROFILES[defaultRoleForStep(type, 'python')].capabilities;
   const mode = ticketType ? TICKET_TYPE_CAPABILITY[ticketType] : undefined;
-  // A mode capability applies only where the role declares it: a Change Request propagates into
+  // A mode capability applies only where that role declares it: a Change Request propagates into
   // Steps whose roles have no separate change-implementation capability.
   const extra = mode && declared.includes(mode) ? [mode] : [];
   return [...STEP_CAPABILITIES[type], ...extra];
 }
 
-export function roleForStepType(type: StepType): DomainRole {
-  switch (type) {
-    case 'REQUIREMENT_ANALYSIS': return 'requirements-engineer';
-    case 'HIGH_LEVEL_DESIGN':
-    case 'DETAILED_DESIGN': return 'system-engineer';
-    case 'CODE': return 'developer';
-    case 'INTEGRATION_TEST': return 'integrator';
-    case 'UNIT_TEST':
-    case 'MODULE_TEST':
-    case 'FUNCTIONAL_TEST': return 'tester';
-  }
-}
-
-/**
- * Which configured role a registered actor speaks as.
- *
- * PM names its own. It registers through the same flow as every other domain role, so the one
- * thing that made it different was invisible: falling through to `Planner` meant the actor that
- * judges delivery and the actor that plans the work drew from the same configured model pool, and
- * a judgement made in the planner's voice is the planner reviewing the planner.
- */
-export function defaultAgentForRole(role: DomainRole): Role {
-  if (role === 'project-manager') return 'ProjectManager';
-  if (role === 'system-engineer') return 'Architect';
-  if (role === 'developer') return 'Coder';
-  if (role === 'integrator' || role === 'tester') return 'Tester';
-  return 'Planner';
-}
-
-export function supportedTicketTypesForRole(role: DomainRole): TicketType[] {
-  return role === 'project-manager'
-    ? ['epic', 'story']
-    : ['story', 'task', 'bug', 'enhancement', 'change-request'];
+export function supportedTicketTypesForRole(role: RoleId): TicketType[] {
+  return [...ROLE_PROFILES[role].supportedTicketTypes];
 }

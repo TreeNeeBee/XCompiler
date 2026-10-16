@@ -2,6 +2,7 @@ import type { SkillOperationWindow } from './window.js';
 import type { ProviderResponseEvidence, RoutedResponseEvidence } from './response_evidence.js';
 import type { LLMRequestAuditBinding } from './request_binding.js';
 import type { AuditWriteLocation } from '../audit/scoped_persistence.js';
+import { z } from 'zod';
 
 export type ChatRole = 'system' | 'user' | 'assistant';
 
@@ -14,6 +15,15 @@ export interface LLMProviderWindow {
   contextWindowTokens: number;
   switched: boolean;
 }
+
+const PoolIdentity = z.string().refine(value => value.trim().length > 0);
+/** The original pool policy and candidate set, captured before score/availability filtering. */
+export const ModelPoolBindingSchema = z.object({
+  modelPool: PoolIdentity, inheritFallbacks: z.boolean(),
+  allowedProviders: z.array(PoolIdentity).min(1)
+    .refine(providers => new Set(providers).size === providers.length, 'Provider names must be unique').readonly(),
+}).strict();
+export type ModelPoolBinding = Readonly<z.infer<typeof ModelPoolBindingSchema>>;
 
 export interface ChatOptions {
   /** Stable identity supplied by the owning persisted request; retry/fallback retain it. */
