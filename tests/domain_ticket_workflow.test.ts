@@ -15,7 +15,9 @@ import { QualityAssessmentService } from '../src/application/execution/quality_a
 import type { Step } from '../src/domain/steps/step.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../src/workspace/workspace.js';
-import type { Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
+import type { CompiledProjectGraph } from '../src/domain/planning/compiler.js';
+import { asObject, asTicket, objectsOf } from './support/domain_objects.js';
 import { bugContracts, failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.js';
 import { buildBugFailureContracts } from '../src/application/project_management/bug_verification.js';
 
@@ -232,8 +234,8 @@ describe('TicketWorkflow', () => {
     expect(closedRequest.objectType === 'ticket' && closedRequest.state).toBe('closed');
     expect(closedBug.objectType === 'ticket' && closedBug.state).toBe('closed');
     expect(closedBug.objectType === 'ticket' && closedBug.solution?.status).toBe('verified');
-    const traces = (await repository.list({ objectType: 'ticket-trace-event' }))
-      .filter((event) => event.objectType === 'ticket-trace-event' && event.ticketId === bug.id)
+    const traces = objectsOf(await repository.list({ objectType: 'ticket-trace-event' }), 'ticket-trace-event')
+      .filter((event) => event.ticketId === bug.id)
       .sort((left, right) => left.sequence - right.sequence);
     const resolvedIndex = traces.findIndex((event) => event.toTicketState === 'resolved');
     expect(resolvedIndex).toBeGreaterThanOrEqual(0);
@@ -440,7 +442,7 @@ describe('TicketWorkflow', () => {
       stepId: detailed.id,
       qualityAssessmentId: await passingAssessment(repository, detailed),
     });
-    expect((await repository.read(bug.id)).state).toBe('resolved');
+    expect(asObject(await repository.read(bug.id), 'ticket').state).toBe('resolved');
 
     const state = new ProjectStateService(repository);
     let failedStep = await state.requireStep(integration.id);
@@ -467,9 +469,9 @@ describe('TicketWorkflow', () => {
     });
 
     expect(again.id).toBe(bug.id);
-    expect((await repository.read(bug.id)).state).toBe('reopened');
-    expect((await repository.read(integration.id)).state).toBe('pending');
-    expect((await repository.read(detailed.id)).state).toBe('reopened');
+    expect(asObject(await repository.read(bug.id), 'ticket').state).toBe('reopened');
+    expect(asObject(await repository.read(integration.id), 'step').state).toBe('pending');
+    expect(asObject(await repository.read(detailed.id), 'step').state).toBe('reopened');
     const blockedParent = await repository.read(parent.id);
     expect(blockedParent.objectType === 'ticket' && blockedParent.state).toBe('pending');
     expect(blockedParent.objectType === 'ticket' && blockedParent.blockedByTicketIds).toContain(bug.id);
@@ -675,8 +677,8 @@ describe('TicketWorkflow', () => {
     // anyone knew the delta would reach them, and replaced the V-model's ordering with a scheduler
     // picking from a pool. The state machine advances one Step at a time, so activation does too.
     const { graph, repository } = await setup();
-    const [detailed, coding, unit] = ['DETAILED_DESIGN', 'CODE', 'UNIT_TEST']
-      .map((type) => graph.steps.find((step) => step.type === type)!);
+    const stepOf = (type: string) => graph.steps.find((step) => step.type === type)!;
+    const [detailed, coding, unit] = [stepOf('DETAILED_DESIGN'), stepOf('CODE'), stepOf('UNIT_TEST')] as const;
     const state = new ProjectStateService(repository);
     for (const step of [unit, coding, detailed]) {
       let current = await state.requireStep(step.id);
@@ -1454,7 +1456,7 @@ describe('TicketWorkflow', () => {
     await workflow.reconcileClosedCorrectiveTickets(graph.project.id);
     const recovered = await repository.read(bug.id);
     expect(recovered.objectType === 'ticket' && recovered.state).toBe('resolved');
-    expect(recovered.objectType === 'ticket' && recovered.verificationRecords).toEqual([]);
+    expect(asTicket(recovered, 'bug').verificationRecords).toEqual([]);
     expect(await activeAssignments(repository, assignment.objectType === 'ticket-assignment'
       ? assignment.assigneeActorId
       : bug.creatorActorId)).toBe(0);
@@ -1507,17 +1509,11 @@ async function attachPassingAssessment(
 
 function samplePlan(): Plan {
   const phases = [
-    ['REQUIREMENT_ANALYSIS', 'Planner'],
-    ['HIGH_LEVEL_DESIGN', 'Architect'],
-    ['DETAILED_DESIGN', 'Architect'],
-    ['CODE', 'Coder'],
-    ['UNIT_TEST', 'Tester'],
-    ['INTEGRATION_TEST', 'Tester'],
-    ['MODULE_TEST', 'Tester'],
-    ['FUNCTIONAL_TEST', 'Tester'],
+    'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE',
+    'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST',
   ] as const;
   return {
-    version: '1', language: 'typescript', intent: 'greenfield', phaseId: 'P1',
+    version: PLAN_VERSION, language: 'typescript', intent: 'greenfield', phaseId: 'P1',
     projectType: 'application', requirementDigest: 'Build a service.',
     complexityAssessment: { level: 'simple', rationale: 'One phase.', splitRecommended: false, userForcedPhaseSplit: false },
     implementationPhases: [{
@@ -1527,9 +1523,9 @@ function samplePlan(): Plan {
     }],
     globalPrompt: 'Implement the plan.', baselineSummary: '', dependencies: [], userAddenda: '',
     createdAt: new Date().toISOString(),
-    steps: phases.map(([phase, role], index) => ({
+    steps: phases.map((phase, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase,
-      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`, role,
+      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`,
       tools: ['read_file'], inputs: index ? [`artifact-${index}`] : [], outputs: [`artifact-${index + 1}`],
       subTasks: [], dependsOn: index ? [`S${String(index).padStart(3, '0')}`] : [],
       acceptance: `${phase} passes.`, maxAttempts: 3,
@@ -1616,7 +1612,7 @@ describe('Change Request hop merging', () => {
     repository: DomainObjectRepository,
     workflow: TicketWorkflow,
     registration: TicketRegistrationService,
-    graph: { steps: Step[]; actors: Array<{ id: string; role: string }> },
+    graph: Pick<CompiledProjectGraph, 'steps' | 'actors'>,
     message: string,
     code: string,
     testSelectors: string[] = [],
@@ -1653,7 +1649,7 @@ describe('Change Request hop merging', () => {
     return bug;
   };
 
-  const hopFor = (graph: { steps: Step[]; actors: Array<{ id: string; role: string }> }, targetType: string) => {
+  const hopFor = (graph: Pick<CompiledProjectGraph, 'steps' | 'actors'>, targetType: string) => {
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const detailed = graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
     return {
@@ -1915,7 +1911,7 @@ describe('Change Request hop merging', () => {
     await workflow.closeVerified(request.id, { verificationStep: functional, testOutcomes: [] });
     const closedBug = await repository.read(bug.id);
     expect(closedBug.objectType === 'ticket' && closedBug.state).toBe('closed');
-    expect(closedBug.objectType === 'ticket' && closedBug.verificationRecords).toHaveLength(1);
+    expect(asTicket(closedBug, 'bug').verificationRecords).toHaveLength(1);
   });
 });
 

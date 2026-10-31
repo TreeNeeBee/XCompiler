@@ -122,6 +122,23 @@ describe('retained Phase decomposition business validation', () => {
     expect(() => parsePhaseDecompositionResponse(text, payload())).toThrow(SyntaxError);
   });
 
+  it('rejects a StepPlan in which no Step before coding, nor the functional test, delivers a scenario input', () => {
+    // A live gate ran its scenario on sample files no Step had been asked to produce.
+    const withInputs = (inputs: string[]) => {
+      const retained = payload();
+      const scenario = retained.phasePlan.implementationPhases[0]!.deliveryGate!.scenarios[0]!;
+      return { ...retained, phasePlan: { ...retained.phasePlan, implementationPhases: [{
+        ...retained.phasePlan.implementationPhases[0]!,
+        deliveryGate: { ...retained.phasePlan.implementationPhases[0]!.deliveryGate!, scenarios: [{ ...scenario, inputs }] },
+      }] } };
+    };
+    expect(() => parsePhaseDecompositionResponse(JSON.stringify(stepPlan()), withInputs(['samples/numbers.txt'])))
+      .toThrowError(expect.objectContaining({ name: 'PlannerContractViolation', message: expect.stringContaining('samples/numbers.txt') }));
+    const owned = stepPlan();
+    owned.steps[0]!.outputs.push('samples/numbers.txt');
+    expect(() => parsePhaseDecompositionResponse(JSON.stringify(owned), withInputs(['samples/numbers.txt']))).not.toThrow();
+  });
+
   it.each(['null', 'false', '42', '"step plan"', '[]'])('rejects a non-object root as business content: %s', text => {
     expect(() => parsePhaseDecompositionResponse(text, payload())).toThrow(PlannerContractViolation);
   });

@@ -1,3 +1,4 @@
+import { t } from '../../i18n/index.js';
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -108,11 +109,7 @@ export async function acquireLock(
       await fs.writeFile(file, payload, 'utf8');
       return makeReleaser(file, info.ownerId!);
     }
-    throw new LockError(
-      `workspace 已被其它 XCompiler 进程占用 (pid=${existing.pid}, host=${existing.host}, cmd=${existing.command}, since=${existing.startedAt}).\n` +
-        `如确信该进程已退出，请删除 ${file} 后重试。`,
-      existing,
-    );
+    throw new LockError(t().system.workspaceLocked(existing, file), existing);
   }
   // 文件存在但读不出（损坏） → 接管
   await fs.writeFile(file, payload, 'utf8');

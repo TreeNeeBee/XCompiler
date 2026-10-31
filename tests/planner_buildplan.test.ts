@@ -1,3 +1,4 @@
+import { calibrationText } from '../src/agents/calibration_text.js';
 import { ArchitectureModuleSchema } from '../src/domain/planning/execution_plan.js';
 import { describe, it, expect } from 'vitest';
 import { buildPlan } from '../src/agents/planner.js';
@@ -152,12 +153,12 @@ describe('buildPlan — Step id 规整', () => {
 
     expect(hld?.outputs).toContain('package.json');
     expect(hld?.outputs).toContain('tsconfig.json');
-    // The runtime/test contract is the TypeScript RuleList (0x0101) bound to every TS execution;
+    // The runtime/test contract is the TypeScript RuleList (0x00001001) bound to every TS execution;
     // the plan no longer copies it into each Step.
     expect(hld?.systemPrompt).not.toContain('TypeScript runtime/test contract');
     const contract = (await boundRuleBlock({ role: 'system-architect', work: 'design.high-level',
       stepWork: 'design.high-level', language: 'typescript' }, 'zh')).content;
-    expect(contract).toContain('"test\\": \\"vitest run\\"');
+    expect(contract).toContain('"test": "vitest run"');
     expect(contract).toContain('`tsconfig.json`');
     expect(contract).toContain('禁止新增或要求 `jest`');
     expect(code?.outputs).not.toContain('package.json');
@@ -262,8 +263,8 @@ describe('buildPlan — Step id 规整', () => {
     };
     const plan = buildPlan(draft);
     expect(plan.steps[0]?.systemPrompt).toContain('M001 api');
-    expect(plan.steps[1]?.systemPrompt).toContain('本 CODE Step 仅实现架构模块');
-    expect(plan.steps[2]?.systemPrompt).toContain('本 MODULE_TEST Step 只检查并运行');
+    expect(plan.steps[1]?.systemPrompt).toContain(calibrationText('en').stepContracts.code);
+    expect(plan.steps[2]?.systemPrompt).toContain(calibrationText('en').stepContracts.moduleTest);
   });
 
   it('把误放在 architectureModules.dependencies 的外部包迁移到顶层 dependencies', () => {

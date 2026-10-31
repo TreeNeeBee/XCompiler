@@ -22,6 +22,18 @@ describe('what a failing verification level hands back', () => {
     expect(defect).toContain('MODULE_TEST executable test gate failed');
   });
 
+  it('lists the cases, not the options the gate runs them with', () => {
+    // The unit-test gate now adds coverage options to its argument list; a live UNIT_TEST rollback
+    // listed `--cov=src, --cov-branch, …` among the cases under test.
+    const defect = validationDefectFromTestFailure(
+      'UNIT_TEST',
+      { tool: 'run_tests', ok: false, summary: 'pytest exit=1' },
+      ['tests/unit/test_core.py', '--cov=src', '--cov-branch', '--cov-report=json:coverage/coverage.json'],
+    );
+    expect(defect).toContain('Cases under test: tests/unit/test_core.py\n');
+    expect(defect).not.toContain('--cov');
+  });
+
   it('still reports the failure when the runner named no cases', () => {
     const defect = validationDefectFromTestFailure(
       'UNIT_TEST',

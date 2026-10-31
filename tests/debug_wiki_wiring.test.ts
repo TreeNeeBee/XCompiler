@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { objectsOf } from './support/domain_objects.js';
 import { StepExecutor, type ExecutorRunResult } from '../src/agents/executor.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import {
@@ -24,6 +25,7 @@ import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { STEP_TYPES } from '../src/domain/steps/step.js';
+import { verificationSupplementRoot } from '../src/domain/quality/test_assets.js';
 import { BugTicketSchema, type BugTicket } from '../src/domain/tickets/ticket.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
@@ -107,6 +109,10 @@ describe('Debug Wiki through an attempt', () => {
     expect(search).toHaveBeenCalledWith(failureBrief(setup.bug), { limit: 3, language: 'typescript' });
     expect(execute).toHaveBeenCalledTimes(1);
     const prompt = execute.mock.calls[0]![0];
+    // The plan's mode and project type and the Debug brief's typed category reach the executor,
+    // which carries them into the request facts Rule applicability reads (revision 11.4).
+    expect(prompt.project).toEqual({ intent: setup.input.plan.intent, projectType: setup.input.plan.projectType });
+    expect(prompt.debugContext?.failureCategory).toBe('test_failure');
     expect(prompt.layeredContext).toContain(priorSolution);
     expect(prompt.debugContext?.suggestions).toContain(entryId);
     expect(prompt.debugContext?.suggestions).toContain(priorSolution);
@@ -256,6 +262,26 @@ describe('Debug Wiki through an attempt', () => {
       .toEqual({ code: 'agent_execution_stalled', stallKind: 'read-only-loop' });
   });
 
+  // Rule applicability reads the category (revision 11.4), so it follows the failure's typed code:
+  // the same typed failure worded like an import error must not select import-error Rules.
+  it('gives a retry the typed category of the latest failure, whatever its text says', async () => {
+    const setup = await fixture();
+    const worded = 'ModuleNotFoundError: No module named parser';
+    const failed = failedExecution();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run')
+      .mockResolvedValueOnce({ ...failed, error: worded, toolCalls: failed.toolCalls.map((call) => ({ ...call, error: worded })) })
+      .mockResolvedValueOnce(failedExecution());
+    await setup.runner.initialize();
+
+    const first = await setup.runner.run(setup.input);
+    expect(first.failure).toMatchObject({ category: 'test', code: 'test_command_failed' });
+    const refreshed = BugTicketSchema.parse(await setup.repository.read(setup.bug.id));
+    await setup.runner.run({ ...setup.input, ticket: refreshed });
+
+    expect(execute.mock.calls[1]![0].debugContext?.failureLog).toContain(worded);
+    expect(execute.mock.calls[1]![0].debugContext?.failureCategory).toBe('test_failure');
+  });
+
   it('gives a Debug attempt the outputs its Bug still owes as a typed fact', async () => {
     const setup = await fixture();
     const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
@@ -316,8 +342,8 @@ describe('Debug Wiki through an attempt', () => {
     const refreshed = BugTicketSchema.parse(await setup.repository.read(setup.bug.id));
     await setup.runner.run({ ...setup.input, ticket: refreshed });
 
-    const logs = (await setup.repository.list({ objectType: 'log', projectId: setup.graph.project.id }))
-      .filter((log) => log.objectType === 'log' && log.level === 'error' && log.subject.id === setup.bug.id);
+    const logs = objectsOf(await setup.repository.list({ objectType: 'log', projectId: setup.graph.project.id }), 'log')
+      .filter((log) => log.level === 'error' && log.subject?.id === setup.bug.id);
     const signatures = logs.map((log) => (log.data as { failureSignature?: string }).failureSignature);
     expect(signatures).toHaveLength(2);
     expect(signatures[0]).toEqual(signatures[1]);
@@ -362,6 +388,44 @@ describe('Debug Wiki through an attempt', () => {
         ticketId: accepted.id, changelistId, verificationAssessmentId: assessmentId,
         verifiedRevision: 'b'.repeat(40), acceptedAt, integration: { kind: 'canonical' },
       } }]);
+  });
+
+  it('gives the role the confirmed plan of its Phase', async () => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
+
+    await setup.runner.initialize();
+    await setup.runner.run(setup.input);
+
+    expect(execute.mock.calls[0]![0].planContract).toEqual({
+      requirementDigest: 'Implement a parser.', phaseObjective: 'Accept empty input.', phaseScope: ['parser'],
+    });
+  });
+
+  // Rule applicability reads what a Step may write (revision 11.4): a verification Step declares only
+  // its report, so the supplement root it writes tests under must reach the executor's allowed writes.
+  it('grants a verification Step its supplement root and the fixture directory beside its report', async () => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
+    const unit = setup.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
+    const story = setup.graph.tickets.find((ticket) => ticket.type === 'story' && ticket.stepId === unit.id)!;
+    const projection = projectExecutionPlan(samplePlan(), setup.graph.phases[0]!, setup.graph.steps);
+    // The paired baseline the entry inspection requires before a verifier may start.
+    const workspace = setup.container.canonical().workspace.root;
+    await fs.mkdir(path.join(workspace, 'docs', 'tests'), { recursive: true });
+    await fs.mkdir(path.join(workspace, 'tests', 'unit'), { recursive: true });
+    await fs.writeFile(path.join(workspace, 'docs', 'tests', 'unit-test-plan.md'), '# Unit test plan\n\n- Parser accepts empty input.\n');
+    await fs.writeFile(path.join(workspace, 'tests', 'unit', 'parser.test.ts'),
+      "import { expect, it } from 'vitest';\nimport { parse } from '../../src/parser.ts';\n\nit('accepts empty input', () => { expect(parse('')).toEqual([]); });\n");
+
+    await setup.runner.initialize();
+    const executionStep = projection.byDomainStepId.get(unit.id)!;
+    const result = await setup.runner.run({ ...setup.input, executionStep, domainStep: unit, ticket: story, mode: 'normal' });
+
+    expect(execute, JSON.stringify(result.failure)).toHaveBeenCalledTimes(1);
+    const allowedWrites = execute.mock.calls[0]![0].ctx.allowedWrites;
+    expect(allowedWrites).toEqual(expect.arrayContaining([...executionStep.outputs, verificationSupplementRoot(executionStep), 'tests/fixtures/']));
+    expect(executionStep.outputs.some((output) => /\.test\.ts$/u.test(output))).toBe(false);
   });
 
   it('keeps an ordinary Story attempt free of Bug knowledge and use records', async () => {
@@ -530,6 +594,8 @@ async function fixture() {
       raw: () => ({
         status: async () => ({ isClean: () => true, files: [] }),
         revparse: async () => 'a'.repeat(40),
+        // `git status --porcelain`: nothing outside the attempt's scope to set aside.
+        raw: async () => '',
       }),
       snapshot: async () => 'a'.repeat(40),
       revertTo: async () => {},

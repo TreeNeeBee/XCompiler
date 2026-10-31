@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Phase as DraftStepType, Plan as DraftPlan, Role as DraftRole } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Phase as DraftStepType, type Plan as DraftPlan } from '../src/domain/planning/execution_plan.js';
 import { isObjectId } from '../src/domain/identity/object_id.js';
 import {
   rebaseDraftPlanPhases,
@@ -373,18 +373,12 @@ describe('domain plan compiler', () => {
 });
 
 function samplePlan(): DraftPlan {
-  const phases: Array<[DraftStepType, DraftRole]> = [
-    ['REQUIREMENT_ANALYSIS', 'Planner'],
-    ['HIGH_LEVEL_DESIGN', 'Architect'],
-    ['DETAILED_DESIGN', 'Architect'],
-    ['CODE', 'Coder'],
-    ['UNIT_TEST', 'Tester'],
-    ['INTEGRATION_TEST', 'Tester'],
-    ['MODULE_TEST', 'Tester'],
-    ['FUNCTIONAL_TEST', 'Tester'],
+  const phases: DraftStepType[] = [
+    'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE',
+    'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST',
   ];
   return {
-    version: '1',
+    version: PLAN_VERSION,
     language: 'typescript',
     intent: 'greenfield',
     phaseId: 'P1',
@@ -431,14 +425,13 @@ function samplePlan(): DraftPlan {
     dependencies: ['vitest'],
     userAddenda: '',
     createdAt: '2026-08-01T00:00:00.000Z',
-    steps: phases.map(([phase, role], index) => ({
+    steps: phases.map((phase, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`,
       iterationId: 'P1',
       phase,
       title: phase,
       description: `Execute ${phase}.`,
       systemPrompt: `Complete only ${phase}.`,
-      role,
       tools: index === 3 ? ['write_file'] : ['read_file'],
       inputs: index === 0 ? [] : [`artifact-${index}`],
       outputs: [`artifact-${index + 1}`],

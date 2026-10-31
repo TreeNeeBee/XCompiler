@@ -5,7 +5,7 @@ import { projectExecutionProviderMessages } from '../agents/execution/provider_p
 import {
   EXECUTION_TURN_PROTOCOL, EXECUTION_TURN_TEMPLATE_VERSION, ExecutionTurnContractViolation,
   ExecutionTurnRoundRefusal, validateExecutionRequestScope, validateExecutionTurnPayload,
-  validateExecutionTurnRequestMessages, type ExecutionRequestScope, type ExecutionTurnRequestPort,
+  validateExecutionTurnRequestMessages, type ExecutionRequestScope, type ExecutionTurnPayload, type ExecutionTurnRequestPort,
 } from '../application/execution/execution_turn_request.js';
 import { BusinessRequestInputError, StepExecutionOwnerSchema, assertBusinessRequestAuditContext } from '../application/execution/business_request_input.js';
 import { BusinessResponseError } from '../application/execution/business_request_response.js';
@@ -23,6 +23,7 @@ import type { ProjectContainer } from '../workspace/project_container.js';
 import { sendRuntimeExecutionBusinessRequest } from './business_request_attempts.js';
 import { createRuntimeBusinessRequestRecovery } from './business_request_recovery.js';
 import { prepareRuntimeRuleRequest } from './rules.js';
+import type { RuleContext } from '../domain/rules/selection.js';
 import { stepWork } from '../domain/workflow/work.js';
 import {
   correctRuntimeProtocolResponse, protocolCorrectionReference, recoverAdoptedProtocolText, type RuntimeProtocolCorrection,
@@ -46,6 +47,9 @@ export function createRuntimeExecutionTurnRequestPort(input: {
   const owner = Object.freeze(StepExecutionOwnerSchema.parse({ kind: 'step-execution', ...scope }));
   const modelPool = Object.freeze({ modelPool: scope.modelPool, inheritFallbacks: scope.inheritFallbacks,
     allowedProviders: scope.allowedProviders });
+  // The first round's selection. Later rounds must find exactly it: lost selection state stops the
+  // execution rather than letting a later round select current Rules under the same execution.
+  let pinnedSnapshotDigest: string | undefined;
   return Object.freeze({
     name: router.forPool(modelPool, { label: scope.role }).name,
     async send(request: Parameters<ExecutionTurnRequestPort['send']>[0]) {
@@ -80,13 +84,13 @@ export function createRuntimeExecutionTurnRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       // One selection per execution (D-6): the first round selects and pins it under the execution
       // ID; later rounds read that snapshot, so retrieval and low-score review run once.
-      await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool,
-        logicalRequestId: scope.executionId, context: { role: scope.role, language: payload.parseContext.language,
-          work: scope.work, projectId: scope.projectId, locale: payload.locale },
+      const selection = await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool,
+        logicalRequestId: scope.executionId, pinnedDigest: pinnedSnapshotDigest, context: executionRuleContext(scope, payload),
         bind: { role: scope.role, language: payload.parseContext.language, work: scope.work,
           stepWork: stepWork(payload.promptContext.step.phase),
           baselineDeferred: payload.validation.baselineExecutionDeferred },
         taskSummary: payload.promptContext.step.description, errorSummary: payload.promptContext.debugContext?.reason, signal });
+      pinnedSnapshotDigest ??= selection.digest;
       signal?.throwIfAborted();
       // At most one correction per logical request; keyed by the attempt whose reply it corrected.
       const corrections = new Map<string, RuntimeProtocolCorrection>();
@@ -174,4 +178,22 @@ function executionProtocolText(response: RoutedResponseEvidence): string {
     });
   }
   return assessment.result.normalized;
+}
+
+/**
+ * What a Step execution is, as Rule applicability reads it (revision 11.4): the assignment, the
+ * plan's mode and project type, the tools offered, the paths it may write (its declared outputs and
+ * the write grants Runtime added, such as a verification Step's supplement root) and, for a repair,
+ * the typed failure category. Every field comes from the retained payload, so recovery reads the same.
+ */
+function executionRuleContext(scope: ExecutionRequestScope, payload: ExecutionTurnPayload): RuleContext {
+  const { project, step, debugContext } = payload.promptContext;
+  return {
+    role: scope.role, language: payload.parseContext.language, work: scope.work, projectId: scope.projectId,
+    locale: payload.locale, outputLanguage: payload.outputLocale ?? payload.locale,
+    ...(project ? { intent: project.intent, projectType: project.projectType } : {}),
+    tools: payload.tools.map((tool) => tool.name),
+    writablePaths: [...new Set([...step.outputs, ...payload.promptContext.ctx.allowedWrites])],
+    ...(debugContext?.failureCategory ? { failureCategory: debugContext.failureCategory } : {}),
+  };
 }

@@ -110,7 +110,7 @@ describe('makeStreamReporter', () => {
     expect(write).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(10_000);
     expect(write).toHaveBeenCalledTimes(2);
-    expect(String(write.mock.calls[1][0])).toContain('streaming · 00:10 · 7 chars · partial\n');
+    expect(String(write.mock.calls[1]![0])).toContain('streaming · 00:10 · 7 chars · partial\n');
 
     reporter.done();
     expect(write).toHaveBeenCalledTimes(3);

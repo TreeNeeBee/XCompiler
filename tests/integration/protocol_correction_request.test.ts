@@ -273,6 +273,26 @@ describe('Explicit correction through Router, raw audit and durable allowance', 
     expect(f.wire.requests).toHaveLength(1);
   });
 
+  it('counts Chinese in the correction request at about a token a character when checking the window', async () => {
+    const cjk = '保留中文说明'.repeat(300);
+    const f = await fixture({ replies: [{ output: `{"note":"${cjk}a"b"}` }, { output: `{"note":"${cjk}a\\"b"}` }] });
+    const client: LLMClient = { name: 'openai:reported-revision', chat: async (messages, options) => {
+      if (!options?.beforeProviderRequest) throw new Error('Expected final-send guard');
+      // Room for the prompt counted at three characters a token, plus the safety margin and the reply.
+      const chars = messages.reduce((sum, message) => sum + message.content.length, 0);
+      await options.beforeProviderRequest({
+        logicalRequestId: options.logicalRequestId!, providerAttemptId: randomUUID(), provider: 'primary', model: client.name,
+        messages, contextWindowTokens: Math.ceil(chars / 3) + 1024 + 1024, maxTokens: 1024,
+      });
+      return `{"note":"${cjk}a\\"b"}`;
+    } };
+    await expect(new LLMProtocolCorrection(f.store, f.evidence, { forProtocolCorrection: () => client })
+      .correctOnce({ original: f.original, protocol })).rejects.toMatchObject({
+      code: 'protocol_correction_request_failed', reason: 'capacity_exceeded',
+    });
+    expect(await f.store.readResult(f.original.logicalRequestId)).toBeUndefined();
+  });
+
   it.each(['capacity', 'missing-response'] as const)('rejects %s at the owned sender boundary without publishing a result', async (fault) => {
     const f = await fixture();
     const client: LLMClient = { name: 'openai:reported-revision', chat: async (messages, options) => {

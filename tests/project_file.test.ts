@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import {
   XCOMPILER_PROJECT_MANIFEST_KIND,
   buildProjectProgress,
@@ -87,9 +87,11 @@ describe('XCompiler project file', () => {
       const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-file-'));
       const legacy = path.join(workspace, 'legacy.xc');
       await fs.writeFile(legacy, JSON.stringify({ kind, version: '1', workspace, planPath: 'plan.json' }));
-      await expect(loadXCompilerProject(legacy)).rejects.toThrow();
-      await expect(updateProjectFile({ workspace, projectFilePath: legacy, planPath: 'plan.json' }))
-        .rejects.toThrow();
+      // Both refuse the payload itself. Without a container the update failed earlier, on the missing
+      // argument, and this assertion passed whatever the payload said.
+      await expect(loadXCompilerProject(legacy)).rejects.toMatchObject({ name: 'ZodError' });
+      await expect(updateProjectFile({ workspace, container: workspace, projectFilePath: legacy, planPath: 'plan.json' }))
+        .rejects.toMatchObject({ name: 'ZodError' });
     },
   );
 
@@ -202,12 +204,11 @@ async function canonicalWorkspace() {
 
 function samplePlan(): Plan {
   const phases = [
-    ['REQUIREMENT_ANALYSIS', 'Planner'], ['HIGH_LEVEL_DESIGN', 'Architect'],
-    ['DETAILED_DESIGN', 'Architect'], ['CODE', 'Coder'], ['UNIT_TEST', 'Tester'],
-    ['INTEGRATION_TEST', 'Tester'], ['MODULE_TEST', 'Tester'], ['FUNCTIONAL_TEST', 'Tester'],
+    'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE',
+    'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST',
   ] as const;
   return {
-    version: '1', language: 'python', intent: 'feature', phaseId: 'P1', projectType: 'application',
+    version: PLAN_VERSION, language: 'python', intent: 'feature', phaseId: 'P1', projectType: 'application',
     requirementDigest: 'sample',
     complexityAssessment: { level: 'simple', rationale: 'one phase', splitRecommended: false, userForcedPhaseSplit: false },
     implementationPhases: [{
@@ -216,9 +217,9 @@ function samplePlan(): Plan {
       verificationGate: { summary: 'Pass all gates.', checks: ['acceptance'], failurePolicy: 'Open Bug.' },
     }],
     globalPrompt: '', baselineSummary: '', dependencies: [], userAddenda: '', createdAt: new Date().toISOString(),
-    steps: phases.map(([phase, role], index) => ({
+    steps: phases.map((phase, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase,
-      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`, role,
+      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`,
       tools: [], inputs: [], outputs: [`docs/${index + 1}.md`], subTasks: [],
       dependsOn: index ? [`S${String(index).padStart(3, '0')}`] : [], acceptance: `${phase} passes.`,
       maxAttempts: 3,

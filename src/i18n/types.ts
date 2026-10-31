@@ -1,6 +1,10 @@
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
+import type { PlanContract } from '../application/execution/plan_contract.js';
+import type { ClarificationParseContext } from '../application/planning/clarification_request.js';
+import type { CapabilityBlockerKind, ClarificationFeasibilityVerdict, ClarificationFinalReason } from '../agents/planning/clarification.js';
 import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { ResponseRepairHint } from '../llm/errors.js';
+import type { RULE_LEVELS } from '../domain/rules/catalogue.js';
 
 /**
  * Locale code (ISO 639-1 lowercase). Currently only 'en' (default) and 'zh'.
@@ -27,9 +31,30 @@ export interface Messages {
     scoreFileSemantics: string;
   };
 
+  deliveryGateReport: {
+    title: (phase: string) => string;
+    evaluatedAt: string;
+    outcome: string;
+    passed: string;
+    failed: (errors: number) => string;
+    checks: string;
+    command: string;
+    exitCode: string;
+    timedOut: string;
+    stdout: string;
+    stderr: string;
+    inspection: string;
+    finding: string;
+    setAside: string;
+    setAsideNote: (directory: string) => string;
+  };
   system: {
+    preflightNoProvider: (pools: string) => string;
+    preflightStillEmpty: (server: string, pools: string) => string;
+    workspaceLocked: (owner: { pid: number; host: string; command: string; startedAt: string }, file: string) => string;
     configEnvMissing: (names: string) => string;
     unhandledError: (message: string) => string;
+    permissionDeniedStop: (operation: string, target: string, consequence: string, reason?: string) => string;
     unsupportedSubprocessNetworkOff: string;
     dockerInsideContainerUnsupported: string;
     smokeHeader: (baseUrl: string) => string;
@@ -233,10 +258,53 @@ export interface Messages {
     topicLoaded: (path: string) => string;
     requirementEmptyExit: string;
     requirementInputHint: string;
-    spinClarify: string;
-    clarifySucceed: (n: number) => string;
+    spinClarify: (questionId: string) => string;
+    clarifyAsked: (questionId: string) => string;
     clarifyFail: string;
     clarifyChoiceHint: (range: string) => string;
+    /** Shown before each question: settled dimensions, the feasibility verdict and the budget used. */
+    clarifyProgress: (settled: number, total: number, verdict: ClarificationFeasibilityVerdict, percent: number) => string;
+    resumeIntake: (answers: number) => string;
+    intakeDraftInvalid: string;
+    /** A credential-looking value was masked in an answer before it was kept anywhere. */
+    answerRedacted: string;
+    /** The user closed a prompt without answering; Build ends as cancelled. */
+    interactionDismissed: string;
+    /** The two questions code asks before the dynamic clarification; option texts are what the user picks. */
+    intakeLanguage: { question: string; why: string; options: { python: string; typescript: string } };
+    intakeDeliverable: { question: string; why: string; options: { application: string; library: string; mixed: string } };
+    intakeDecided: (subject: string, value: string, source: 'baseline' | 'requirement' | 'topic') => string;
+    intakeSubjects: { language: string; deliverable: string };
+    clarifyEnded: {
+      clear: (asked: number) => string; proceed: (asked: number) => string; narrowed: (asked: number) => string;
+    };
+    /** What the user sees, and what is recorded, when the model judges the requirement undeliverable. */
+    infeasible: {
+      spin: string;
+      header: (summary: string) => string;
+      blockerKinds: Record<CapabilityBlockerKind, string>;
+      scope: (scope: string) => string;
+      prompt: string;
+      choices: { narrow: string; revise: string; proceed: string; cancel: string };
+      /** The transcript question recorded when the user accepts the narrowed scope. */
+      narrowQuestion: (summary: string) => string;
+      narrowAnswer: (scope: string) => string;
+      reviseEditorMsg: string;
+      auditRevised: string;
+      cancelled: string;
+    };
+    /** The final assessment: the budget is used up or the answers stopped settling anything. */
+    final: {
+      spin: string;
+      header: (reason: ClarificationFinalReason, stallTurns: number) => string;
+      unresolved: (summary: string) => string;
+      choices: { continue: string; narrow: string; revise: string; proceed: string; cancel: string };
+      reviseCondensedMsg: string;
+      condensedConfirmed: string;
+      /** The summary of a final assessment intake built itself because the model gave no usable one. */
+      codeSummary: string;
+      codeBuilt: string;
+    };
     addendaConfirm: string;
     addendaEditorMsg: string;
     auditClarifyAnswer: (qid: string, q: string) => string;
@@ -275,11 +343,48 @@ export interface Messages {
     topicPreamble: string;
     topicSecRequirement: string;
     topicSecClarify: string;
+    topicSecDecisions: string;
+    topicSecOpen: string;
+    topicOpenNote: string;
+    topicSecAssumptions: string;
+    topicAssumptionsNote: string;
+    topicSecFeasibility: string;
+    topicFeasibility: {
+      verdict: (verdict: ClarificationFeasibilityVerdict) => string;
+      narrowed: (scope: string) => string;
+      proceeded: string;
+    };
     topicSecAddenda: string;
     topicSecBaseline: string;
   };
 
   // ───────── inspect (xcompiler ls / show) ─────────
+  /** Built-in tool descriptions and the hints tools return; read by the model in the prompt language. */
+  tools: {
+    readFile: { description: string };
+    writeFile: { description: string; chunkTooLarge: (size: number, limit: number) => string };
+    appendFile: { description: string; chunkTooLarge: (size: number, limit: number) => string };
+    listDir: { description: string };
+    replaceInFile: { description: string; noOpRefused: string; nearbyHint: string; firstLineMissing: string };
+    codeSearch: { description: string };
+    analyzeError: { description: string; missingModule: (name: string) => string; failedTests: (count: number) => string };
+    runProgram: { description: string };
+    runTests: { description: string };
+    installDeps: { description: string };
+    applyPatch: { description: string };
+    addDependency: { description: string };
+  };
+  /** Comments XCompiler writes into the generated project's own files: a deliverable, in the user's language. */
+  generated: {
+    pathBootstrap: string[];
+    conftest: string[];
+    fileManifest: { heading: string; intro: (scannedAt?: string) => string; count: (files: number) => string; path: string; type: string };
+  };
+  /** Prompt translation between the user's locale and the models' English. */
+  translation: {
+    /** A translation failed; the text went on as the user or the model wrote it. */
+    fallback: (texts: number) => string;
+  };
   inspect: {
     noPlanFound: string;
     digestLabel: string;
@@ -325,6 +430,14 @@ export interface Messages {
     auditTestFilesMissing: string;
     auditEntrypointOk: (command: string) => string;
     auditEntrypointFailed: (command: string) => string;
+    auditScenarioInputsMissing: (scenario: string, inputs: string) => string;
+    auditScenarioContractContradicts: (scenario: string, exitCode: number, declared: number) => string;
+    auditScenarioAddendumSuggestion: (scenario: string, exitCode: number, expected: string) => string;
+    auditScenarioUnverifiable: (scenario: string, exitCode: number) => string;
+    auditScenarioInspectSuggestion: (scenario: string, expected: string) => string;
+    auditScenarioInspectReviewSuggestion: (scenario: string) => string;
+    auditScenarioPlanConflict: (scenario: string) => string;
+    unchangedRepairStop: (detail: { ticketName: string; targetStepName: string; failureCode: string; changelistName: string }) => string;
     auditPackageJsonMissing: string;
     auditScriptMissing: (name: string) => string;
     auditCommandOk: (name: string) => string;
@@ -353,25 +466,9 @@ export interface Messages {
 
   // ───────── Agent system prompts (large blocks) ─────────
   prompts: {
-    plannerSystem: (profile: LanguageProfile) => string;
     plannerPhasePlanSystem: (profile: LanguageProfile) => string;
     plannerPhaseDecomposeSystem: (profile: LanguageProfile) => string;
-    plannerClarify: (
-      rawRequirement: string,
-      opts?: {
-        intent?: 'greenfield' | 'feature' | 'refactor' | 'self';
-        hasBaseline?: boolean;
-        complex?: boolean;
-        projectShapeAmbiguous?: boolean;
-        languageAmbiguous?: boolean;
-      },
-    ) => string;
-    plannerDecompose: (
-      rawRequirement: string,
-      qa: string,
-      addenda: string,
-      opts?: { intent?: 'greenfield' | 'feature' | 'refactor' | 'self'; baseline?: string },
-    ) => string;
+    plannerClarifyTurn: (context: ClarificationParseContext) => string;
     plannerPhasePlan: (
       rawRequirement: string,
       qa: string,
@@ -390,10 +487,15 @@ export interface Messages {
       },
     ) => string;
     plannerClarifySystem: string;
+    /** The correction appended after a planner reply fails its plan contract. */
+    plannerValidationFeedback: (message: string) => string;
+    /** Labels of a clarification transcript handed to planning. */
+    clarificationTranscript: { options: string; why: string };
     plannerSelfMode: string;
     executorSystem: (profile: LanguageProfile) => string;
     executorDebugBlock: (reason: string, suggestions?: string) => string;
     executorGlobalBlock: (globalPrompt: string) => string;
+    executorPlanContractBlock: (contract: PlanContract) => string;
     executorAcceptedContractChangesBlock: (changes: readonly AcceptedContractChange[]) => string;
     executorContextBlock: (context: string) => string;
     executorStepBlock: (stepSystemPrompt: string) => string;
@@ -415,6 +517,66 @@ export interface Messages {
   };
 
   // ───────── doctor (xcompiler doctor / startup env-check) ─────────
+  // ───────── Rule block (prefix of every business and Rule-selection request) ─────────
+  ruleBlock: {
+    /** Framework lines before the Rule groups; Rule text never redefines them. */
+    declaration: string;
+    /** Each level with its binding strength, appended to every rendered Rule (revision 6.1, 6.3). */
+    levels: Record<(typeof RULE_LEVELS)[number], string>;
+  };
+
+  ruleCli: {
+    description: string;
+    lsDescription: string;
+    showDescription: string;
+    addDescription: string;
+    updateDescription: string;
+    rmDescription: string;
+    rmDisabled: string;
+    createListDescription: string;
+    discardDescription: string;
+    checkDescription: string;
+    renderDescription: string;
+    exportDescription: string;
+    promoteDescription: string;
+    argList: string;
+    argRule: string;
+    argReference: string;
+    optName: string;
+    optLevel: string;
+    optText: (field: string, locale: string) => string;
+    optFile: string;
+    optSlot: string;
+    optRole: string;
+    optWork: string;
+    optStepWork: string;
+    optLanguage: string;
+    optBaselineDeferred: string;
+    optLocale: string;
+    optOutputLanguage: string;
+    optScope: (dimensions: string) => string;
+    optClearScope: string;
+    optIntent: string;
+    optProjectType: string;
+    optTool: string;
+    optWritablePath: string;
+    optFailureCategory: string;
+    optOutput: string;
+    written: (location: string) => string;
+    removed: (listId: string) => string;
+    added: (reference: string, version: string) => string;
+    created: (listId: string) => string;
+    checkSummary: (lists: number, rules: number) => string;
+    overlayApplied: (listId: string) => string;
+    overlayPending: (listId: string, reason: string) => string;
+    overlayInvalid: (id: string, reason: string, location: string) => string;
+    bindingProblem: (reason: string, slot: string, key?: string) => string;
+    descriptionStyle: (reference: string, locales: string) => string;
+    similarRules: (first: string, second: string, similarity: number) => string;
+    promoted: (files: string) => string;
+    promoteRebuild: string;
+    nothingToPromote: string;
+  };
   doctor: {
     cliDescription: string;
     optStrict: string;

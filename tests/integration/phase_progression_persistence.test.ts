@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PromptTranslator, type TextTranslationPort } from '../../src/application/translation/text_translation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildPlan } from '../../src/agents/planner.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
@@ -66,7 +67,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  async function setup(hasNextPhase: boolean) {
+  async function setup(hasNextPhase: boolean, translator?: PromptTranslator, userAddenda?: string) {
     const control = new Workspace(root);
     const workspace = new Workspace(control.abs('worktrees/master'));
     const state = new Workspace(control.abs('.xcompiler'));
@@ -89,7 +90,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
       implementationPhases: phases,
       dependencies: ['pytest'],
       steps: vModelSteps('P1'),
-    }, { language: 'python', intent: 'feature' });
+    }, { language: 'python', intent: 'feature', userAddenda });
     const phasePlanPath = defaultPhasePlanPath(control.root);
     const currentPlanPath = defaultPhasePlanStepPath(control.root, 'P1');
     const nextPlanPath = defaultPhasePlanStepPath(control.root, 'P2');
@@ -110,7 +111,7 @@ describe('Phase progression persists its recovery checkpoint', () => {
     const port: PhaseDecompositionRequestPort = { name: 'deterministic-planner', send };
     // The final Phase has no further decomposition and must work without a configured port.
     const service = new PhaseProgressionService(workspace, state, control, store, audit, false,
-      undefined, undefined, hasNextPhase ? port : undefined);
+      undefined, undefined, hasNextPhase ? port : undefined, translator);
     const complete = () => service.completeAndPrepareNext({
       phasePlan,
       phasePlanPath,
@@ -122,6 +123,21 @@ describe('Phase progression persists its recovery checkpoint', () => {
         .map((line) => JSON.parse(line) as AuditEvent);
     return { store, workspace, phasePlanPath, currentPlanPath, nextPlanPath, send, complete, events };
   }
+
+  it('plans the next Phase from the topic as models read it when prompt translation is on', async () => {
+    const translate = vi.fn<TextTranslationPort['translate']>(async ({ texts }) => texts.map((text) => `⟦en⟧${text}`));
+    const fixture = await setup(true, new PromptTranslator({ userLocale: 'zh', enabled: true, port: { name: 'fake', translate } }));
+    await fixture.complete();
+    const sent = fixture.send.mock.calls[0]![0];
+    expect(sent.payload.parseContext.rawRequirement).toBe('⟦en⟧Add presentation polish after the core utility.');
+    expect(translate).toHaveBeenCalledWith(expect.objectContaining({ from: 'zh', to: 'en' }));
+  });
+
+  it('plans the next Phase from the topic alone, not sending the addenda it carries a second time', async () => {
+    const fixture = await setup(true, undefined, 'Keep the output monochrome.');
+    await fixture.complete();
+    expect(fixture.send.mock.calls[0]![0].payload.parseContext.userAddenda).toBe('');
+  });
 
   it('reopens the completed final Phase from disk without asking for another plan', async () => {
     const fixture = await setup(false);

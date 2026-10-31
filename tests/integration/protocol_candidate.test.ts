@@ -40,7 +40,7 @@ function candidate(facts: Partial<ProviderResponseEvidence> = {}) {
   return response('{"x":"a\\"b"}', 'candidate', facts);
 }
 
-describe('C1 correction response acceptance', () => {
+describe('protocol-correction response acceptance', () => {
   it('requires independently completed original and correction responses before proving preservation', () => {
     expect(assessJsonProtocolCorrection(original(), candidate(), protocol, correctionRequestId)).toMatchObject({
       status: 'assessed',

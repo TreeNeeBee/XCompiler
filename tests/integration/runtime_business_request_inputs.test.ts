@@ -1,9 +1,13 @@
-import { fixtureScenarioOwner, fixturePool } from '../support/request_owner_fixture.js';
+import { fixturePlanningOwner, fixtureScenarioOwner, fixturePool } from '../support/request_owner_fixture.js';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BusinessRequestOwner, ScenarioJudgementOwner } from '../../src/application/execution/business_request_input.js';
+import { parseObjectId } from '../../src/domain/identity/object_id.js';
+import { writeRuleMaterialFile } from '../support/rule_request_files.js';
+import { ruleList } from '../support/rule_fixtures.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import {
   createBusinessRequestInputRecord, validateBusinessRequestInput,
@@ -48,25 +52,27 @@ async function snapshot(container: ProjectContainer, options: {
   const catalogue = new RuleCatalogue([
     {
       source: { owner: { kind: 'compiler' }, location: path.join(root, 'base.yaml') },
-      definition: {
-        schemaVersion: '1', id: uuid(10), version: '1', title: 'Base declaration', slot: 0,
-        rules: [{ id: uuid(11), version: '1', category: 'general', level: 'announce',
-          instruction: options.instruction ?? 'Use the current evidence.', retrievalDescription: 'Base declaration' }],
-      },
+      definition: ruleList({
+        id: uuid(10), version: '1', title: 'Base declaration', slot: 0,
+        rules: [{ id: uuid(11), version: '1', level: 'announce',
+          instruction: options.instruction ?? 'Use the current evidence.', description: 'Base declaration' }],
+      }),
     },
     ...(options.lowScore ? [{
       source: { owner: { kind: 'compiler' as const }, location: path.join(root, 'optional.yaml') },
-      definition: {
-        schemaVersion: '1' as const, id: uuid(20), version: '1', title: 'Evidence', slot: 0x0300,
-        rules: [{ id: uuid(21), version: '1', category: 'framework' as const, level: 'advised' as const,
-          instruction: 'Retain observed evidence.', retrievalDescription: optionalDescription }],
-      },
+      definition: ruleList({
+        id: uuid(20), version: '1', title: 'Evidence', slot: 0x00012000,
+        rules: [{ id: uuid(21), version: '1', level: 'advised' as const,
+          instruction: 'Retain observed evidence.', description: optionalDescription }],
+      }),
     }] : []),
   ]);
   const selector = new RuleSelector(catalogue);
+  // A scenario judgement searches no open segment (revision 3.5), so the reviewed case is a clarification.
   const request = { requestKind: 'business' as const,
-    context: { projectId: options.project ?? projectId, role: options.role ?? 'project-manager' as const,
-      work: 'judge.scenario' }, required: [] };
+    context: options.lowScore ? { role: 'project-manager' as const, work: 'plan.clarify' as const }
+      : { projectId: options.project ?? projectId, role: options.role ?? 'project-manager' as const, work: 'judge.scenario' as const },
+    required: [] };
   const prepared = selector.prepare(request);
   let selection: Awaited<ReturnType<RuleSelector['retrieve']>>;
   if (options.lowScore) {
@@ -74,7 +80,7 @@ async function snapshot(container: ProjectContainer, options: {
     const embedding: RuleEmbeddingPort = { identity, async embed(texts) {
       return { identity, vectors: texts.map((text) => text === optionalDescription ? [0, 1] : [1, 0]) };
     } };
-    selection = await selector.retrieve({ ...request, taskSummary: 'Inspect the current operation.',
+    selection = await selector.retrieve({ strategy: 'embedding', ...request, taskSummary: 'Inspect the current operation.',
       retriever: new RuleVectorRetriever(embedding,
         new FileRuleVectorIndexStore(container.state.abs('rules', 'indexes'), container.root)) });
   } else {
@@ -85,7 +91,7 @@ async function snapshot(container: ProjectContainer, options: {
     requestKind: 'business', createdAt: '2026-10-10T01:02:03.000Z' });
   return finalizeRuleSelectionDraft(draft, options.lowScore ? {
     logicalRequestId: uuid(950), providerAttemptId: uuid(951), provider: 'fixture-reviewer',
-    model: 'fixture-model', selectedRuleIds: [], protocolVersion: 'rule-selection-review/1',
+    model: 'fixture-model', selectedRuleIds: [], protocolVersion: 'rule-selection-review/2',
     requestDigest: `sha256:${'1'.repeat(64)}`,
   } : undefined);
 }
@@ -105,13 +111,20 @@ async function fixture(options: {
     container, audit, retained,
     service: createRuntimeBusinessRequestInputs(container, audit),
     request: { logicalRequestId: requestId,
-      owner: fixtureScenarioOwner({ projectId, phaseId, executionId }, fixturePool('management', ['fixture'])),
+      owner: options.lowScore ? fixturePlanningOwner('clarification', executionId, fixturePool('management', ['fixture']))
+        : fixtureScenarioOwner({ projectId, phaseId, executionId }, fixturePool('management', ['fixture'])),
       messages: [{ role: 'system' as const, content: 'Return the current judgement as JSON.' },
         { role: 'user' as const, content: originalText }],
       templateVersion: 'scenario-judgement-fixture/1', outputProtocol: structuredClone(protocol) },
     auditPath: container.state.abs('audit', 'audit.jsonl'),
     snapshotPath: container.state.abs('rules', 'requests', 'snapshots', `${requestId}.json`),
   };
+}
+
+/** The fixture's default owner, a scenario judgement; the planning variant carries no project or execution. */
+function scenarioOwner(owner: BusinessRequestOwner): ScenarioJudgementOwner {
+  if (owner.kind !== 'scenario-judgement') throw new Error(`Expected a scenario-judgement owner, got ${owner.kind}`);
+  return owner;
 }
 
 async function readEvents(target: string): Promise<AuditEvent[]> {
@@ -172,8 +185,8 @@ describe('Runtime business input retention and exact read-only recovery', () => 
     const auditBefore = await fs.readFile(f.auditPath, 'utf8');
     const second = await createRuntimeBusinessRequestInputs(f.container, f.audit).capture({
       ...f.request, logicalRequestId: requestId.toUpperCase(),
-      owner: { ...f.request.owner, projectId: projectId.toUpperCase(),
-        phaseId: phaseId.toUpperCase(), executionId: executionId.toUpperCase() },
+      owner: { ...scenarioOwner(f.request.owner), projectId: parseObjectId(projectId.toUpperCase()),
+        phaseId: parseObjectId(phaseId.toUpperCase()), executionId: executionId.toUpperCase() },
     });
     expect(second).toEqual(first);
     expect(await fs.readFile(f.auditPath, 'utf8')).toBe(auditBefore);
@@ -197,7 +210,7 @@ describe('Runtime business input retention and exact read-only recovery', () => 
     const pending = f.service.capture(f.request);
     await reading;
     f.request.messages[1]!.content = 'Mutated while the store was reading.';
-    f.request.owner.executionId = uuid(999);
+    scenarioOwner(f.request.owner).executionId = uuid(999);
     f.request.outputProtocol.transformations = [];
     release();
     const captured = await pending;
@@ -213,7 +226,7 @@ describe('Runtime business input retention and exact read-only recovery', () => 
       const f = await fixture();
       const first = await f.service.capture(f.request);
       const next = structuredClone(f.request);
-      if (change === 'owner') next.owner.executionId = uuid(999);
+      if (change === 'owner') scenarioOwner(next.owner).executionId = uuid(999);
       if (change === 'messages') next.messages[1]!.content = 'Different current evidence.';
       if (change === 'template') next.templateVersion = 'scenario-judgement-fixture/2';
       if (change === 'protocol') next.outputProtocol.transformations = [];
@@ -267,9 +280,10 @@ describe('Runtime business input retention and exact read-only recovery', () => 
     const f = await fixture();
     await f.service.capture(f.request);
     if (change === 'missing') await fs.unlink(f.snapshotPath);
-    else await fs.writeFile(f.snapshotPath, JSON.stringify(await snapshot(f.container, {
+    // A different, well-formed snapshot written exactly as the store lays it out (revision 7a).
+    else await writeRuleMaterialFile(f.snapshotPath, f.container.state.abs('rules', 'requests', 'content'), await snapshot(f.container, {
       instruction: 'A different valid snapshot cannot replace the pinned one.',
-    })));
+    }));
     await expect(createRuntimeBusinessRequestInputs(f.container, f.audit)
       .resume({ logicalRequestId: requestId })).rejects.toThrow();
   });

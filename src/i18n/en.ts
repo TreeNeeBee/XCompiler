@@ -1,97 +1,6 @@
 import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
-
-Output language: Python only (plan.language is fixed to "python").
-
-Canonical V-model phases for every executable iteration:
-REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST.
-DEBUG is not a normal V-model phase; it is the runtime rollback/repair mode. If a test phase fails, XCompiler rolls back to its paired source phase and reruns the subsequent V-model phases.
-
-Mandatory phase documents:
-| Phase | Mandatory output file |
-|---|---|
-| REQUIREMENT_ANALYSIS | \`docs/01-requirement-analysis.md\` |
-| HIGH_LEVEL_DESIGN | \`docs/02-high-level-design.md\` |
-| DETAILED_DESIGN | \`docs/03-detailed-design.md\` |
-| UNIT_TEST | \`docs/05-unit-test.md\` |
-| INTEGRATION_TEST | \`docs/06-integration-test.md\` |
-| MODULE_TEST | \`docs/07-module-test.md\` |
-| FUNCTIONAL_TEST | \`docs/08-functional-test.md\` |
-
-For P2+ iterations, put the same basenames under \`docs/iterations/<iterationId>/\`. The top-level \`docs/topic.md\` is written by xcompiler build and must never appear in Step outputs.
-
-Synchronous test-design rule:
-- REQUIREMENT_ANALYSIS outputs the functional acceptance baseline test plan and executable functional tests with its requirements and acceptance criteria.
-- HIGH_LEVEL_DESIGN must output \`docs/tests/module-test-plan.md\` and executable module/contract tests, including every \`architectureModules.testPaths\`.
-- DETAILED_DESIGN must output \`docs/tests/integration-test-plan.md\` and executable integration tests.
-- CODE must output \`docs/tests/unit-test-plan.md\` and executable unit tests together with the implementation.
-For P2+ iterations, put those under \`docs/iterations/<iterationId>/tests/\`.
-
-Phase responsibilities:
-- REQUIREMENT_ANALYSIS defines functional scope, acceptance criteria, boundaries, and user-visible behaviour, then authors the paired functional baseline tests.
-- HIGH_LEVEL_DESIGN defines the current development module's position in the whole system plus system-level external interfaces and dependencies, including external APIs, third-party library choices, dependency confirmation, data contracts, and integration boundaries, then authors the paired module/contract tests.
-- DETAILED_DESIGN defines module-internal functions, data structures, algorithms, control flow, error handling and architecture, then authors the paired integration tests.
-- CODE implements only the designed scope and authors its paired unit tests.
-- UNIT_TEST, INTEGRATION_TEST, MODULE_TEST, and FUNCTIONAL_TEST uniformly inspect the paired baseline, add only risk-driven supplements under their own verification namespace, freeze the combined suite, execute it with deterministic external data, and write reports. Baseline incompleteness routes an Enhancement to the paired source; a supplemental-test defect routes a Bug to the verification owner; a product defect routes a Bug to the product owner. Real-user live-network cases belong only to the Phase delivery gate.
-
-Functional documentation bundle: P1 FUNCTIONAL_TEST outputs must include \`README.md\`, \`docs/quickstart.md\`, and \`docs/08-functional-test.md\`; for \`projectType\` = \`library\` or \`mixed\`, also include \`docs/api-guide.md\`. P2+ uses \`docs/iterations/<iterationId>/08-functional-test.md\`, \`quickstart.md\`, and optional \`api-guide.md\`. Documentation must follow the active i18n language.
-
-Mandatory rules:
-1. Return pure JSON only. No Markdown fences.
-2. Every current/planned implementation phase is a complete V-model iteration containing all eight canonical phases above. Never emit the old phases REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY.
-3. Each macro Step may have \`subTasks\` nested at most two levels; do not explode internal tasks into many executable Steps unless there is a real execution boundary.
-4. dependsOn must follow the phase order and be acyclic. Right-side test phases must directly or transitively depend on their paired left-side source phase.
-5. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration.
-6. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN own their paired baseline tests but no src/ product code. CODE owns product source/runtime assets and unit tests. Right-side phases may write tests only under their Runtime-declared verification supplement root and must not modify paired baselines or src/.
-7. The same outputs path is globally unique. DEBUG may modify dependency-chain files at runtime; planned Steps should not duplicate outputs.
-8. id has the form S001, S002, ...; do not output a role: the phase determines the Step's work and Runtime assigns who does it.
-9. Every Step needs a systemPrompt that pins scope, inputs, outputs, acceptance, forbidden actions, and the paired test-design obligation when applicable.
-10. projectType is inferred by the LLM after clarification: application, library, or mixed. There is no CLI project-type override.
-11. complexityAssessment is your plan-stage complexity assessment. simple => P1 only; moderate => at least P1+P2; complex => at least P1+P2+P3. If the user explicitly asks for phases/stages, set userForcedPhaseSplit=true and split.
-12. implementationPhases must include P1 current and any planned executable phases. Each phase has a verificationGate whose failurePolicy says to feed the failure log to Debugger, roll back to the paired V-model phase, and rerun subsequent phases. Its deliveryGate must declare validationTypes, baselineExecutionPolicy, and at least one live real-user scenario with operation, expected result, and a concrete execution command/args derived from the requirement; \`--help\` alone is not functional acceptance.
-13. dependencies is a Python pip dependency list. Include \`pytest\`; use bare package names only; never list \`requirements.txt\` in Step outputs.
-14. Application/mixed projects need a directly executable Python entry point (\`src/main.py\` or package \`__main__.py\`) that reuses CODE modules. Library/mixed projects need a stable public API and \`docs/api-guide.md\`.
-15. Structured HIGH_LEVEL_DESIGN -> CODE -> MODULE_TEST contract: for non-trivial work, return \`architectureModules\` with each module's id, name, responsibility, sourcePaths, optional assetPaths, testPaths, and dependencies. HIGH_LEVEL_DESIGN authors testPaths, CODE authors implementation paths, and MODULE_TEST consumes testPaths. Every module needs at least one \`testPaths\` entry, and \`sourcePaths\` and \`assetPaths\` cannot both be empty — a module with no test path cannot be consumed by MODULE_TEST. Macro Steps may cover multiple modules but must list module-level work in subTasks.
-16. Third-party library choices must match real APIs: HIGH_LEVEL_DESIGN must name the concrete entry point function/class or verification basis for the selected library in this requirement; do not invent parser/export APIs from package names alone.
-17. Every Step may declare a qualityGate. S1-S4 use completionMin and upstreamAlignmentMin. S5-S8 declare their stage metrics and tolerance (metricShortfall, maxFailedTests, maxSkippedTests, maxWarnings). Keep thresholds realistic for the project; Runtime supplies engineering defaults when omitted.
-
-Output JSON shape:
-{
-  "requirementDigest": "string",
-  "globalPrompt": "string",
-  "projectType": "application | library | mixed",
-  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
-  "implementationPhases": [
-    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["run tests", "verify functional docs"], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["complete deliverables", "run real-user scenarios"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
-  ],
-  "dependencies": ["pytest"],
-  "architectureModules": [
-    { "id": "M001", "name": "module name", "responsibility": "one clear responsibility", "sourcePaths": ["src/example.py"], "assetPaths": ["src/templates/example.txt"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
-  ],
-  "steps": [
-    {
-      "id": "S001",
-      "iterationId": "P1",
-      "phase": "REQUIREMENT_ANALYSIS",
-      "title": "string",
-      "description": "string",
-      "systemPrompt": "Step-specific prompt: scope, inputs, outputs, acceptance, forbidden actions",
-      "tools": ["skill:artifact-authoring", "skill:test-design"],
-      "inputs": ["docs/topic.md"],
-      "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"],
-      "subTasks": [
-        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["docs/01-requirement-analysis.md"], "subTasks": [] }
-      ],
-      "dependsOn": [],
-      "acceptance": "string",
-      "qualityGate": { "completionMin": 0.95, "upstreamAlignmentMin": 0.95, "metrics": {}, "tolerance": { "metricShortfall": 0.02, "maxFailedTests": 0, "maxSkippedTests": 0, "maxWarnings": 0 } },
-      "maxAttempts": 3
-    }
-  ]
-}`;
-
 const PYTHON_EXECUTOR_SYSTEM = `You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
 Every round you must return strict JSON:
@@ -118,32 +27,8 @@ Every round you must return strict JSON:
 Rules:
 1. Only call tools in the Step's authorised whitelist.
 2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
-   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle in the active i18n language: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
+   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow the target language's best practice; modules importable, functions typed appropriately.
-   - [Import convention] When modules under src/ import each other, use "from <module> import …" (sibling name).
-     **Never write "from src.<module> import …".** If main.py needs to run from the project root, prepend
-     "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))" before any import,
-     so that both "python src/main.py …" and "python -m src.main …" work.
-   - [Test convention] Files under tests/ also import targets via "from <module> import …".
-     **XCompiler auto-generates tests/conftest.py to inject project-root and src/ into sys.path**,
-     so both pytest and "python tests/test_*.py" can resolve modules — test files
-     **must NOT** add their own sys.path.insert(...). If you create or edit conftest.py yourself,
-     keep the existing sys.path injection — do not delete it.
-   - [Self-contained tests] Tests **must NOT** open() a sample file that does not exist on disk
-     (e.g. "sample.csv"). When a target function needs file input, choose in this priority order:
-       (a) first reuse a real sample supplied by the user or already present in the workspace, copying/referencing it under tests/fixtures/<name>;
-       (b) for third-party or industry-standard formats with no local sample, use http_fetch to obtain a small reference sample from official docs,
-           the upstream repository, or a public standard/example, save it under tests/fixtures/<name>, and record the source in the test report or comment;
-       (c) only for simple text formats such as CSV/JSON/INI, and only when you can immediately run_tests, construct a minimal sample with pytest tmp_path.
-     If the network is unavailable, no user sample exists, and the format standard cannot be confirmed, report a blocker asking the user for a sample.
-     A test that references a file nobody created will trap the Debugger in an endless FileNotFoundError loop.
-   - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed",
-     the **fixture itself is malformed**, **not the implementation**.
-     read_file the fixture, identify the format from the extension/parser/error, then prefer a user/workspace sample or an authoritative http_fetch reference;
-     rewrite the whole fixture with write_file and run_tests. After repeated failures on a complex domain format, stop inventing from memory and ask
-     for a user sample or network reference.
-     Never edit the implementation, the assertion, or mock out the parser to "fix" a parse error — fix the fixture first.
-   - [Time stability] Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
 4. When all outputs files exist and self-check passes, set done = true with empty actions and a qualityAssessment backed by concrete evidence.
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE report completion and upstreamAlignment.
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE author the baseline tests consumed by FUNCTIONAL_TEST / MODULE_TEST / INTEGRATION_TEST / UNIT_TEST. Authored baseline tests are not run until their paired verification Step unless the current Step explicitly authorises verification.
@@ -161,48 +46,6 @@ Rules:
    - For complex projects, prefer multiple cohesive modules/files and separate CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Steps over one giant file.
    - The concatenated result must be valid Python; never split inside a function body.
    - For partial edits to existing files, use replace_in_file / apply_patch — do not overwrite the whole file repeatedly.`;
-
-const TYPESCRIPT_PLANNER_SYSTEM = `Your job is to compile a user's natural-language requirement into a strict iterative V-model Step plan.
-
-Output language: TypeScript / Node.js only (plan.language is fixed to "typescript").
-
-Canonical V-model phases for every executable iteration:
-REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST.
-DEBUG is runtime rollback/repair only. If a test phase fails, XCompiler rolls back to its paired source phase and reruns subsequent phases.
-
-Use the same phase documents and synchronous test-design rule as the Python planner:
-- REQUIREMENT_ANALYSIS: \`docs/01-requirement-analysis.md\` only during normal execution.
-- HIGH_LEVEL_DESIGN: \`docs/02-high-level-design.md\` plus \`docs/tests/module-test-plan.md\`.
-- DETAILED_DESIGN: \`docs/03-detailed-design.md\` plus \`docs/tests/integration-test-plan.md\`.
-- CODE: implementation outputs plus \`docs/tests/unit-test-plan.md\` and executable unit tests.
-- UNIT_TEST: \`docs/05-unit-test.md\`.
-- INTEGRATION_TEST: \`docs/06-integration-test.md\`.
-- MODULE_TEST: \`docs/07-module-test.md\`.
-- FUNCTIONAL_TEST: \`docs/08-functional-test.md\`, \`README.md\`, \`docs/quickstart.md\`, and \`docs/api-guide.md\` for library/mixed projects.
-For P2+ iterations, put phase docs under \`docs/iterations/<iterationId>/\` and test plans under \`docs/iterations/<iterationId>/tests/\`.
-
-HIGH_LEVEL_DESIGN must place the current development module in the whole system and define system-level external interfaces and dependencies, including external APIs, third-party library choices, dependency confirmation, package.json scripts, package dependencies/devDependencies, tsconfig, data contracts, and integration boundaries.
-DETAILED_DESIGN must define module-internal functions, types, data structures, algorithms, control flow, error handling, and internal architecture.
-
-Mandatory rules:
-1. Return pure JSON only. Never emit the old phases REQUIREMENT, ARCH, TASK, TEST, REFACTOR, or DELIVERY.
-2. Every current/planned implementation phase is a complete V-model iteration containing all eight canonical phases.
-3. Each macro Step may contain \`subTasks\` nested at most two levels.
-4. Every CODE Step must be covered by a UNIT_TEST Step in the same iteration. HIGH_LEVEL_DESIGN must author architectureModules.testPaths; MODULE_TEST consumes them as inputs.
-   CODE outputs contain product source/runtime assets, docs/tests/unit-test-plan.md, and executable unit tests under tests/.
-5. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN may output only their documents, paired executable tests, and allowed project configuration; they must not output src/ product code. Right-side test phases must not output tests/ or src/. HIGH_LEVEL_DESIGN is the only phase that may output \`package.json\` / \`tsconfig.json\`.
-6. Exactly one HIGH_LEVEL_DESIGN Step must output \`package.json\` for greenfield TypeScript plans; ensure one HIGH_LEVEL_DESIGN Step output \`package.json\`. It must include scripts for \`build\`, \`test\`, and preferably \`lint\`.
-7. Local TypeScript source imports must use explicit \`.ts\` ESM specifiers. Configure \`allowImportingTsExtensions: true\` and use \`tsc --noEmit\`. Generated TypeScript must be compatible with Node native type stripping: avoid enums, namespaces, parameter properties, and transform-required syntax.
-8. Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
-9. dependencies is an advisory runtime npm package list; the authoritative manifest is \`package.json\` from HIGH_LEVEL_DESIGN. Do not invent package names.
-10. Application/mixed projects need \`src/main.ts\` with a directly runnable \`main()\`; library/mixed projects need \`src/index.ts\` or equivalent public API plus API guide.
-11. complexityAssessment and implementationPhases follow the same rules as Python: simple => P1, moderate => at least P1+P2, complex => at least P1+P2+P3, forced phase split => set userForcedPhaseSplit=true.
-12. verificationGate failurePolicy must say: Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases.
-13. For non-trivial work, return architectureModules with sourcePaths, optional assetPaths, and testPaths; HIGH_LEVEL_DESIGN/CODE/MODULE_TEST Steps may cover multiple modules but must list module-level work in subTasks.
-14. TypeScript tests must use Vitest only. Never request Jest, ts-jest, @types/jest, ts-node, or nodemon in Step prompts or package.json; package.json must use "test": "vitest run" and "build": "tsc --noEmit".
-15. Declare stage qualityGate thresholds and tolerance when project risk requires stricter values; otherwise Runtime applies the same S1-S8 engineering defaults as the Python planner.
-
-Output JSON shape is identical to Python and must include \`"projectType": "application | library | mixed"\`, with TypeScript paths such as \`src/example.ts\` and \`tests/example.test.ts\`; the first Step phase must be \`REQUIREMENT_ANALYSIS\`, not \`REQUIREMENT\`. There is no CLI project-type override.`;
 
 const TYPESCRIPT_EXECUTOR_SYSTEM = `You may only interact with the system through JSON tool calls — no Markdown and no explanatory text.
 
@@ -230,13 +73,10 @@ Every round you must return strict JSON:
 Rules:
 1. Only call tools in the Step's authorised whitelist.
 2. File writes must land within the Step's writable allowlist (other paths are rejected); required outputs are the final artifacts that must exist for acceptance.
-   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle in the active i18n language: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
+   For FUNCTIONAL_TEST documentation outputs, write the complete declared bundle: P1 paths such as \`README.md\`, \`docs/quickstart.md\`, \`docs/08-functional-test.md\`, and \`docs/api-guide.md\` when present, or the declared iteration-scoped equivalents under \`docs/iterations/<iterationId>/\`. Do not set done=true while any declared documentation output is missing.
 3. Generated code must follow TypeScript / Node.js best practice; modules importable, APIs typed, and runtime code directly runnable.
-   - [Import convention] Local source modules under src/ use ESM relative imports with explicit ".ts" specifiers, e.g. \`import { x } from "./util.ts";\`. Keep code compatible with Node's native TypeScript type stripping: use erasable type syntax only, and avoid enums, namespaces, parameter properties, or other transform-required TS features. Never use Python-style imports, \`from src.<module>\`, or sys.path hacks.
-   - [Test convention] Tests use Vitest: \`import { describe, it, expect } from "vitest";\`. Test files live under \`tests/**/*.test.ts\`.
    - [Self-contained tests] Tests **must NOT** read a sample file that does not exist on disk. When a target function needs file input, either create the content inside the test or write fixtures under \`tests/fixtures/<name>\`.
    - [Fixture iteration] When a test runs but the target function raises "Invalid syntax / Parse error / Malformed", the **fixture itself is malformed**. read_file the fixture, prefer a user/workspace sample; if none exists, use http_fetch to obtain an authoritative public reference; construct minimal samples only for simple text formats and immediately run_tests. Never weaken the implementation/assertion, and never repeatedly invent complex domain fixtures from memory.
-   - [Time stability] Time-dependent tests must freeze the system clock (for example \`vi.setSystemTime\` or patched datetime) or derive expected values from the current clock. Never call \`new Date()\` / \`date.today()\` while hard-coding a calendar year.
 4. When all outputs files exist and self-check passes, set done = true with empty actions and a qualityAssessment backed by concrete evidence.
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE report completion and upstreamAlignment.
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE author the baseline tests consumed by FUNCTIONAL_TEST / MODULE_TEST / INTEGRATION_TEST / UNIT_TEST. Authored baseline tests are not run until their paired verification Step unless the current Step explicitly authorises verification.
@@ -256,12 +96,22 @@ Rules:
 7. package.json is the dependency manifest. Use add_dependency for npm packages; never write requirements.txt.
 8. run_program runs the project entry with \`npx tsx\`, run_tests runs Vitest via \`npm test\`, and the final delivery gate also verifies the direct Node entry command.`;
 
-const PLANNER_CLARIFY_SYSTEM = `Do not restate the topic; expose unresolved decisions that would change functional design, acceptance, or architecture boundaries.
-Return strict JSON only. Each question must be directly answerable by a product owner and cover one decision. Avoid vague catch-all or implementation-stack questions, except for the single development-language question when the user prompt explicitly requires it.`;
+const PLANNER_CLARIFY_SYSTEM = `You clarify a requirement one question at a time and judge whether XCompiler can deliver it. Each turn you either ask the single next question whose answer most changes functional design, acceptance or architecture boundaries, report that nothing decision-relevant is left open, or report that XCompiler cannot deliver the requirement.
+Return strict JSON only. A question must be directly answerable by a product owner and cover one decision. Never ask about the development language, runtime, package manager, test framework or the deliverable form: those are decided before you start.
+Leave to planning what it can settle with a sensible default: field and column formats, how values are spelled, number representation, ordering, header layout and similar presentation details. Do not ask about them; when only such details remain in a dimension, mark it resolved.`;
 
-function buildPlannerSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM);
-}
+const CLARIFY_LANGUAGE_NAMES = { python: 'Python', typescript: 'TypeScript (Node.js)' } as const;
+const CLARIFY_SANDBOX_MODES = { subprocess: 'a local subprocess', docker: 'a Docker container' } as const;
+const CLARIFY_NETWORK_POLICIES = {
+  off: 'no network at all',
+  'download-only': 'outbound only; nothing outside can reach the project',
+  full: 'outbound, and the configured ports are published to this machine',
+} as const;
+const CLARIFY_DELIVERABLE_NAMES = {
+  application: 'a runnable program (CLI, script or service)',
+  library: 'a library or SDK that other code calls',
+  mixed: 'both a runnable program and a reusable library',
+} as const;
 
 function buildPlannerPhasePlanSystem(profile: LanguageProfile): string {
   return `This is two-level planning, pass one: PhasePlan.
@@ -276,6 +126,7 @@ The PhasePlan must:
 3. Produce implementationPhases: P1 status=current; later P2/P3 status=planned. simple uses P1 only; moderate uses at least P1+P2; complex uses at least P1+P2+P3; user-forced staging uses at least P1+P2 and userForcedPhaseSplit=true.
 4. Give each phase objective, scope, deliverables, dependsOn, verificationGate, and deliveryGate. The deliveryGate declares validationTypes and baselineExecutionPolicy, owns live real-user scenarios, and must include concrete command/args; no V-model Step owns live-network acceptance.
    execution.command is exactly one executable token, never a complete shell command; put every argument in execution.args. ${profile.id === 'typescript' ? 'For TypeScript source use for example {"command":"npx","args":["tsx","src/main.ts",...]}, {"command":"node","args":["src/main.ts",...]}, or an npm script. Never use ts-node, nodemon, Jest, or ts-jest. Any source entry named in args must be delivered by the current phase CODE Step.' : 'For Python source use for example {"command":"python","args":["src/main.py",...]}. Any source entry named in args must be delivered by the current phase CODE Step.'}
+   List in inputs every workspace file a scenario reads (input data, sample files). Scenario inputs are given before coding, as outputs of REQUIREMENT_ANALYSIS, HIGH_LEVEL_DESIGN or DETAILED_DESIGN, or obtained by FUNCTIONAL_TEST at test time (for example real data for the live check); CODE never provides them, so the product and its acceptance stay independent. When the expectation requires a specific non-zero exit (for example a partial-failure code), set execution.expectExitCode to it; omit it when the scenario must exit 0. When the scenario's result is a file that cannot be read as text (for example a spreadsheet, an image or an archive), add inspect: a list of {"command","args"} entries, written like execution, that read that result and print what the expectation checks, using the project's own dependencies. They run after the scenario and their output is what the judge reads; without readable evidence the scenario cannot pass.
 5. Keep planned phases as goals and gates only. Do not expand any Step for them; a separate pass will generate a full V-model plan for one phase at a time.
 
 Return strict JSON only:
@@ -285,7 +136,7 @@ Return strict JSON only:
   "projectType": "application | library | mixed",
   "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
   "implementationPhases": [
-    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["..."], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["complete deliverables", "run real-user scenarios"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
+    { "id": "P1", "title": "Core functionality", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["..."], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["complete deliverables", "run real-user scenarios"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "inputs": ["..."], "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
   ]
 }
 
@@ -300,7 +151,9 @@ Target language: ${profile.displayName}.
 You will receive a frozen PhasePlan and a phaseId. Generate Steps only for that phaseId. Planned phases must not be expanded into this StepPlan.
 
 The target phase's objective, scope, deliverables, and delivery gate are the authoritative
-specification for this StepPlan. Every planned phase is explicitly out of scope: do not copy its
+specification for this StepPlan. Every file in a deliveryGate scenario's inputs must be a declared
+output of the target phase's REQUIREMENT_ANALYSIS, HIGH_LEVEL_DESIGN, DETAILED_DESIGN or
+FUNCTIONAL_TEST Step; CODE never provides acceptance inputs. Every planned phase is explicitly out of scope: do not copy its
 features, packages, artifacts, or acceptance criteria into the current phase. Rewrite
 requirementDigest and globalPrompt for the target phase only, and exclude dependencies used solely
 by a future planned phase.
@@ -318,9 +171,8 @@ Phase responsibilities:
 Strict output ownership:
 - Step inputs/outputs form an auditable artifact graph and must list exact file paths. Do not use globs or directory selectors such as src/**/*.ts or tests/**. Globs may appear inside tsconfig content, never in Planner JSON.
 - REQUIREMENT_ANALYSIS owns functional baseline tests; HIGH_LEVEL_DESIGN owns module baseline tests and architectureModules.testPaths; DETAILED_DESIGN owns integration baseline tests; CODE owns unit baseline tests plus product source/runtime assets.
+- For greenfield projects, a CODE Step outputs the entry the project type needs: application/mixed needs ${profile.id === 'typescript' ? '`src/main.ts`' : '`src/main.py` or a package `__main__.py`'} that runs directly, reuses the CODE modules and answers \`--help\` with usage text; library/mixed needs ${profile.id === 'typescript' ? '`src/index.ts` or an equivalent public API module' : 'a stable public API module'}, documented in the API guide. Incremental work keeps the existing entries.
 - UNIT_TEST / INTEGRATION_TEST / MODULE_TEST / FUNCTIONAL_TEST consume paired baselines and own only validation reports/delivery docs. Runtime assigns the exact risk-supplement root when the Step executes; no Step inputs/outputs in Planner JSON may predeclare supplement, supplemental, or tests/verification paths.
-- For greenfield TypeScript, exactly one HIGH_LEVEL_DESIGN Step must output package.json with scripts, dependencies, and devDependencies. CODE must not output package.json.
-- For TypeScript package.json, use Vitest only: "test": "vitest run", "build": "tsc --noEmit", and include typescript/tsx/vitest/@vitest/coverage-v8/@types/node in devDependencies with compatible Vitest/provider versions. Scope tsconfig product build/typecheck to src/**/*.ts and src/**/*.tsx; each V-model test Step runs only its paired tests through Vitest. Do not mention or request Jest, ts-jest, @types/jest, ts-node, or nodemon.
 
 Return only the current phase's dependencies, architectureModules, and steps. Complex or multi-concern work must declare architectureModules for the current phase and map module-level work under HIGH_LEVEL_DESIGN/CODE/MODULE_TEST subTasks. Each Step's subTasks may nest at most two levels.
 
@@ -373,9 +225,33 @@ const messages: Messages = {
     scoreFileHeader: '# XCompiler LLM provider score snapshot (maintained automatically by ScoreStore; do not edit)',
     scoreFileSemantics: '# Scores: dynamic snapshot; default 1.0; automatic range 0.1-1.0; providers tagged cluster default to 0.2-0.5 unless llm.cluster_score_min/max widens it; transport/attributed quality failure -0.5; verified finding/repair/change +0.1. Put user overrides in llm_scores_user.yaml; 0 disables a provider.',
   },
+  deliveryGateReport: {
+    title: (phase) => `${phase} delivery gate report`,
+    evaluatedAt: 'Evaluated at',
+    outcome: 'Outcome',
+    passed: 'passed',
+    failed: (errors) => `failed (${errors} error(s))`,
+    checks: 'Checks',
+    command: 'Command',
+    exitCode: 'Exit code',
+    timedOut: 'timed out',
+    stdout: 'Output',
+    stderr: 'Error output',
+    inspection: 'Inspection',
+    finding: 'Finding',
+    setAside: 'Run outputs set aside',
+    setAsideNote: (directory) => `What this gate run left in the working copy was moved to \`${directory}\` (ignored by git; delete it when no longer needed):`,
+  },
   system: {
+    preflightNoProvider: (pools) => `LLM preflight failed: model pools [${pools}] have no usable provider and no ollama server is reachable. Check base_url in config.yaml, or start the ollama service, then retry.`,
+    preflightStillEmpty: (server, pools) => `LLM preflight failed: ollama server ${server} was loaded, but model pools [${pools}] still have no usable provider (every score is still 0 after the automatic import).`,
+    workspaceLocked: (owner, file) => `The workspace is in use by another XCompiler process (pid=${owner.pid}, host=${owner.host}, cmd=${owner.command}, since=${owner.startedAt}).\n` +
+      `If you are sure that process has exited, delete ${file} and retry.`,
     configEnvMissing: (names) => `[xcompiler] unset config environment variables were replaced with empty strings: ${names}`,
     unhandledError: (message) => `Unhandled error: ${message}`,
+    permissionDeniedStop: (operation, target, consequence, reason) =>
+      `Stopped: permission for ${operation} (${target}) was not granted${reason ? ` — ${reason}` : ''}. ${consequence}\n` +
+      'To continue, run again and approve it, or pass --permission-mode auto to allow Runtime permissions for that run.',
     unsupportedSubprocessNetworkOff:
       'sandbox network=off cannot be enforced in subprocess mode; use mode=docker or choose download-only/full explicitly.',
     dockerInsideContainerUnsupported:
@@ -568,10 +444,73 @@ const messages: Messages = {
     topicLoaded: (p) => `topic loaded: ${p} (skipping intake / clarify / Gate 1)`,
     requirementEmptyExit: 'requirement is empty, aborting.',
     requirementInputHint: 'Please describe your requirement (multi-line, blank line to finish):',
-    spinClarify: 'Planner is clarifying the requirement…',
-    clarifySucceed: (n) => `clarification questions: ${n}`,
+    spinClarify: (questionId) => `Preparing clarification question ${questionId}…`,
+    clarifyAsked: (questionId) => `clarification question ${questionId} ready`,
     clarifyFail: 'clarification failed',
-    clarifyChoiceHint: (range) => `Reply with ${range} to choose a shown option, or type a custom answer.`,
+    clarifyChoiceHint: (range) => `Reply with ${range} to choose a shown option (Enter takes A, the recommended one), or type a custom answer.`,
+    clarifyProgress: (settled, total, verdict, percent) => `Progress: ${settled}/${total} dimensions settled · ${
+      verdict === 'feasible' ? 'deliverable' : verdict === 'uncertain' ? 'deliverability still open' : 'not deliverable'} · ${percent}% of the clarification budget used`,
+    resumeIntake: (answers) => `An unfinished clarification of this requirement was found (${answers} answer(s)). Resume it?`,
+    intakeDraftInvalid: 'The saved clarification draft is unreadable and was discarded; starting over.',
+    answerRedacted: 'A credential-looking value in your answer was replaced with [REDACTED]. Give secrets to the project through environment variables, not answers.',
+    interactionDismissed: 'Build cancelled: a prompt was closed without an answer.',
+    intakeLanguage: {
+      question: 'Which development language should this project use?',
+      why: 'Fixes the toolchain, test framework and project layout for every later step.',
+      options: { python: 'Python (recommended)', typescript: 'TypeScript (Node.js)' },
+    },
+    intakeDeliverable: {
+      question: 'What should the deliverable be?',
+      why: 'Decides the entry point, the public interface and how delivery is verified.',
+      options: {
+        application: 'A runnable program: a CLI, script or service a user runs directly',
+        library: 'A library or SDK that other code imports and calls',
+        mixed: 'Both: a reusable library plus a runnable program built on it',
+      },
+    },
+    intakeDecided: (subject, value, source) => `${subject} already decided: ${value} (from the ${source === 'baseline' ? 'existing project' : source === 'topic' ? 'topic file' : 'requirement'})`,
+    intakeSubjects: { language: 'Development language', deliverable: 'Deliverable' },
+    clarifyEnded: {
+      clear: (asked) => `Requirement is clear after ${asked} question(s).`,
+      proceed: (asked) => `Clarification stopped after ${asked} question(s): continuing with what is settled, as you chose. topic.md records what is still open.`,
+      narrowed: (asked) => `Clarification stopped after ${asked} question(s) with the requirement narrowed to the closest deliverable scope.`,
+    },
+    infeasible: {
+      spin: 'Requirement judged undeliverable',
+      header: (summary) => `XCompiler cannot deliver this requirement as it stands: ${summary}`,
+      blockerKinds: { language: 'Language', platform: 'Platform', verification: 'Verification', environment: 'Environment' },
+      scope: (scope) => `Closest deliverable scope: ${scope}`,
+      prompt: 'How do you want to continue?',
+      choices: {
+        narrow: 'Accept the closest deliverable scope and keep clarifying',
+        revise: 'Edit the requirement and keep clarifying',
+        proceed: 'Continue with the requirement as it is',
+        cancel: 'Cancel this build',
+      },
+      narrowQuestion: (summary) => `XCompiler cannot deliver the requirement as stated (${summary}). Narrow it to the closest deliverable scope?`,
+      narrowAnswer: (scope) => `Narrowed to: ${scope}`,
+      reviseEditorMsg: 'Edit the requirement',
+      auditRevised: 'revised requirement',
+      cancelled: 'Build cancelled at clarification.',
+    },
+    final: {
+      spin: 'Final assessment ready',
+      header: (reason, stallTurns) => reason === 'budget'
+        ? 'Final assessment: the clarification has used its share of the context window.'
+        : `Final assessment: the last ${stallTurns} answers settled nothing new.`,
+      unresolved: (summary) => `Still open: ${summary}`,
+      choices: {
+        continue: 'Keep clarifying',
+        narrow: 'Accept the closest deliverable scope and go to the topic review',
+        revise: 'Edit the requirement and clarify again',
+        proceed: 'Go to the topic review with what is settled',
+        cancel: 'Cancel this build',
+      },
+      reviseCondensedMsg: 'Edit the requirement. The answers confirmed so far are appended; keep what matters, since clarification restarts from this text.',
+      condensedConfirmed: '## Confirmed so far',
+      codeSummary: 'The model gave no usable final assessment; these are the points the last valid turn still saw open.',
+      codeBuilt: 'The model did not give a usable final assessment, so it was built from the last valid turn.',
+    },
     addendaConfirm: 'Any extra requirements to append? (Will be sent to Planner together with the clarification and kept in plan.userAddenda)',
     addendaEditorMsg: 'Enter custom addenda (multi-line, Markdown allowed)',
     auditClarifyAnswer: (qid, q) => `clarify answer ${qid}: ${q}`,
@@ -611,8 +550,99 @@ const messages: Messages = {
     topicPreamble: '> This file is the project topic frozen after requirement clarification. All subsequent V-model decomposition and every phase output use this file as the sole requirement input.',
     topicSecRequirement: '## Original requirement',
     topicSecClarify: '## Clarification record',
+    topicSecDecisions: '## Decisions',
+    topicSecOpen: '## Open points',
+    topicOpenNote: 'These dimensions were still open at the last assessment; planning applies the recommended defaults for them.',
+    topicSecAssumptions: '## Default assumptions',
+    topicAssumptionsNote: 'These were not asked during clarification. Planning applies them as defaults, binding like accepted requirements; edit them at Gate 1 if they do not fit.',
+    topicSecFeasibility: '## Feasibility',
+    topicFeasibility: {
+      verdict: (verdict) => `Last assessment: ${verdict === 'feasible' ? 'deliverable' : verdict === 'uncertain' ? 'deliverability still depends on an open decision' : 'not deliverable as stated'}.`,
+      narrowed: (scope) => `The user narrowed the requirement to: ${scope}`,
+      proceeded: 'The user chose to continue with the requirement judged undeliverable.',
+    },
     topicSecAddenda: '## User addenda',
     topicSecBaseline: '## Existing project baseline',
+  },
+  tools: {
+    readFile: {
+      description: 'Reads a text file in the workspace in chunks. args.path is required and must not be empty; args.offset is an optional byte offset: pass the previous result\'s nextOffset to continue reading.',
+    },
+    writeFile: {
+      description: 'Creates or overwrites a file inside the current Step\'s writable allowlist. args.path (not empty) and the string args.content are required; path is a concrete workspace-relative path. ' +
+        'Each content is bounded by the runtime chunk limit; write a large file with write_file for its first part and append_file for the rest, split at module, function or class boundaries. ' +
+        'Overwriting an existing file needs its complete content; an abnormal shrink is refused, so prefer replace_in_file or apply_patch for precise edits. ' +
+        'Maintain runtime-managed dependency manifests with add_dependency.',
+      chunkTooLarge: (size, limit) => `write_file content of ${size}B exceeds this Step's chunk limit of ${limit}B. Split the large file: ` +
+        `write its head with write_file in the first action (at most ${limit}B, overwriting the existing file), ` +
+        `then append the rest with append_file at module, function or class boundaries (each at most ${limit}B). One round may hold several actions.`,
+    },
+    appendFile: {
+      description: 'Appends content to the end of a file inside the current Step\'s writable allowlist. args.path (not empty) and the string args.content are required; path is a concrete workspace-relative path. ' +
+        'Each content is bounded by the runtime chunk limit; use it with write_file to write a large file in chunks.',
+      chunkTooLarge: (size, limit) => `append_file content of ${size}B exceeds this Step's chunk limit of ${limit}B; split it further at module, function or class boundaries.`,
+    },
+    listDir: {
+      description: 'Lists the entries of a directory (names only). args.path is optional; when given, it must be a concrete workspace-relative directory path.',
+    },
+    replaceInFile: {
+      description: 'Replaces the find string exactly with replace in a target file inside the current Step\'s writable allowlist (one occurrence by default). ' +
+        'The three string arguments args.path (a concrete workspace-relative file path from the writable allowlist), args.find and args.replace are required; a missing path is refused.',
+      noOpRefused: 'no-op edit refused: find === replace (the strings before and after are identical). Check the change you actually mean to make; to read a file use read_file, to rewrite a whole file use write_file.',
+      nearbyHint: 'Hint: these regions of the original look like what you meant to change (take the bytes below as the basis for a new find):',
+      firstLineMissing: 'Hint: the first line of find was not found in the original. Consider reading it with read_file and editing precisely with apply_patch; a whole-file rewrite must stay under the current runtime chunk limit.',
+    },
+    codeSearch: {
+      description: 'Searches code in the workspace by substring (line matches). args.root is optional; when given, it must be a concrete workspace-relative directory path.',
+    },
+    analyzeError: {
+      description: 'Parses Python error or test output into a structured summary.',
+      missingModule: (name) => `Missing module ${name}: install it with pip and write it back to requirements.txt`,
+      failedTests: (count) => `${count} test(s) failed`,
+    },
+    runProgram: {
+      description: 'Runs the project\'s entry program or a common project command in the sandbox. ' +
+        'Python: Runtime provides the interpreter, so args start after it (for example ["-m", "py_compile", "x.py"] or ["src/main.py"]); ' +
+        'an extra python prefix is ignored. TypeScript: npx tsx <entry> by default; npm, npx, node, tsx and tsc prefixes also work. ' +
+        'When the product\'s specified contract requires a non-zero exit for this input (for example a documented failure exit code), ' +
+        'set expectExitCode to that code: the call then succeeds only if the program exits with exactly it. Not for test runners.',
+    },
+    runTests: {
+      description: 'Runs the test suite in the sandbox (Python: pytest; TypeScript: npm test / Vitest), with optional extra arguments. ' +
+        'The TypeScript UNIT_TEST gate turns coverage collection on by itself, so do not pass --coverage again. ' +
+        'On failure the summary carries the last lines of stderr and stdout, enough to fix from.',
+    },
+    installDeps: {
+      description: 'Installs extra dependencies in the sandbox (Python: pip install; TypeScript: npm install). It does not write them back to the dependency manifest.',
+    },
+    applyPatch: {
+      description: 'Applies a unified diff patch; every +++ file header must name a concrete workspace-relative target path, and the target must be inside the current Step\'s writable allowlist.',
+    },
+    addDependency: {
+      description: 'Adds or updates dependencies in the dependency manifest and rebuilds the sandbox. TypeScript packages accept name@version; set dev=true for test and build tools.',
+    },
+  },
+  generated: {
+    pathBootstrap: [
+      'Lets `python src/main.py` (a script launch) import the top-level package `src.xxx`',
+      'by putting the project root first on sys.path. pytest and `python -m` launches are unaffected.',
+    ],
+    conftest: [
+      "Puts the project root and src/ on sys.path, so 'from <module> import ...' resolves modules in src/",
+      "both under pytest and when 'python tests/test_*.py' runs directly.",
+    ],
+    fileManifest: {
+      heading: '## File manifest',
+      intro: (scannedAt) => `Generated from the project file tree${scannedAt ? ` (reconciled ${scannedAt})` : ''}. ` +
+        'Do not edit by hand — this region is replaced on every delivery.',
+      count: (files) => `${files} files. Size and timestamps are generated data and are recorded on the project ` +
+        'file tree rather than here: writing this section changes them for the document that carries it.',
+      path: 'Path',
+      type: 'Type',
+    },
+  },
+  translation: {
+    fallback: (texts) => `Translation unavailable for ${texts} text(s); they were kept as written.`,
   },
   inspect: {
     noPlanFound: 'No phasePlan.json found',
@@ -658,6 +688,29 @@ const messages: Messages = {
     auditTestFilesMissing: 'no concrete test files found under tests/',
     auditEntrypointOk: (command) => `entrypoint ok: ${command}`,
     auditEntrypointFailed: (command) => `entrypoint failed: ${command}`,
+    auditScenarioInputsMissing: (scenario, inputs) => `scenario ${scenario} was not run: its declared input files are missing: ${inputs}`,
+    auditScenarioContractContradicts: (scenario, exitCode, declared) =>
+      `scenario ${scenario} exited ${exitCode} but declares exit ${declared}, while its outcome judge found the expectation met: the scenario contract contradicts itself and no Step in this run can repair it`,
+    auditScenarioAddendumSuggestion: (scenario, exitCode, expected) =>
+      `Suggested change: if exit ${exitCode} is what the requirement specifies for this scenario, append to the "User addenda" section of topic.md: ` +
+      `"Delivery scenario ${scenario} (${expected}) ends with process exit code ${exitCode}; declare expectExitCode: ${exitCode} in its execution." ` +
+      'Otherwise append the exit code the scenario must produce. Then build again from that topic; where the addenda conflict with the earlier requirements, the addenda take precedence.',
+    auditScenarioUnverifiable: (scenario, exitCode) =>
+      `scenario ${scenario} (exit ${exitCode}) could not be verified: nothing readable in its evidence shows whether the expectation was met, and no Step in this run can make it readable`,
+    auditScenarioInspectSuggestion: (scenario, expected) =>
+      'Suggested change: append to the "User addenda" section of topic.md: ' +
+      `"Delivery scenario ${scenario} (${expected}) produces a result that cannot be read as text; declare inspect commands in the scenario that read that result and print what the expectation checks, using the project's own dependencies." ` +
+      'Then build again from that topic; where the addenda conflict with the earlier requirements, the addenda take precedence.',
+    auditScenarioInspectReviewSuggestion: (scenario) =>
+      `Suggested change: scenario ${scenario} declares inspect commands, but their output did not show whether the expectation was met (see the judgement above). ` +
+      'Check that they read what the expectation checks and that the output is structured as the plan says; if either needs to change, state it in the "User addenda" section of topic.md ' +
+      'and build again from that topic; where the addenda conflict with the earlier requirements, the addenda take precedence.',
+    auditScenarioPlanConflict: (scenario) =>
+      `scenario ${scenario}: the requirement this Phase froze conflicts with the confirmed plan; requirement analysis corrects it to the plan and the change is carried to the later Steps`,
+    unchangedRepairStop: ({ ticketName, targetStepName, failureCode, changelistName }) =>
+      `Stopped: the last repair of ${ticketName} on ${targetStepName} (${changelistName}) changed no file, and the same failure (${failureCode}) came back; retrying would only repeat it. ` +
+      'Decide whether the requirement or plan behind the failure needs to change: if so, state the correct requirement in the "User addenda" section of topic.md and build again from that topic ' +
+      '(where the addenda conflict with the earlier requirements, the addenda take precedence); if the requirement is right and the implementation is wrong, correct it and run again.',
     auditPackageJsonMissing: 'missing package.json',
     auditScriptMissing: (name) => `package.json has no ${name} script`,
     auditCommandOk: (name) => `${name} ok`,
@@ -688,7 +741,6 @@ const messages: Messages = {
     labelSystemPrompt: '**System prompt (sole mandate):**',
   },
   prompts: {
-    plannerSystem: (p) => buildPlannerSystem(p),
     plannerPhasePlanSystem: (p) => buildPlannerPhasePlanSystem(p),
     plannerPhaseDecomposeSystem: (p) => buildPlannerPhaseDecomposeSystem(p),
     plannerSelfMode: `SELF-BOOTSTRAP OVERRIDE (takes precedence over conflicting greenfield rules above):
@@ -698,85 +750,88 @@ const messages: Messages = {
 - Every CODE/test output must be scoped to the requested delta. Never rebuild or replace the repository wholesale.
 - Treat the stable host binary as generation N and the worktree candidate as N+1; do not design in-process hot replacement.`,
     plannerClarifySystem: PLANNER_CLARIFY_SYSTEM,
-    plannerClarify: (raw, opts = {}) =>
-      `The user's original requirement is:
-
+    clarificationTranscript: { options: 'Candidate settings', why: 'Purpose of the question' },
+    plannerValidationFeedback: (message) => [
+      '',
+      '',
+      'The previous output failed the XCompiler plan contract. Fix it according to the error below and output the complete, strict JSON again, with no explanation or Markdown:',
+      `Validation error: ${message}`,
+      'Correction requirements:',
+      '- Keep the confirmed PhasePlan constraints; generate content for the current phase only.',
+      '- architectureModules must satisfy sourcePaths/testPaths and HIGH_LEVEL_DESIGN/CODE/MODULE_TEST traceability; do not split cohesive modules to reach a count.',
+      '- architectureModules.testPaths are module contract tests that HIGH_LEVEL_DESIGN creates and MODULE_TEST consumes; they must not also appear among CODE\'s unit test outputs.',
+      '- When one CODE macro Step covers several modules, list each module in that CODE Step\'s subTasks.',
+      '- Each output file is produced by exactly one Step in one V cycle; a Step that needs it lists it in inputs instead of declaring it as an output again.',
+      '- Step inputs/outputs must be exact file paths, never globs or directory selectors such as src/**/*.ts or tests/**; list the concrete outputs of upstream Steps when several files are needed.',
+      '- Do not remove any of the 8 standard V-model macro Steps.',
+    ].join('\n'),
+    // Stable instructions first, then the growing transcript, then what changes every turn, so a
+    // provider's prefix cache can reuse everything up to the newest answer.
+    plannerClarifyTurn: (context) => {
+      const transcript = context.transcript.length > 0
+        ? context.transcript.map((entry) => `${entry.id} [${entry.category}] ${entry.question}\nA: ${entry.answer}`).join('\n\n')
+        : 'None yet.';
+      const final = context.finalAssessment;
+      return `Original requirement:
 """
-${raw}
-"""
-
-Generate ${opts.complex ? '8-10' : '7-10'} non-duplicate clarification questions about unresolved decisions whose answers materially affect implementation or acceptance. Never return an empty array; when the functional description is already detailed, ask for acceptance examples, failure behaviour, and explicit exclusions.
-
-Return ONLY a JSON array. Every item must be shaped exactly as:
-{"id":"Q1","category":"functionality|data|acceptance|boundary|quality|extensibility","question":"one concrete directly-answerable question","why":"what design or acceptance decision this answer affects","options":[{"label":"A","answer":"highest-priority feasible setting"},{"label":"B","answer":"second feasible setting"}]}
-
-Question mix (functionality first):
-- At least ${opts.complex ? '5' : '4'} function-focused questions categorized as functionality / data / acceptance, so functional questions remain the majority. Prioritize actors, core journeys, business rules and state transitions, inputs/outputs, failure behaviour, and verifiable acceptance examples.
-- At least one boundary question defining in-scope, explicitly out-of-scope, external-system ownership, or compatibility limits.
-- At least one quality question requesting measurable latency, throughput, volume, concurrency, accuracy, reliability, or security targets. Never ask only “Any performance requirements?”.
-- At least one extensibility question identifying the most likely future business capability, extension axis, or interface that must remain stable. Never ask only “Should it be extensible?”.
-- If the deliverable shape is unclear, include one boundary question asking whether this should be an API library/SDK/package, a runnable application/CLI/service, or a mixed deliverable with both.
-- If the requirement needs access to external APIs, URLs, or third-party data sources, include one data or boundary question asking whether the user already has a usable API, key, token, or auth method. If they do not, the default for this delivery is to choose a public, no-key/no-token, verifiable API; do not generate placeholder URLs.
-- Order by blocking impact: core functional/data decisions first, then scope and quality, then future evolution.
-- One primary decision per question. Include useful business choices/examples; do not join unrelated questions with “and/or”.
-- For every question, generate 2-5 feasible answer options ordered by priority. The option count is not fixed: use 2 for binary choices, 3 for common defaults, and 4-5 only when there are genuinely distinct viable settings. Do not pad or force every question to exactly 3 options.
-- Label options sequentially from A through the last generated option, for example A-B, A-C, A-D, or A-E. A should be the recommended/default setting when one is apparent. Options must be concrete business/product settings, not vague placeholders.
-- Do not include “Other”, “Custom”, or “Let the user decide” as an option. The CLI already allows the user to reply with one of the shown labels or enter a custom free-form answer.
-${opts.projectShapeAmbiguous
-  ? '- Required for this topic: ask the API library vs runnable application vs mixed-deliverable boundary explicitly.\n'
-  : ''}
-${opts.languageAmbiguous
-  ? '- Required for this topic: include exactly one boundary question confirming the target development language. Options must be A. Python (default/recommended) and B. TypeScript / Node.js. The user may still answer with custom free-form text.\n'
-  : ''}
-
-${opts.languageAmbiguous
-  ? `[Stack decision] XCompiler could not infer the target language from the topic or baseline. Ask only the development-language question described above; do not ask package manager, test framework, or OS questions. If the user does not choose, Python is the default.`
-  : `[Hard constraint] The implementation stack is already fixed by the user's topic or existing project baseline. Do not reopen language/runtime/package-manager decisions.
-**Do NOT** ask questions of these forms:
-  - "Which programming language / framework / runtime should this use?"
-  - "Which test framework / build tool / package manager?"
-  - "Which OS is the target platform?"`}
-${opts.intent && opts.intent !== 'greenfield'
-  ? `This is an incremental ${opts.intent} request against an existing project${opts.hasBaseline ? ' with a separate baseline summary that will be provided during decomposition' : ''}. Ask ONLY delta questions; do not ask to rebuild the project from scratch.`
-  : ''}The majority of questions must concern functional behaviour; performance, boundaries, and extensibility should eliminate ambiguities that affect this delivery.`,
-    plannerDecompose: (raw, qa, addenda, opts = {}) =>
-      `Original requirement:
-"""
-${raw}
+${context.rawRequirement}
 """
 
-Clarification Q&A:
-${qa || '(none)'}
+Decided before this turn (do not reopen):
+- Development language: ${CLARIFY_LANGUAGE_NAMES[context.language]}
+- Deliverable: ${CLARIFY_DELIVERABLE_NAMES[context.projectType]}
+${context.intent !== 'greenfield' ? `- This is an incremental ${context.intent} change to an existing project${context.hasBaseline ? ' whose baseline summary is given during planning' : ''}: ask only about the change, never about rebuilding the project.\n` : ''}
+What XCompiler can deliver (judge feasibility against these limits only):
+- Code in ${CLARIFY_LANGUAGE_NAMES[context.language]} only.
+- A runnable program (CLI, script or service), a library, or both.
+- Acceptance is checked by running one command in the project's sandbox and reading its exit status and output, including files it writes and responses from a service it starts in that sandbox. Nothing may need a person to watch a screen, a desktop window, a mobile device or physical hardware.
+- Commands run in ${CLARIFY_SANDBOX_MODES[context.sandbox.mode]} with ${CLARIFY_NETWORK_POLICIES[context.sandbox.network]}.
 
-${addenda ? `User addenda (must be strictly followed; takes priority over any vague parts of the original):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
-  ? `Incremental intent: ${opts.intent}
+Judge feasibility every turn:
+- "feasible": everything understood so far fits these limits; blockers is [].
+- "uncertain": whether it fits depends on a decision still open; list that limit in blockers and make settling it this turn's question.
+- "infeasible": it cannot fit whatever the answers are; list the limits, return status "infeasible" instead of a question, and give feasibleScope, the closest requirement that does fit, when there is one.
+Blocker kinds: "language" (needs another language or a native toolchain), "platform" (a mobile, desktop GUI, browser-only or embedded target), "verification" (acceptance needs a person or a device rather than a command), "environment" (needs network, hardware or system access the sandbox does not give).
 
-Generate an incremental ${opts.intent} plan on top of the existing project. Reuse the current architecture, files, tests and dependencies where possible instead of rebootstrapping the whole project. Outside the requested change, preserve existing behaviour.
+Assess each dimension against the requirement and every answer below:
+- functionality: actors, core journeys, business rules, state transitions
+- data: inputs, outputs, formats, volumes, external data sources
+- acceptance: verifiable examples, failure behaviour, explicit exclusions
+- boundary: what is in scope, what is out, who owns external systems, compatibility limits
+- quality: measurable latency, throughput, volume, accuracy, reliability or security targets
+- extensibility: the most likely next capability, or the interface that must stay stable
+Mark each "resolved" (settled by the requirement or an answer), "open" (an unsettled decision that would change design or acceptance) or "not-applicable" (no such decision for this delivery).
+${context.externalApiRequired ? 'The requirement uses external APIs, URLs or third-party data: keep data open until the user has said whether they have a usable API, key, token or auth method. Without one, the default is a public, no-key, verifiable API; never a placeholder URL.\n' : ''}
+Return ONLY one JSON object, one of
+{"status":"ask","coverage":{"functionality":"resolved|open|not-applicable","data":"…","acceptance":"…","boundary":"…","quality":"…","extensibility":"…"},"feasibility":{"verdict":"feasible|uncertain","blockers":[{"kind":"platform","detail":"the limit and what in the requirement hits it"}]},"question":{"category":"<one open dimension>","question":"one concrete question","why":"the design or acceptance decision the answer settles","options":[{"label":"A","answer":"recommended setting"},{"label":"B","answer":"another feasible setting"}]}}
+or, when no dimension is open and the verdict is feasible,
+{"status":"clear","coverage":{…the same six keys…},"feasibility":{"verdict":"feasible","blockers":[]},"summary":"one or two sentences on what is now settled","assumptions":["a decision not asked about, and the default planning will apply"]}
+or, when XCompiler cannot deliver it,
+{"status":"infeasible","coverage":{…},"feasibility":{"verdict":"infeasible","blockers":[{"kind":"…","detail":"…"}]},"summary":"why XCompiler cannot deliver it","feasibleScope":"the closest deliverable requirement; omit when there is none"}
 
-Existing project baseline:
-"""
-${opts.baseline || '(missing baseline)'}
-"""
+Question rules:
+- Ask only about an open dimension: one decision per question, never a repeat or rephrasing of an earlier question.
+- Give 2-5 concrete options ordered by priority, with A as the recommended default. Do not add "Other" or "let me decide": the user can always answer in their own words.
+- While the verdict is uncertain, ask the question that settles it first. Otherwise prefer the decision with the widest effect on design and acceptance.
+- Report clear only when the verdict is feasible and the remaining unknowns would change neither design nor acceptance.
+- With clear, list in assumptions (1-12 entries) each decision you did not ask about and leave to planning, with the default it will get: for example which fields the output contains, how output files are organised, the input encodings accepted, which sample acceptance runs on. The user reads them before planning starts and corrects any that do not fit.
 
-`
-  : ''}Planning depth rules:
-- Unless the request is explicitly tiny (single function / toy script / one-file utility), do not collapse the solution into one source file and one test.
-- If the requirement spans multiple concerns (domain logic, API/CLI surface, persistence, integration, orchestration, tests), reflect that with multiple architecture modules and Step.subTasks under HIGH_LEVEL_DESIGN/CODE/MODULE_TEST macro Steps.
-- Assess project complexity in the plan and size implementationPhases from that assessment: simple => P1 current only; moderate => P1 current + at least P2 planned; complex => P1 current + at least P2/P3 planned. If the user explicitly requested phases/stages, use at least P1+P2 and set userForcedPhaseSplit=true. Materialize a full V-model cycle only for the current phase; planned phases remain goals until activated.
-- Use HIGH_LEVEL_DESIGN/DETAILED_DESIGN steps to describe module boundaries, responsibilities, dependencies, and extension points that future incremental work can build on.
-- When baseline files already exist, prefer editing/extending those modules over creating shadow implementations with duplicate behaviour.
+Questions asked so far:
+${transcript}
 
-Output a strict JSON plan per the system rules.`,
+This turn: question id ${context.questionId}; ${context.budgetUsedPercent}% of the clarification budget is used.
+${final ? `FINAL ASSESSMENT (${final === 'budget' ? 'the clarification budget is used up' : 'the last answers settled nothing new'}): do not ask. Return clear when the verdict is feasible and nothing open would change design or acceptance; infeasible when XCompiler cannot deliver it; otherwise
+{"status":"unresolved","coverage":{…},"feasibility":{"verdict":"feasible|uncertain","blockers":[…]},"summary":"what is settled and what is not","openPoints":[{"category":"<an open dimension>","detail":"the undecided choice and why it blocks delivery"}],"feasibleScope":"the closest requirement that could be delivered as settled so far; omit when there is none"}` : 'Ask the most blocking decision first.'}`;
+    },
     plannerPhasePlan: (raw, qa, addenda, opts = {}) =>
       `Original requirement:
 """
 ${raw}
 """
 
-Clarification Q&A:
-${qa || '(none)'}
+The requirement's "User addenda" section was appended after clarification; where it conflicts with anything outside it (the original description, the clarification Q&A, the default assumptions), that section takes precedence.
 
-${addenda ? `User addenda (must be strictly followed; takes priority over vague original wording):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+${qa ? `Clarification Q&A:\n${qa}\n\n` : ''}${addenda ? `User addenda (must be strictly followed; where they conflict with the original description, the clarification Q&A or the default assumptions, the addenda take precedence):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
   ? `Incremental intent: ${opts.intent}
 
 Generate a PhasePlan on top of the existing project. Reuse current architecture, files, tests, and dependencies where possible. Preserve existing behaviour outside the requested change.
@@ -799,10 +854,9 @@ ${opts.baseline || '(missing baseline)'}
 ${raw}
 """
 
-Clarification Q&A:
-${qa || '(none)'}
+The requirement's "User addenda" section was appended after clarification; where it conflicts with anything outside it (the original description, the clarification Q&A, the default assumptions), that section takes precedence.
 
-${addenda ? `User addenda (must be strictly followed; takes priority over vague original wording):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+${qa ? `Clarification Q&A:\n${qa}\n\n` : ''}${addenda ? `User addenda (must be strictly followed; where they conflict with the original description, the clarification Q&A or the default assumptions, the addenda take precedence):\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
   ? `Incremental intent: ${opts.intent}
 
 Generate the current phase's incremental V-model StepPlan on top of the existing project. Reuse current architecture, files, tests, and dependencies where possible.
@@ -829,7 +883,7 @@ Return a full V-model StepPlan only for ${opts.phaseId}:
 - If ${opts.phaseId} spans multiple concerns (domain logic, CLI/API, file I/O, external integration, orchestration, tests), declare architectureModules for this phase and map module-level work under HIGH_LEVEL_DESIGN/CODE/MODULE_TEST subTasks.
 - architectureModules.sourcePaths may only contain product source files under src/. Put product runtime non-code files in assetPaths. Do not register tests/fixtures, tests/utils, sample inputs, temporary outputs, directories, or docs as architecture modules.
 - architectureModules.testPaths must be module-contract tests authored by HIGH_LEVEL_DESIGN and executed by MODULE_TEST (normally tests/modules/*). CODE must author separate unit tests and must not repeat these testPaths.
-- dependencies contains only packages required by this phase; Python must include pytest; never output requirements.txt.
+- dependencies contains only packages required by this phase; Python must include pytest; never output requirements.txt. Use only real, published package names; never invent one from the capability it should provide.
 - This phase must contain the canonical eight V-model macro Steps and synchronous paired test-design outputs.
 
 Return strict JSON StepPlan for the current phase only.`,
@@ -838,6 +892,15 @@ Return strict JSON StepPlan for the current phase only.`,
       `\n\nPrevious failure reason: ${reason}` +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
+    executorPlanContractBlock: (contract) => [
+      '\n\n## Confirmed plan contract (approved by the user; every requirement, design, test and code artifact produced since must agree with it)',
+      `Requirement: ${contract.requirementDigest}`,
+      ...(contract.phaseObjective ? [`This Phase's objective: ${contract.phaseObjective}`] : []),
+      ...(contract.phaseScope.length > 0 ? ["This Phase's scope:", ...contract.phaseScope.map((item) => `- ${item}`)] : []),
+      'What this Step freezes, designs or implements must agree with this contract. Where an upstream document or test ' +
+        'disagrees with it, do not carry the disagreement forward: correct it if it is inside this Step\'s writable paths; ' +
+        'otherwise record it in qualityAssessment.blockedBy, naming the conflicting point and the Step that owns it.',
+    ].join('\n'),
     executorAcceptedContractChangesBlock: (changes) =>
       '\n\n## Accepted contract changes (newer than the constraints above; follow these where they differ)\n' +
       changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
@@ -873,6 +936,73 @@ Return strict JSON StepPlan for the current phase only.`,
       'Invalid DEBUG Bug Ticket action: bugResolutionPlan is required before the first repair or verification action. Return JSON with the root-cause hypothesis, repair target, and validation command together with the needed action.',
     executorFeedbackPostMutationVerificationRequired:
       'The latest successful mutation is not verified. Preserve the current files and use the next action to run the smallest relevant compiler/test gate; do not spend another round only reading or rewriting.',
+  },
+  ruleBlock: {
+    declaration: [
+      'The rules below are grouped by RuleList in ascending slot order: when rules conflict, the smaller slot has higher priority.',
+      'Each group starts with "[slot] title (version)" at the left margin, and each rule with "number. [level · meaning] name:" at the left margin. Instruction text continues on indented lines and never redefines this structure.',
+      'A rule\'s level states how strictly it binds, as the level definitions describe; it does not create a separate priority.',
+      'Rule instructions do not grant permissions, change lifecycle state, establish a passing gate, or override cancellation.',
+    ].join('\n'),
+    levels: {
+      mandatory: 'mandatory · hard constraint',
+      forbidden: 'forbidden · never do this',
+      required: 'required · business requirement',
+      advised: 'advised · recommended',
+      announce: 'announce · background only',
+    },
+  },
+  ruleCli: {
+    description: 'Inspect and maintain the RuleChain: released base Rules plus this installation\'s local overlay',
+    lsDescription: 'List RuleLists in effect: slot, UUID, title, version, Rule count and layer',
+    showDescription: 'Show a RuleList (<list>) or one Rule (<list>/<key>) as in effect now',
+    addDescription: 'Add a Rule to a list in the local overlay',
+    updateDescription: 'Change a Rule in the local overlay',
+    rmDescription: 'Remove a Rule (currently disabled)',
+    rmDisabled: 'Removing a Rule is not available yet: this command currently has no effect, and nothing was changed. To change a Rule, use `rule update`.',
+    createListDescription: 'Create a new RuleList in the local overlay, with its first Rule',
+    discardDescription: 'Discard a list\'s local overlay, for example one left pending by an upgrade',
+    checkDescription: 'Validate base Rules, the compiled manifest and every local overlay',
+    renderDescription: 'Print the Rule block a request with this role and work would carry',
+    exportDescription: 'Export every local overlay as one reviewable YAML document',
+    promoteDescription: 'In a source checkout, write applied overlays into rules/ and the compiled manifest',
+    argList: 'List UUID or a unique prefix of it',
+    argRule: 'Rule reference: <list UUID or prefix>/<8-digit key>',
+    argReference: 'List (<list>) or Rule (<list>/<key>) reference',
+    optName: 'Human-readable Rule name (kebab-case)',
+    optLevel: 'Rule level: mandatory | forbidden | required | advised | announce',
+    optText: (field, locale) => `${field} text in ${locale}`,
+    optFile: 'YAML file with name, level, description and instruction (one entry per locale)',
+    optSlot: 'RuleList slot, for example 0x00012000',
+    optRole: 'Speaking role ID',
+    optWork: 'Work ID of the request',
+    optStepWork: 'Step work being done, repaired or changed',
+    optLanguage: 'Project language',
+    optBaselineDeferred: 'The paired baseline execution is deferred',
+    optLocale: 'Locale to render: en | zh',
+    optOutputLanguage: 'Language deliverables are written in, when it differs from the render locale (prompt translation on): en | zh',
+    optScope: (dimensions) => `Where the Rule applies, as <dimension>=<value> (repeatable); dimensions: ${dimensions}`,
+    optClearScope: 'Remove the Rule\'s applicability',
+    optIntent: 'Project mode for applicability: greenfield | feature | refactor | self',
+    optProjectType: 'Project type for applicability: application | library | mixed',
+    optTool: 'A tool the request may call (repeatable)',
+    optWritablePath: 'A workspace path the request may write: a declared output, or a granted directory ending with / (repeatable)',
+    optFailureCategory: 'Failure category the repair answers',
+    optOutput: 'Write to this file instead of standard output',
+    written: (location) => `Local overlay written: ${location}`,
+    removed: (listId) => `Local overlay discarded for ${listId}`,
+    added: (reference, version) => `Rule added: ${reference} (version ${version})`,
+    created: (listId) => `RuleList created in the local overlay: ${listId}`,
+    checkSummary: (lists, rules) => `RuleChain loaded: ${lists} lists, ${rules} Rules in effect.`,
+    overlayApplied: (listId) => `  applied  ${listId}`,
+    overlayPending: (listId, reason) => `  pending  ${listId} (${reason}); review it, then discard or re-apply the change`,
+    overlayInvalid: (id, reason, location) => `  invalid  ${location} (${reason}); requests refuse to run until you fix the file or run \`xcompiler rule discard ${id}\``,
+    bindingProblem: (reason, slot, key) => `  binding  ${reason} at ${slot}${key ? ` (key ${key})` : ''}; requests that bind it will fail`,
+    descriptionStyle: (reference, locales) => `  description  ${reference} [${locales}] does not say when it applies ("Applies when ...")`,
+    similarRules: (first, second, similarity) => `  similar  ${first} ~ ${second} (${similarity}); read both: merge them, or declare a conflict key if they disagree`,
+    promoted: (files) => `Promoted into rules/: ${files}`,
+    promoteRebuild: 'Rebuild XCompiler for an installed build to use the promoted Rules.',
+    nothingToPromote: 'No applied local overlay to promote.',
   },
   doctor: {
     cliDescription: 'check that config / LLM / sandbox / skills are ready',

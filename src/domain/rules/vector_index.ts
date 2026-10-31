@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 const Text = z.string().refine((value) => value.trim().length > 0, 'Value must not be blank');
 export const RuleDigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
-export const RULE_VECTOR_INPUT_VERSION = 'rule-retrieval/1' as const;
+export const RULE_VECTOR_INPUT_VERSION = 'rule-retrieval/2' as const;
 
 /** An explicit space version changes whenever the provider's encoding identity changes. */
 export const RuleEmbeddingIdentitySchema = z.object({
@@ -19,7 +19,8 @@ export const RuleVectorDocumentSchema = z.object({
   ruleListId: z.uuid(),
   ruleListVersion: Text,
   contentDigest: RuleDigestSchema,
-  retrievalDescription: Text,
+  /** The Rule's description in the request locale; the text that is encoded. */
+  description: Text,
 }).strict();
 export type RuleVectorDocument = z.infer<typeof RuleVectorDocumentSchema>;
 

@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import { LLMRouter } from '../src/llm/router.js';
+import { setLocale, setPromptTranslation, tFor } from '../src/i18n/index.js';
 import {
   LLM_DYNAMIC_SCORES_FILE,
   LLM_USER_SCORES_FILE,
@@ -12,31 +13,27 @@ import {
 } from '../src/llm/scores.js';
 import type { XCompilerConfig } from '../src/config/config.js';
 import type { LLMClient } from '../src/llm/types.js';
+import { BASE_CONFIG, provider, type ProviderInput } from './support/config.js';
 
-function mkCfg(partial: Partial<XCompilerConfig['llm']>): XCompilerConfig {
+/**
+ * A configuration derived from a valid loaded one. Tests override `llm` fields directly, including
+ * values the schema would refuse, to exercise the Router's own checks; providers are completed
+ * from the schema's defaults so only the fields a test cares about are written.
+ */
+function mkCfg(partial: Omit<Partial<XCompilerConfig['llm']>, 'providers'> & { providers?: Record<string, ProviderInput> } = {}): XCompilerConfig {
+  const { providers = {
+    ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
+    ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
+    openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
+  }, ...llm } = partial;
   return {
+    ...BASE_CONFIG,
     llm: {
-      providers: {
-        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'qwen' },
-        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://x', model: 'gemma' },
-        openai: { type: 'openai', api_key: 'k', base_url: 'http://y', model: 'gpt' },
-      },
+      ...BASE_CONFIG.llm,
+      providers: Object.fromEntries(Object.entries(providers).map(([name, input]) => [name, provider(input)])),
       pools: { coding: ['ollama_code'], planning: ['ollama_design'] },
       fallbacks: [],
-      scores: {},
-      ...partial,
-    },
-    agent: {
-      language: 'python',
-      sandbox: 'subprocess',
-      sandbox_limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'off' },
-      sandbox_docker: {
-        image: 'python:3.11-slim',
-        workdir: '/workspace',
-        pull: false,
-        docker_bin: 'docker',
-        extra_run_args: [],
-      },
+      ...llm,
     },
   };
 }
@@ -444,6 +441,36 @@ describe('LLMRouter fallback chain', () => {
     expect(correction).toContain('before any action was parsed, authorized, executed, or persisted');
     expect(correction).toContain('never-executed="true"');
     expect(correction).toContain('rejected mutation candidate');
+  });
+
+  it('writes the contract feedback in the language models read, not in the user\'s', async () => {
+    const cfg = mkCfg({ fallbacks: ['openai'] });
+    const router = new LLMRouter(cfg, undefined, undefined, undefined, undefined, stubProbe);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const clientsMap: Map<string, LLMClient> = (router as any).clients;
+    const corrections: string[] = [];
+    clientsMap.set('ollama_code', {
+      name: 'fake-primary',
+      chat: async (messages) => {
+        if (messages.length > 1) corrections.push(messages.at(-1)!.content);
+        return messages.length === 1 ? 'rejected candidate' : 'corrected';
+      },
+    });
+    const chat = () => router.forPool('coding').chat([{ role: 'user', content: 'repair' }], {
+      validate: (text) => { if (text.startsWith('rejected')) throw new Error('incomplete JSON turn'); },
+    });
+    const opening = (locale: 'en' | 'zh') => tFor(locale).llm.providerValidationRepairPrompt('', '').slice(0, 24);
+    setLocale('zh');
+    try {
+      setPromptTranslation(true);
+      await chat();
+      setPromptTranslation(false);
+      await chat();
+    } finally {
+      setPromptTranslation(false);
+      setLocale('en');
+    }
+    expect(corrections.map((correction) => correction.slice(0, 24))).toEqual([opening('en'), opening('zh')]);
   });
 
   it('can disable success score boosts for workflow-level LLM calls', async () => {

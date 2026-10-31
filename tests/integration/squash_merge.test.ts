@@ -107,6 +107,31 @@ describe('squash merge onto the mainline', () => {
     })).resolves.toBeTruthy();
   });
 
+  it('merges past the ignore rules Runtime appended, and still stops on anyone else\'s edit to the file', async () => {
+    // Runtime appends its rules to `.gitignore` on every start. Committing them moved the canonical
+    // branch under a merge already gated against the old head; leaving them failed this guard.
+    const { root, git, service } = await repository();
+    await fs.writeFile(path.join(root, '.gitignore'), 'node_modules/\n');
+    await git.add('.');
+    await git.commit('ignore rules of an older build');
+    const branch = 'xcompiler/ticket/T5';
+    await ticketBranch(root, service, branch);
+    await fs.appendFile(path.join(root, '.gitignore'), '\n# Build output and runtime artifacts\n.xc-tmp/\n');
+
+    await expect(service.squashMerge({
+      targetBranch: 'master', sourceBranch: branch,
+      expectedTargetRevision: await service.revision('master'), message: '[xcompiler] T5',
+    })).resolves.toMatch(/^[0-9a-f]{40}$/u);
+
+    const other = 'xcompiler/ticket/T6';
+    await ticketBranch(root, service, other);
+    await fs.appendFile(path.join(root, '.gitignore'), 'my-notes/\n');
+    await expect(service.squashMerge({
+      targetBranch: 'master', sourceBranch: other,
+      expectedTargetRevision: await service.revision('master'), message: '[xcompiler] T6',
+    })).rejects.toThrow(/uncommitted changes: \.gitignore/u);
+  });
+
   it('merges past an untracked artifact the incoming change never touches', async () => {
     // The phase delivery gate runs the product to judge what it produces, so its output sits in the
     // canonical copy by design. Git carries an untracked file straight through a squash merge, and

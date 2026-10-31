@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ruleList } from './support/rule_fixtures.js';
 import {
   EXECUTION_TURN_PROTOCOL, EXECUTION_TURN_TEMPLATE_VERSION, ExecutionTurnContractViolation,
   ExecutionTurnEnvelopeError, ExecutionTurnRequestConfigurationError, ExecutionTurnRequestInputError,
@@ -75,9 +76,9 @@ function input(): BusinessRequestInput {
 function snapshot(context: RuleContext) {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: '/installed/rules/base.yaml' },
-    definition: { schemaVersion: '1', id: id(20), version: '1', title: 'Base declaration', slot: 0,
-      rules: [{ id: id(21), version: '1', category: 'general', level: 'announce',
-        instruction: 'Preserve current evidence.', retrievalDescription: 'Current evidence.' }] },
+    definition: ruleList({ id: id(20), version: '1', title: 'Base declaration', slot: 0,
+      rules: [{ id: id(21), version: '1', level: 'announce',
+        instruction: 'Preserve current evidence.', description: 'Current evidence.' }] }),
   }]));
   const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
   return finalizeRuleSelectionDraft(createRuleSelectionDraft({ logicalRequestId: id(10), requestKind: 'business',

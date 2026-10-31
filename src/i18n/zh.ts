@@ -1,96 +1,18 @@
 import type { LanguageProfile } from '../application/execution/language_support.js';
 import type { Messages } from './types.js';
 
-const PYTHON_PLANNER_SYSTEM = `你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
-
-输出语言：仅 Python (plan.language 固定为 "python")。
-
-每个可执行迭代周期必须使用标准 V 模型流程：
-REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST。
-DEBUG 不是正常 V 模型阶段，只是运行时失败回退/修复模式。任意测试阶段失败时，XCompiler 会回退到该测试对应的左侧阶段开始 Debugger 修复，并重新执行后续 V 模型动作。
-
-阶段文档：
-| Phase | 必须输出文件 |
-|---|---|
-| REQUIREMENT_ANALYSIS | \`docs/01-requirement-analysis.md\` |
-| HIGH_LEVEL_DESIGN | \`docs/02-high-level-design.md\` |
-| DETAILED_DESIGN | \`docs/03-detailed-design.md\` |
-| UNIT_TEST | \`docs/05-unit-test.md\` |
-| INTEGRATION_TEST | \`docs/06-integration-test.md\` |
-| MODULE_TEST | \`docs/07-module-test.md\` |
-| FUNCTIONAL_TEST | \`docs/08-functional-test.md\` |
-
-P2+ 迭代把同名阶段文档写入 \`docs/iterations/<iterationId>/\`。顶层 \`docs/topic.md\` 由 xcompiler build 写入，任何 Step 都不得把它列为 outputs。
-
-同步测试设计规则：
-- REQUIREMENT_ANALYSIS 在输出需求和验收标准时，同步输出功能验收基线测试计划和可执行功能测试。
-- HIGH_LEVEL_DESIGN 同步输出 \`docs/tests/module-test-plan.md\` 和可执行模块/契约测试，包括全部 \`architectureModules.testPaths\`。
-- DETAILED_DESIGN 同步输出 \`docs/tests/integration-test-plan.md\` 和可执行集成测试。
-- CODE 同步输出 \`docs/tests/unit-test-plan.md\`，并与实现一起产出可执行单元测试。
-P2+ 迭代把这些测试计划写到 \`docs/iterations/<iterationId>/tests/\`。
-
-阶段职责：
-- REQUIREMENT_ANALYSIS 定义功能范围、验收标准、边界条件和用户可见行为，并编写配对的功能基线测试。
-- HIGH_LEVEL_DESIGN 负责架构设计，说明当前开发模块在整体系统中的定位，并定义系统层面的对外接口和依赖，包括外部 API、第三方库选型、依赖确认、数据契约和集成边界，同时编写配对的模块/契约测试。
-- DETAILED_DESIGN 定义模块内部的具体功能实现和架构，包括函数/类、数据结构、算法、控制流、错误处理和内部协作，并编写配对的集成测试。
-- CODE 实现已设计范围，并同步编写配对的单元测试。
-- UNIT_TEST、INTEGRATION_TEST、MODULE_TEST、FUNCTIONAL_TEST 统一独立检查配对基线，只能在本验证阶段的独立命名空间追加风险补充测试，随后冻结“基线 + 补充”集合、使用确定性外部数据完整执行并写报告。基线不完整向配对源阶段发 Enhancement；补充测试自身错误向当前验证阶段发 Bug；产品错误向产品所有阶段发 Bug。真实用户网络场景只属于 Phase 交付门禁。
-
-功能验收文档包：P1 FUNCTIONAL_TEST outputs 必须包含 \`README.md\`、\`docs/quickstart.md\`、\`docs/08-functional-test.md\`；当 \`projectType\` 为 \`library\` 或 \`mixed\` 时还必须包含 \`docs/api-guide.md\`。P2+ 使用 \`docs/iterations/<iterationId>/08-functional-test.md\`、\`quickstart.md\` 和可选 \`api-guide.md\`。文档语言遵循当前 i18n。
-
-强制规则：
-1. 只返回纯 JSON，禁止 Markdown 代码块和解释文字。
-2. 每个 current/planned implementation phase 都是完整 V 模型迭代，必须包含上述 8 个标准阶段。禁止输出旧阶段 REQUIREMENT、ARCH、TASK、TEST、REFACTOR、DELIVERY。
-3. 每个宏 Step 的 \`subTasks\` 最多嵌套 2 层；不要为了内部细节拆出大量可执行 Step。
-4. dependsOn 必须按阶段顺序且无环。右侧测试阶段必须直接或间接依赖其对应左侧阶段。
-5. 每个 CODE Step 必须被同迭代的 UNIT_TEST Step 覆盖。
-6. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN 拥有各自配对的基线测试但不输出 src/ 产品代码；CODE 拥有产品源码、运行时资产和单元测试；右侧阶段只能在 Runtime 声明的 verification supplement root 下写测试，禁止修改配对基线或 src/。
-7. outputs 路径全局唯一。DEBUG 运行时可修改依赖链文件，计划 Step 不要重复声明 outputs。
-8. id 形如 S001、S002；不要输出 role：Step 的工作由 phase 决定，执行角色由运行时按工作分派。
-9. 每个 Step 必须有 systemPrompt，明确范围、输入、产出、验收、禁令，以及左侧阶段的同步测试设计义务。
-10. projectType 由 LLM 在澄清后判定：application / library / mixed，不存在命令行 project-type 覆盖。
-11. complexityAssessment 由 plan 阶段评估：simple => P1；moderate => 至少 P1+P2；complex => 至少 P1+P2+P3。用户明确要求分阶段时必须 userForcedPhaseSplit=true。
-12. implementationPhases 必须包含 P1 current 和后续 planned 可执行迭代；verificationGate 的 failurePolicy 必须说明把失败日志传给 Debugger，回退到对应 V 模型阶段并重新执行后续阶段。deliveryGate 必须声明 validationTypes、baselineExecutionPolicy，并至少包含一个真实用户 live 场景，包含 operation、expected 及根据需求制定的具体 execution command/args；仅执行 \`--help\` 不算功能验收。
-13. dependencies 是 Python pip 依赖列表；必须包含 \`pytest\`；只写裸包名；任何 Step 都不要输出 \`requirements.txt\`。
-14. application/mixed 项目需要可直接运行的 Python 入口（\`src/main.py\` 或包 \`__main__.py\`）并复用 CODE 模块；library/mixed 项目需要稳定公开 API 和 \`docs/api-guide.md\`。
-15. 复杂需求必须返回 \`architectureModules\`：每个模块包含 id、name、responsibility、sourcePaths、可选 assetPaths、testPaths、dependencies。每个模块的 \`testPaths\` 至少一条，且 \`sourcePaths\` 与 \`assetPaths\` 不能同时为空——模块没有测试路径就无法被 MODULE_TEST 消费。HIGH_LEVEL_DESIGN 产出 testPaths，CODE 产出实现路径，MODULE_TEST 消费 testPaths；宏 Step 覆盖多个模块时必须在 subTasks 中列出模块级工作。
-16. 第三方库选型必须匹配真实 API：HIGH_LEVEL_DESIGN 必须写明选定库用于本需求的具体入口函数/类或验证依据；禁止仅凭包名臆造不存在的解析/导出 API。
-17. 每个 Step 可声明 qualityGate。S1-S4 使用 completionMin 和 upstreamAlignmentMin；S5-S8 声明对应阶段 metrics 与 tolerance（metricShortfall、maxFailedTests、maxSkippedTests、maxWarnings）。阈值应符合项目风险；省略时由 Runtime 注入工程默认值。
-
-输出 JSON 形如：
-{
-  "requirementDigest": "string",
-  "globalPrompt": "string",
-  "projectType": "application | library | mixed",
-  "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
-  "implementationPhases": [
-    { "id": "P1", "title": "核心功能", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["run tests", "verify functional docs"], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["完整交付物", "运行真实用户场景"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
-  ],
-  "dependencies": ["pytest"],
-  "architectureModules": [
-    { "id": "M001", "name": "模块名", "responsibility": "单一且明确的模块职责", "sourcePaths": ["src/example.py"], "assetPaths": ["src/templates/example.txt"], "testPaths": ["tests/test_example.py"], "dependencies": [] }
-  ],
-  "steps": [
-    {
-      "id": "S001",
-      "iterationId": "P1",
-      "phase": "REQUIREMENT_ANALYSIS",
-      "title": "string",
-      "description": "string",
-      "systemPrompt": "本 Step 专属提示：范围、输入、产出、验收、禁令",
-      "tools": ["skill:artifact-authoring", "skill:test-design"],
-      "inputs": ["docs/topic.md"],
-      "outputs": ["docs/01-requirement-analysis.md", "docs/tests/functional-test-plan.md", "tests/test_functional_acceptance.py"],
-      "subTasks": [
-        { "id": "T1", "title": "string", "description": "string", "acceptance": "string", "outputs": ["docs/01-requirement-analysis.md"], "subTasks": [] }
-      ],
-      "dependsOn": [],
-      "acceptance": "string",
-      "qualityGate": { "completionMin": 0.95, "upstreamAlignmentMin": 0.95, "metrics": {}, "tolerance": { "metricShortfall": 0.02, "maxFailedTests": 0, "maxSkippedTests": 0, "maxWarnings": 0 } },
-      "maxAttempts": 3
-    }
-  ]
-}`;
+const CLARIFY_LANGUAGE_NAMES_ZH = { python: 'Python', typescript: 'TypeScript（Node.js）' } as const;
+const CLARIFY_SANDBOX_MODES_ZH = { subprocess: '本地子进程', docker: 'Docker 容器' } as const;
+const CLARIFY_NETWORK_POLICIES_ZH = {
+  off: '完全没有网络',
+  'download-only': '只能向外访问，外部无法访问工程',
+  full: '可以向外访问，配置的端口会发布到本机',
+} as const;
+const CLARIFY_DELIVERABLE_NAMES_ZH = {
+  application: '可执行程序（命令行工具、脚本或服务）',
+  library: '供其他代码调用的库或 SDK',
+  mixed: '可执行程序加可复用的库',
+} as const;
 
 const PYTHON_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
@@ -118,31 +40,8 @@ const PYTHON_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互
 规则：
 1. 仅可调用本 Step 授权的工具白名单。
 2. 写入文件必须落在本 Step 的 writable allowlist 内（其它路径会被拒绝）；required outputs 只是最终必须存在的验收产物。
-   对 FUNCTIONAL_TEST 文档产物，必须按当前 i18n 语言写完整声明的文档包：P1 路径如 \`README.md\`、\`docs/quickstart.md\`、\`docs/08-functional-test.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`；P2+ 则写 outputs 声明的 \`docs/iterations/<iterationId>/\` 等价路径。任何已声明文档缺失时不得设置 done=true。
+   对 FUNCTIONAL_TEST 文档产物，必须写完整声明的文档包：P1 路径如 \`README.md\`、\`docs/quickstart.md\`、\`docs/08-functional-test.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`；P2+ 则写 outputs 声明的 \`docs/iterations/<iterationId>/\` 等价路径。任何已声明文档缺失时不得设置 done=true。
 3. 对生成代码遵循目标语言的最佳实践；模块可导入、函数应带合适的类型信息。
-   - 【导入约定】src/ 下的模块互相 import 时使用 "from <module> import ..."（同级名称），
-     **严禁写成 "from src.<module> import ..."**。如果 main.py 需要从项目根运行，
-     在 import 之前加一行：sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))，
-     以保证 "python src/main.py ..." 和 "python -m src.main ..." 两种调用都能走通。
-   - 【测试约定】tests/ 下的文件同样以 "from <module> import ..." 导入被测模块；
-     **XCompiler 已自动生成 tests/conftest.py 把项目根与 src/ 注入 sys.path**，
-     因此 pytest 与 "python tests/test_*.py" 两种执行方式都能解析模块，
-     测试文件头部**无需**再写 sys.path.insert(...)，避免重复污染。
-     如果 LLM 自己额外创建/编辑 conftest.py，必须保留上面 sys.path 注入逻辑，禁止删除。
-   - 【测试自包含】测试**严禁**直接 open() 一个磁盘上不存在的样例文件（如 "sample.csv"）；
-     当被测函数需要文件输入时，必须按优先级选择：
-       (a) 优先复用用户或工作区已提供的真实样例，用 read_file 读取后复制/引用到 tests/fixtures/<name>；
-       (b) 若是第三方/行业标准格式且工作区无样例，用 http_fetch 获取官方文档、上游仓库或公开标准中的小型参考样例，
-           保存到 tests/fixtures/<name>，并在测试报告或注释中记录来源；
-       (c) 只有 CSV/JSON/INI 等简单文本格式，且能立刻 run_tests 验证时，才可在 pytest tmp_path 中构造最小样例。
-     网络不可用、用户未提供样例且无法确认格式标准时，应明确报告 blocker 请求用户提供样例。
-     绝不允许出现"测试代码引用了一个谁都没创建的文件"——这会让 Debugger 反复 FileNotFoundError 死循环。
-   - 【fixture 迭代】当测试已经能运行但被测函数报"Invalid syntax / Parse error / Malformed"等解析失败错误，
-     说明 fixture 文件本身格式不合法，**不是被测代码的 bug**。
-     必须 read_file 看清当前 fixture 内容，按扩展名/解析库确认格式标准；优先使用用户样例或 http_fetch 下载的权威参考样例，
-     再 write_file 整文件重写并 run_tests。复杂领域格式连续失败后必须停止凭记忆生成，改为请求用户样例或网络参考。
-     严禁因为解析错误就去改被测模块、测试断言或 mock 掉解析逻辑——先把 fixture 修对再说。
-   - 【时间稳定性】时间相关测试必须冻结系统时钟（例如 \`vi.setSystemTime\` / patch datetime）或根据当前时钟推导期望值；禁止在调用 \`new Date()\` / \`date.today()\` 的同时硬编码某个年份。
 4. 当所有 outputs 文件均已生成且自检通过，把 done 设为 true 且 actions 为空，并提交有具体证据支撑的 qualityAssessment。
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE 必须报告 completion 和 upstreamAlignment。
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE 分别编写 FUNCTIONAL_TEST / MODULE_TEST / INTEGRATION_TEST / UNIT_TEST 消费的基线测试。基线测试按计划留到配对验证阶段执行不属于当前阶段缺陷。
@@ -160,48 +59,6 @@ const PYTHON_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互
    - 复杂工程优先拆成多个内聚模块/文件，并用独立 CODE/UNIT_TEST/INTEGRATION_TEST/MODULE_TEST/FUNCTIONAL_TEST Step 增量推进，不要写一个巨型万能文件。
    - 拆分必须保证拼接后仓 Python 语法合法；严禁在函数体中间拆断。
    - 对已存在文件的局部修改使用 replace_in_file / apply_patch，不要重复覆盖整个文件。`;
-
-const TYPESCRIPT_PLANNER_SYSTEM = `你的任务是把用户的自然语言需求编译成严格的“迭代模型 + V 模型”Step 计划。
-
-输出语言：仅 TypeScript / Node.js（plan.language 固定为 "typescript"）。
-
-每个可执行迭代周期必须使用标准 V 模型流程：
-REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TEST -> INTEGRATION_TEST -> MODULE_TEST -> FUNCTIONAL_TEST。
-DEBUG 只是运行时失败回退/修复模式。任意测试阶段失败时，XCompiler 会回退到该测试对应的左侧阶段并重新执行后续阶段。
-
-沿用 Python Planner 的阶段文档和同步测试设计规则：
-- REQUIREMENT_ANALYSIS：\`docs/01-requirement-analysis.md\` + \`docs/tests/functional-test-plan.md\` + 可执行功能基线测试。
-- HIGH_LEVEL_DESIGN：\`docs/02-high-level-design.md\` + \`docs/tests/module-test-plan.md\`。
-- DETAILED_DESIGN：\`docs/03-detailed-design.md\` + \`docs/tests/integration-test-plan.md\`。
-- CODE：实现产物 + \`docs/tests/unit-test-plan.md\` + 可执行单元测试。
-- UNIT_TEST：\`docs/05-unit-test.md\`。
-- INTEGRATION_TEST：\`docs/06-integration-test.md\`。
-- MODULE_TEST：\`docs/07-module-test.md\`。
-- FUNCTIONAL_TEST：\`docs/08-functional-test.md\`、\`README.md\`、\`docs/quickstart.md\`，library/mixed 还要 \`docs/api-guide.md\`。
-P2+ 迭代把阶段文档写到 \`docs/iterations/<iterationId>/\`，测试计划写到 \`docs/iterations/<iterationId>/tests/\`。
-
-HIGH_LEVEL_DESIGN 必须说明当前开发模块在整体系统中的定位，并定义系统层面的对外接口和依赖，包括外部 API、第三方库选型、依赖确认、package.json scripts、dependencies/devDependencies、tsconfig、数据契约和集成边界。
-DETAILED_DESIGN 必须定义模块内部具体功能实现和架构，包括函数/类型、数据结构、算法、控制流、错误处理和内部协作。
-
-强制规则：
-1. 只返回纯 JSON。禁止输出旧阶段 REQUIREMENT、ARCH、TASK、TEST、REFACTOR、DELIVERY。
-2. 每个 current/planned implementation phase 都必须包含完整 8 阶段 V 模型。
-3. 每个宏 Step 的 \`subTasks\` 最多嵌套 2 层。
-4. 每个 CODE Step 必须被同迭代 UNIT_TEST 覆盖；architectureModules.testPaths 必须由 HIGH_LEVEL_DESIGN 产出并作为 MODULE_TEST inputs。
-   CODE outputs 包含 src/ 下的产品源码/运行时资产、docs/tests/unit-test-plan.md 和 tests/ 下的可执行单元测试。
-5. REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN 只能输出文档、配对测试和允许的工程配置，不得输出 src/ 产品代码；右侧测试阶段不得输出 tests/ 或 src/。HIGH_LEVEL_DESIGN 是唯一可输出 \`package.json\` / \`tsconfig.json\` 的阶段。
-6. TypeScript greenfield 计划必须且只能有一个 HIGH_LEVEL_DESIGN Step 输出 \`package.json\`，并确保 one HIGH_LEVEL_DESIGN Step output \`package.json\`，包含 \`build\`、\`test\`、最好还有 \`lint\` 脚本。
-7. 本地 TypeScript 源码模块必须使用带显式 \`.ts\` 后缀的 ESM 相对导入；配置 \`allowImportingTsExtensions: true\`，build/lint 使用 \`tsc --noEmit\`。代码必须兼容 Node 原生 type stripping，避免 enum、namespace、参数属性等需转译语法。
-8. 时间相关测试必须冻结系统时钟（例如 \`vi.setSystemTime\` / patch datetime）或根据当前时钟推导期望值；禁止在调用 \`new Date()\` / \`date.today()\` 的同时硬编码某个年份。
-9. dependencies 只是运行时 npm 包建议；真正依赖清单以 HIGH_LEVEL_DESIGN 产出的 \`package.json\` 为准，不要编造包名。
-10. application/mixed 需要 \`src/main.ts\` 且可直接 \`node src/main.ts --help\`；library/mixed 需要 \`src/index.ts\` 或等价公共 API 并写 API Guide。
-11. complexityAssessment 和 implementationPhases 规则同 Python：simple=>P1，moderate => 至少 P1+P2，complex => 至少 P1+P2+P3，用户强制分阶段时 userForcedPhaseSplit=true。
-12. verificationGate failurePolicy 必须说明把失败日志传给 Debugger，回退到对应 V 模型阶段并重跑后续阶段。
-13. 复杂需求返回 architectureModules；HIGH_LEVEL_DESIGN/CODE/MODULE_TEST Step 可覆盖多个模块，但必须在 subTasks 中列出模块级工作。
-14. TypeScript 测试必须只使用 Vitest。Step prompt 或 package.json 中禁止要求 Jest、ts-jest、@types/jest、ts-node、nodemon；package.json 必须使用 "test": "vitest run" 和 "build": "tsc --noEmit"。
-15. 项目风险需要更严格阈值时应声明阶段 qualityGate 与 tolerance；省略时 Runtime 使用与 Python Planner 相同的 S1-S8 工程默认值。
-
-输出 JSON 结构同 Python，必须包含 \`"projectType": "application | library | mixed"\`，路径使用 \`src/example.ts\` 和 \`tests/example.test.ts\`；第一个 Step phase 必须是 \`REQUIREMENT_ANALYSIS\`，不是 \`REQUIREMENT\`。不存在命令行 project-type 覆盖。`;
 
 const TYPESCRIPT_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统交互，禁止任何 Markdown 或解释性文本。
 
@@ -229,13 +86,10 @@ const TYPESCRIPT_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统�
 规则：
 1. 仅可调用本 Step 授权的工具白名单。
 2. 写入文件必须落在本 Step 的 writable allowlist 内（其它路径会被拒绝）；required outputs 只是最终必须存在的验收产物。
-   对 FUNCTIONAL_TEST 文档产物，必须按当前 i18n 语言写完整声明的文档包：P1 路径如 \`README.md\`、\`docs/quickstart.md\`、\`docs/08-functional-test.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`；P2+ 则写 outputs 声明的 \`docs/iterations/<iterationId>/\` 等价路径。任何已声明文档缺失时不得设置 done=true。
+   对 FUNCTIONAL_TEST 文档产物，必须写完整声明的文档包：P1 路径如 \`README.md\`、\`docs/quickstart.md\`、\`docs/08-functional-test.md\`，以及 outputs 中出现时的 \`docs/api-guide.md\`；P2+ 则写 outputs 声明的 \`docs/iterations/<iterationId>/\` 等价路径。任何已声明文档缺失时不得设置 done=true。
 3. 生成代码必须符合 TypeScript / Node.js 最佳实践；API 要有类型，运行代码必须能直接执行。
-   - 【导入约定】src/ 下的本地源码模块使用带显式 ".ts" 后缀的 ESM 相对导入，例如 \`import { x } from "./util.ts";\`。代码必须兼容 Node 原生 TypeScript type stripping：只使用可擦除类型语法，避免 enum、namespace、参数属性等需要转译的 TS 特性。禁止使用 Python 风格 import、\`from src.<module>\` 或任何 sys.path hack。
-   - 【测试约定】测试使用 Vitest：\`import { describe, it, expect } from "vitest";\`，测试文件放在 \`tests/**/*.test.ts\`。
    - 【测试自包含】测试**严禁**读取一个磁盘上不存在的样例文件；当被测函数需要文件输入时，要么在测试里构造内容，要么写入 \`tests/fixtures/<name>\`。
    - 【fixture 迭代】当测试已经能运行但被测函数报"Invalid syntax / Parse error / Malformed"等解析失败错误，说明 fixture 文件本身格式不合法。必须 read_file 看清当前 fixture 内容，优先使用用户/工作区样例；没有样例时用 http_fetch 拉取权威公开参考；只有简单文本格式才可构造最小样例并立即 run_tests。严禁因为解析错误去弱化实现或断言，也严禁反复凭记忆生成复杂格式 fixture。
-   - 【时间稳定性】时间相关测试必须冻结系统时钟（例如 \`vi.setSystemTime\` / patch datetime）或根据当前时钟推导期望值；禁止在调用 \`new Date()\` / \`date.today()\` 的同时硬编码某个年份。
 4. 当所有 outputs 文件均已生成且自检通过，把 done 设为 true 且 actions 为空，并提交有具体证据支撑的 qualityAssessment。
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE 必须报告 completion 和 upstreamAlignment。
    REQUIREMENT_ANALYSIS / HIGH_LEVEL_DESIGN / DETAILED_DESIGN / CODE 分别编写 FUNCTIONAL_TEST / MODULE_TEST / INTEGRATION_TEST / UNIT_TEST 消费的基线测试。基线测试按计划留到配对验证阶段执行不属于当前阶段缺陷。
@@ -255,10 +109,6 @@ const TYPESCRIPT_EXECUTOR_SYSTEM = `你只能通过 JSON 工具调用与系统�
 7. package.json 是依赖清单。新增 npm 包要用 add_dependency，禁止去写 requirements.txt。
 8. run_program 会通过 \`npx tsx\` 运行入口，run_tests 会通过 \`npm test\` 跑 Vitest，最终交付门禁还会验证 direct Node 入口命令。`;
 
-function buildPlannerSystem(profile: LanguageProfile): string {
-  return (profile.id === 'typescript' ? TYPESCRIPT_PLANNER_SYSTEM : PYTHON_PLANNER_SYSTEM);
-}
-
 function buildPlannerPhasePlanSystem(profile: LanguageProfile): string {
   return `当前执行“两级规划”的第一步：PhasePlan。
 
@@ -272,6 +122,7 @@ PhasePlan 必须完成：
 3. 生成 implementationPhases：P1 status=current；后续 P2/P3 status=planned。simple 只需要 P1；moderate 至少 P1+P2；complex 至少 P1+P2+P3；用户强制分阶段时至少 P1+P2 且 userForcedPhaseSplit=true。
 4. 每个 phase 必须包含 objective、scope、deliverables、dependsOn、verificationGate 和 deliveryGate。deliveryGate 声明 validationTypes 和 baselineExecutionPolicy，拥有真实用户 live 场景并给出具体 command/args；任何 V 模型 Step 都不拥有真实网络验收。
    execution.command 只能是一个可执行程序名，不能填写整条 shell 命令；所有参数必须分别放入 execution.args。${profile.id === 'typescript' ? 'TypeScript 源码例如使用 {"command":"npx","args":["tsx","src/main.ts",...]}、{"command":"node","args":["src/main.ts",...]} 或 npm script；禁止使用 ts-node、nodemon、Jest 或 ts-jest。args 引用的源码入口必须由当前 phase 的 CODE Step 交付。' : 'Python 源码例如使用 {"command":"python","args":["src/main.py",...]}。args 引用的源码入口必须由当前 phase 的 CODE Step 交付。'}
+   场景读取的每个工程文件（输入数据、样例文件）都要列入 inputs。场景输入在编码之前给出，即由 REQUIREMENT_ANALYSIS、HIGH_LEVEL_DESIGN 或 DETAILED_DESIGN 产出，或由 FUNCTIONAL_TEST 在测试阶段获取（例如为真实场景验证获取的真实数据）；CODE 不提供场景输入，产品与验收相互独立。期望要求特定的非 0 退出码（例如部分失败的退出码）时，把它写入 execution.expectExitCode；场景应以 0 退出时省略。场景的结果是无法作为文本读取的文件（例如电子表格、图片或压缩包）时，增加 inspect：若干 {"command","args"}，写法同 execution，用工程自身的依赖读取该结果并输出期望要核对的内容。它们在场景之后运行，输出就是裁判读取的证据；没有可读证据的场景无法通过。
 5. planned phase 只记录目标和门禁，不能展开任何 Step。后续会基于单个 phase 另行生成完整 V 模型计划。
 
 只返回严格 JSON：
@@ -281,7 +132,7 @@ PhasePlan 必须完成：
   "projectType": "application | library | mixed",
   "complexityAssessment": { "level": "simple | moderate | complex", "rationale": "string", "splitRecommended": true, "userForcedPhaseSplit": false },
   "implementationPhases": [
-    { "id": "P1", "title": "核心功能", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["..."], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["完整交付物", "运行真实用户场景"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
+    { "id": "P1", "title": "核心功能", "objective": "string", "status": "current", "scope": ["..."], "deliverables": ["..."], "dependsOn": [], "verificationGate": { "summary": "string", "checks": ["..."], "failurePolicy": "Feed failures to Debugger, roll back to the paired V-model phase, and rerun subsequent phases." }, "deliveryGate": { "kind": "phase-delivery", "summary": "string", "checks": ["完整交付物", "运行真实用户场景"], "validationTypes": ["deliverable-validation", "baseline-test", "supplemental-functional-test"], "baselineExecutionPolicy": "phase-aggregate", "testAssetPolicy": "phase-aggregate", "externalDataPolicy": "live", "scenarios": [{ "name": "primary-user-flow", "description": "string", "operation": "string", "environment": "live", "expected": "string", "inputs": ["..."], "execution": { "command": "string", "args": ["..."] } }], "freezeBeforeExecution": true, "routeEachFinding": true } }
   ]
 }
 
@@ -296,6 +147,8 @@ function buildPlannerPhaseDecomposeSystem(profile: LanguageProfile): string {
 你会收到已经冻结的 PhasePlan 和一个 phaseId。只允许为该 phaseId 生成 Step；planned phase 不得展开到本次 steps 中。
 
 目标 phase 的 objective、scope、deliverables 和 deliveryGate 是本次 StepPlan 的权威规格。
+deliveryGate 场景 inputs 中的每个文件都必须是目标 phase 的 REQUIREMENT_ANALYSIS、HIGH_LEVEL_DESIGN、
+DETAILED_DESIGN 或 FUNCTIONAL_TEST Step 的声明产出；CODE 不提供验收输入。
 所有 planned phase 都是本次明确的范围外内容：禁止把其功能、依赖包、产物或验收条件提前复制到
 当前 phase。requirementDigest 与 globalPrompt 必须重写为仅描述目标 phase，并排除仅供未来
 planned phase 使用的 dependencies。
@@ -313,9 +166,8 @@ REQUIREMENT_ANALYSIS -> HIGH_LEVEL_DESIGN -> DETAILED_DESIGN -> CODE -> UNIT_TES
 严格产物归属：
 - Step 的 inputs/outputs 是可审计产物图，必须逐项填写精确文件路径；禁止使用 src/**/*.ts、tests/** 等 glob 或目录选择器。tsconfig 内容可以使用 glob，但 Planner JSON 不可以。
 - REQUIREMENT_ANALYSIS 拥有功能基线测试；HIGH_LEVEL_DESIGN 拥有模块基线测试和 architectureModules.testPaths；DETAILED_DESIGN 拥有集成基线测试；CODE 拥有单元基线测试及产品源码/运行时资产。
+- greenfield 项目由某个 CODE Step 产出项目类型所需的入口：application/mixed 需要可直接运行、复用 CODE 模块并对 \`--help\` 输出用法说明的 ${profile.id === 'typescript' ? '`src/main.ts`' : '`src/main.py` 或包 `__main__.py`'}；library/mixed 需要${profile.id === 'typescript' ? ' `src/index.ts` 或等价的公共 API 模块' : '稳定的公共 API 模块'}，并写入 API 指南。增量开发保留已有入口。
 - UNIT_TEST / INTEGRATION_TEST / MODULE_TEST / FUNCTIONAL_TEST 把配对基线作为 inputs，并只拥有验证报告/交付文档。风险补充测试的精确 root 由 Runtime 在执行时分配，Planner JSON 的任何 Step inputs/outputs 都不得预先声明 supplement、supplemental 或 tests/verification 路径。
-- TypeScript greenfield 必须且只能有一个 HIGH_LEVEL_DESIGN Step 输出 package.json，包含 scripts、dependencies、devDependencies。CODE 不得输出 package.json。
-- TypeScript package.json 只能使用 Vitest："test": "vitest run"，"build": "tsc --noEmit"，devDependencies 包含 typescript/tsx/vitest/@vitest/coverage-v8/@types/node，并保证 Vitest 与 coverage provider 版本兼容。tsconfig 的产品 build/typecheck 只包含 src/**/*.ts 与 src/**/*.tsx；各 V 模型测试阶段通过 Vitest 独立运行自己的配对测试。禁止提及或要求 Jest、ts-jest、@types/jest、ts-node、nodemon。
 
 输出必须只包含当前 phase 的 dependencies、architectureModules 和 steps。复杂/多关注点任务必须用 architectureModules 表达当前 phase 的模块边界，并在 HIGH_LEVEL_DESIGN/CODE/MODULE_TEST 的 subTasks 中映射模块级工作。每个 Step 的 subTasks 最多嵌套 2 层。
 
@@ -369,9 +221,33 @@ const messages: Messages = {
     scoreFileHeader: '# XCompiler LLM provider 评分快照（由 ScoreStore 自动维护，请勿手工编辑）',
     scoreFileSemantics: '# 评分语义：这是动态评分快照；默认 1.0；自动评分范围 0.1～1.0；tags: [cluster] 的 provider 默认 0.2～0.5，除非 llm.cluster_score_min/max 扩宽；传输失败或归因质量缺口 -0.5；已验证的发现、修复或变更 +0.1。用户覆盖请写 llm_scores_user.yaml，0 表示禁用。',
   },
+  deliveryGateReport: {
+    title: (phase) => `${phase} 交付门禁报告`,
+    evaluatedAt: '评估时间',
+    outcome: '结果',
+    passed: '通过',
+    failed: (errors) => `未通过（${errors} 项错误）`,
+    checks: '检查项',
+    command: '命令',
+    exitCode: '退出码',
+    timedOut: '超时',
+    stdout: '输出',
+    stderr: '错误输出',
+    inspection: '检查命令',
+    finding: '问题',
+    setAside: '运行产物的去向',
+    setAsideNote: (directory) => `本次门禁运行留在工作区的文件已移到 \`${directory}\`（git 忽略；不再需要时请自行删除）：`,
+  },
   system: {
+    preflightNoProvider: (pools) => `LLM preflight failed: 模型池 [${pools}] 没有可用的 provider，且没有任何 ollama 服务器可达。请检查 config.yaml 的 base_url / 启动 ollama 服务后重试。`,
+    preflightStillEmpty: (server, pools) => `LLM preflight failed: ollama server ${server} 已加载，但模型池 [${pools}] 仍无可用 provider（自动导入后评分仍全为 0）。`,
+    workspaceLocked: (owner, file) => `workspace 已被其它 XCompiler 进程占用 (pid=${owner.pid}, host=${owner.host}, cmd=${owner.command}, since=${owner.startedAt}).\n` +
+      `如确信该进程已退出，请删除 ${file} 后重试。`,
     configEnvMissing: (names) => `[xcompiler] 配置中的环境变量未设置，已替换为空字符串：${names}`,
     unhandledError: (message) => `未处理错误：${message}`,
+    permissionDeniedStop: (operation, target, consequence, reason) =>
+      `已停止：未获得 ${operation}（${target}）的授权${reason ? `（${reason}）` : ''}。${consequence}\n` +
+      '如需继续，请重新运行并批准该操作，或使用 --permission-mode auto 让本次运行自动批准 Runtime 授权。',
     unsupportedSubprocessNetworkOff:
       'subprocess 模式无法兑现 sandbox network=off；请改用 mode=docker，或明确选择 download-only/full。',
     dockerInsideContainerUnsupported:
@@ -564,10 +440,73 @@ const messages: Messages = {
     topicLoaded: (p) => `已加载 topic：${p}（跳过 intake / clarify / Gate 1）`,
     requirementEmptyExit: '需求为空，已退出。',
     requirementInputHint: '请描述你的需求（多行，输入空行结束）:',
-    spinClarify: 'Planner 正在澄清需求…',
-    clarifySucceed: (n) => `澄清问题：${n} 条`,
+    spinClarify: (questionId) => `正在准备澄清问题 ${questionId}…`,
+    clarifyAsked: (questionId) => `澄清问题 ${questionId} 已就绪`,
     clarifyFail: '澄清失败',
-    clarifyChoiceHint: (range) => `输入 ${range} 选择已展示选项，或直接输入自定义回答内容。`,
+    clarifyChoiceHint: (range) => `输入 ${range} 选择已展示选项（直接回车即选推荐的 A），或输入自定义回答。`,
+    clarifyProgress: (settled, total, verdict, percent) => `进度：已澄清 ${settled}/${total} 个维度 · ${
+      verdict === 'feasible' ? '可交付' : verdict === 'uncertain' ? '能否交付待定' : '无法交付'} · 澄清预算已用 ${percent}%`,
+    resumeIntake: (answers) => `发现该需求未完成的澄清（已回答 ${answers} 个问题）。是否继续？`,
+    intakeDraftInvalid: '保存的澄清草稿无法读取，已丢弃，从头开始。',
+    answerRedacted: '回答中疑似凭据的内容已替换为 [REDACTED]。密钥请通过环境变量提供给工程，不要写在回答里。',
+    interactionDismissed: '已取消 build：有提示被关闭而未作答。',
+    intakeLanguage: {
+      question: '这个项目使用哪种开发语言？',
+      why: '决定后续每个步骤的工具链、测试框架和项目结构。',
+      options: { python: 'Python（推荐）', typescript: 'TypeScript（Node.js）' },
+    },
+    intakeDeliverable: {
+      question: '生成物是什么形式？',
+      why: '决定程序入口、对外接口以及交付如何验收。',
+      options: {
+        application: '可执行程序：用户直接运行的命令行工具、脚本或服务',
+        library: '库 / SDK：供其他代码导入和调用',
+        mixed: '两者兼有：可复用的库，加上基于它的可执行程序',
+      },
+    },
+    intakeDecided: (subject, value, source) => `${subject}已确定：${value}（来自${source === 'baseline' ? '已有项目' : source === 'topic' ? 'topic 文件' : '需求原文'}）`,
+    intakeSubjects: { language: '开发语言', deliverable: '生成物' },
+    clarifyEnded: {
+      clear: (asked) => `已问 ${asked} 个问题，需求已清晰。`,
+      proceed: (asked) => `已问 ${asked} 个问题后停止澄清：按你的选择，以已确定的内容继续。仍未澄清的内容记录在 topic.md 中。`,
+      narrowed: (asked) => `已问 ${asked} 个问题后停止澄清：需求已缩小到最接近的可交付范围。`,
+    },
+    infeasible: {
+      spin: '需求被判断为无法交付',
+      header: (summary) => `按目前的需求，XCompiler 无法交付：${summary}`,
+      blockerKinds: { language: '语言', platform: '平台', verification: '验收方式', environment: '运行环境' },
+      scope: (scope) => `最接近的可交付范围：${scope}`,
+      prompt: '接下来怎么做？',
+      choices: {
+        narrow: '接受最接近的可交付范围，继续澄清',
+        revise: '修改需求，继续澄清',
+        proceed: '仍按原需求继续',
+        cancel: '取消本次 build',
+      },
+      narrowQuestion: (summary) => `按原需求 XCompiler 无法交付（${summary}）。是否缩小到最接近的可交付范围？`,
+      narrowAnswer: (scope) => `缩小为：${scope}`,
+      reviseEditorMsg: '修改需求',
+      auditRevised: '修改后的需求',
+      cancelled: '已在澄清阶段取消 build。',
+    },
+    final: {
+      spin: '最终评估已完成',
+      header: (reason, stallTurns) => reason === 'budget'
+        ? '最终评估：澄清已用完分配给它的上下文窗口份额。'
+        : `最终评估：最近 ${stallTurns} 个回答没有确定任何新内容。`,
+      unresolved: (summary) => `仍未确定：${summary}`,
+      choices: {
+        continue: '继续澄清',
+        narrow: '接受最接近的可交付范围，进入 topic 确认',
+        revise: '修改需求后重新澄清',
+        proceed: '按已确定的内容进入 topic 确认',
+        cancel: '取消本次 build',
+      },
+      reviseCondensedMsg: '修改需求。下方附有目前已确认的回答，请保留需要的内容：澄清将从这段文字重新开始。',
+      condensedConfirmed: '## 目前已确认',
+      codeSummary: '模型没有给出可用的最终评估；以下是最后一次有效回复中仍未澄清的内容。',
+      codeBuilt: '模型没有给出可用的最终评估，已根据最后一次有效回复生成。',
+    },
     addendaConfirm: '是否有补充需求要追加？（会连同澄清一起发给 Planner，并保留在 plan.userAddenda 字段）',
     addendaEditorMsg: '输入自定义补充需求（多行、Markdown 可）',
     auditClarifyAnswer: (qid, q) => `澄清回答 ${qid}: ${q}`,
@@ -607,8 +546,97 @@ const messages: Messages = {
     topicPreamble: '> 本文件是需求澄清后冻结的项目选题，后续 V 模型拆解与所有阶段产出皆以本文件为唯一需求输入。',
     topicSecRequirement: '## 原始需求',
     topicSecClarify: '## 澄清记录',
+    topicSecDecisions: '## 已确定的决定',
+    topicSecOpen: '## 未澄清项',
+    topicOpenNote: '以下维度在最后一次评估时仍未澄清，规划时按推荐默认处理。',
+    topicSecAssumptions: '## 默认假设',
+    topicAssumptionsNote: '以下事项在澄清中没有提问，规划按这些默认值处理，与已接受的需求同样有效；不符合时请在 Gate 1 编辑。',
+    topicSecFeasibility: '## 可实施性',
+    topicFeasibility: {
+      verdict: (verdict) => `最后一次评估：${verdict === 'feasible' ? '可以交付' : verdict === 'uncertain' ? '能否交付仍取决于未确定的决策' : '按目前的需求无法交付'}。`,
+      narrowed: (scope) => `用户将需求缩小为：${scope}`,
+      proceeded: '用户选择继续使用被判断为无法交付的需求。',
+    },
     topicSecAddenda: '## 用户补充需求 (Addenda)',
     topicSecBaseline: '## 现有工程基线',
+  },
+  tools: {
+    readFile: {
+      description: '分块读取 workspace 内的文本文件。必须提供非空 args.path；args.offset 是可选字节偏移，使用上次结果的 nextOffset 可继续读取后续内容。',
+    },
+    writeFile: {
+      description: '在当前 Step writable allowlist 内创建或覆盖文件。必须提供非空 args.path 和字符串 args.content；path 使用具体的 workspace 相对路径。' +
+        '单次 content 受运行时 chunk limit 限制；大文件按模块/函数/类边界用 write_file 首段 + append_file 续写。' +
+        '覆盖已有文件时必须提供完整内容；异常缩短会被拒绝，此时应优先用 replace_in_file/apply_patch 精确修改。' +
+        '注意：runtime 管理的依赖清单请用 add_dependency 维护。',
+      chunkTooLarge: (size, limit) => `write_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B。请将大文件拆分写入：` +
+        `第 1 个 action 用 write_file 写头部（≤${limit}B，覆盖现有文件），` +
+        `后续 action 用 append_file 按模块/函数/类边界逐段追加（每段 ≤${limit}B）。同一轮可放多个 actions。`,
+    },
+    appendFile: {
+      description: '把一段内容追加到当前 Step writable allowlist 内文件末尾。必须提供非空 args.path 和字符串 args.content；path 使用具体的 workspace 相对路径。' +
+        '单次 content 受运行时 chunk limit 限制，用于配合 write_file 分块写出大文件。',
+      chunkTooLarge: (size, limit) => `append_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B；请按模块/函数/类边界进一步拆分。`,
+    },
+    listDir: {
+      description: '列出指定目录下的条目（仅文件名）。args.path 可选；提供时必须是具体的 workspace 相对目录路径。',
+    },
+    replaceInFile: {
+      description: '把当前 Step writable allowlist 内目标文件的 find 字符串精确替换为 replace（默认要求出现 1 次）。' +
+        '必须提供 args.path（具体的 workspace 相对文件路径，取自 writable allowlist）、args.find、args.replace 三个字符串参数；缺少 path 会被拒绝。',
+      noOpRefused: 'no-op edit refused: find === replace（替换前后字符串完全相同）。请确认你真正要修改的差异；如只想读取文件请改用 read_file，如要整文件重写请用 write_file。',
+      nearbyHint: '提示：以下是原文中似是你要改的区域（请以下面的字节为准重新起 find）：',
+      firstLineMissing: '提示：未在原文中找到 find 的首行片段。考虑改用 read_file 读出原文，再用 apply_patch 精确修改；若要整文件重写，必须低于当前运行时 chunk limit。',
+    },
+    codeSearch: {
+      description: '在 workspace 内按子串搜索代码（行级匹配）。args.root 可选；提供时必须是具体的 workspace 相对目录路径。',
+    },
+    analyzeError: {
+      description: '解析 Python 错误/测试输出，给出结构化摘要。',
+      missingModule: (name) => `缺失模块 ${name}，需要 pip 安装并写回 requirements.txt`,
+      failedTests: (count) => `${count} 个测试失败`,
+    },
+    runProgram: {
+      description: '在沙盒内运行工程入口程序或常见项目命令。' +
+        'Python：解释器由 Runtime 提供，args 直接从解释器之后写起（例如 ["-m", "py_compile", "x.py"] 或 ["src/main.py"]）；' +
+        '多写一个 python 前缀会被忽略。TypeScript：默认 npx tsx <entry>，也支持 npm/npx/node/tsx/tsc 前缀。' +
+        '产品的既定契约要求对该输入以非 0 退出（例如文档规定的失败退出码）时，把 expectExitCode 设为该退出码：' +
+        '只有程序恰好以该码退出时调用才算成功。不适用于测试运行器。',
+    },
+    runTests: {
+      description: '在沙盒内运行测试套件（Python: pytest；TypeScript: npm test / Vitest），可指定额外参数。' +
+        'TypeScript UNIT_TEST 门禁会自动启用覆盖率采集，无需重复传 --coverage。' +
+        '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
+    },
+    installDeps: {
+      description: '在沙盒内安装一组额外依赖（Python: pip install；TypeScript: npm install）。不会自动写回依赖清单。',
+    },
+    applyPatch: {
+      description: '应用 unified diff 补丁；每个 +++ 文件头必须包含具体的 workspace 相对目标路径，且目标必须在当前 Step writable allowlist 内。',
+    },
+    addDependency: {
+      description: '向依赖清单追加或更新依赖并重建沙盒。TypeScript packages 支持 name@version；测试/构建工具应设置 dev=true。',
+    },
+  },
+  generated: {
+    pathBootstrap: [
+      '为了让 `python src/main.py`（脚本式启动）也能 import 到顶层包 `src.xxx`，',
+      '把项目根目录注入 sys.path[0]。pytest / `python -m` 启动方式不受影响。',
+    ],
+    conftest: [
+      "把项目根与 src/ 加入 sys.path，使 'from <module> import ...' 在 pytest",
+      "与 'python tests/test_*.py' 直接执行两种方式下都能解析到 src/ 内的模块。",
+    ],
+    fileManifest: {
+      heading: '## 文件清单',
+      intro: (scannedAt) => `由工程文件树生成${scannedAt ? `（核对于 ${scannedAt}）` : ''}。请勿手工编辑：每次交付都会替换这一区域。`,
+      count: (files) => `共 ${files} 个文件。大小和时间戳属于生成数据，记录在工程文件树中而不写在这里：写入本节会改变承载它的文档本身的这些数据。`,
+      path: '路径',
+      type: '类型',
+    },
+  },
+  translation: {
+    fallback: (texts) => `有 ${texts} 段文字未能翻译，已按原文继续。`,
   },
   inspect: {
     noPlanFound: '未找到 phasePlan.json',
@@ -654,6 +682,29 @@ const messages: Messages = {
     auditTestFilesMissing: 'tests/ 下没有有效测试文件',
     auditEntrypointOk: (command) => `入口验证通过：${command}`,
     auditEntrypointFailed: (command) => `入口验证失败：${command}`,
+    auditScenarioInputsMissing: (scenario, inputs) => `场景 ${scenario} 未运行：声明的输入文件不存在：${inputs}`,
+    auditScenarioContractContradicts: (scenario, exitCode, declared) =>
+      `场景 ${scenario} 以退出码 ${exitCode} 结束，而它声明的预期退出码是 ${declared}；结果裁判却认为期望已满足。场景契约自相矛盾，本次 run 中没有 Step 能修正`,
+    auditScenarioAddendumSuggestion: (scenario, exitCode, expected) =>
+      `修改建议：如果退出码 ${exitCode} 正是需求对该场景的规定，在 topic.md 的「用户补充需求 (Addenda)」一节追加：` +
+      `「交付场景 ${scenario}（${expected}）的进程退出码为 ${exitCode}，请在该场景的 execution 中声明 expectExitCode: ${exitCode}。」` +
+      '否则追加该场景应有的退出码。然后用该 topic 重新 build；追加需求与原需求冲突时以追加需求为准。',
+    auditScenarioUnverifiable: (scenario, exitCode) =>
+      `场景 ${scenario}（退出码 ${exitCode}）无法核对：证据中没有可读内容能说明期望是否满足，本次 run 中没有 Step 能让它变得可读`,
+    auditScenarioInspectSuggestion: (scenario, expected) =>
+      '修改建议：在 topic.md 的「用户补充需求 (Addenda)」一节追加：' +
+      `「交付场景 ${scenario}（${expected}）的结果无法作为文本读取；请在该场景中声明检查命令（inspect），用工程自身的依赖读取该结果并输出期望要核对的内容。」` +
+      '然后用该 topic 重新 build；追加需求与原需求冲突时以追加需求为准。',
+    auditScenarioInspectReviewSuggestion: (scenario) =>
+      `修改建议：场景 ${scenario} 已声明检查命令，但它们的输出没能说明期望是否满足（原因见上方 judgement）。` +
+      '请核对这些命令读取的是否正是期望要核对的内容，以及产物结构是否与规划一致；需要调整时在 topic.md 的「用户补充需求 (Addenda)」一节写明，' +
+      '然后用该 topic 重新 build；追加需求与原需求冲突时以追加需求为准。',
+    auditScenarioPlanConflict: (scenario) =>
+      `场景 ${scenario}：本 Phase 冻结的需求与已确认的规划冲突，交由需求分析按规划修正后再传到后续 Step`,
+    unchangedRepairStop: ({ ticketName, targetStepName, failureCode, changelistName }) =>
+      `已停止：${ticketName} 在 ${targetStepName} 上的上一次修复（${changelistName}）没有改动任何文件，同一失败（${failureCode}）又出现了；继续重试只会得到同样的结果。` +
+      '请判断这个失败依据的需求或规划是否需要调整：需要调整时，在 topic.md 的「用户补充需求 (Addenda)」一节写明正确的要求，然后用该 topic 重新 build' +
+      '（追加需求与原需求冲突时以追加需求为准）；如果需求无误而实现有误，修正实现后再 run。',
     auditPackageJsonMissing: '缺少 package.json',
     auditScriptMissing: (name) => `package.json 缺少 ${name} 脚本`,
     auditCommandOk: (name) => `${name} 通过`,
@@ -683,7 +734,6 @@ const messages: Messages = {
     labelSystemPrompt: '**System prompt (唯一使命):**',
   },
   prompts: {
-    plannerSystem: (p) => buildPlannerSystem(p),
     plannerPhasePlanSystem: (p) => buildPlannerPhasePlanSystem(p),
     plannerPhaseDecomposeSystem: (p) => buildPlannerPhaseDecomposeSystem(p),
     plannerSelfMode: `自举模式覆盖规则（优先级高于上方与之冲突的 greenfield 规则）：
@@ -692,87 +742,90 @@ const messages: Messages = {
 - 除非本次变更确实需要修改，否则 HIGH_LEVEL_DESIGN outputs 不得包含 package.json 或 tsconfig.json。
 - 每个 CODE/测试产物必须严格限定在本次增量范围，禁止整体重建或替换仓库。
 - 将稳定宿主视为 N 代、隔离 worktree 中的候选版本视为 N+1 代；禁止设计进程内热替换。`,
-    plannerClarifySystem: `你的职责不是复述 topic，而是发现会改变功能设计、验收结果或架构边界的未决事项。
-只返回严格 JSON。问题必须可由业务方直接作答、一次只确认一个决策，避免空泛的“还有什么要求”或技术栈选型问题；只有用户提示明确要求时，才允许提出唯一一条开发语言确认问题。`,
-    plannerClarify: (raw, opts = {}) =>
-      `用户的原始需求如下：
-
+    clarificationTranscript: { options: '候选设定', why: '澄清目的' },
+    plannerValidationFeedback: (message) => [
+      '',
+      '',
+      '上一次输出未通过 XCompiler 计划契约校验。请根据以下错误修正后重新输出完整、严格 JSON，禁止解释或 Markdown：',
+      `校验错误：${message}`,
+      '修正要求：',
+      '- 保留已确认的 PhasePlan 约束；只生成当前 current phase 的内容。',
+      '- architectureModules 必须满足 sourcePaths/testPaths 和 HIGH_LEVEL_DESIGN/CODE/MODULE_TEST 可追踪性；不要为凑数量拆散内聚模块。',
+      '- architectureModules.testPaths 是 HIGH_LEVEL_DESIGN 创建、MODULE_TEST 消费的模块契约测试，不能同时出现在 CODE 的单元测试输出中。',
+      '- 若一个 CODE 宏 Step 覆盖多个模块，必须在该 CODE Step 的 subTasks 中逐一列出对应模块。',
+      '- 每个 output 文件在一次 V 流程中只能由一个 Step 产出；其它 Step 需要它就写进 inputs，不要重复声明为 outputs。',
+      '- Step inputs/outputs 必须是精确文件路径，禁止使用 src/**/*.ts、tests/** 等 glob 或目录选择器；需要多个文件时逐项列出上游 Step 的具体 outputs。',
+      '- 不要删除标准 V 模型 8 个宏 Step。',
+    ].join('\n'),
+    plannerClarifySystem: `你逐个提问来澄清需求，并判断 XCompiler 能否交付它。每一轮三选一：提出唯一一个下一问题，它的答案对功能设计、验收或架构边界影响最大；判断已没有会影响决策的未决事项；或判断 XCompiler 无法交付该需求。
+只返回严格 JSON。问题必须可由业务方直接作答、一次只确认一个决策。不要询问开发语言、运行时、包管理器、测试框架或生成物形态：这些在你开始之前已经确定。
+规划能按合理默认处理的细节留给规划：字段与列的格式、取值的写法、数字的表示方式、排序、表头布局等呈现细节。不要就这些提问；某个维度只剩这类细节时，把它标为 resolved。`,
+    // 先放不变的说明，再放不断增长的问答，最后放每轮变化的内容，便于 provider 复用前缀缓存。
+    plannerClarifyTurn: (context) => {
+      const transcript = context.transcript.length > 0
+        ? context.transcript.map((entry) => `${entry.id} [${entry.category}] ${entry.question}\n答：${entry.answer}`).join('\n\n')
+        : '暂无。';
+      const final = context.finalAssessment;
+      return `用户的原始需求：
 """
-${raw}
-"""
-
-请针对 topic 中尚未明确、且答案会实质改变实现或验收的事项，生成${opts.complex ? '8-10' : '7-10'}个互不重复的澄清问题。不得返回空数组；如果功能描述已经较完整，就追问验收示例、失败行为和明确的不做范围。
-
-仅返回 JSON 数组，每项严格为：
-{"id":"Q1","category":"functionality|data|acceptance|boundary|quality|extensibility","question":"一个可直接回答的具体问题","why":"该答案会影响什么设计或验收","options":[{"label":"A","answer":"最高优先级的可行设定"},{"label":"B","answer":"第二个可行设定"}]}
-
-问题组合要求（功能优先）：
-- 至少 ${opts.complex ? '5' : '4'} 个功能性问题，category 使用 functionality / data / acceptance，确保功能问题占多数。优先质询：目标用户与角色、核心使用流程、功能规则与状态变化、输入输出、失败/异常行为、可验证验收示例。
-- 至少 1 个 boundary：明确本期必须做、明确不做、外部系统责任边界或兼容范围。
-- 至少 1 个 quality：询问可量化的性能、容量、并发、时延、准确性、可靠性或安全指标；不要只问“性能有什么要求”。
-- 至少 1 个 extensibility：询问最可能新增的业务能力、扩展维度或需要稳定保留的接口，不要泛问“是否需要扩展性”。
-- 如果交付形态不明确，必须包含 1 个 boundary 问题，确认本项目应是 API library/SDK/软件包、可运行应用/CLI/服务，还是二者兼具的 mixed 交付。
-- 如果需求需要访问外部 API/URL/第三方数据源，必须包含 1 个 data 或 boundary 问题，确认用户是否已有可用 API、key、token 或鉴权方式；若用户没有凭证，本期默认优先选择公开、免 key/token、可验证的接口，不要生成占位 URL。
-- 按阻塞程度排序：先问会改变核心功能/数据模型的问题，再问范围与质量，最后问未来扩展。
-- 一题只包含一个主要决策，给出必要的业务选项或示例，禁止把多个无关问题用“以及/或者”拼成一题。
-- 每个问题都必须预生成 2-5 个可行回答设定，按优先级排序。选项数量不是固定值：二选一场景用 2 个，常见默认设定用 3 个，只有确实存在 4-5 个彼此不同的可行设定时才生成 4-5 个；不要填充或强制每题都是 3 个选项。
-- 选项从 A 开始连续标号，到实际最后一个选项结束，例如 A-B、A-C、A-D 或 A-E；如果能判断推荐/默认方案，A 应是最高优先级方案。选项必须是具体业务/产品设定，不要写成空泛占位。
-- 不要把“其他 / 自定义 / 用户决定”作为选项；CLI 已支持用户输入已展示的选项字母或直接输入自定义回答内容。
-${opts.projectShapeAmbiguous
-  ? '- 本 topic 必问：明确确认 API library / 可运行应用 / mixed 交付边界。\n'
-  : ''}
-${opts.languageAmbiguous
-  ? '- 本 topic 必问：必须包含且只包含 1 个 boundary 问题确认目标开发语言。选项必须是 A. Python（默认/推荐） 和 B. TypeScript / Node.js；用户仍可输入自定义回答。\n'
-  : ''}
-
-${opts.languageAmbiguous
-  ? `【技术栈确认】XCompiler 无法从 topic 或基线中判断目标开发语言。只询问上面要求的开发语言问题；不要询问包管理器、测试框架或操作系统。若用户不选择，默认 Python。`
-  : `【硬约束】实现技术栈已经由用户 topic / 现有工程基线固定，不要重新询问语言、运行时、包管理器这类问题。
-**严禁**提出以下类型的问题：
-  - "希望用什么编程语言 / 框架 / 运行时实现？"
-  - "需要哪种测试框架 / 构建工具 / 包管理器？"
-  - "目标平台是哪种操作系统？"`}
-${opts.intent && opts.intent !== 'greenfield'
-  ? `这是一条针对现有工程的增量 ${opts.intent} 请求${opts.hasBaseline ? '；分解阶段还会提供一份基线摘要' : ''}。请只问“变更增量”相关问题，不要把项目当成从零开始重做。`
-  : ''}问题主体必须聚焦功能行为；性能、边界和扩展性用于消除会影响本期设计的关键歧义。`,
-    plannerDecompose: (raw, qa, addenda, opts = {}) =>
-      `原始需求：
-"""
-${raw}
+${context.rawRequirement}
 """
 
-澄清问答：
-${qa || '（无）'}
+本轮之前已确定（不得重新讨论）：
+- 开发语言：${CLARIFY_LANGUAGE_NAMES_ZH[context.language]}
+- 生成物：${CLARIFY_DELIVERABLE_NAMES_ZH[context.projectType]}
+${context.intent !== 'greenfield' ? `- 这是对已有项目的增量 ${context.intent} 改动${context.hasBaseline ? '，基线摘要会在规划时提供' : ''}：只询问本次改动，不要询问重建项目。\n` : ''}
+XCompiler 能交付的范围（只按这些限制判断可实施性）：
+- 只用${CLARIFY_LANGUAGE_NAMES_ZH[context.language]}编写代码。
+- 交付可执行程序（命令行工具、脚本或服务）、库，或两者兼有。
+- 验收方式是在工程沙箱里运行一条命令，读取它的退出码和输出，包括它写出的文件、以及它在同一沙箱中启动的服务返回的响应。任何验收都不能依赖人去看屏幕、桌面窗口、移动设备或实体硬件。
+- 命令运行在${CLARIFY_SANDBOX_MODES_ZH[context.sandbox.mode]}中，网络：${CLARIFY_NETWORK_POLICIES_ZH[context.sandbox.network]}。
 
-${addenda ? `用户补充需求（需严格遵守，优先级高于原始描述中模糊的部分）：\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
-  ? `增量意图：${opts.intent}
+每一轮都要判断可实施性：
+- "feasible"：目前理解的全部内容都在上述范围内；blockers 为 []。
+- "uncertain"：是否在范围内取决于某个尚未确定的决策；在 blockers 中写明涉及的限制，本轮就问能确定它的问题。
+- "infeasible"：无论怎样回答都超出范围；写明涉及的限制，返回 status "infeasible" 而不是问题，并在有可交付的近似需求时给出 feasibleScope。
+blocker 的 kind："language"（需要其他语言或原生工具链）、"platform"（移动端、桌面图形界面、仅浏览器运行或嵌入式目标）、"verification"（验收需要人或设备，而不是命令）、"environment"（需要沙箱不提供的网络、硬件或系统权限）。
 
-请在现有工程基础上生成一份增量 ${opts.intent} 计划，优先复用当前架构、文件、测试与依赖，而不是把整个项目重新搭一遍。除本次需求涉及的范围外，默认保持既有行为不变。
+请对照需求和下面的全部回答，评估每个维度：
+- functionality：参与者、核心流程、业务规则、状态变化
+- data：输入、输出、格式、规模、外部数据来源
+- acceptance：可验证的示例、失败时的行为、明确不做的内容
+- boundary：范围内外、外部系统归属、兼容性限制
+- quality：可度量的时延、吞吐、规模、准确率、可靠性或安全指标
+- extensibility：最可能的下一项能力，或必须保持稳定的接口
+每个维度标为 "resolved"（需求或回答已确定）、"open"（尚未确定、且会改变设计或验收的决策）或 "not-applicable"（本次交付不涉及此类决策）。
+${context.externalApiRequired ? '需求涉及外部 API、URL 或第三方数据：在用户说明是否已有可用的 API、key、token 或鉴权方式之前，data 保持 open。没有时默认选用公开、免 key、可验证的 API，不得使用占位 URL。\n' : ''}
+只返回一个 JSON 对象，三选一：
+{"status":"ask","coverage":{"functionality":"resolved|open|not-applicable","data":"…","acceptance":"…","boundary":"…","quality":"…","extensibility":"…"},"feasibility":{"verdict":"feasible|uncertain","blockers":[{"kind":"platform","detail":"涉及的限制，以及需求中触及它的内容"}]},"question":{"category":"<某个 open 维度>","question":"一个具体问题","why":"该答案确定哪项设计或验收决策","options":[{"label":"A","answer":"推荐设定"},{"label":"B","answer":"另一个可行设定"}]}}
+或者，在没有 open 维度且判断为 feasible 时：
+{"status":"clear","coverage":{…同样的六个键…},"feasibility":{"verdict":"feasible","blockers":[]},"summary":"用一两句话说明已确定的内容","assumptions":["一项没有提问的决策，以及规划将采用的默认值"]}
+或者，在 XCompiler 无法交付时：
+{"status":"infeasible","coverage":{…},"feasibility":{"verdict":"infeasible","blockers":[{"kind":"…","detail":"…"}]},"summary":"XCompiler 无法交付的原因","feasibleScope":"最接近的可交付需求；没有时省略"}
 
-现有工程基线：
-"""
-${opts.baseline || '（缺少基线摘要）'}
-"""
+提问规则：
+- 只问 open 维度：一个问题只确认一个决策，不得重复或换个说法再问已问过的问题。
+- 给出 2-5 个按优先级排序的具体选项，A 为推荐默认值。不要加入"其他"或"由我决定"：用户总可以用自己的话回答。
+- 判断为 uncertain 时，先问能确定它的问题；否则优先问对设计和验收影响最广的决策。
+- 只有判断为 feasible、且剩余未知项既不影响设计也不影响验收时，才报告 clear。
+- 报告 clear 时，在 assumptions 中逐条列出（1-12 条）没有提问、交给规划决定的事项及其默认值，例如输出包含哪些字段、输出文件如何组织、接受哪些输入编码、验收用什么样例。用户会在规划开始前看到并修正不合适的条目。
 
-`
-  : ''}规划深度约束：
-- 除非需求明确只是一个很小的单函数 / 单脚本 / 小工具，否则不要把方案压缩成“一个源码文件 + 一个测试文件”的最小实现。
-- 如果需求横跨多个关注点（领域逻辑、API/CLI 接口、持久化、外部集成、流程编排、测试），必须在计划里体现为多个架构模块，并在 HIGH_LEVEL_DESIGN/CODE/MODULE_TEST 宏 Step 的 subTasks 下分解模块级工作。
-- 在 plan 中评估项目复杂度，并按评估结果确定 implementationPhases 数量：simple => 只有 P1 current；moderate => P1 current + 至少 P2 planned；complex => P1 current + 至少 P2/P3 planned。若用户明确要求分阶段/里程碑，至少使用 P1+P2，并设置 userForcedPhaseSplit=true。只为 current phase 生成一套完整 V 模型 Step；planned phase 保留目标，激活后再展开。
-- 请通过 HIGH_LEVEL_DESIGN / DETAILED_DESIGN Step 明确模块边界、职责划分、依赖和后续可扩展点，让后续增量开发可以持续追加，而不是每次重写。
-- 如果基线里已经存在相关文件，优先在原模块上扩展/重构，不要新造一套行为重复的影子实现。
+已问过的问题：
+${transcript}
 
-请按系统规则输出严格 JSON 计划。`,
+本轮：问题编号 ${context.questionId}；澄清预算已用 ${context.budgetUsedPercent}%。
+${final ? `最终评估（${final === 'budget' ? '澄清预算已用完' : '最近几轮回答没有确定任何新内容'}）：不要再提问。判断为 feasible 且剩余未知项不影响设计和验收时返回 clear；XCompiler 无法交付时返回 infeasible；否则返回
+{"status":"unresolved","coverage":{…},"feasibility":{"verdict":"feasible|uncertain","blockers":[…]},"summary":"已确定和未确定的内容","openPoints":[{"category":"<某个 open 维度>","detail":"尚未决定的选择，以及它为何阻碍交付"}],"feasibleScope":"按目前已确定的内容可以交付的最接近需求；没有时省略"}` : '请先问最阻塞的决策。'}`;
+    },
     plannerPhasePlan: (raw, qa, addenda, opts = {}) =>
       `原始需求：
 """
 ${raw}
 """
 
-澄清问答：
-${qa || '（无）'}
+需求中的「用户补充需求 (Addenda)」一节是澄清之后追加的需求；与该节以外的内容（原始描述、澄清问答、默认假设）冲突时，以该节为准。
 
-${addenda ? `用户补充需求（需严格遵守，优先级高于原始描述中模糊的部分）：\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+${qa ? `澄清问答：\n${qa}\n\n` : ''}${addenda ? `用户补充需求（需严格遵守；与原始描述、澄清问答或默认假设冲突时，以补充需求为准）：\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
   ? `增量意图：${opts.intent}
 
 请在现有工程基础上生成 PhasePlan，优先复用当前架构、文件、测试与依赖。除本次需求涉及的范围外，默认保持既有行为不变。
@@ -795,10 +848,9 @@ ${opts.baseline || '（缺少基线摘要）'}
 ${raw}
 """
 
-澄清问答：
-${qa || '（无）'}
+需求中的「用户补充需求 (Addenda)」一节是澄清之后追加的需求；与该节以外的内容（原始描述、澄清问答、默认假设）冲突时，以该节为准。
 
-${addenda ? `用户补充需求（需严格遵守，优先级高于原始描述中模糊的部分）：\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
+${qa ? `澄清问答：\n${qa}\n\n` : ''}${addenda ? `用户补充需求（需严格遵守；与原始描述、澄清问答或默认假设冲突时，以补充需求为准）：\n"""\n${addenda}\n"""\n\n` : ''}${opts.intent && opts.intent !== 'greenfield'
   ? `增量意图：${opts.intent}
 
 请在现有工程基础上生成当前 phase 的增量 V 模型 StepPlan，优先复用当前架构、文件、测试与依赖。
@@ -824,7 +876,7 @@ ${opts.phasePlan}
 - 如果 ${opts.phaseId} 横跨多个关注点（领域逻辑、CLI/API、文件 I/O、外部集成、流程编排、测试），必须在 architectureModules 中体现当前 phase 的模块边界，并在 HIGH_LEVEL_DESIGN/CODE/MODULE_TEST 的 subTasks 下分解模块级工作。
 - architectureModules.sourcePaths 只能是 src/ 下的产品源码文件；随产品交付的运行时非代码资产写入 assetPaths。不要把 tests/fixtures、tests/utils、样例输入、临时输出、目录或文档登记为架构模块。
 - architectureModules.testPaths 只能填写由 HIGH_LEVEL_DESIGN 创建、MODULE_TEST 读取执行的模块契约测试（通常为 tests/modules/*）；CODE 必须另行输出单元测试，禁止与这些 testPaths 重复。
-- dependencies 只写当前 phase 需要的包名；Python 必须包含 pytest；不要输出 requirements.txt。
+- dependencies 只写当前 phase 需要的包名；Python 必须包含 pytest；不要输出 requirements.txt。只使用真实发布的包名，不要按所需功能臆造包名。
 - 当前 phase 必须包含标准 V 模型 8 个宏 Step，并满足同步测试设计规则。
 
 只返回当前 phase 的严格 JSON StepPlan。`,
@@ -833,6 +885,14 @@ ${opts.phasePlan}
       `\n\n上一轮失败原因: ${reason}` +
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
+    executorPlanContractBlock: (contract) => [
+      '\n\n## 已确认的规划契约（用户确认规划时批准；此后产出的需求、设计、测试和代码都必须与之一致）',
+      `需求：${contract.requirementDigest}`,
+      ...(contract.phaseObjective ? [`本 Phase 目标：${contract.phaseObjective}`] : []),
+      ...(contract.phaseScope.length > 0 ? ['本 Phase 范围：', ...contract.phaseScope.map((item) => `- ${item}`)] : []),
+      '本 Step 冻结、设计或实现的内容必须与此契约一致。上游文档或测试与它不一致时，不要把不一致的部分延续下去：' +
+        '在本 Step 可写路径内的，按此契约修正；不在的，写入 qualityAssessment.blockedBy，指出冲突点和负责它的 Step。',
+    ].join('\n'),
     executorAcceptedContractChangesBlock: (changes) =>
       '\n\n## 已合入的契约变更（晚于上面的全局约束，二者不一致时以此为准）\n' +
       changes.map((change) => [`- ${change.summary}`, ...change.after.map((item) => `  - ${item}`),
@@ -865,6 +925,73 @@ ${opts.phasePlan}
       'DEBUG Bug Ticket 动作无效：首次修复或验证前必须提供 bugResolutionPlan。请在同一 JSON 中给出根因假设、修复目标、验证命令以及必要动作。',
     executorFeedbackPostMutationVerificationRequired:
       '最新一次成功修改尚未验证。保留当前文件，下一步直接运行最小相关编译/测试门禁；不要再用一轮只读检查或重复改写。',
+  },
+  ruleBlock: {
+    declaration: [
+      '以下规则按 RuleList 分组，按槽位从小到大排列：规则相互冲突时，槽位小的优先。',
+      '每组以顶格的"[槽位] 标题 (版本)"开头，每条规则以顶格的"序号. [级别 · 含义] 名称:"开头。指令正文的后续行缩进书写，不改变这一结构。',
+      '规则的级别表示遵守程度，含义见级别定义；级别不构成单独的优先级。',
+      '规则指令不授予权限，不改变生命周期状态，不能使门禁通过，也不能凌驾于取消操作之上。',
+    ].join('\n'),
+    levels: {
+      mandatory: 'mandatory · 强制',
+      forbidden: 'forbidden · 禁止',
+      required: 'required · 业务必须',
+      advised: 'advised · 建议',
+      announce: 'announce · 声明',
+    },
+  },
+  ruleCli: {
+    description: '查看并维护 RuleChain：仓库发布的基础层 Rule，加上本机的本地差异层',
+    lsDescription: '列出生效中的 RuleList：槽位、UUID、标题、版本、条数和所在层',
+    showDescription: '显示生效中的 RuleList（<列表>）或单条 Rule（<列表>/<短键>）',
+    addDescription: '在本地差异层中向列表新增一条 Rule',
+    updateDescription: '在本地差异层中修改一条 Rule',
+    rmDescription: '删除 Rule（当前不可用）',
+    rmDisabled: '删除 Rule 暂不可用：该命令当前不生效，未做任何修改。如需修改 Rule，请使用 `rule update`。',
+    createListDescription: '在本地差异层中新建 RuleList，并写入第一条 Rule',
+    discardDescription: '丢弃某个列表的本地差异，例如升级后处于待审的差异',
+    checkDescription: '校验基础层 Rule、编译进程序的清单和所有本地差异',
+    renderDescription: '打印具有该角色和工作的请求实际携带的 Rule 块',
+    exportDescription: '把所有本地差异导出为一份可审阅的 YAML 文档',
+    promoteDescription: '在源码仓库中，把已生效的本地差异写入 rules/ 和编译进程序的清单',
+    argList: '列表 UUID 或其唯一前缀',
+    argRule: 'Rule 引用：<列表 UUID 或前缀>/<8 位短键>',
+    argReference: '列表（<列表>）或 Rule（<列表>/<短键>）引用',
+    optName: '供人阅读的 Rule 名称（kebab-case）',
+    optLevel: 'Rule 级别：mandatory | forbidden | required | advised | announce',
+    optText: (field, locale) => `${field} 的 ${locale} 文本`,
+    optFile: '包含 name、level、description、instruction（每种语言一项）的 YAML 文件',
+    optSlot: 'RuleList 槽位，例如 0x00012000',
+    optRole: '发言角色 ID',
+    optWork: '请求的工作 ID',
+    optStepWork: '正在完成、修复或变更的 Step 工作',
+    optLanguage: '项目语言',
+    optBaselineDeferred: '配对基线延后执行',
+    optLocale: '渲染语言：en | zh',
+    optOutputLanguage: '交付物使用的语言，与渲染语言不同时指定（开启 prompt 翻译时）：en | zh',
+    optScope: (dimensions) => `Rule 的适用范围，写成 <维度>=<值>（可重复）；维度：${dimensions}`,
+    optClearScope: '清除 Rule 的适用范围',
+    optIntent: '用于适用范围的项目模式：greenfield | feature | refactor | self',
+    optProjectType: '用于适用范围的项目类型：application | library | mixed',
+    optTool: '请求可用的工具（可重复）',
+    optWritablePath: '请求可写入的路径：声明的产出，或以 / 结尾的授权目录（可重复）',
+    optFailureCategory: '本次修复的失败类别',
+    optOutput: '写入该文件而不是标准输出',
+    written: (location) => `已写入本地差异：${location}`,
+    removed: (listId) => `已丢弃 ${listId} 的本地差异`,
+    added: (reference, version) => `已新增 Rule：${reference}（版本 ${version}）`,
+    created: (listId) => `已在本地差异层新建 RuleList：${listId}`,
+    checkSummary: (lists, rules) => `RuleChain 已加载：生效 ${lists} 个列表、${rules} 条 Rule。`,
+    overlayApplied: (listId) => `  已生效  ${listId}`,
+    overlayPending: (listId, reason) => `  待审    ${listId}（${reason}）；请审阅后丢弃或重新应用该修改`,
+    overlayInvalid: (id, reason, location) => `  无效    ${location}（${reason}）；修正该文件或运行 \`xcompiler rule discard ${id}\` 之前，所有请求都会拒绝运行`,
+    bindingProblem: (reason, slot, key) => `  绑定    ${slot} ${reason}${key ? `（短键 ${key}）` : ''}；绑定它的请求将失败`,
+    descriptionStyle: (reference, locales) => `  描述    ${reference} [${locales}] 未写明何时适用（"…时适用"）`,
+    similarRules: (first, second, similarity) => `  相近    ${first} ~ ${second}（${similarity}）；请人工阅读：合并重复条目，或在要求相反时声明冲突键`,
+    promoted: (files) => `已写入 rules/：${files}`,
+    promoteRebuild: '安装版需要重新构建 XCompiler 才会使用写入的 Rule。',
+    nothingToPromote: '没有可写入的已生效本地差异。',
   },
   doctor: {
     cliDescription: '检查 config / LLM / sandbox / skills 是否就绪',

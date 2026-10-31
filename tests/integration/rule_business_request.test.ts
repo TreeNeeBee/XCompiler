@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ruleList } from '../support/rule_fixtures.js';
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import {
@@ -17,11 +18,11 @@ const messages: ChatMessage[] = [{ role: 'user', content: 'Evaluate this request
 function snapshot(requestKind: 'business' | 'rule-selection' = 'business') {
   const selector = new RuleSelector(new RuleCatalogue([{ source: {
     owner: { kind: 'compiler' }, location: '/installed/rules/genesis.yaml',
-  }, definition: {
-    schemaVersion: '1', id: id(1), version: '1', title: 'Base', slot: 0,
-    rules: [{ id: id(2), version: '1', category: 'general', level: 'announce',
-      instruction: 'Retain the current evidence.', retrievalDescription: 'Base declaration' }],
-  } }]));
+  }, definition: ruleList({
+    id: id(1), version: '1', title: 'Base', slot: 0,
+    rules: [{ id: id(2), version: '1', level: 'announce',
+      instruction: 'Retain the current evidence.', description: 'Base declaration' }],
+  }) }]));
   const prepared = selector.prepare({ requestKind, context: { role: 'python-developer' }, required: [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [] });
   return finalizeRuleSelectionDraft(createRuleSelectionDraft({

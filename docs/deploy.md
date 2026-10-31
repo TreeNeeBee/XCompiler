@@ -14,7 +14,7 @@
 |---|---|---|
 | **LLM 服务** | OpenRouter API key（默认 Free mode）**或** 任一 OpenAI-compatible endpoint；Ollama 可作为本地备选 | XCompiler 的所有 Agent 推理 |
 | **Git** | 任意现代版本 | XCompiler 在 workspace 内做 snapshot/revert（每个 Step 一次提交）|
-| **Python 3.11+** | （仅 `sandbox=subprocess` 必需，docker 模式可省）| 沙盒内运行 pip / pytest |
+| **Python 3.11+** | （仅 `sandbox=subprocess` 必需，docker 模式可省）| 沙盒内运行 pip / pytest；单元测试阶段用 pytest-cov 测覆盖率（随工程依赖安装到沙盒，无需在主机安装） |
 
 > **网络要求**：沙盒在 `pip install -r requirements.txt` 时需要可达的 PyPI 镜像。建议在 shell 注入：
 > `PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple`（或阿里云、内网 mirror）。
@@ -142,8 +142,9 @@ npm run package:all
 dist/pkg/
 ├── xcompiler-linux-x64/
 │   ├── xcompiler                      # ELF 64-bit, x86_64
-│   ├── README.md  LICENSE  NOTICE
+│   ├── README.md  LICENSE  NOTICE  VERSION
 │   ├── config.example.yaml  .env.example
+│   ├── rules/  skills/  debug-wiki/  docs/
 ├── xcompiler-linux-x64.tar.gz         # 打包发布用
 ├── xcompiler-linux-arm64/
 │   ├── xcompiler                      # ELF 64-bit, aarch64
@@ -156,8 +157,16 @@ dist/pkg/
 ├── xcompiler-win-x64/
 │   ├── xcompiler.exe                  # PE32+, x86_64 — ⚠️ v0.1.0 未在 Windows 实机验证
 │   └── ...
-└── xcompiler-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
+├── xcompiler-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
+└── SHA256SUMS                         # 覆盖目录中的全部压缩包
 ```
+
+单文件可执行程序随包携带 `rules/`、`debug-wiki/`、`skills/`，运行时从可执行文件所在目录读取；未设置 `XC_PATH` 时，debug wiki 的工作副本也写在该目录的 `.xcompiler/debug-wiki`。重新打包会替换整个目录，要长期保留 debug wiki 积累的修复经验，运行时设置 `XC_PATH`（例如 `~/.xc`）。
+
+`dist/pkg` 只保存当前版本：
+- 打包前删除其他版本的产物、中断留下的 `.staging` 目录，以及没有对应目录的压缩包；
+- 同一版本分几次打包的目标会保留，所以可以逐个目标打包；
+- `SHA256SUMS` 每次按目录中的全部压缩包重新生成。
 
 > **macOS Apple Silicon 原生目标为 macos-arm64**；`npm run package` 会在 Apple Silicon Mac 上自动选择该目标。
 > 关键点：

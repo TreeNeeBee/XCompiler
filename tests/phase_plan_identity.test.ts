@@ -42,7 +42,7 @@ function fixture(send: PhasePlanRequestPort['send']) {
 }
 
 describe('approved implementation Phase identity at planning boundaries', () => {
-  it('rejects duplicate planned identities through the actual P02 validator and retries with feedback', async () => {
+  it('rejects duplicate planned identities through the actual phase-plan validator and retries with feedback', async () => {
     const seen: Parameters<PhasePlanRequestPort['send']>[0][] = [];
     const refusals: unknown[] = [];
     const send = vi.fn<PhasePlanRequestPort['send']>(async request => {
@@ -94,7 +94,7 @@ describe('approved implementation Phase identity at planning boundaries', () => 
     expect(send).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['P1', 'P2'])('retains the same unique identities before P03 expands current %s', currentId => {
+  it.each(['P1', 'P2'])('retains the same unique identities before phase decomposition expands current %s', currentId => {
     const valid = phasePlan(false, currentId);
     expect(validateImplementationPhaseDraft(valid.implementationPhases, valid.complexityAssessment,
       { language: 'python', expectedCurrentPhaseId: currentId })).toBeUndefined();

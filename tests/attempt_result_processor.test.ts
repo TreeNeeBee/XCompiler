@@ -50,8 +50,8 @@ describe('correctiveAffectedArtifacts', () => {
       type: 'CODE',
       outputs: ['src/cli.ts', 'src/reporter.ts'],
     } as Step;
-    const result = {
-      changedFiles: [],
+    const result: AttemptResult = {
+      ok: false, changedFiles: [], wikiEntryIds: [], testOutcomes: [],
       solutionPlan: 'The executable entry in src/cli.ts must be implemented by CODE.',
       bugResolutionDisposition: {
         outcome: 'deferred',
@@ -60,7 +60,7 @@ describe('correctiveAffectedArtifacts', () => {
         affectedArtifacts: ['src/cli.ts'],
         evidence: ['src/cli.ts was inspected from the current workspace'],
       },
-    } as AttemptResult;
+    };
 
     expect(correctiveAffectedArtifacts([requirement, code], requirement, result)).toEqual([
       'src/cli.ts',
@@ -72,7 +72,7 @@ describe('correctiveAffectedArtifacts', () => {
       type: 'REQUIREMENT_ANALYSIS',
       outputs: ['docs/01-requirement-analysis.md'],
     } as Step;
-    const result = { changedFiles: [] } as AttemptResult;
+    const result: AttemptResult = { ok: false, changedFiles: [], wikiEntryIds: [], testOutcomes: [] };
 
     expect(correctiveAffectedArtifacts([requirement], requirement, result)).toEqual([
       'docs/01-requirement-analysis.md',
@@ -179,7 +179,7 @@ describe('Change Request verification completion', () => {
           auditEvents.push(data);
         },
       },
-      onTransition: async (event) => { transitions.push(event as unknown as Record<string, unknown>); },
+      onTransition: async (event: unknown) => { transitions.push(event as Record<string, unknown>); },
     } as never);
     const step = {
       id: 'integration-step', name: 'P1-S006', type: 'INTEGRATION_TEST',

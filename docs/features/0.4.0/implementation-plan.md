@@ -2,7 +2,7 @@
 
 > **2026-10-16 起**：批次顺序与剩余工作以 [变更清单](2026-10-15-review-change-list.md) 第 3 节为准（M-0→M-A→M-B→M-R→M-C→M-D→M-E→G1→验证→P1）。
 
-Updated: 2026-10-15. This development stage extends `a20dae0` (P01 retained PM clarification requests)
+Updated: 2026-10-15. This development stage extends `a20dae0` (P01 (clarification) retained PM clarification requests)
 on `feature/0.4.0`, tracking `origin/feature/0.4.0`; feature development proceeds to complete
 functional milestones before their verification, and release preparation follows last.
 The original assessment baseline was `77ff6e2`.
@@ -115,7 +115,7 @@ The assessment changes the plan in four ways:
 - Put request identity, complete raw evidence and effective selection before the first migrated
   production caller. Audit/replay must accompany each vertical migration, rather than being added
   after all callers and old paths have changed.
-- Name a production owner and a disposition for each extraction candidate. Treat J06 rubric
+- Name a production owner and a disposition for each extraction candidate. Treat J06 (scenario-outcome judgement) rubric
   extraction as behavior preservation; keep other semantic policy replacements behind their own
   approved contracts and producer/validator updates.
 - Expose completion metadata and separate protocol/business failures before introducing a shared
@@ -134,7 +134,7 @@ supersedes the earlier A/B1/C/B2 order where it placed evidence integration afte
 
 **Latest user sequencing update, 2026-10-14:** continue feature development first; start tests only
 after a larger functional milestone is fully implemented, and put release last. The dependency order
-is now M0 -> D1 -> F1 -> R1 -> C1 -> V1 -> V2 -> G1 -> P1. Group contracts, actual caller wiring,
+is now M0 -> D1 -> F1 (request-and-evidence foundation) -> R1 (Rule catalogue and assembly) -> C1 (protocol correction) -> V1 (scenario vertical slice) -> V2 (remaining-caller integration) -> G1 -> P1. Group contracts, actual caller wiring,
 audit/recovery and regression cases into a complete milestone before executing its focused checks
 and call-site falsification. Do not interrupt development to verify each small helper. The complete affected functional gates still follow the
 remaining implementation; version updates, package assembly, release curation and publication
@@ -233,8 +233,8 @@ Runtime's advancement call and the service's final save also require separate ca
 | J06 scenario judgement | Rubric-only extraction and current-evidence judgement authored in YAML/Application/Runtime | Preserve classification/process/PM intake; execute production wiring and recovery tests at G1 |
 | P01-P14 instruction candidates | In-scope inventory, not fourteen already approved RuleLists | Record retained text, authoritative source, caller, binding and replaced duplicate per batch |
 | P01 clarification caller | Complete retained PM intake milestone implemented and checked; original i18n remains authoritative, with required genesis selection | Preserve question counts/coverage and J01 policies; no duplicate YAML rubric or outer repair budget; further instruction extraction remains separate |
-| P02 PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, actual Build/Planner/recovery wiring checked with P01/P03; remaining instruction extraction stays separate |
-| P03 decomposition caller | Retained port, original approved phase/context/Skill-name evidence and pure original-context parsing implemented; actual Build and Project-bound phase progression connected and verified | Keep i18n/Skill metadata as original prompt source, eight Steps/ownership/delivery checks and 2/3 semantic budget; read-only exact-request recovery cannot advance phases or read current registry |
+| P02 (phase plan) PhasePlan caller | Runtime retained port authored; i18n instructions remain framework-authoritative, with required genesis selection | No duplicate YAML rubric in this batch; preserve audit-only context and candidate/outer budgets, actual Build/Planner/recovery wiring checked with P01/P03; remaining instruction extraction stays separate |
+| P03 (phase decomposition) decomposition caller | Retained port, original approved phase/context/Skill-name evidence and pure original-context parsing implemented; actual Build and Project-bound phase progression connected and verified | Keep i18n/Skill metadata as original prompt source, eight Steps/ownership/delivery checks and 2/3 semantic budget; read-only exact-request recovery cannot advance phases or read current registry |
 | Executor / P04-P14 consumers | Complete retained Run/Runner/Executor node implemented and verified; original role/i18n/policy/Skill/context/Wiki sources retained | Preserve original outer/conditional budgets, actual role/Actor pool, no text-success credit, provider-window/Tool agreement and exact read-only recovery; no bulk YAML extraction, Tool replay or production C1 allowance |
 | J01-J05 planning/design/test heuristics | Semantic replacement remains a proposal | Approve each replacement and update producer, calibration, lint and feedback together |
 | J07 disposition/completion | Existing execution/evidence checks remain authoritative | Extract instructions only within an approved batch; no gate waiver |

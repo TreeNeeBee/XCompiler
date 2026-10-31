@@ -1,3 +1,4 @@
+import { t } from '../src/i18n/index.js';
 import { describe, it, expect } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -5,36 +6,29 @@ import path from 'node:path';
 import { preflightProviders } from '../src/llm/preflight.js';
 import { ScoreStore } from '../src/llm/scores.js';
 import type { XCompilerConfig } from '../src/config/config.js';
+import { BASE_CONFIG, provider, type ProviderInput } from './support/config.js';
+import { present } from './support/domain_objects.js';
 
-function mkCfg(overrides: Partial<XCompilerConfig['llm']> = {}): XCompilerConfig {
+/** A configuration derived from a valid loaded one, with providers completed from the schema's defaults. */
+function mkCfg(overrides: Omit<Partial<XCompilerConfig['llm']>, 'providers'> & { providers?: Record<string, ProviderInput> } = {}): XCompilerConfig {
+  const { providers = {
+    ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
+    ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
+  }, ...llm } = overrides;
   return {
+    ...BASE_CONFIG,
     llm: {
-      providers: {
-        ollama_code: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'qwen' },
-        ollama_design: { type: 'ollama', api_key: '', base_url: 'http://srv', model: 'gemma' },
-      },
+      ...BASE_CONFIG.llm,
+      providers: Object.fromEntries(Object.entries(providers).map(([name, input]) => [name, provider(input)])),
       pools: { coding: ['ollama_code'], planning: ['ollama_design'] },
       fallbacks: [],
-      ...overrides,
+      ...llm,
     },
-    agent: {
-      max_rounds_per_step: 6,
-      max_edit_lines_per_step: 100,
-      sandboxes: {
-        python: {
-          mode: 'subprocess',
-          local: { inherit_env: false, limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'download-only', expose_ports: [] } },
-          docker: { image: 'python:3.11-slim', workdir: '/workspace', pull: false, docker_bin: 'docker', extra_run_args: [], limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'download-only', expose_ports: [] } },
-        },
-        typescript: {
-          mode: 'subprocess',
-          local: { inherit_env: false, limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'download-only', expose_ports: [] } },
-          docker: { image: 'node:24-slim', workdir: '/workspace', pull: false, docker_bin: 'docker', extra_run_args: [], limits: { cpu: 1, memory_mb: 256, wall_seconds: 30, network: 'download-only', expose_ports: [] } },
-        },
-      },
-    },
-  } as unknown as XCompilerConfig;
+  };
 }
+
+/** The preflight failure for pools left without a provider, whichever pools they are, from its i18n text. */
+const NO_PROVIDER = new RegExp(t().system.preflightNoProvider('§').split('§').map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('.+'), 'u');
 
 describe('preflightProviders', () => {
   it('marks provider unavailable and lowers score when its model is missing on the server', async () => {
@@ -72,8 +66,8 @@ describe('preflightProviders', () => {
     expect(result.zeroed).toContain('ollama_design');
     expect(Object.keys(result.autoAdded).length).toBeGreaterThanOrEqual(2);
     // Roles must now include the synthetic providers
-    expect(cfg.llm.pools.coding.some((n) => n.startsWith('auto_'))).toBe(true);
-    expect(cfg.llm.pools.planning.some((n) => n.startsWith('auto_'))).toBe(true);
+    expect(present(cfg.llm.pools.coding, 'coding pool').some((n) => n.startsWith('auto_'))).toBe(true);
+    expect(present(cfg.llm.pools.planning, 'planning pool').some((n) => n.startsWith('auto_'))).toBe(true);
     // The synthetic providers must exist with score=1
     for (const synth of Object.keys(result.autoAdded)) {
       expect(scores.get(synth)).toBe(1);
@@ -92,7 +86,7 @@ describe('preflightProviders', () => {
           throw new Error('connection refused');
         },
       }),
-    ).rejects.toThrow(/没有可用的 provider|没有任何 ollama 服务器可达/);
+    ).rejects.toThrow(NO_PROVIDER);
   });
 
   it('fails fast without permanently zeroing scores when all servers are unreachable', async () => {
@@ -104,7 +98,7 @@ describe('preflightProviders', () => {
           throw new Error('ECONNREFUSED');
         },
       }),
-    ).rejects.toThrow(/没有任何 ollama 服务器可达/);
+    ).rejects.toThrow(NO_PROVIDER);
     // A transient outage blocks this run but does not persistently disable providers.
     expect(scores.get('ollama_code')).toBe(1);
     expect(scores.get('ollama_design')).toBe(1);
@@ -157,7 +151,7 @@ describe('preflightProviders', () => {
     const scores = new ScoreStore(path.join(dir, 'config.yaml'));
     await scores.load();
 
-    await expect(preflightProviders(cfg, scores)).rejects.toThrow(/没有可用的 provider|没有任何 ollama 服务器可达/);
+    await expect(preflightProviders(cfg, scores)).rejects.toThrow(NO_PROVIDER);
     expect(scores.get('openai')).toBe(0);
   });
 });

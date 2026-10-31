@@ -38,7 +38,7 @@ export class PhasePlanProtocolError extends Error {
   }
 }
 
-/** P02 only. Original parse context is audit-owned and never expands the provider prompt. */
+/** Phase planning only. Original parse context is audit-owned and never expands the provider prompt. */
 export function createRuntimePhasePlanRequestPort(input: {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
   router: LLMRouter; audit: AuditLogger;
@@ -66,7 +66,8 @@ export function createRuntimePhasePlanRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'planner', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS['phase-plan'], locale: payload.locale },
+          work: PLANNING_REQUEST_CONTEXTS['phase-plan'], intent: payload.parseContext.intent, locale: payload.locale,
+          outputLanguage: payload.outputLocale ?? payload.locale },
         bind: { role: 'planner', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS['phase-plan'] },
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
@@ -114,7 +115,7 @@ export function createRuntimePhasePlanRequestPort(input: {
   });
 }
 
-/** Restore one adopted P02 response and its original parse inputs; no sends, latest sources or writes. */
+/** Restore one adopted phase-plan response and its original parse inputs; no sends, latest sources or writes. */
 export async function resumeRuntimePhasePlanRequest(input: {
   container: ProjectContainer; audit: AuditLogger; logicalRequestId: string; signal?: AbortSignal;
 }) {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { stageAssessment } from './support/quality.js';
 import {
   defaultQualityGateForPhase,
   evaluateQualityGate,
@@ -91,19 +92,19 @@ describe('LLM quality evidence normalization', () => {
 
   it('classifies metric shortfalls separately from failed tests', () => {
     const step = testStep('UNIT_TEST');
-    const coverageGap = evaluateQualityGate(step, {
+    const coverageGap = evaluateQualityGate(step, stageAssessment({
       metrics: { lineCoverage: 0.72, branchCoverage: 0.62, testCasePassRate: 1 },
       tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
       evidence: ['coverage/coverage-summary.json'], gaps: [],
-    });
+    }));
     expect(coverageGap.enhancementFailures).not.toEqual([]);
     expect(coverageGap.bugFailures).toEqual([]);
 
-    const failedTests = evaluateQualityGate(step, {
+    const failedTests = evaluateQualityGate(step, stageAssessment({
       metrics: { lineCoverage: 0.9, branchCoverage: 0.8, testCasePassRate: 0.95 },
       tolerance: { failedTests: 1, skippedTests: 0, warnings: 0 },
       evidence: ['test output'], gaps: [],
-    });
+    }));
     expect(failedTests.bugFailures).toContain('failedTests=1 exceeds tolerance 0');
   });
 
@@ -115,29 +116,29 @@ describe('LLM quality evidence normalization', () => {
         tolerance: { metricShortfall: 0.05, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
       },
     };
-    expect(evaluateQualityGate(step, {
+    expect(evaluateQualityGate(step, stageAssessment({
       metrics: { lineCoverage: 0.76 },
       tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
       evidence: ['coverage report'], gaps: [],
-    }).passed).toBe(true);
+    })).passed).toBe(true);
   });
 
   it('preserves semantic defects even when files exist', () => {
     const step = { ...testStep('CODE'), outputs: ['src/main.ts'] };
     const gap = 'src/main.ts is missing retry behavior required by the design';
-    const assessment = {
+    const assessment = stageAssessment({
       completion: 0.6,
       upstreamAlignment: 1,
       metrics: {},
       tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
       evidence: ['src/main.ts'], gaps: [gap], blockedBy: [],
-    };
+    });
     expect(evaluateQualityGate(step, assessment).passed).toBe(false);
   });
 
   it('does not infer ownership from metric names in free text', () => {
     const step = { ...testStep('CODE'), outputs: ['src/main.ts'] };
-    const misplaced = {
+    const misplaced = stageAssessment({
       completion: 1,
       upstreamAlignment: 1,
       metrics: { lineCoverage: 0.39 },
@@ -145,7 +146,7 @@ describe('LLM quality evidence normalization', () => {
       evidence: ['npm test -- --coverage'],
       gaps: ['lineCoverage 0.39 is below the UNIT_TEST target 0.80'],
       blockedBy: [],
-    };
+    });
     expect(evaluateQualityGate(step, misplaced).passed).toBe(false);
 
     const structured = {
@@ -161,11 +162,6 @@ function testStep(phase: Step['phase']): Step {
   return {
     id: 'S001', iterationId: 'P1', phase, title: phase, description: `Execute ${phase}`,
     systemPrompt: `Complete ${phase} and provide evidence.`,
-    role: phase === 'REQUIREMENT_ANALYSIS'
-      ? 'Planner'
-      : phase === 'HIGH_LEVEL_DESIGN' || phase === 'DETAILED_DESIGN'
-        ? 'Architect'
-        : phase === 'CODE' ? 'Coder' : 'Tester',
     tools: [], inputs: [], outputs: [], dependsOn: [], acceptance: `${phase} passes`,
     maxAttempts: 3,
   };
@@ -210,10 +206,10 @@ describe('preconditions a Step does not own', () => {
       evidence: ['docs/03-detailed-design.md'],
     };
 
-    const blocked = evaluateQualityGate(step, { ...base, gaps: [], blockedBy: ['CODE has not run'] });
+    const blocked = evaluateQualityGate(step, stageAssessment({ ...base, gaps: [], blockedBy: ['CODE has not run'] }));
     expect(blocked.passed).toBe(true);
 
-    const real = evaluateQualityGate(step, { ...base, gaps: ['the module contract is undefined'], blockedBy: [] });
+    const real = evaluateQualityGate(step, stageAssessment({ ...base, gaps: ['the module contract is undefined'], blockedBy: [] }));
     expect(real.passed).toBe(false);
   });
 

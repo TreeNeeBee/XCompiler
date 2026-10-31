@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { toolText } from './tool_text.js';
 import {
   removeWorkspaceFile,
   writeWorkspaceFile,
@@ -20,8 +21,7 @@ export const addDependencyTool: Tool<
   { added: string[]; updated: string[]; finalLines: string[] }
 > = {
   name: 'add_dependency',
-  description:
-    '向依赖清单追加或更新依赖并重建沙盒。TypeScript packages 支持 name@version；测试/构建工具应设置 dev=true。',
+  get description() { return toolText().addDependency.description; },
   argsSchema: { packages: 'string[]', dev: 'boolean?' },
   async run(args, ctx) {
     if (!args || !Array.isArray(args.packages) || !args.packages.every((p) => typeof p === 'string')) {

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import { QualityAssessmentService } from '../src/application/execution/quality_assessment_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
@@ -17,7 +17,9 @@ import { TicketSchema } from '../src/domain/tickets/ticket.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { bugContracts } from './helpers/ticket_fixtures.js';
+import { asObject, type TicketOf } from './support/domain_objects.js';
 import { DomainAuditTrail } from '../src/application/observability/domain_audit_trail.js';
+import { stepContextFingerprint, xcompilerBuildId } from '../src/application/identity/build_identity.js';
 
 describe('PM WorkScheduler', () => {
   it('keeps a source Step delivered until its paired verification closes it', async () => {
@@ -30,9 +32,9 @@ describe('PM WorkScheduler', () => {
     const code = fixture.graph.steps.find((step) => step.type === 'CODE')!;
     const unit = fixture.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const detailed = fixture.graph.steps.find((step) => step.type === 'DETAILED_DESIGN')!;
-    expect((await fixture.repository.read(code.id)).state).toBe('closed');
-    expect((await fixture.repository.read(unit.id)).state).toBe('closed');
-    expect((await fixture.repository.read(detailed.id)).state).toBe('delivered');
+    expect(asObject(await fixture.repository.read(code.id), 'step').state).toBe('closed');
+    expect(asObject(await fixture.repository.read(unit.id), 'step').state).toBe('closed');
+    expect(asObject(await fixture.repository.read(detailed.id), 'step').state).toBe('delivered');
   });
 
   it('routes a failed verification to its paired source and resumes the Bug after reload', async () => {
@@ -58,8 +60,8 @@ describe('PM WorkScheduler', () => {
       bugKind: 'test-failure',
     });
     const code = fixture.graph.steps.find((step) => step.type === 'CODE')!;
-    expect((await fixture.repository.read(code.id)).state).toBe('reopened');
-    expect((await fixture.repository.read(unitWork.step.id)).state).toBe('pending');
+    expect(asObject(await fixture.repository.read(code.id), 'step').state).toBe('reopened');
+    expect(asObject(await fixture.repository.read(unitWork.step.id), 'step').state).toBe('pending');
 
     const repository = new DomainObjectRepository(new Workspace(fixture.root));
     await repository.load();
@@ -133,7 +135,7 @@ describe('PM WorkScheduler', () => {
     expect(activeAssignmentId).toBeDefined();
 
     const unitStep = fixture.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
-    const unitStory = fixture.graph.tickets.find((ticket) =>
+    const unitStory = fixture.graph.tickets.find((ticket): ticket is TicketOf<'story'> =>
       ticket.type === 'story' && ticket.stepId === unitStep.id)!;
     const tester = fixture.graph.actors.find((actor) => actor.roleId === 'test-engineer')!;
     const {
@@ -195,7 +197,7 @@ describe('PM WorkScheduler', () => {
   it('materializes a missing CR outcome before considering one recovery attempt', async () => {
     const fixture = await setup();
     const step = fixture.graph.steps.find((candidate) => candidate.type === 'REQUIREMENT_ANALYSIS')!;
-    const story = fixture.graph.tickets.find((ticket) =>
+    const story = fixture.graph.tickets.find((ticket): ticket is TicketOf<'story'> =>
       ticket.type === 'story' && ticket.stepId === step.id)!;
     const creator = fixture.graph.actors.find((actor) => actor.roleId === 'requirements-analyst')!;
     const {
@@ -268,6 +270,61 @@ describe('PM WorkScheduler', () => {
     )).toBe(true);
   });
 
+  it('names the failure that kept recurring when it stops a Ticket', async () => {
+    // A live run ended on "same failure recurred 3 times without convergence" and nothing more; which
+    // failure it was took a search through the audit log to find.
+    const fixture = await setup();
+    const step = fixture.graph.steps.find((candidate) => candidate.type === 'REQUIREMENT_ANALYSIS')!;
+    const story = fixture.graph.tickets.find((ticket): ticket is TicketOf<'story'> =>
+      ticket.type === 'story' && ticket.stepId === step.id)!;
+    const creator = fixture.graph.actors.find((actor) => actor.roleId === 'requirements-analyst')!;
+    const {
+      workKind: _workKind,
+      verificationTicketId: _verificationTicketId,
+      pairedSourceTicketId: _pairedSourceTicketId,
+      ...ticketBase
+    } = story;
+    const correlationId = createObjectId();
+    const request = TicketSchema.parse({
+      ...ticketBase,
+      ...createObjectEnvelope({ name: 'CR-P1-S001-RECURRING', objectType: 'ticket', projectId: story.projectId }),
+      type: 'change-request', changeKind: 'contract-change', creatorActorId: creator.id, state: 'created',
+      assignmentIds: [], activeAssignmentId: undefined, attempts: 3, maxAttempts: 3,
+      solution: undefined, resolvedAt: undefined, closedAt: undefined,
+      source: { kind: 'runtime', correlationId }, sourceTicketIds: [story.id],
+      triggerStepId: step.id, sourceStepId: step.id, targetStepId: step.id, propagationStepIds: [step.id],
+      originFailures: [],
+      contractDelta: {
+        summary: 'Re-check the accepted requirement contract.', before: ['previous contract'],
+        after: ['corrected contract'], affectedArtifacts: ['docs/01-requirement-analysis.md'],
+      },
+      implementationPlan: ['Verify the accepted requirement contract.'],
+      verificationGate: ['Requirement gate passes.'], applications: [],
+    });
+    await fixture.repository.insert(request, request.state);
+    await fixture.registration.register(request.id);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await new DomainAuditTrail(fixture.repository).recordLog({
+        projectId: request.projectId,
+        subject: { id: request.id, objectType: 'ticket' },
+        level: 'error',
+        message: 'REQUIREMENT_ANALYSIS test assets are incomplete\nPaired source phase: none.',
+        data: {
+          stepId: step.id, mode: 'change-request', failureSignature: 'recurring-signature',
+          structuredFailure: { code: 'test_assets_incomplete' },
+          toolchainBuildId: xcompilerBuildId(), stepContextFingerprint: stepContextFingerprint(step),
+        },
+        correlationId,
+      });
+    }
+    const routed = await fixture.registration.routeAndAssign(request.id, { forStepId: step.id });
+
+    await expect(fixture.controller.start({ phase: fixture.graph.phases[0]!, step, ticket: routed.ticket }))
+      .rejects.toThrow(
+        'same failure recurred 3 times without convergence — test_assets_incomplete: REQUIREMENT_ANALYSIS test assets are incomplete',
+      );
+  });
+
   it('closes a Phase only after all Step and delivery Tickets close', async () => {
     const fixture = await setup();
     for (let index = 0; index < 8; index += 1) await deliverPassing(fixture, await startNext(fixture));
@@ -283,8 +340,8 @@ describe('PM WorkScheduler', () => {
     await fixture.controller.attachPhaseQuality(phase.id, assessment.id);
     const result = await fixture.controller.completePhase(fixture.graph.phases[0]!.id);
     expect(result.projectDelivered).toBe(true);
-    expect((await fixture.repository.read(fixture.graph.phases[0]!.id)).state).toBe('closed');
-    expect((await fixture.repository.read(fixture.graph.phases[0]!.epicTicketId)).state).toBe('closed');
+    expect(asObject(await fixture.repository.read(fixture.graph.phases[0]!.id), 'phase').state).toBe('closed');
+    expect(asObject(await fixture.repository.read(fixture.graph.phases[0]!.epicTicketId), 'ticket').state).toBe('closed');
   });
 
   // The manifest has to be produced when every Step has closed — so every ChangeSet has merged and
@@ -301,7 +358,7 @@ describe('PM WorkScheduler', () => {
         seen.push({
           deliveryState: delivery?.state,
           closedSteps: tickets.filter((ticket) =>
-            ticket.workKind === 'v-model-step' && ticket.state === 'closed').length,
+            ticket.type === 'story' && ticket.workKind === 'v-model-step' && ticket.state === 'closed').length,
         });
       },
     });
@@ -419,12 +476,11 @@ async function deliverPassing(
 
 function samplePlan(): Plan {
   const phases = [
-    ['REQUIREMENT_ANALYSIS', 'Planner'], ['HIGH_LEVEL_DESIGN', 'Architect'],
-    ['DETAILED_DESIGN', 'Architect'], ['CODE', 'Coder'], ['UNIT_TEST', 'Tester'],
-    ['INTEGRATION_TEST', 'Tester'], ['MODULE_TEST', 'Tester'], ['FUNCTIONAL_TEST', 'Tester'],
+    'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE',
+    'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST',
   ] as const;
   return {
-    version: '1', language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
+    version: PLAN_VERSION, language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
     requirementDigest: 'Build a service.',
     complexityAssessment: { level: 'simple', rationale: 'One phase.', splitRecommended: false, userForcedPhaseSplit: false },
     implementationPhases: [{
@@ -433,9 +489,9 @@ function samplePlan(): Plan {
       verificationGate: { summary: 'All gates pass.', checks: ['Acceptance passes.'], failurePolicy: 'Open a Bug.' },
     }],
     globalPrompt: 'Implement.', baselineSummary: '', dependencies: [], userAddenda: '', createdAt: new Date().toISOString(),
-    steps: phases.map(([phase, role], index) => ({
+    steps: phases.map((phase, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase, title: phase,
-      description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`, role, tools: ['read_file'],
+      description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`, tools: ['read_file'],
       inputs: index ? [`artifact-${index}`] : [], outputs: [`artifact-${index + 1}`], subTasks: [],
       dependsOn: index ? [`S${String(index).padStart(3, '0')}`] : [], acceptance: `${phase} passes.`,
       maxAttempts: 3,

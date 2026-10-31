@@ -11,7 +11,7 @@ import { ProtocolCorrectionAuditBindingSchema, type ProtocolCorrectionAuditBindi
 import type { RoutedResponseEvidence } from './response_evidence.js';
 import type { LLMRouter } from './router.js';
 import type { ChatOptions } from './types.js';
-import { estimateTextTokens, resolveSkillOperationWindow } from './window.js';
+import { estimateMessageTokens, resolveSkillOperationWindow } from './window.js';
 
 export type ProtocolCorrectionChatOptions = Pick<ChatOptions,
   'temperature' | 'maxTokens' | 'requestTimeoutMs' | 'responseFormat'>;
@@ -114,9 +114,8 @@ export class LLMProtocolCorrection {
           logicalRequestId: claim.correctionRequestId, kind: 'prompt-digest',
         });
       }
-      const promptChars = actual.messages.reduce((sum, message) => sum + message.content.length, 0);
-      const promptTokens = estimateTextTokens(promptChars);
-      const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptChars });
+      const promptTokens = estimateMessageTokens(actual.messages);
+      const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptTokens });
       if (promptTokens + safetyTokens + actual.maxTokens > actual.contextWindowTokens) {
         throw new ProtocolCorrectionRequestError('capacity_exceeded', {
           logicalRequestId: claim.correctionRequestId, providerAttemptId: actual.providerAttemptId,

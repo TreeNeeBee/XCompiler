@@ -3,6 +3,7 @@ import { analyzeArchitectureDemand, missingArchitectureDocumentTokens } from '..
 import { lintPlan } from '../src/domain/planning/plan_lint.js';
 import { PLAN_VERSION, PlanSchema, type ArchitectureModule, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
 import { renderPlanMarkdown } from '../src/application/planning/plan_renderer.js';
+import { tFor } from '../src/i18n/index.js';
 
 const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'];
 
@@ -68,6 +69,7 @@ function complexPlan(): Plan {
     version: PLAN_VERSION,
     language: 'python',
     intent: 'greenfield',
+    phaseId: 'P1',
     projectType: 'application',
     requirementDigest: 'Build an OpenAPI server with CLI import/export commands and SQLite persistence.',
     complexityAssessment: {
@@ -184,6 +186,14 @@ function complexPlan(): Plan {
 }
 
 describe('V-model architecture contract', () => {
+  it.each(['en', 'zh'] as const)('reads the addenda of a %s topic under the heading XCompiler writes for them', (locale) => {
+    const M = tFor(locale).compile;
+    const topic = [M.topicSecRequirement, '', 'Print one greeting.', '', M.topicSecAddenda, '',
+      'Store each greeting in a SQLite database behind an HTTP endpoint.', ''].join('\n');
+    const demand = analyzeArchitectureDemand({ requirementDigest: 'Print one greeting.', rawRequirement: topic }, 'python');
+    expect(demand.surfaces).toEqual(expect.arrayContaining(['api', 'persistence']));
+  });
+
   it('scales Chinese multi-surface requirements beyond three modules', () => {
     const demand = analyzeArchitectureDemand(
       { requirementDigest: '构建带命令行、HTTP 接口、SQLite 持久化和 Excel 导出的完整系统' },

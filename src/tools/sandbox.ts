@@ -1,9 +1,10 @@
 import { promises as fs } from 'node:fs';
+import { toolText } from './tool_text.js';
 import path from 'node:path';
 import { isPathPattern, type Tool, type ToolContext, type ToolFailureCode } from './types.js';
 import type { StepType } from '../domain/steps/step.js';
 import { detectNetworkApiFailureInExec } from '../application/execution/network_failure.js';
-import { normalizeTypeScriptTestArgs } from '../sandbox/test_args.js';
+import { isCoverageArgument, normalizeTypeScriptTestArgs } from '../sandbox/test_args.js';
 import { resolveTypeScriptProgramCommand } from '../sandbox/program_args.js';
 import { resolveWorkspacePath } from './path_guard.js';
 import { isExecutableTestPath } from '../domain/quality/test_assets.js';
@@ -115,34 +116,53 @@ function extractVitestEvidence(stdout: string): string[] {
 }
 
 export const runProgramTool: Tool<
-  { args: string[]; cwd?: string; timeoutMs?: number },
-  { exitCode: number; stdout: string; stderr: string; timedOut: boolean }
+  { args: string[]; cwd?: string; timeoutMs?: number; expectExitCode?: number },
+  { exitCode: number; stdout: string; stderr: string; timedOut: boolean; expectedExitCode?: number }
 > = {
   name: 'run_program',
-  description:
-    '在沙盒内运行工程入口程序或常见项目命令。' +
-    'Python：解释器由 Runtime 提供，args 直接从解释器之后写起（例如 ["-m", "py_compile", "x.py"] 或 ["src/main.py"]）；' +
-    '多写一个 python 前缀会被忽略。TypeScript：默认 npx tsx <entry>，也支持 npm/npx/node/tsx/tsc 前缀。',
-  argsSchema: { args: 'string[]', cwd: 'string?', timeoutMs: 'number?' },
+  get description() { return toolText().runProgram.description; },
+  argsSchema: { args: 'string[]', cwd: 'string?', timeoutMs: 'number?', expectExitCode: 'number?' },
   async run(args, ctx) {
     const cwd = await resolveSandboxCwd(ctx, args.cwd, 'run_program.cwd');
     if (!cwd.ok) return { ok: false, error: cwd.error };
-    const r = await ctx.sandbox.runProgram(args.args, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     // What was executed decides, not which tool executed it. A Step that wants a specific invocation
     // runs the test runner through run_program, and a suite covering "the dependency is unreachable"
     // prints network-failure text on its way to passing — the same false failure `run_tests` was
     // fixed for, arriving by the other door because that fix keyed on the tool.
     const ranTests = isTestRunnerInvocation(args.args);
-    const failed = r.exitCode !== 0 || r.timedOut;
-    const networkFailure = ranTests && !failed ? null : detectNetworkApiFailureInExec(r);
+    // A product whose contract specifies a non-zero exit for some input has no other way to show it
+    // behaves: a live CODE Step verified "a bad input file exits 1" and then spent five rounds failing
+    // to clear that exact call, which only an exit 0 of the same command could resolve.
+    const expected = args.expectExitCode;
+    if (expected !== undefined && !(Number.isInteger(expected) && expected >= 0 && expected <= 255)) {
+      return { ok: false, error: `run_program.expectExitCode must be an integer exit code from 0 to 255; got ${JSON.stringify(expected)}.` };
+    }
+    if (ranTests && expected !== undefined && expected !== 0) {
+      return {
+        ok: false,
+        error: 'run_program.expectExitCode is for the product\'s own exit codes. A test runner\'s non-zero exit is its ' +
+          'verdict on the tests and cannot be declared expected; fix the tests or the product instead.',
+      };
+    }
+    const r = await ctx.sandbox.runProgram(args.args, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
+    const declaresFailureExit = expected !== undefined && expected !== 0;
+    const exitAsDeclared = declaresFailureExit && !r.timedOut && r.exitCode === expected;
+    const failed = (r.exitCode !== 0 && !exitAsDeclared) || r.timedOut || (declaresFailureExit && r.exitCode === 0);
+    const networkFailure = (ranTests && !failed) || exitAsDeclared ? null : detectNetworkApiFailureInExec(r);
     const ok = !failed && !networkFailure;
     const command = ctx.language === 'typescript' ? resolveTypeScriptProgramCommand(args.args).display : `python ${args.args.join(' ')}`.trim();
     const base = `${command} exit=${r.exitCode} ${r.timedOut ? '(timeout)' : ''}`.trim();
+    const withoutVerdict = ranTests && isPytestInvocation(args.args) && !r.timedOut
+      ? pytestRunWithoutVerdict(base, r.exitCode)
+      : undefined;
     return {
       ok,
-      data: { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut },
+      data: {
+        exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut,
+        ...(expected !== undefined ? { expectedExitCode: expected } : {}),
+      },
       summary: ok
-        ? base
+        ? exitAsDeclared ? `${base} (the declared expected exit code)` : base
         // The unresolved-import hint keys on what the output says, not on which tool ran: a Step that
         // drives the runner through run_program hits the same wrong-depth import, and reading the
         // hint only out of run_tests leaves that door unwatched.
@@ -153,10 +173,34 @@ export const runProgramTool: Tool<
           ].filter(Boolean).join('\n'),
           r,
         ),
-      ...(ok ? {} : await diagnoseSandboxFailure(ctx, base, r, 'program')),
+      ...(ok ? {} : withoutVerdict ?? withExitCodeGuidance(
+        await diagnoseSandboxFailure(ctx, base, r, 'program'),
+        { ranTests, timedOut: r.timedOut, exitCode: r.exitCode, expected },
+      )),
     };
   },
 };
+
+/** The action a failed product run leaves the caller, when its exit code may be the specified one. */
+function withExitCodeGuidance(
+  failure: { error: string; code?: ToolFailureCode },
+  run: { ranTests: boolean; timedOut: boolean; exitCode: number; expected?: number },
+): { error: string; code?: ToolFailureCode } {
+  if (failure.code || run.ranTests || run.timedOut) return failure;
+  if (run.expected !== undefined && run.expected !== 0) {
+    return {
+      ...failure,
+      error: `${failure.error}\nThe call declared expectExitCode: ${run.expected}, but the program exited ${run.exitCode}.`,
+    };
+  }
+  if (run.exitCode === 0) return failure;
+  return {
+    ...failure,
+    error: `${failure.error}\nIf exit ${run.exitCode} is what the product's specified contract requires for this input ` +
+      `(for example a documented failure exit code), run the same command again with expectExitCode: ${run.exitCode}; ` +
+      'otherwise fix the cause.',
+  };
+}
 
 /**
  * Declared test selectors that have no file behind them yet.
@@ -187,15 +231,22 @@ export const runTestsTool: Tool<
     stderr: string;
     timedOut: boolean;
     passed: boolean;
+    /** The runner that produced the verdict, so readers need not infer it from the project. */
+    runner: 'vitest' | 'pytest';
     effectiveArgs: string[];
+    /**
+     * The tests a gated run ran, which Runtime chose. A run is identified by them, not by the runner
+     * options its caller added: a live Step's failing run carried `-p no:cacheprovider`, the gate's
+     * passing rerun did not, and the stale failure outlived every pass until the Step ran out of rounds.
+     */
+    selectors?: string[];
     failedTests: string[];
+    /** Line and branch coverage the run measured, in percent, when it was asked to measure them. */
+    coverage?: MeasuredCoverage;
   }
 > = {
   name: 'run_tests',
-  description:
-    '在沙盒内运行测试套件（Python: pytest；TypeScript: npm test / Vitest），可指定额外参数。' +
-    'TypeScript UNIT_TEST 门禁会自动启用覆盖率采集，无需重复传 --coverage。' +
-    '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
+  get description() { return toolText().runTests.description; },
   argsSchema: { args: 'string[]?', cwd: 'string?', timeoutMs: 'number?' },
   async run(args, ctx) {
     const cwd = await resolveSandboxCwd(ctx, args.cwd, 'run_tests.cwd');
@@ -215,17 +266,22 @@ export const runTestsTool: Tool<
     // those rounds into one refusal that names the files to write.
     const unwritten = await unwrittenSelectors(ctx, ctx.testGateArgs ?? []);
     if (unwritten.length > 0) {
-      // Deliberately no `code`: those mark conditions a Step does not own, and this one it does —
-      // the files are its own declared outputs, so the ordinary repairable path is correct.
+      // Not an unowned code: the files are this Step's own declared outputs, so the ordinary
+      // repairable path is correct. But nothing ran, so it is no test verdict on the product either.
       return {
         ok: false,
+        code: 'declared_tests_unwritten',
         error:
           `run_tests refused: this Step's declared test files do not exist yet: ${unwritten.join(', ')}. ` +
           'Write them first — the suite cannot run, let alone pass, until they exist. ' +
           'Author each file with its real assertions against the product module it verifies.',
       };
     }
-    const runArgs = mergeTestGateArgs(gateArgs, requestedEffectiveArgs);
+    const { args: runArgs, refused: refusedOptions } = mergeTestGateArgs(gateArgs, requestedEffectiveArgs);
+    // A report left by an earlier run must not pass for this run's measurement.
+    const coverageReport = ctx.language === 'typescript' ? undefined : pytestCoverageReport(runArgs);
+    const runDirectory = cwd.abs ?? ctx.ws.root;
+    if (coverageReport) await fs.rm(path.resolve(runDirectory, coverageReport), { force: true });
     const r = await ctx.sandbox.runTests(runArgs, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     // A test runner's verdict is its exit code. Network text inside a passing suite is the suite's
     // own subject matter — a project whose tests cover "the source is unreachable" prints exactly
@@ -239,16 +295,23 @@ export const runTestsTool: Tool<
     const failed = r.exitCode !== 0 || r.timedOut;
     const networkFailure = failed ? detectNetworkApiFailureInExec(r) : null;
     const passed = !failed;
-    const cmd = ctx.language === 'typescript' ? 'npm test' : 'pytest';
+    const runner = ctx.language === 'typescript' ? 'vitest' : 'pytest';
+    const cmd = runner === 'vitest' ? 'npm test' : 'pytest';
     const base = [
       `${cmd} exit=${r.exitCode}`,
       r.timedOut ? '(timeout)' : '',
       runArgs.length > 0 ? `args=${runArgs.join(' ')}` : '',
     ].filter(Boolean).join(' ');
-    const successEvidence = ctx.language === 'typescript' ? extractVitestEvidence(r.stdout) : [];
+    const scopeNote = refusedOptions.length > 0
+      ? `Not passed to the runner, because Runtime decides which tests this gate runs: ${refusedOptions.join(', ')}`
+      : '';
+    const coverage = coverageReport && passed ? await readPytestCoverage(path.resolve(runDirectory, coverageReport)) : undefined;
+    const successEvidence = ctx.language === 'typescript' ? extractVitestEvidence(r.stdout)
+      : coverage ? [`coverage lines=${coverage.lines}%${coverage.branches === undefined ? '' : ` branches=${coverage.branches}%`}`] : [];
     const failedTests = failed
       ? buildDebugBrief({ failureLog: `${r.stderr}\n${r.stdout}` }).failedTests
       : [];
+    const withoutVerdict = runner === 'pytest' && !r.timedOut ? pytestRunWithoutVerdict(base, r.exitCode) : undefined;
     return {
       ok: passed,
       data: {
@@ -257,19 +320,23 @@ export const runTestsTool: Tool<
         stderr: r.stderr,
         timedOut: r.timedOut,
         passed,
+        runner,
         effectiveArgs: runArgs,
+        ...(gateArgs.length > 0 ? { selectors: testSelectors(gateArgs) } : {}),
         failedTests,
+        ...(coverage ? { coverage } : {}),
       },
       summary: passed
-        ? [base, ...successEvidence].join('\n')
+        ? [base, ...successEvidence, scopeNote].filter(Boolean).join('\n')
         : buildRunSummary(
           [
             networkFailure ? `${base}\n${networkFailure.message}\nEvidence: ${networkFailure.evidence}` : base,
             unresolvedProductImportHint(`${r.stderr}\n${r.stdout}`),
+            scopeNote,
           ].filter(Boolean).join('\n'),
           r,
         ),
-      ...(passed ? await Promise.resolve({}) : await diagnoseSandboxFailure(ctx, base, r, 'tests')),
+      ...(passed ? await Promise.resolve({}) : withoutVerdict ?? await diagnoseSandboxFailure(ctx, base, r, 'tests')),
     };
   },
 };
@@ -388,21 +455,142 @@ export function isTestRunnerInvocation(args: readonly string[]): boolean {
     /\b(?:python\s+)?-m\s+(?:pytest|unittest)\b/u.test(flat);
 }
 
-function isCoverageArgument(arg: string): boolean {
-  return arg === '--coverage' || arg.startsWith('--coverage.');
+/** Whether this command runs pytest, through its own executable or as `python -m pytest`. */
+export function isPytestInvocation(args: readonly string[]): boolean {
+  return args.some((arg) => arg === 'pytest' || arg.endsWith('/pytest'));
 }
 
-function mergeTestGateArgs(gateArgs: readonly string[], requestedArgs: readonly string[]): string[] {
-  if (gateArgs.length === 0) return [...requestedArgs];
+/**
+ * pytest exit codes that mean no test reached a verdict, with what the Step has to change.
+ *
+ * Exit 2 is left out on purpose: pytest also returns it for errors while collecting, which include
+ * a product module that fails to import — a real verdict on the product.
+ */
+const PYTEST_EXIT_WITHOUT_VERDICT: ReadonlyMap<number, string> = new Map([
+  [3, 'pytest stopped on an internal error before any test reached a verdict. No test failed; ' +
+    'read the error above (often a conftest.py or plugin problem) and fix that before running again.'],
+  [4, 'pytest rejected the invocation itself (an unknown option, or a path that does not exist), so no ' +
+    'test ran. No test failed; correct the arguments. Runtime already supplies the test selectors and, ' +
+    'at UNIT_TEST, the coverage options — pass only extra flags pytest itself accepts.'],
+  [5, 'pytest collected no tests, so no test reached a verdict. Make sure the selected files define ' +
+    'test functions named test_* (or classes named Test*) that pytest can collect.'],
+]);
+
+function pytestRunWithoutVerdict(
+  base: string,
+  exitCode: number,
+): { code: ToolFailureCode; error: string } | undefined {
+  const explanation = PYTEST_EXIT_WITHOUT_VERDICT.get(exitCode);
+  return explanation ? { code: 'test_run_without_verdict', error: `${base}\n${explanation}` } : undefined;
+}
+
+/** Coverage a test run measured, in percent; branches only when branch measurement was on. */
+export interface MeasuredCoverage {
+  lines: number;
+  branches?: number;
+}
+
+/** The JSON report a pytest-cov run was asked to write, relative to the directory it ran in. */
+function pytestCoverageReport(args: readonly string[]): string | undefined {
+  const option = args.find((arg) => arg.startsWith('--cov-report=json:'));
+  return option ? option.slice('--cov-report=json:'.length) : undefined;
+}
+
+/** coverage.py's JSON totals as percentages; anything else in the file is not a measurement. */
+async function readPytestCoverage(file: string): Promise<MeasuredCoverage | undefined> {
+  let report: unknown;
+  try {
+    report = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+  const totals = typeof report === 'object' && report !== null ? (report as { totals?: unknown }).totals : undefined;
+  if (typeof totals !== 'object' || totals === null) return undefined;
+  const count = (key: string) => {
+    const value = (totals as Record<string, unknown>)[key];
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  };
+  const statements = count('num_statements');
+  const coveredLines = count('covered_lines');
+  if (statements === undefined || coveredLines === undefined) return undefined;
+  const percent = (covered: number, total: number) => (total > 0 ? Math.round((covered / total) * 1000) / 10 : 100);
+  // coverage.py writes the branch totals only when branches were measured; zero branches is full.
+  const branches = count('num_branches');
+  const coveredBranches = count('covered_branches');
+  return {
+    lines: percent(coveredLines, statements),
+    ...(branches !== undefined && coveredBranches !== undefined ? { branches: percent(coveredBranches, branches) } : {}),
+  };
+}
+
+/**
+ * Runner options that change which tests a gate runs, or whether it runs any: the Runtime decides
+ * the gate's scope, so these are refused with their value. `--collect-only` would pass a gate that
+ * ran nothing.
+ */
+const SCOPE_OPTIONS: ReadonlySet<string> = new Set([
+  '-k', '-m', '--deselect', '--ignore', '--ignore-glob', '--maxfail', '-t', '--testNamePattern', '--shard', '--related',
+  '--project', '--lf', '--last-failed', '--sw', '--stepwise', '--sw-skip', '-x', '--exitfirst', '--collect-only', '--co',
+  '--setup-plan', '--bail', '--changed', '--only',
+]);
+/**
+ * Output options that stand alone, so the token after one is never taken as its value: after `-v`,
+ * a path is a selector, and selectors are the Runtime's.
+ */
+const OPTIONS_WITHOUT_VALUE: ReadonlySet<string> = new Set([
+  '-v', '-vv', '-vvv', '-q', '-qq', '-s', '-l', '--verbose', '--quiet', '--no-header', '--no-summary', '--disable-warnings',
+  '--showlocals', '--strict-markers', '--strict-config', '--runxfail', '--cache-clear', '--setup-show', '--ff',
+  '--failed-first', '--nf', '--new-first', '--silent', '--coverage', '--cov', '--cov-branch', '--no-cov',
+]);
+
+/**
+ * The gate's own arguments, then the caller's runner options.
+ *
+ * Only option tokens used to survive, so an option's value was dropped: `-p no:cacheprovider` reached
+ * pytest as a bare `-p`, a usage error that ran no test. An option now keeps the value written after
+ * it, unless it is one that takes none.
+ */
+function mergeTestGateArgs(
+  gateArgs: readonly string[],
+  requestedArgs: readonly string[],
+): { args: string[]; refused: string[] } {
+  if (gateArgs.length === 0) return { args: [...requestedArgs], refused: [] };
   const merged = [...gateArgs];
-  for (const arg of requestedArgs) {
+  const refused: string[] = [];
+  for (let index = 0; index < requestedArgs.length; index += 1) {
+    const arg = requestedArgs[index]!;
     // The Runtime owns selectors. The model may add runner flags, but it cannot replace the exact
     // paired gate with a smaller or unrelated test scope.
     if (!arg.startsWith('-')) continue;
+    const next = requestedArgs[index + 1];
+    const name = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+    const takesNext = !arg.includes('=') && !OPTIONS_WITHOUT_VALUE.has(arg) &&
+      next !== undefined && !next.startsWith('-');
+    const option = takesNext ? [arg, next] : [arg];
+    if (takesNext) index += 1;
+    if (SCOPE_OPTIONS.has(name)) {
+      refused.push(option.join(' '));
+      continue;
+    }
     if (isCoverageArgument(arg) && merged.some(isCoverageArgument)) continue;
-    if (!merged.includes(arg)) merged.push(arg);
+    if (option.length === 1 ? !merged.includes(arg) : true) merged.push(...option);
   }
-  return merged;
+  return { args: merged, refused };
+}
+
+/** The selectors among a run's arguments: every token that is neither an option nor an option's value. */
+export function testSelectors(args: readonly string[]): string[] {
+  const selectors: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith('-')) {
+      selectors.push(arg);
+      continue;
+    }
+    const next = args[index + 1];
+    if (!arg.includes('=') && !OPTIONS_WITHOUT_VALUE.has(arg) && next !== undefined && !next.startsWith('-')) index += 1;
+  }
+  return selectors;
 }
 
 async function resolveSandboxCwd(
@@ -418,8 +606,7 @@ async function resolveSandboxCwd(
 
 export const installDepsTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {
   name: 'install_deps',
-  description:
-    '在沙盒内安装一组额外依赖（Python: pip install；TypeScript: npm install）。不会自动写回依赖清单。',
+  get description() { return toolText().installDeps.description; },
   argsSchema: { packages: 'string[]' },
   async run(args, ctx) {
     const r = await ctx.sandbox.installDeps(args.packages);

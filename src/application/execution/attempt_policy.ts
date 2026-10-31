@@ -1,4 +1,5 @@
 import { isUnownedStepFailure } from '../../tools/types.js';
+import { isCoverageArgument, PYTHON_COVERAGE_ARGS } from '../../sandbox/test_args.js';
 import type { ExecutorRunResult } from '../../agents/executor.js';
 import {
   buildDebugBrief,
@@ -47,7 +48,7 @@ export type BaselineGateExecution =
     }
   | {
       mode: 'defer';
-      reason: 'initial-pre-code' | 'pre-code-correction';
+      reason: 'initial-pre-code' | 'pre-code-correction' | 'contract-change';
       originStepId?: string;
       originPhase?: Step['phase'];
     }
@@ -73,6 +74,12 @@ const DEVELOPMENT_PHASE_ORDER: Record<string, number> = {
  * S1-S3 always author and statically validate their tests. Only the initial pre-CODE path defers
  * execution. A correction discovered by S4 or any right-side Step proves a product baseline exists,
  * so the routed source Step must execute its baseline gate before redelivering.
+ *
+ * A contract change is the exception. Its hop at S1-S3 moves the paired tests to the new contract,
+ * and those cannot pass against a product that has not yet taken the change; S4 applies it later
+ * in the same chain, where the paired verification Step runs them. Requiring them to pass first
+ * kept a live requirement analysis and high-level design on the old assertions — each said the
+ * alignment had to wait for CODE — and the verification Steps then failed on exactly those.
  */
 export function resolveBaselineGateExecution(
   plan: Plan,
@@ -92,6 +99,13 @@ export function resolveBaselineGateExecution(
     return { mode: 'execute', reason: 'code-step' };
   }
   const origin = chainOrigin ?? directCorrectionOrigin(plan, ticket);
+  if (ticket.type === 'change-request' && ticket.changeKind === 'contract-change') {
+    return {
+      mode: 'defer',
+      reason: 'contract-change',
+      ...(origin ? { originStepId: origin.id, originPhase: origin.phase } : {}),
+    };
+  }
   if (!origin) return { mode: 'defer', reason: 'initial-pre-code' };
   const reachesCode = (DEVELOPMENT_PHASE_ORDER[origin.phase] ?? -1) >= DEVELOPMENT_PHASE_ORDER.CODE!;
   return reachesCode
@@ -114,12 +128,10 @@ export function resolveAttemptTestArgs(
   language: Plan['language'],
 ): string[] {
   const args = [...scope.testArgs];
-  if (
-    language === 'typescript' &&
-    scope.verificationPhase === 'UNIT_TEST' &&
-    !args.some((arg) => arg === '--coverage' || arg.startsWith('--coverage.'))
-  ) {
-    args.push('--coverage');
+  // The UNIT_TEST gate is measured on line and branch coverage, so Runtime collects it rather than
+  // leaving each Step to discover how; a Step left to it reached for tools nobody had installed.
+  if (scope.verificationPhase === 'UNIT_TEST' && !args.some(isCoverageArgument)) {
+    args.push(...(language === 'typescript' ? ['--coverage'] : PYTHON_COVERAGE_ARGS));
   }
   return args;
 }
@@ -146,19 +158,22 @@ export function reconcileMeasuredQualityAssessment(
   if (toolCalls.some((call) => isUnownedStepFailure(call.code))) {
     value = { ...value, gaps: [] };
   }
-  const summaries = toolCalls
-    .filter((call) => call.ok && call.tool === 'run_tests' && call.summary)
-    .map((call) => call.summary!);
-  const measured = [...summaries].reverse().map((summary) => ({
-    summary,
-    coverage: summary.match(
+  const runs = toolCalls.filter((call) => call.ok && call.tool === 'run_tests' && call.summary);
+  const measured = [...runs].reverse().map((call) => ({
+    summary: call.summary!,
+    // What the run measured itself (pytest-cov's report), ahead of what its output says.
+    measuredCoverage: measuredCoverageOf(call.data),
+    coverage: call.summary!.match(
       /coverage statements=(\d+(?:\.\d+)?)% branches=(\d+(?:\.\d+)?)% functions=(\d+(?:\.\d+)?)% lines=(\d+(?:\.\d+)?)%/u,
     ),
-    tests: summary.match(/Tests\s+(\d+)\s+passed\s+\((\d+)\)/u),
-  })).find((item) => item.coverage || item.tests);
+    tests: call.summary!.match(/Tests\s+(\d+)\s+passed\s+\((\d+)\)/u),
+  })).find((item) => item.measuredCoverage || item.coverage || item.tests);
   if (!measured && !verification) return value;
   const metrics = { ...value.metrics };
-  if (measured?.coverage) {
+  if (measured?.measuredCoverage) {
+    metrics.lineCoverage = measured.measuredCoverage.lines / 100;
+    if (measured.measuredCoverage.branches !== undefined) metrics.branchCoverage = measured.measuredCoverage.branches / 100;
+  } else if (measured?.coverage) {
     metrics.statementCoverage = Number(measured.coverage[1]) / 100;
     metrics.branchCoverage = Number(measured.coverage[2]) / 100;
     metrics.functionCoverage = Number(measured.coverage[3]) / 100;
@@ -184,6 +199,14 @@ export function reconcileMeasuredQualityAssessment(
       ...(measured ? [measured.summary] : []),
     ])],
   };
+}
+
+function measuredCoverageOf(data: unknown): { lines: number; branches?: number } | undefined {
+  const coverage = typeof data === 'object' && data !== null ? (data as { coverage?: unknown }).coverage : undefined;
+  if (typeof coverage !== 'object' || coverage === null) return undefined;
+  const { lines, branches } = coverage as { lines?: unknown; branches?: unknown };
+  if (typeof lines !== 'number') return undefined;
+  return { lines, ...(typeof branches === 'number' ? { branches } : {}) };
 }
 
 /**

@@ -12,42 +12,42 @@ Whole producer completion/protocol/proof precedes original business checks and T
 effects. Existing round budgets and outcome scoring are preserved. A trusted actual-provider
 projection keeps dynamic prompt and Tool windows consistent while protecting all selected Rule and
 other message bytes. Exact-ID recovery is read-only and grants no Tool replay or lifecycle progress.
-P04-P14 retain their original instruction sources; production C1 and further extraction are separate.
+The other inventoried instruction sources stay where they are; production protocol correction and further extraction are separate.
 The restored final gates passed 1,651 core, 1,483 functional-integration and 11 e2e cases,
 typecheck/lint/build, and 24 actual-call removal checks. Typed content refusal now survives Runner
 and PM without creating a generated-project Bug. Final results and limits are recorded in HANDOVER;
-the [review handover](2026-10-15-executor-review-handover.md) describes scope and review priorities.
+the [review handover](../../audit-reports/2026-10-15-executor-review-handover.md) describes scope and review priorities.
 
-Previous checkpoint: P03 phase decomposition is now retained in both Build (pre-graph planning
+Previous checkpoint: phase decomposition is now retained in both Build (pre-graph planning
 operation) and Run phase progression (real canonical Project identity). Original i18n messages
 remain authoritative. The approved PhasePlan/current phase, parse context and available Skill names
 are audit-only recovery inputs; no new Domain lifecycle state is added. The complete milestone
 passed 1,586 core, 1,452 functional-integration and 11 e2e cases, typecheck/lint/build and fourteen
-actual-call removal checks. Restored P03/nearest-caller checks passed all 334 cases. The shared
-phase validator now rejects duplicate identifiers before P02 adoption or checkpoint reuse.
+actual-call removal checks. Restored phase-decomposition/nearest-caller checks passed all 334 cases. The shared
+phase validator now rejects duplicate identifiers before phase-plan adoption or checkpoint reuse.
 
-P01's complete retained PM intake milestone passed 1,476 core, 1,434 functional-integration and 11 e2e
-cases, plus typecheck/lint/build and actual-call falsification. P02/J06 and foundation checks were
+Clarification's complete retained PM intake milestone passed 1,476 core, 1,434 functional-integration and 11 e2e
+cases, plus typecheck/lint/build and actual-call falsification. Phase-plan, scenario-judgement and foundation checks were
 included. Full integration remains open: ten release-resource failures are recorded in HANDOVER and
-deferred to P1. Remaining instruction extraction, production C1 and
+deferred to P1. Remaining instruction extraction, production protocol correction and
 business-Rule activation remain separate functional work; release preparation stays last.
 
-Earlier P02 checkpoint: Build injects its retained port. User choice A keeps original i18n messages
+Earlier phase-plan checkpoint: Build injects its retained port. User choice A keeps original i18n messages
 while hashing versioned audit-only parse context. Completion/full JSON/proven normalization precede
 original business checks; candidate/outer budgets and scoring retain their owners. Explicit
-request-ID recovery reads original materials. Its focused/functional checks passed with P01.
+request-ID recovery reads original materials. Its focused/functional checks passed with clarification.
 
 Previous checkpoint: Router now offers awaited validation after transport returns output and producer
 facts, without using the callback to stop streams. Typed protocol/business candidate refusal keeps
 the existing feedback/fallback owners; other failures preserve required raw evidence and propagate
 without retries or scoring. Plugin protects the callback and Q0 correction excludes it. Tests are
-authored, unrun. Production P02 PhasePlan port migration and G1 remain pending; legacy consumers
+authored, unrun. Production PhasePlan port migration and G1 remain pending; legacy consumers
 have not been switched.
 
 Earlier checkpoint: retained request evidence now supports pre-graph planning-operation identity
 without invented Domain IDs. Clarification retains PM; PhasePlan/decomposition retain Planner.
 Input, Rule snapshot and final attempt roles are bound together, including explicit recovery;
-scenario records retain their format and J06 rejects planning-owner responses. Contract and
+scenario records retain their format and scenario-outcome judgement rejects planning-owner responses. Contract and
 real-file/HTTP cases are authored, unrun. This is the identity foundation; production Planner/Build
 ports, validation/scoring integration and G1 remain pending.
 
@@ -55,10 +55,10 @@ Earlier checkpoint: Executor whole-response parsing and its stream-shape predica
 proven JSON scanner. Invalid whole replies cannot supply salvaged actions, automatic test gates
 or permission requests; original output/diagnostics are audited and regeneration uses the existing
 business-round allowance. Permission denial still permits only its one adaptation turn. Tests are
-authored, unrun. This parsing slice does not complete producer eligibility, C1 or Executor Rule/input
+authored, unrun. This parsing slice does not complete producer eligibility, protocol correction or Executor Rule/input
 retention. Production planning ports and validation-owner integration are the next caller boundaries.
 
-Earlier checkpoint: J06's current-evidence scenario judgement now calls Runtime Rule preparation,
+Earlier checkpoint: the scenario-outcome judgement's current-evidence judgement now calls Runtime Rule preparation,
 response retention and deterministic protocol handling from the Phase-delivery gate. Its semantic
 rubric is authored once in `rules/scenario-outcome.yaml`; PM ownership and typed Bug/CR routing are
 preserved. Explicit request-ID recovery reads the original evidence without a model send. Each new
@@ -104,7 +104,7 @@ existing requests retain their pinned Rule versions. Concrete Q5 record schemas
 can be implemented within its approved retention contract; no new deletion or proof-invalidation
 policy is implied.
 
-The first R1 code now provides pure slot utilities and RuleDecorator aggregation for framework
+The first Rule catalogue and assembly code now provides pure slot utilities and RuleDecorator aggregation for framework
 prompt generation, with unrun tests. Release-time review and extraction of Wiki experience into
 versioned Debug Rules is approved. The expanded `0x0300-0x0FFF` segment provides 3,328 RuleList slots;
 each list supports many Rules, retrieved individually without loading the whole segment into a
@@ -136,14 +136,14 @@ an unmanaged HTTP channel keeps the existing live-call behavior. This is interna
 build/run do not yet trigger it.
 Selector snapshot capture and the immutable file store retain required/top-candidate definitions,
 effective prompt Rules, overrides, ranking, index/query evidence and low-score review references.
-These remain internal F1/R1 components; production caller recovery is not connected.
+These remain internal foundation and catalogue components; production caller recovery is not connected.
 The Application request coordinator now pins drafts and consumes a durable low-score review claim;
 the injected reviewer uses a fixed protocol and final-send guard, while completion eligibility is
-classified from provider termination facts. Runtime production wiring and C1 correction remain open.
+classified from provider termination facts. Runtime production wiring and protocol correction remain open.
 Candidate activation, additional migrated Rule definitions and production request wiring remain incomplete.
 The Q5/Q6 approvals authorize implementation of those directions; this status update does not claim
 that request persistence or the calibration coordinator is already wired into production.
-The 2026-09-10 F1 continuation adds complete rejected-response content, actual attempt messages and
+The 2026-09-10 request-and-evidence foundation continuation adds complete rejected-response content, actual attempt messages and
 request/attempt correlation to Router audit events. Real-filesystem coverage is authored but unrun;
 required rejection records now propagate typed storage failure through the infrastructure
 interruption path. The 2026-09-13 continuation authors exact-output/model/termination observations
@@ -181,13 +181,13 @@ the text returned after Plugin hooks; the adapter performs no business validatio
 success scoring. Missing transport facts remain explicitly unavailable. Filesystem/Router/Plugin/
 replay tests are authored and unrun.
 Production request identity and original-business-input recovery still need caller integration.
-C1 now interprets finish reasons and adds completion-gated internal JSON inspection/proof entries.
+Protocol correction now interprets finish reasons and adds completion-gated internal JSON inspection/proof entries.
 Its first explicit transformations cover complete outer fences, trailing commas and exact raw
 CR/LF/tab escaping. Candidate proofs preserve full ordered structure, numeric lexemes and decoded
 string values. Ambiguous inner quotes and fragment salvage remain unresolved; the combined Executor
 sample is not repaired. Further quote/escape proofs, the durable
 correction coordinator and production integration remain open. Completion, real provider-loopback
-and proof tests are authored, unrun. J06 migration still depends on F1/R1/C1 readiness.
+and proof tests are authored, unrun. Scenario-outcome judgement migration still depends on foundation, catalogue and protocol-correction readiness.
 These are development checkpoints, not a verified 0.4 release.
 
 The 2026-10-05 continuation captures message/delta refusal and native-tool payloads, retaining their
@@ -223,23 +223,23 @@ original logical request ID. State and audit roots stay in the project container
 Recovery restores original/candidate evidence from raw audit, repeats verification and never sends
 or grants another allowance. Empty state is `not-started`; consumed state remains `incomplete` or
 `recovered`. Runtime/file/HTTP and recovery tests are authored, unrun. Production business request
-identity/input recovery and J06 migration remain next.
+identity/input recovery and scenario-outcome judgement migration remain next.
 
-The 2026-10-10–11 V1 input sub-batch now pins caller-owned request/scenario-execution identity,
+The 2026-10-10–11 scenario vertical slice input sub-batch now pins caller-owned request/scenario-execution identity,
 Project/Phase references, framework messages, protocol/template versions and a verified Rule snapshot.
 Required audit holds protected messages plus the pre-redaction digest; immutable metadata contains
 no message bodies. Concurrent identical captures reuse the winning record. Internal Runtime recovery
 revalidates exact audit values and Rule review evidence, without selecting Rules or sending a request.
 Redaction that removed original values prevents exact recovery. These are input records only; dispatch,
-retained/selected responses and J06 production migration remain next. Tests are authored, unrun.
+retained/selected responses and scenario-outcome judgement production migration remain next. Tests are authored, unrun.
 
-The 2026-10-12 V1 continuation connects the internal sender to required final-request audit and
+The 2026-10-12 scenario vertical slice continuation connects the internal sender to required final-request audit and
 immutable per-attempt metadata. It binds actual post-Plugin messages and producer identity to the
 original input, and keeps required Router response audit in the same container-owned ledger. Recovery
 requires an explicit request/attempt pair and returns retained raw evidence only. Prepared metadata
 or an absent response cannot prove whether transport happened and never triggers automatic resend;
 ordinary explicit business sends retain their retry policy. Caller-selected response and protocol/result
-integration, followed by J06/rubric migration, remain next. Build/run are unchanged. New filesystem,
+integration, followed by scenario-outcome judgement/rubric migration, remain next. Build/run are unchanged. New filesystem,
 audit, Plugin and loopback cases are authored; all execution verification remains deferred to G1.
 
 The 2026-10-13 continuation implements the normal interruption-recovery evidence layer. It retains
@@ -247,7 +247,7 @@ the caller-adopted original response and deterministic protocol result, then res
 request ID. Fresh credentials can be verified against protected audit; exact restart recovery rejects
 lost values. Resume never sends another request, picks a latest attempt or publishes a missing result.
 Protocol outcomes remain separate from business judgement. Internal Runtime composition and real
-audit/file/loopback cases are authored, unrun; J06/rubric production integration remains next.
+audit/file/loopback cases are authored, unrun; scenario-outcome judgement/rubric production integration remains next.
 
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to

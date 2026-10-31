@@ -11,7 +11,7 @@ import { TicketRegistrationService } from './ticket_registration_service.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import type { RoutingActor } from './role_registry.js';
 import type { PluginHost } from '../../plugins/host.js';
-import type { ToolPermissionRequest } from '../../tools/types.js';
+import { PermissionDeniedError, type ToolPermissionRequest } from '../../tools/types.js';
 import {
   DomainAttemptRunner,
   type AttemptInput,
@@ -34,6 +34,8 @@ import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js'
 import type { TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import { QualityAssessmentService } from '../execution/quality_assessment_service.js';
 import { workFor } from '../../domain/workflow/work.js';
+import { isUnchangedRepairRecurrence } from './ticket_workflow.js';
+import { t } from '../../i18n/index.js';
 
 interface MergeIntegrationResult {
   status: 'merged' | 'nothing-to-merge' | 'failed' | 'blocked' | 'awaiting-authorization';
@@ -396,13 +398,36 @@ export class ProjectOrchestrator {
               gate.reason ?? 'Phase delivery gate failed without routable findings',
             );
           }
-          await this.scheduler.intakeProblems({
-            projectId: phase.projectId,
-            phaseId: phase.id,
-            origin: 'phase-delivery-gate',
-            reports: gate.findings,
-            correlationId: createObjectId(),
-          });
+          try {
+            await this.scheduler.intakeProblems({
+              projectId: phase.projectId,
+              phaseId: phase.id,
+              origin: 'phase-delivery-gate',
+              reports: gate.findings,
+              correlationId: createObjectId(),
+            });
+          } catch (error) {
+            return this.unchangedRecurrenceStop(error, phase, steps.length, executed, acceptance);
+          }
+          // Running the gate again only helps once something has been repaired. With nothing to
+          // schedule it judged the same product every few seconds, opening a duplicate each time,
+          // and the progress guard never fired because every lap created objects.
+          let repair: ScheduledWork | undefined;
+          try {
+            repair = await this.scheduler.resume(phase.id);
+          } catch (error) {
+            return this.failure(phase.id, steps.length, executed, undefined, (error as Error).message);
+          }
+          if (!repair) {
+            return this.failure(
+              phase.id,
+              steps.length,
+              executed,
+              acceptance,
+              `Phase delivery gate failed and its findings left no work to schedule: ` +
+                `${gate.findings.map((finding) => finding.code).join(', ')}`,
+            );
+          }
           continue;
         }
         await this.scheduler.attachPhaseQuality(phase.id, phaseAssessment.id);
@@ -555,7 +580,12 @@ export class ProjectOrchestrator {
       executed += 1;
       await this.options.plugins.emit('step.after', { plan: projection.plan, step: executionStep, ok: result.ok });
 
-      const disposition = await this.results.process({ phase, work, steps, result });
+      let disposition: Awaited<ReturnType<AttemptResultProcessor['process']>>;
+      try {
+        disposition = await this.results.process({ phase, work, steps, result });
+      } catch (error) {
+        return this.unchangedRecurrenceStop(error, phase, steps.length, executed, work.step);
+      }
       if (disposition.action === 'stop') {
         // Result processing can park the active Step/Ticket before asking the Runtime to stop.
         // Keep PM's derived cache aligned with those authoritative transitions at the session
@@ -573,13 +603,18 @@ export class ProjectOrchestrator {
         // the gate could not run, nothing about the project was shown to be wrong, and there is
         // nothing to ask anyone to repair.
         if (landed.status === 'failed') {
-          const gate = await this.results.processIntegrationFailure({
-            phase,
-            work,
-            reason: landed.reason ?? 'merge gate rejected the change',
-            failureLog: landed.failureLog,
-            workspaceBinding: landed.workspaceBinding,
-          });
+          let gate: Awaited<ReturnType<AttemptResultProcessor['processIntegrationFailure']>>;
+          try {
+            gate = await this.results.processIntegrationFailure({
+              phase,
+              work,
+              reason: landed.reason ?? 'merge gate rejected the change',
+              failureLog: landed.failureLog,
+              workspaceBinding: landed.workspaceBinding,
+            });
+          } catch (error) {
+            return this.unchangedRecurrenceStop(error, phase, steps.length, executed, work.step);
+          }
           if (gate.action === 'stop') {
             return this.failure(phase.id, steps.length, executed, work.step, gate.reason);
           }
@@ -638,13 +673,35 @@ export class ProjectOrchestrator {
     const decision = this.options.requestPermission
       ? await this.options.requestPermission(request)
       : { approved: false, reason: 'No Runtime permission policy is configured.' };
-    if (!decision.approved) throw new Error(`permission denied for ${request.operationType}: ${request.target}`);
+    if (!decision.approved) throw new PermissionDeniedError(request, decision.reason);
   }
 
   private async transition(event: Parameters<NonNullable<ProjectOrchestratorOptions['onTransition']>>[0]): Promise<void> {
     await this.outbox.dispatchPending(event.projectId);
     await this.projection.refresh(event.projectId);
     await this.options.onTransition?.(event);
+  }
+
+  /**
+   * Ends the run when a repair that changed nothing met the same failure again; every other error
+   * keeps propagating as before. Decided on the error's type, never its message.
+   */
+  private async unchangedRecurrenceStop(
+    error: unknown,
+    phase: Phase,
+    totalSteps: number,
+    executedSteps: number,
+    step: Step | undefined,
+  ): Promise<ProjectOrchestratorResult> {
+    if (!isUnchangedRepairRecurrence(error)) throw error;
+    await this.options.audit.event('note', error.message, {
+      messageId: 'domain.repair_recurred_unchanged',
+      projectId: phase.projectId,
+      phaseId: phase.id,
+      ...error.detail,
+    });
+    await this.projection.refresh(phase.projectId);
+    return this.failure(phase.id, totalSteps, executedSteps, step, t().execute.unchangedRepairStop(error.detail));
   }
 
   private failure(

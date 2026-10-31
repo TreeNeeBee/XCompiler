@@ -207,7 +207,7 @@ the review allowance.
 described in the next paragraph is deferred to 0.5 and designed together with Story/V+V. 0.4 does
 not enable the business range `0x1000+`; the project-owner catalogue capability stays unused.
 Contract-change CRs instead append their accepted `contractDelta.after` to the project-global
-constraints and the J06 input deterministically (D-8). The paragraph is kept as decision history.
+constraints and the scenario-outcome judgement input deterministically (D-8). The paragraph is kept as decision history.
 
 The user then selected controlled automatic business-Rule maintenance (optimized B). XCompiler
 derives candidates with provenance from accepted project requirements/changes. Candidates apply
@@ -319,7 +319,7 @@ Use Node.js 24 or newer. Apply the gates appropriate to the change's blast radiu
 - `npm run test:core`: deterministic domain and application behavior; expected for every code change.
 - `npm run test:integration`: loopback, subprocess, Git, persistence, and capability boundaries.
 - `npm run test:e2e`: CLI and ACP child-process scenarios.
-- `npm run typecheck` and `npm run lint`: static correctness and repository style.
+- `npm run typecheck` and `npm run lint`: static correctness and repository style. Typecheck covers product source and tests (`tests/tsconfig.json`, which editors also use for files under `tests/`); a test that builds a deliberately invalid input says so with a commented cast.
 - `npm run build`: Runtime, adapters, CLI, and declarations.
 - `npm run version:check` plus the relevant package command: release metadata and artifacts.
 - Release work also runs the npm package dry run and production-dependency security audit.

@@ -1,20 +1,26 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "8d89e817-e289-51c4-ad89-edcd88290e5f"
-version: "1.0.0"
-title: "Applying a Change Request to a Step"
-slot: "0x0243"
-applicability:
-  works: [change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 8d89e817-e289-51c4-ad89-edcd88290e5f
+title:
+  en: Applying a Change Request to a Step
+  zh: 在 Step 上应用变更请求
+slot: "0x00011003"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:3b6a0f5ed3d0bb4553bc144eb9855235cf28b7fcdd1433f08115dc4dd4646f5b
 rules:
-  - id: "2a88a24d-751a-5b02-bb06-0e256ed10ddf"
-    version: "1.0.0"
-    category: framework
+  - id: 2a88a24d-751a-5b02-bb06-0e256ed10ddf
+    name: delta-only
+    version: 2.0.0
     level: mandatory
-    retrievalDescription: "Apply only the active change request delta"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:1b56a07541b973d52498c5cb659f1e245f3713003b4868909dac58b8aa080637
+    description:
+      en: "Applies when implementing a Change Request: apply only the active delta to the accepted baseline."
+      zh: 实施变更请求时适用：只在已接受的基线上应用当前增量。
     instruction:
-      en: |-
-        CR mode: treat existing outputs as the accepted baseline. Apply only the active change request delta, preserve unrelated behavior, and produce focused change or verification evidence. Never regenerate the whole phase or project.
-      zh: |-
-        CR 模式：已有产物是已验收基线，只实施当前变更请求的增量差异，保留无关行为，并提供聚焦的变更或验证证据；禁止重新生成整个阶段或工程。
+      en: "CR mode: treat existing outputs as the accepted baseline. Apply only the active change request delta, preserve unrelated behavior, and produce focused change or verification evidence. Never regenerate the whole phase or project."
+      zh: CR 模式：已有产物是已验收基线，只实施当前变更请求的增量差异，保留无关行为，并提供聚焦的变更或验证证据；禁止重新生成整个阶段或工程。

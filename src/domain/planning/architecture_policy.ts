@@ -173,7 +173,9 @@ function extractDemandBearingText(text: string): string {
 
   const topicPieces = [
     extractMarkdownSection(normalized, /^(?:原始需求|original\s+requirement|raw\s+requirement)\s*$/iu),
-    extractMarkdownSection(normalized, /^(?:补充需求|追加需求|附加要求|user\s+addenda|additional\s+requirements?)\s*$/iu),
+    // The topic heading is "用户补充需求 (Addenda)" in Chinese and "User addenda" in English.
+    extractMarkdownSection(normalized,
+      /^(?:(?:用户)?(?:补充需求|追加需求|附加要求)(?:\s*[（(]\s*addenda\s*[）)])?|user\s+addenda|additional\s+requirements?)\s*$/iu),
     extractClarificationAnswers(normalized),
   ]
     .map((part) => part.trim())

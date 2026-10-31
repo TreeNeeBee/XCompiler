@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseObjectId } from '../src/domain/identity/object_id.js';
 import {
   appendTicketCommit,
   attemptBaselineRevision,
@@ -7,7 +8,7 @@ import {
   type TicketCommit,
 } from '../src/domain/tickets/ticket.js';
 
-const stepId = '019fd0e5-5210-7e41-8d33-fd207dc4de96';
+const stepId = parseObjectId('019fd0e5-5210-7e41-8d33-fd207dc4de96');
 
 function commit(overrides: Partial<TicketCommit>): TicketCommit {
   return {

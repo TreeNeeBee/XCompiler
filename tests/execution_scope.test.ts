@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DomainAttemptRunner, type AttemptInput, type ExecutionScope } from '../src/application/execution/attempt_runner.js';
+import { DomainAttemptRunner, type AttemptRunnerOptions, type AttemptInput, type ExecutionScope } from '../src/application/execution/attempt_runner.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 import { ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
 
@@ -78,12 +78,13 @@ function bindings(tag: string) {
   };
 }
 
-function options(scope: ReturnType<typeof bindings>) {
+/** A runner built for scope resolution only: collaborators it never reaches are left empty. */
+function options(scope: ReturnType<typeof bindings>): AttemptRunnerOptions {
   return {
     ...scope,
     router: {}, audit: {}, repository: {}, plugins: { size: 0 },
     debugWiki: new FileDebugWiki('/tmp/xcompiler-scope-wiki'),
-  } as never;
+  } as unknown as AttemptRunnerOptions;
 }
 
 function input(): AttemptInput {

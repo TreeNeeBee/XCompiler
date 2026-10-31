@@ -1,40 +1,65 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "94c876d5-7ffe-5aa9-979c-9866c1752fe5"
-version: "1.0.0"
-title: "High-level design"
-slot: "0x0251"
-applicability:
-  works: [design.high-level, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 94c876d5-7ffe-5aa9-979c-9866c1752fe5
+title:
+  en: High-level design
+  zh: 高层设计
+slot: "0x00011101"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:2d602274579fa189762e6d17cf180fc48d53ff25b746265f227d4d08483d5b36
 rules:
-  - id: "f6d3471c-92de-5b78-ac06-a2086254b75f"
-    version: "1.0.0"
-    category: framework
+  - id: f6d3471c-92de-5b78-ac06-a2086254b75f
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "High-level design: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:ae2d1a319e0a109446c5eb6ccfa2b8b77a6e0a172229dc5b6761013c79f45864
+    description:
+      en: "High-level design deliverable: the system and module design with its paired tests."
+      zh: 高层设计的交付：系统与模块设计及配对测试。
     instruction:
-      en: |-
-        You design the system and its modules, and the tests paired with each design level.
-      zh: |-
-        你负责设计系统及其模块，以及与每个设计层级配对的测试。
-  - id: "18966757-3be2-50ec-8d04-453f91195285"
-    version: "1.0.0"
-    category: framework
+      en: You design the system and its modules, and the tests paired with each design level.
+      zh: 你负责设计系统及其模块，以及与每个设计层级配对的测试。
+  - id: 18966757-3be2-50ec-8d04-453f91195285
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "High-level design: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:d19305742423ef0d598ca70dee882efe626ed60a7b8ac17e89b18f48d2733bd7
+    description:
+      en: "High-level design method: define interfaces, dependencies and downstream contracts."
+      zh: 高层设计的方法：定义接口、依赖和下游契约。
     instruction:
-      en: |-
-        Define interfaces, dependencies, and the contracts downstream work must satisfy.
-      zh: |-
-        定义接口、依赖，以及下游工作必须满足的契约。
-  - id: "13e3c2b9-bf37-5170-8b38-d83c1cd72642"
-    version: "1.0.0"
-    category: framework
+      en: Define interfaces, dependencies, and the contracts downstream work must satisfy.
+      zh: 定义接口、依赖，以及下游工作必须满足的契约。
+  - id: 423c27b0-9d8c-5210-9337-a641ef4060a7
+    name: third-party-entry-points
+    version: 2.0.0
+    level: required
+    ctime: 2026-10-18T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:c8a9340a6d63cd3d12fe63efe93576913e99cb23476978d4b98705527c036685
+    description:
+      en: "Applies when the design selects a third-party library or external API: name its concrete entry point and the evidence for it."
+      zh: 设计选用第三方库或外部 API 时适用：写明具体入口及依据。
+    instruction:
+      en: When the design selects a third-party library or an external API, name the concrete entry point this requirement uses (function, class, command or endpoint) and the basis for it, such as the official documentation or the installed package. Never infer an API or a package name from what the package is called.
+      zh: 设计选用第三方库或外部 API 时，写明本需求使用的具体入口（函数、类、命令或端点）及其依据，例如官方文档或已安装的包。禁止仅凭包名推断 API 或臆造包名。
+  - id: 13e3c2b9-bf37-5170-8b38-d83c1cd72642
+    name: no-weakened-contracts
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "High-level design: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:cd7e2758736de657bc09a6f54c407c0b80e96ae7bffb6dcfca18fb613657e9c5
+    description:
+      en: High-level design does not weaken a contract for implementation convenience.
+      zh: 高层设计不为方便实现而削弱契约。
     instruction:
-      en: |-
-        Do not weaken a contract to make an implementation easier.
-      zh: |-
-        不要为了让实现更容易而削弱契约。
+      en: Do not weaken a contract to make an implementation easier.
+      zh: 不要为了让实现更容易而削弱契约。

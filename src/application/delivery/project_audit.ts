@@ -3,9 +3,9 @@ import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { Sandbox, ExecResult } from '../../sandbox/types.js';
-import type { Plan, ProjectType } from '../../domain/planning/execution_plan.js';
+import type { Phase, Plan, ProjectType } from '../../domain/planning/execution_plan.js';
 import type { LanguageProfile } from '../execution/language_support.js';
-import { deliveryDocsForIteration, deliveryDocsForProjectType } from '../../domain/planning/document_contract.js';
+import { deliveryDocsForIteration, deliveryDocsForProjectType, phaseDocForIteration } from '../../domain/planning/document_contract.js';
 import { t } from '../../i18n/index.js';
 import { detectNetworkApiFailureInExec } from '../execution/network_failure.js';
 import {
@@ -118,11 +118,18 @@ async function runQualityAudit(opts: {
     throw new Error('Phase delivery scenarios require an LLM outcome judge');
   }
   for (const scenario of scenarios) {
+    // A scenario without its inputs exercises nothing it describes: a live run read three files that
+    // no Step had produced, every one failed to open, and the outcome was judged on that.
+    const missingInputs = await missingScenarioInputs(opts.ws, scenario);
+    if (missingInputs.length > 0) {
+      checks.push(missingScenarioInputsCheck(scenario, missingInputs, opts.plan));
+      continue;
+    }
     // Taken here rather than once for the Phase: the test and entrypoint checks above already
     // touched files, and each scenario changes files the next would otherwise inherit. A snapshot
     // from before all of that credits every one of those changes to whichever scenario is judged.
     const before = (await opts.snapshotArtifacts?.()) ?? [];
-    const operation = () => runScenarioAudit(opts.sandbox, scenario, before, opts.judgeScenarioOutcome);
+    const operation = () => runScenarioAudit(opts.sandbox, opts.plan, scenario, before, opts.judgeScenarioOutcome);
     checks.push(await (opts.runLiveScenario ? opts.runLiveScenario(operation) : operation()));
   }
 
@@ -244,6 +251,7 @@ async function runEntrypointAudit(
 
 async function runScenarioAudit(
   sandbox: Sandbox,
+  plan: Plan,
   scenario: DeliveryGateScenario,
   before: readonly ScenarioArtifactSnapshot[],
   judge?: ScenarioOutcomeJudge,
@@ -259,7 +267,7 @@ async function runScenarioAudit(
     // evidence for the judge, not a verdict: a run that degrades gracefully prints the source it lost
     // and still satisfies an expectation asking for two of them. Deciding `ok` from that text made
     // the judge's agreement an error, and the branch below turns disagreement into a thrown run.
-    ok: result.exitCode === 0 && !result.timedOut,
+    ok: result.exitCode === (execution.expectExitCode ?? 0) && !result.timedOut,
     command: [execution.command, ...execution.args].join(' '),
     exitCode: result.exitCode,
     timedOut: result.timedOut,
@@ -275,12 +283,31 @@ async function runScenarioAudit(
     ...(probe.stdoutTail ? { stdoutTail: tailText(probe.stdoutTail) } : {}),
     ...(probe.stderrTail ? { stderrTail: tailText(probe.stderrTail) } : {}),
   };
+  // What the declared inspections print is what the judge can read of a result that is not text.
+  const inspections = [];
+  for (const inspection of scenario.inspect ?? []) {
+    const output = await sandbox.exec(inspection.command, inspection.args, { timeoutMs: 60_000 });
+    inspections.push({
+      command: [inspection.command, ...inspection.args].join(' '),
+      exitCode: output.exitCode,
+      timedOut: output.timedOut,
+      ...(output.stdout ? { stdoutTail: tailText(output.stdout) } : {}),
+      ...(output.stderr ? { stderrTail: tailText(output.stderr) } : {}),
+    });
+  }
+  if (inspections.length > 0) scene.inspections = inspections;
   // A non-zero process result still contains routing evidence. The old branch returned before the
   // scenario judge ran, so every failed command became a CODE Bug even when satisfying the original
   // expectation required an accepted contract/capability change. The verdict may not turn a failed
   // process into a pass; it only identifies the Ticket type and owner of the observed failure.
   if (!judge) throw new Error(`Scenario ${scenario.name} has no outcome judge`);
   const verdict = await judge({ scenario, scene, before });
+  // First, whatever the run showed: a run built on a requirement frozen against the plan proves
+  // nothing about the plan, and only requirement analysis can bring that requirement back.
+  if (!verdict.ok && verdict.planConflict) return planConflictCheck(scenario, scene, verdict, plan);
+  // Nothing the judge could read shows the expectation met or failed. That is the scenario's own
+  // declaration giving it nothing to read, so no Step is handed a repair it cannot make.
+  if (!verdict.ok && verdict.unverifiable) return unverifiableScenarioCheck(scenario, probe, verdict.reason);
   if (probe.ok) {
     // Exiting zero answers a narrower question than the gate asks. The scenario states what the run
     // was supposed to produce; until something reads that, a project can pass delivery having done
@@ -308,15 +335,16 @@ async function runScenarioAudit(
         evidence: [`expected: ${scenario.expected}`, ...verdict.evidence],
         // The LLM supplies ownership from the accepted contract and observed result. No protocol,
         // status code, service, or project-specific matcher decides this route.
-        ...scenarioFindingTarget(verdict.target),
+        ...scenarioFindingTarget(verdict.target, plan),
         dependencyPackages: [],
       },
     };
   }
   if (verdict.ok) {
-    throw new Error(
-      `Scenario ${scenario.name} exited unsuccessfully but its outcome judge returned ok=true`,
-    );
+    // The judge reads the expectation as met while the process ended other than declared: the
+    // scenario's own contract disagrees with itself, which no Step in the run can repair. It used
+    // to throw and end the run with a stack trace; it stops the gate with the change that fixes it.
+    return contradictoryScenarioCheck(scenario, probe, verdict.reason);
   }
   const sceneEvidence = [
     ...renderSceneEvidence(scene),
@@ -335,10 +363,98 @@ async function runScenarioAudit(
       code: scenarioFindingCode('scenario_execution_failed', scenario.name, verdict),
       summary: `Real entrypoint scenario failed: ${probe.command}`,
       evidence: sceneEvidence,
-      ...scenarioFindingTarget(verdict.target),
+      ...scenarioFindingTarget(verdict.target, plan),
       dependencyPackages: [],
       scene,
     },
+  };
+}
+
+function unverifiableScenarioCheck(
+  scenario: DeliveryGateScenario,
+  probe: { exitCode: number },
+  judgement: string,
+): ProjectAuditCheck {
+  // Declaring inspect commands is the advice only when there are none. A live gate whose declared
+  // command read the wrong column was told to declare one.
+  const suggestion = scenario.inspect?.length
+    ? t().execute.auditScenarioInspectReviewSuggestion(scenario.name)
+    : t().execute.auditScenarioInspectSuggestion(scenario.name, scenario.expected);
+  return {
+    name: `scenario:${scenario.name}`,
+    severity: 'error',
+    ok: false,
+    summary: t().execute.auditScenarioUnverifiable(scenario.name, probe.exitCode),
+    detail: [`judgement=${judgement}`, suggestion].join('\n'),
+  };
+}
+
+function planConflictCheck(
+  scenario: DeliveryGateScenario,
+  scene: DeliveryGateScene,
+  verdict: Extract<ScenarioOutcomeVerdict, { planConflict: true }>,
+  plan: Plan,
+): ProjectAuditCheck {
+  return {
+    name: `scenario:${scenario.name}`,
+    severity: 'error',
+    ok: false,
+    summary: t().execute.auditScenarioPlanConflict(scenario.name),
+    detail: [`planConflict=${verdict.reason}`, ...verdict.evidence].join('\n'),
+    scene,
+    finding: {
+      category: 'change-request',
+      code: `scenario_plan_conflict:${scenario.name}`,
+      // The Change Request's statement of what is expected, so it names the plan's side.
+      summary: `The requirement this Phase froze conflicts with the confirmed plan; bring it back to the plan: ${verdict.reason}`,
+      evidence: [`expected: ${scenario.expected}`, ...verdict.evidence],
+      ...scenarioFindingTarget('requirement-analysis', plan),
+      dependencyPackages: [],
+    },
+  };
+}
+
+async function missingScenarioInputs(ws: Workspace, scenario: DeliveryGateScenario): Promise<string[]> {
+  const missing: string[] = [];
+  for (const input of scenario.inputs ?? []) {
+    if (!(await ws.exists(input))) missing.push(input);
+  }
+  return missing;
+}
+
+/** No routed finding: every declared input is a delivered Step output, so its absence is not a repair. */
+function missingScenarioInputsCheck(
+  scenario: DeliveryGateScenario,
+  missing: readonly string[],
+  plan: Plan,
+): ProjectAuditCheck {
+  const owners = missing.map((input) => {
+    const owner = plan.steps.find((step) => step.outputs.includes(input));
+    return owner ? `${input} (${owner.id} ${owner.phase})` : input;
+  });
+  return {
+    name: `scenario:${scenario.name}`,
+    severity: 'error',
+    ok: false,
+    summary: t().execute.auditScenarioInputsMissing(scenario.name, owners.join(', ')),
+  };
+}
+
+function contradictoryScenarioCheck(
+  scenario: DeliveryGateScenario,
+  probe: { command: string; exitCode: number },
+  judgement: string,
+): ProjectAuditCheck {
+  const declared = scenario.execution?.expectExitCode ?? 0;
+  return {
+    name: `scenario:${scenario.name}`,
+    severity: 'error',
+    ok: false,
+    summary: t().execute.auditScenarioContractContradicts(scenario.name, probe.exitCode, declared),
+    detail: [
+      `judgement=${judgement}`,
+      t().execute.auditScenarioAddendumSuggestion(scenario.name, probe.exitCode, scenario.expected),
+    ].join('\n'),
   };
 }
 
@@ -363,21 +479,31 @@ function scenarioFindingDisposition(
  *
  * The artifact list follows the target rather than staying at `src/`: a Step is offered the files it
  * owns, and naming another Step's outputs narrows its allowlist to nothing it can write.
+ *
+ * A design Step is offered every output it declared, not its document alone. It owns its paired
+ * executable tests with its specification, and a contract change moves both: a live requirement
+ * analysis, routed a conflict with the plan, corrected its document and could not touch the
+ * acceptance test that still asserted the old contract.
  */
 function scenarioFindingTarget(
   target: ScenarioRepairTarget,
+  plan: Pick<Plan, 'phaseId' | 'steps'>,
 ): { target: DeliveryGateFinding['target']; affectedArtifacts: string[] } {
-  switch (target) {
-    case 'high-level-design':
-      return { target: 'high-level-design', affectedArtifacts: ['docs/02-high-level-design.md'] };
-    case 'requirement-analysis':
-      return { target: 'requirement-analysis', affectedArtifacts: ['docs/01-requirement-analysis.md'] };
-    case 'detailed-design':
-      return { target: 'detailed-design', affectedArtifacts: ['docs/03-detailed-design.md'] };
-    default:
-      return { target: 'code', affectedArtifacts: ['src/'] };
-  }
+  if (target === 'code') return { target: 'code', affectedArtifacts: ['src/'] };
+  const type = DESIGN_TARGET_STEP[target];
+  const owner = plan.steps.find((step) => step.phase === type);
+  const fallback = phaseDocForIteration(type, plan.phaseId);
+  return {
+    target,
+    affectedArtifacts: owner?.outputs.length ? [...owner.outputs] : fallback ? [fallback] : [],
+  };
 }
+
+const DESIGN_TARGET_STEP = {
+  'requirement-analysis': 'REQUIREMENT_ANALYSIS',
+  'high-level-design': 'HIGH_LEVEL_DESIGN',
+  'detailed-design': 'DETAILED_DESIGN',
+} as const satisfies Record<Exclude<ScenarioRepairTarget, 'code'>, Phase>;
 
 function renderSceneEvidence(scene: DeliveryGateScene): string[] {
   return [

@@ -1,0 +1,104 @@
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 4648013a-69cf-436b-9647-7d91529981b6
+title:
+  en: Rule level definitions
+  zh: 规则级别定义
+slot: "0x00000001"
+version: 1.0.0
+ctime: 2026-10-19T00:00:00Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:b4d07452cab493893e3e77f707ad0201e2efdba78c18d28007a76a9bcbb82e87
+rules:
+  - id: fbad2504-f293-4aea-8c81-78501966c839
+    name: levels
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:aad40d9c99413e38bb72934045a6e8156e147c10847f6574456fef5075565d98
+    description:
+      en: "How to read rule levels: the five levels and how they relate to slot priority."
+      zh: 如何理解规则级别：五个级别及其与槽位优先级的关系。
+    instruction:
+      en: "Every rule carries one of five levels, which states how strictly it binds. A level is not a priority: conflicts between RuleLists are decided by slot, and the smaller slot wins."
+      zh: 每条规则都带有五个级别之一，表示遵守程度。级别不是优先级：不同 RuleList 之间的冲突按槽位裁决，槽位小的优先。
+  - id: fd9f6953-d2e2-4e5a-8cb1-e30f77eefefc
+    name: level-mandatory
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:2d4736a7f1511008c60b73bf5227dec1c1d511198dfe996bf182a4e4b2ecc19a
+    description:
+      en: "Defines mandatory: a hard constraint that must always be followed."
+      zh: 定义 mandatory：任何情况下都必须遵守的硬约束。
+    instruction:
+      en: "mandatory: a hard framework or language constraint. Always follow it; output that violates it is invalid."
+      zh: mandatory（强制）：框架或语言层面的硬约束。任何情况下都必须遵守，违反即视为输出无效。
+  - id: 4f9292da-0593-4906-b839-4df401b23306
+    name: level-forbidden
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:04fb4b9377851e0902ec7750c2b95ba0c178ec7212b602a3ff15b3668aff1103
+    description:
+      en: "Defines forbidden: a practice that must never be used, binding like mandatory."
+      zh: 定义 forbidden：不得采取的做法，约束程度与 mandatory 相同。
+    instruction:
+      en: "forbidden: a practice that must not be used. It binds exactly as mandatory does."
+      zh: forbidden（禁止）：不得采取的做法，约束程度与 mandatory 相同。
+  - id: a754849d-4b5d-4ce8-86e2-89ea4bbf8fba
+    name: level-required
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:42a1c118391504445b6b0bab00220e315d56568c45534eaf7cb9de56907dc7a3
+    description:
+      en: "Defines required: a business requirement that yields only to mandatory and forbidden rules."
+      zh: 定义 required：业务必须达成的要求，只让位于 mandatory 与 forbidden 规则。
+    instruction:
+      en: "required: a business requirement of this work or project. It must be met; when it conflicts with a mandatory or forbidden rule, it yields and the output states the conflict."
+      zh: required（业务必须）：完成本次工作或满足项目业务所必须达成的要求。必须满足；与 mandatory 或 forbidden 规则冲突时让位，并在输出中说明冲突。
+  - id: b8705225-1e1b-45b3-b357-edc2cf6ae1ee
+    name: level-advised
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:23a112bb1848ac8880c5adc47ee533026be32f4e9f76e6811c554895a868f776
+    description:
+      en: "Defines advised: a recommended practice that may be set aside with a stated reason."
+      zh: 定义 advised：推荐做法，说明理由后可以不采用。
+    instruction:
+      en: "advised: a recommended practice. It may be set aside for a sound reason, which the output states."
+      zh: advised（建议）：推荐做法。有充分理由可以不采用，但要在输出中说明理由。
+  - id: e95eeda5-0b3e-4a50-86a5-4156b1b1fe38
+    name: level-announce
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:b224ee4597e47db4a1d30c1b147e12f5348779284de393f05d082e88416e91c7
+    description:
+      en: "Defines announce: background information that is neither an instruction nor a permission."
+      zh: 定义 announce：背景信息，既不是指令也不授予权限。
+    instruction:
+      en: "announce: background information. It is not an instruction and grants no permission."
+      zh: announce（声明）：背景信息，不构成指令，也不授予任何权限。
+  - id: 32304b90-c519-434d-b8d8-9ec457996de3
+    name: step-precedence
+    version: 1.0.0
+    level: announce
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:d8299bb7dd71bc017ee0cbabeacb80d7d42809199e98d963add13285dc772805
+    description:
+      en: "Applies when a Step description contradicts a mandatory or forbidden rule: the rule prevails."
+      zh: Step 描述与 mandatory 或 forbidden 规则相反时适用：以规则为准。
+    instruction:
+      en: mandatory and forbidden rules override any contrary description in a Step.
+      zh: mandatory 与 forbidden 级规则覆盖 Step 描述中与之相反的内容。

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { calibratePlanCoverage } from '../src/agents/calibration.js';
 import { lintPlan } from '../src/domain/planning/plan_lint.js';
-import type { Step, Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Step, type Plan } from '../src/domain/planning/execution_plan.js';
 
 const baseDeliveryDocs = ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'];
 
@@ -13,7 +13,6 @@ function mkStep(over: Partial<Step> & Pick<Step, 'id' | 'phase'>): Step {
     title: over.title ?? `${over.phase} ${over.id}`,
     description: over.description ?? `${over.phase} ${over.id}`,
     systemPrompt: over.systemPrompt ?? '本 Step 专属提示词：明确范围、输入、产出、验收与禁令。',
-    role: over.role ?? 'Coder',
     tools: over.tools ?? [],
     inputs: over.inputs ?? [],
     outputs: over.outputs ?? [],
@@ -172,9 +171,10 @@ describe('calibratePlanCoverage', () => {
     ];
     const calibrated = calibratePlanCoverage(steps);
     const plan: Plan = {
-      version: '1',
+      version: PLAN_VERSION,
       language: 'python',
       intent: 'greenfield',
+      phaseId: 'P1',
       projectType: 'application',
       requirementDigest: 'd',
       complexityAssessment: {

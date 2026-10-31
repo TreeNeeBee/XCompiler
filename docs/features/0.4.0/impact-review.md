@@ -299,7 +299,7 @@ The 2026-09-05 assessment updates the dependency order as follows:
    complete raw evidence and typed protocol/business rejection before migrating production callers.
 4. Continue from the authored catalogue/YAML loader and RuleDecorator foundation. Connect the
    explicitly configured embedding adapter and versioned vector index with their real RuleSelector
-   caller and the separate nonrecursive calibration coordinator against those contracts. Use the existing J06 scenario
+   caller and the separate nonrecursive calibration coordinator against those contracts. Use the existing J06 (scenario-outcome judgement) scenario
    judge as the first vertical integration point.
 5. Migrate approved Planner/Executor/role/language/project instruction batches with one authoring
    authority. Include Plugin integrity, context windows, audit/replay and caller tests in each batch.

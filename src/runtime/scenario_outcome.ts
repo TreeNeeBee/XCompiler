@@ -8,7 +8,7 @@ import {
   judgeScenarioOutcome, readScenarioOutcomeMessages, consumeScenarioOutcomeProtocol,
   SCENARIO_OUTCOME_RULE,
   SCENARIO_OUTCOME_TEMPLATE_VERSION, SCENARIO_OUTCOME_PROTOCOL,
-  type ScenarioArtifactReader,
+  type FrozenRequirements, type ScenarioArtifactReader,
 } from '../application/execution/scenario_outcome_judge.js';
 import type { RuleRequestSnapshot } from '../application/rules/rule_request_snapshot.js';
 import { canonicalRuleJson } from '../application/rules/rule_evidence_encoding.js';
@@ -43,6 +43,8 @@ export async function judgeRuntimeScenarioOutcome(input: {
   scenario: DeliveryGateScenario;
   scene: DeliveryGateScene;
   requirementDigest?: string;
+  plannedScope?: readonly string[];
+  frozenRequirements?: FrozenRequirements;
   acceptedContractChanges?: readonly AcceptedContractChange[];
   artifacts?: ScenarioArtifactReader;
   signal?: AbortSignal;
@@ -68,13 +70,14 @@ export async function judgeRuntimeScenarioOutcome(input: {
   let correction: RuntimeProtocolCorrection | undefined;
   const verdict = await judgeScenarioOutcome({
     before: input.before, scenario: input.scenario, scene: input.scene,
-    requirementDigest: input.requirementDigest, acceptedContractChanges: input.acceptedContractChanges,
+    requirementDigest: input.requirementDigest, plannedScope: input.plannedScope,
+    frozenRequirements: input.frozenRequirements, acceptedContractChanges: input.acceptedContractChanges,
     artifacts: input.artifacts, signal,
     send: async (messages) => {
       const payload = readScenarioOutcomeMessages(messages);
       const snapshot = await prepareRuntimeRuleRequest({
         config: input.config, container, recordReplay: input.recordReplay, router, modelPool, logicalRequestId,
-        // The J06 template is English-only, so its Rules render in English too.
+        // The scenario judgement template is English-only, so its Rules render in English too.
         context: { projectId: owner.projectId, role: 'project-manager', work: 'judge.scenario', locale: 'en' },
         bind: { role: 'project-manager', work: 'judge.scenario' }, taskSummary: payload.expectation, signal,
       });
@@ -85,7 +88,7 @@ export async function judgeRuntimeScenarioOutcome(input: {
         outputProtocol: SCENARIO_OUTCOME_PROTOCOL, messages: [...messages], signal,
       } });
       signal?.throwIfAborted();
-      // J06 reads its reply after adoption, so its one correction follows an unresolved assessment.
+      // The scenario judgement reads its reply after adoption, so its one correction follows an unresolved assessment.
       if (processed.assessment.outcome === 'unresolved') {
         correction = await correctRuntimeProtocolResponse({ container, router, audit, response: processed.source.response,
           protocol: SCENARIO_OUTCOME_PROTOCOL, signal });
@@ -128,7 +131,9 @@ export async function resumeRuntimeScenarioOutcome(input: {
     ? await recoverRuntimeProtocolCorrection({ container, logicalRequestId, signal,
       originalProviderAttemptId: restored.source.response.providerAttemptId })
     : undefined;
-  const verdict = consumeScenarioOutcomeProtocol(restored.assessment, payload.evidence, corrected?.text);
+  const verdict = consumeScenarioOutcomeProtocol(restored.assessment, payload.evidence, corrected?.text, {
+    comparePlan: payload.frozenRequirements !== undefined,
+  });
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,
     logicalRequestId: restored.source.input.logicalRequestId, owner: restored.source.input.owner, verdict });

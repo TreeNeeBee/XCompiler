@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseReviewSelection } from '../application/rules/rule_review_selection.js';
 import { protectAuditContent } from '../audit/audit.js';
 import {
   ruleSelectionDraftFromSnapshot, validateRuleRequestSnapshot, type RuleRequestSnapshot,
@@ -24,7 +25,6 @@ const Event = z.object({
     }).strict() }).strict(),
   }).passthrough(),
 }).passthrough();
-const Selection = z.object({ selectedRuleIds: z.array(z.uuid()) }).strict();
 
 /** Checks the pinned final-send digest, never regenerating a past request from today's template. */
 export class LLMRuleReviewEvidenceVerifier implements RuleReviewEvidenceVerifier {
@@ -60,7 +60,7 @@ export class LLMRuleReviewEvidenceVerifier implements RuleReviewEvidenceVerifier
       throw new RuleReviewEvidenceError('mismatch', { ...details, field: 'producer' });
     }
     let selected: string[];
-    try { selected = Selection.parse(JSON.parse(data.output)).selectedRuleIds; }
+    try { selected = parseReviewSelection(data.output, snapshot.ranking.candidates); }
     catch (cause) { throw new RuleReviewEvidenceError('invalid', { ...details, field: 'output' }, { cause }); }
     if (selected.length !== reference.selectedRuleIds.length
       || selected.some((id, index) => !sameId(id, reference.selectedRuleIds[index]!))) {

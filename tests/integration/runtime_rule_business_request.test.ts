@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { storedRuleMaterial } from '../support/rule_request_files.js';
+import { ruleList } from '../support/rule_fixtures.js';
 import { AuditLogger, protectAuditContent, type AuditEvent } from '../../src/audit/audit.js';
 import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_encoding.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
@@ -56,7 +58,7 @@ function plugin(hooks: {
 }
 
 async function endpoint(status = 200, options: { review?: boolean } = {}) {
-  const calls: { path: string; input: { model: string; messages: ChatMessage[]; input?: string[] } }[] = [];
+  const calls: { path: string; input: { model: string; messages: ChatMessage[]; input?: string[]; max_tokens?: number } }[] = [];
   let chatCalls = 0;
   const server = createServer((request, response) => {
     let body = '';
@@ -72,7 +74,7 @@ async function endpoint(status = 200, options: { review?: boolean } = {}) {
         return;
       }
       chatCalls++;
-      const responseOutput = options.review && chatCalls === 1 ? JSON.stringify({ selectedRuleIds: [id(4)] }) : output;
+      const responseOutput = options.review && chatCalls === 1 ? JSON.stringify({ selected: ['c1'] }) : output;
       response.end(JSON.stringify(status === 200 ? {
         model: 'reported-model', choices: [{ index: 0, message: { content: responseOutput }, finish_reason: 'stop' }],
       } : { error: { message: 'The configured provider rejected this request.' } }));
@@ -111,19 +113,19 @@ async function fixture(options: {
   const { config } = await loadConfigWithPath(configPath);
   const sourceRoot = path.join(root, 'compiler-rules');
   await fs.mkdir(sourceRoot);
-  await fs.writeFile(path.join(sourceRoot, 'base.yaml'), `# AUTHOR_COMMENT_ONLY\n${YAML.stringify({
-    schemaVersion: '1', id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
-      id: id(2), version: '1', category: 'general', level: 'announce',
+  await fs.writeFile(path.join(sourceRoot, 'base.yaml'), `# AUTHOR_COMMENT_ONLY\n${YAML.stringify(ruleList({
+    id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
+      id: id(2), version: '1', level: 'announce',
       instruction: 'PINNED_RULE: retain the operation evidence.\r\n  Preserve literal # content.',
-      retrievalDescription: 'Operation evidence declaration',
+      description: 'Operation evidence declaration',
     }],
-  })}`);
-  if (options.optional) await fs.writeFile(path.join(sourceRoot, 'optional.yaml'), YAML.stringify({
-    schemaVersion: '1', id: id(3), version: '1', title: 'Evidence handling', slot: '0x0300', rules: [{
-      id: id(4), version: '1', category: 'framework', level: 'advised',
-      instruction: 'OPTIONAL_RULE: preserve the operation evidence.', retrievalDescription: 'Operation evidence handling',
+  }))}`);
+  if (options.optional) await fs.writeFile(path.join(sourceRoot, 'optional.yaml'), YAML.stringify(ruleList({
+    id: id(3), version: '1', title: 'Evidence handling', slot: '0x00020000', rules: [{
+      id: id(4), version: '1', level: 'advised',
+      instruction: 'OPTIONAL_RULE: preserve the operation evidence.', description: 'Operation evidence handling',
     }],
-  }));
+  })));
   const loadCatalogue = vi.fn(() => loadYamlRuleCatalogue([
     { root: sourceRoot, relativePath: 'base.yaml', owner: { kind: 'compiler' } },
     ...(options.optional ? [{ root: sourceRoot, relativePath: 'optional.yaml', owner: { kind: 'compiler' as const } }] : []),
@@ -138,7 +140,9 @@ async function fixture(options: {
     options.plugins, async () => ({ ok: true, latencyMs: 0, detail: 'controlled loopback provider' }), recordReplay);
   return {
     input: {
-      config: config.rules, container, recordReplay, router, logicalRequestId: id(800),
+      // Embedding selection is not configurable in 0.4; this composes it to keep its machinery covered (11.8).
+      config: options.optional ? { ...config.rules, selection: { strategy: 'embedding' as const } } : config.rules,
+      container, recordReplay, router, logicalRequestId: id(800),
       context: { role: 'python-developer' as const, language: 'python' as const }, required: [],
       loadCatalogue, taskSummary: 'Inspect the operation.', messages: structuredClone(frameworkMessages),
     },
@@ -167,9 +171,9 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
     const snapshot = JSON.parse(await current.input.container.state.readFile(`rules/requests/snapshots/${id(800)}.json`));
     expect(result.binding).toEqual({
       schemaVersion: 1, kind: 'business', logicalRequestId: id(800), snapshotDigest: snapshot.digest,
-      promptVersion: 'rule-business-request/1',
+      promptVersion: 'rule-business-request/2',
       requestDigest: ruleEvidenceDigest({
-        promptVersion: 'rule-business-request/1', messages: protectAuditContent(messages, 'redacted'),
+        promptVersion: 'rule-business-request/2', messages: protectAuditContent(messages, 'redacted'),
       }),
     });
     expect(JSON.stringify(messages)).not.toContain(result.binding.requestDigest);
@@ -305,6 +309,39 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
     expect(skipped?.data).toMatchObject({ provider: 'primary', contextWindowTokens: 2048, logicalRequestId: id(800) });
   });
 
+  it('counts Chinese text at about a token per character when deciding which provider can hold it', async () => {
+    const primary = await endpoint();
+    const secondary = await endpoint();
+    const current = await fixture({ endpoint: primary.url, primaryContextWindow: 2048,
+      fallback: { endpoint: secondary.url, contextWindow: 131072 } });
+    // 900 Han characters: about 300 tokens at three characters a token, about 900 at one a character.
+    const extra = '保留此上下文内容'.repeat(112) + '保留此上下';
+    expect(extra).toHaveLength(901);
+    const result = await sendRuntimeRuleRequest({ ...current.input,
+      messages: [...current.input.messages, { role: 'user', content: extra }] });
+    expect(result.response).toMatchObject({ provider: 'secondary', output });
+    expect(primary.calls).toHaveLength(0);
+    const skipped = (await current.events()).find((event) => event.messageId === 'llm.provider_capacity_skipped');
+    expect(skipped?.data).toMatchObject({ provider: 'primary', contextWindowTokens: 2048 });
+    expect((skipped?.data as { promptTokens: number }).promptTokens).toBeGreaterThan(901);
+  });
+
+  it('reserves the reply room a Chinese prompt leaves, so a provider that can hold both is kept', async () => {
+    const primary = await endpoint();
+    const secondary = await endpoint();
+    const current = await fixture({ endpoint: primary.url, primaryContextWindow: 8192,
+      fallback: { endpoint: secondary.url, contextWindow: 131072 } });
+    // About 6,400 prompt tokens: the reply budget the remaining room allows (512) fits an 8,192 window.
+    // Projected from characters, the prompt would look small and claim a 1,024-token reply, which does not.
+    const extra = '保留此上下文内容'.repeat(764) + '保留此上下文内';
+    expect(extra).toHaveLength(6119);
+    const result = await sendRuntimeRuleRequest({ ...current.input,
+      messages: [...current.input.messages, { role: 'user', content: extra }] });
+    expect(result.response).toMatchObject({ provider: 'primary', output });
+    expect(secondary.calls).toHaveLength(0);
+    expect(primary.calls[0]!.input.max_tokens).toBe(512);
+  });
+
   it('fails with every provider\'s capacity when no provider of the pool can hold the request', async () => {
     const primary = await endpoint();
     const secondary = await endpoint();
@@ -340,7 +377,7 @@ describe('Runtime business Rule requests at the real provider boundary', () => {
     expect(current.input.loadCatalogue).toHaveBeenCalledTimes(1);
     expect(result.binding.snapshotDigest).toBe(snapshot.digest);
     expect(server.calls[0]!.input.messages[0]!.content).toContain('PINNED_RULE:');
-    expect(JSON.parse(await current.input.container.state.readFile(`rules/requests/snapshots/${id(800)}.json`))).toEqual(snapshot);
+    expect(JSON.parse(await current.input.container.state.readFile(`rules/requests/snapshots/${id(800)}.json`))).toEqual(storedRuleMaterial(snapshot));
   });
 
   it('rejects a missing business role before selecting a provider', async () => {

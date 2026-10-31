@@ -1,12 +1,74 @@
 # 0.4.0 Rule artifacts and development interfaces
 
-> **2026-10-16 修改合同**：applicability 的 `roles` 改为角色 ID、`scenarios` 改为 `works`；快照按执行固定；正文支持 locale 变体；J06 迁至工作段（[变更清单](2026-10-15-review-change-list.md) D-6、D-13、D-18、M-R7）。
+> **2026-10-16 修改合同**：applicability 的 `roles` 改为角色 ID、`scenarios` 改为 `works`；快照按执行固定；正文支持 locale 变体；场景结果判定迁至工作段（[变更清单](2026-10-15-review-change-list.md) D-6、D-13、D-18、M-R7）。
 
-Updated 2026-10-15. This describes authored F1/R1 components, J06/P01/P02/P03/Executor production composition
+Updated 2026-10-15. This describes authored foundation and catalogue components, scenario-outcome judgement, clarification, phase-plan, phase-decomposition and Executor production composition
 and pre/post-graph planning identity. Initial focused checks have run; complete functional milestones are
 verified before further development and release remains last. Installed behavior is not yet
 verified. Current results are recorded in HANDOVER. The approved behavior is in
 [remaining-decisions.md](remaining-decisions.md); overall progress is in [HANDOVER.md](HANDOVER.md).
+
+## Current state after the RuleChain revision (2026-10-20)
+
+This section is authoritative where it differs from the sections below, which keep the earlier
+milestone record. The behavioural contract is the [RuleChain revision](2026-10-18-rulechain-revision.md),
+section 11 in particular; decisions are D-22 to D-34 in the [change list](2026-10-15-review-change-list.md).
+
+**Released RuleLists** (26, `rules/*.yaml`, compiled manifest `src/infrastructure/rules/compiler_rule_manifest.ts`):
+
+| Slot | Lists |
+|---|---|
+| `0x00000000` | Genesis declarations |
+| `0x00000001` / `0x00000002` | Base segment: level definitions, output language (variant chosen by `config.locale`) |
+| `0x00001001` / `0x00001002` | Language contracts: TypeScript, Python |
+| `0x00010001`–`0x00010008` | Role identities |
+| `0x00011000`–`0x00011003` | Work fragments: execution common, baseline deferred, repair, change |
+| `0x00011100`–`0x00011107` | Step works |
+| `0x00011300` | Scenario outcome judgement rubric |
+
+Drafts not yet in force: coding standards (`0x00002001`/`0x00002002`), the Step work list rewrite
+and planning work lists (`0x00011200`+), in [`drafts/`](drafts/).
+
+**Schema `"2"`**: a Rule has `id` (UUID; its first eight hex digits are the short key, unique in its
+list), `name`, `version`, `level`, `description` and `instruction` as `{en, zh}` maps, `ctime`,
+`mtime`, `digest`, and optional `applicability` and `conflicts`. A list has `id`, `title`, `slot`,
+`version`, times, `digest` (covering each Rule's version and digest), optional `references` and
+`applicability`. Genesis and base Rules declare no applicability.
+
+**Applicability** (`src/domain/rules/selection.ts`, `RULE_APPLICABILITY_DIMENSIONS`): projects,
+languages, roles, works, project modes, project types, tools, paths the request may write
+(`src/domain/rules/path_pattern.ts`) and failure categories. Step requests carry the plan's mode and
+type, the tools offered, the declared outputs plus the write grants Runtime adds (a verification
+Step's supplement root, the fixture directory) and, for a repair, the latest failure's typed category.
+
+**Binding** (`src/application/rules/rule_binding.ts`): genesis and the base always; the language list
+filtered by the work's minimum Rule set (`MINIMUM_RULE_SET`) and by applicability; the role list, work
+fragments and the Step or operation work list, also filtered by applicability; referenced lists for
+Step works. `ruleBindingProblems` checks every binding the workflow can make.
+
+**Selection** (`src/application/rules/rule_selector.ts`, `src/domain/rules/partitions.ts`):
+strategy `bound-only` in 0.4 (`rules.selection.strategy`); `embedding` and `review` run only over the
+open segments the work's partition names, with fallback to the required Rules when the selection
+service fails. Summaries for selection are bounded to 2,000 characters.
+
+**Rendering** (`src/application/rules/rule_decorator.ts`): grouped text, one `[slot] title (vX)` header
+per list, Rules numbered by authored position with their level meaning, instruction continuation
+lines indented, no identities. Business prompt version `rule-business-request/2`.
+
+**Storage**: drafts and snapshots under `<state>/rules/requests/{drafts,snapshots}` keep considered
+Rules as `ruleRef` digests; bodies live once in `<state>/rules/requests/content/<hex>.json`
+(`src/infrastructure/rules/rule_content_store.ts`). A local Rule's source records the overlay
+revision and digest and, for a changed released list, the base version and digest it was made
+against. A review that ended in an integrity error leaves `review-failures/<id>.json`, which a retry
+reports again.
+
+**Maintenance**: `xcompiler rule` (`src/cli/rule.ts` over `src/runtime/rule_maintenance.ts`) lists,
+shows, adds, updates (including `--scope`), creates lists, discards, checks, renders, exports and
+promotes; `rm` is disabled. Edits go to the installation's local overlay
+(`<XC_PATH or ~/.xc>/rules-local`, or `XC_RULES_LOCAL`). An overlay whose base changed, or a local
+list whose slot an upgraded base took (`slot_taken`), waits for review; a damaged overlay file stops
+requests and is reported by `check` and removable by `discard`. `promote` validates the whole batch
+before writing and keeps author comments.
 
 ## YAML definitions and source authority
 
@@ -47,12 +109,7 @@ strings participate; source paths, YAML comments and equivalent formatting do no
 symlinks observed by its checks fail. Errors retain root/source context, actual/expected identities
 or the original filesystem/parser/schema cause.
 
-The released resources are 23 RuleLists (M-D): [`rules/genesis.yaml`](../../../rules/genesis.yaml)
-at `0x0000`, the TypeScript runtime/test contract at `0x0101` (`language-typescript.yaml`), eight role
-identities at `0x0201–0x0208` (`role-*.yaml`), the shared and mode fragments at `0x0240–0x0243`
-(`work-execution-common`, `work-design-baseline-deferred`, `work-repair-debug`, `work-change-apply`),
-the eight Step works at `0x0250–0x0257` (`work-*.yaml`) and J06 at `0x02A0`. Python's `0x0102` is
-empty. Genesis is one RuleList with three `general`/`announce` Rules at `0x0000`. Its declarations grant no capability, do not override
+The released resources are listed in the current-state section above (26 RuleLists after the revision). Earlier milestones used the 16-bit layout recorded in the change list section 1.8. Genesis is one RuleList with three `general`/`announce` Rules at `0x0000`. Its declarations grant no capability, do not override
 cancellation or host constraints and do not establish passing gates. Manual instruction changes
 require updating affected Rule/list versions, regenerating the normalized definition digest and
 reviewing the compiled manifest together. No Runtime/Plugin/model or derived-project update entry
@@ -62,13 +119,13 @@ npm and standalone artifacts declare the `rules` resource. Missing either requir
 packaging before build and before staging publication. All associated tests remain unrun; the
 child-process pkg resolver simulation does not substitute for the native package gate.
 
-The J06 resource is [`rules/scenario-outcome.yaml`](../../../rules/scenario-outcome.yaml): one
+The scenario-outcome judgement resource is [`rules/scenario-outcome.yaml`](../../../rules/scenario-outcome.yaml): one
 `scenario`/`required` Rule in work-segment slot `0x02A0`, list and Rule version `2.1.0` (2.1.0 adds the
 zh variant; the en text is unchanged). The list declares `works: [judge.scenario]`; role eligibility
 belongs to business code, not this rubric. Runtime binds it through the `judge.scenario` work and
-J06 checks Rule `a707ec22-a5d2-45da-83b3-823d96d18f20` is pinned; its level alone does not load it. The existing
+scenario-outcome judgement checks Rule `a707ec22-a5d2-45da-83b3-823d96d18f20` is pinned; its level alone does not load it. The existing
 expectation/evidence and Bug/CR rubric is authored here once. It excludes unrelated work and
-does not create an embedding dependency for required-only J06. Its compiled manifest pins this
+does not create an embedding dependency for required-only scenario-outcome judgement. Its compiled manifest pins this
 version and the normalized definition digest.
 
 [`RuleCatalogue`](../../../src/domain/rules/catalogue.ts) validates the following strict fields:
@@ -103,7 +160,7 @@ are never retrieval candidates and enter a request only through Runtime's bindin
 language, mode) it binds genesis, the language list when one exists, the role list, and for Step
 work `execution.common`, the mode fragment (`repair.debug`, `change.apply`, or
 `design.baseline-deferred` for a declarative Step whose baseline execution is deferred and which is
-not repairing a Bug) and the base Step work. Planning binds language and role; J06 binds role and
+not repairing a Bug) and the base Step work. Planning binds language and role; scenario-outcome judgement binds role and
 `judge.scenario`. A work list's `works` names the request works it may be bound under (a Step work
 list also accepts `repair.debug` and `change.apply`); the required-binding applicability check still
 rejects a binding outside it. A snapshot recording a bound-segment Rule as optional is invalid.
@@ -154,7 +211,7 @@ calibration on its fixed protocol template.
 ## Selector stages
 
 [`RuleSelector`](../../../src/application/rules/rule_selector.ts) exposes the following development
-interfaces. Runtime preparation composes these Application calls; the J06 Phase-delivery callback
+interfaces. Runtime preparation composes these Application calls; the scenario-outcome judgement Phase-delivery callback
 now invokes that preparation. Other approved callers remain to migrate.
 
 | Method | Input and result | Important boundary |
@@ -224,7 +281,7 @@ scoring or cancellation overrides inside `options` fail as `invalid_input`; the 
 separate `signal` remains authoritative. The adapter fixes `scoreSuccess: false`, protects capture
 callbacks through the existing Plugin host, and does not pass a business validator to Router.
 It returns `{ output, response, binding }` after checking exactly one matching producer/attempt and
-the final text after Plugin hooks. Malformed output is retained for the caller/C1, not parsed or
+the final text after Plugin hooks. Malformed output is retained for the caller/protocol correction, not parsed or
 repaired here. `response.capture: unavailable` is preserved without claiming completion.
 
 The business audit binding is `{ schemaVersion: 1, kind: "business", logicalRequestId,
@@ -238,7 +295,7 @@ outside model retry and quality scoring, apart from genuine transport failures g
 This is an internal send facility, not persisted business-response recovery. The production caller
 must still own its durable ID, original business messages, protocol/template identity and original
 response recovery. This adapter does not reload or validate a historical business response, and it
-does not migrate J06, Planner or Executor. New tests remain unrun.
+does not migrate scenario-outcome judgement, Planner or Executor. New tests remain unrun.
 
 ## Embedding identity and versioned vector index
 
@@ -367,7 +424,7 @@ review and cannot be retried automatically. The result records the draft digest,
 actual provider/model, selected candidate IDs, protocol version and final-request digest.
 `FileRuleRequestStateStore` stores drafts, claims
 and results under the Runtime-supplied state root with the same no-replace publication rules. It is
-called by Runtime preparation, including the J06 Phase-delivery callback.
+called by Runtime preparation, including the scenario-outcome judgement Phase-delivery callback.
 
 The coordinator requires an injected `RuleReviewEvidenceVerifier`. It verifies before publishing
 a fresh review result, before finalizing a retained result, and before returning a recovered reviewed
@@ -403,8 +460,8 @@ transport. It accepts a unique candidate subset or explicit empty result and doe
 business validator or start a second calibration attempt. Its client, role-pool composition and
 Runtime preparation are connected; business caller migration remains pending.
 
-[`assessResponseCompletion`](../../../src/llm/completion_eligibility.ts) is a pure F1 boundary for
-the provider facts used by later protocol correction. The C1 continuation now checks finish reasons:
+[`assessResponseCompletion`](../../../src/llm/completion_eligibility.ts) is a pure request-and-evidence foundation boundary for
+the provider facts used by later protocol correction. The protocol-correction continuation now checks finish reasons:
 `length`/`incomplete` remain truncated; missing/unknown/mixed facts remain unavailable. Explicit
 refusal/filter/tool-call reasons are complete but ineligible. Internal JSON inspection/proof entries
 call this boundary; production callers do not. Message/delta payloads now retain refusal/tool fields
@@ -412,7 +469,7 @@ through capture, audit and replay. `stop` plus a native signal remains ineligibl
 payload inspection and malformed payloads remain unavailable. No corrector or business judgement occurs
 here; the first representation proofs are described in [output-calibration.md](output-calibration.md).
 
-The 2026-10-06 C1 entry validates both original and candidate routed evidence using the schema shared
+The 2026-10-06 protocol-correction entry validates both original and candidate routed evidence using the schema shared
 with the business sender. Completion cannot apply to different routed output. Candidate request and
 attempt identity are distinct from the original, and its requested/reported model must match the
 original actual producer. The fixed protocol-only template and exact message guard are authored;
@@ -431,7 +488,7 @@ Rule prompt protection and message-subsequence semantics do not substitute for t
 read-only resume path that restores the original raw response by request ID. It neither selects
 Rules nor replenishes the separate Rule-review budget. Production caller integration remains open.
 
-The 2026-10-10–11 V1 input foundation references this already-persisted business Rule snapshot by its
+The 2026-10-10–11 scenario vertical slice input foundation references this already-persisted business Rule snapshot by its
 digest. `BusinessRequestInputs.capture` verifies that it belongs to the same logical request and
 role/work/Project context, including raw low-score review evidence. It never accepts a caller's
 arbitrary snapshot digest or starts a new selection. The framework messages, caller-owned scenario
@@ -450,11 +507,11 @@ review verification. `resume` restores exact input values and repeats snapshot/r
 it does not load today's Rule sources, require embedding or replenish review allowance. Irreversible
 redaction makes exact resume fail, although fresh capture may verify the protected representation
 against live input. These input records do not prove dispatch, retain a response or impose a business
-send budget. Production J06/build/run adoption and dispatch/response binding remain pending. New
-store/audit/Runtime cases are authored, unrun; the shared JSONL reader also requires existing Rule/C1
+send budget. Production scenario-outcome judgement/build/run adoption and dispatch/response binding remain pending. New
+store/audit/Runtime cases are authored, unrun; the shared JSONL reader also requires existing Rule/protocol correction
 regression execution and actual-call falsification at G1.
 
-The 2026-10-12 V1 sender extends that input foundation with per-provider-attempt evidence. Adopting
+The 2026-10-12 scenario vertical slice sender extends that input foundation with per-provider-attempt evidence. Adopting
 callers use the `business-input` binding: existing snapshot/prompt digests plus `inputRecordId`,
 `inputRecordDigest` and `inputDigest`. The final guard supplies the actual post-Plugin messages,
 provider/model, capacity and attempt ID. Before transport it writes required
@@ -487,7 +544,7 @@ while retaining its existing asynchronous advisory contract. The scope and audit
 from provider input and replay keys. New store,
 audit, Router/Plugin and Runtime loopback tests are authored, unrun; G1 must falsify actual composition,
 final audit/publication/verification, scope propagation and response/recovery binding calls. Selected
-response/result persistence and J06/build/run migration remain pending.
+response/result persistence and scenario-outcome judgement/build/run migration remain pending.
 Scoped Plugin composition also requires its logger explicitly: missing dependency and a wrong
 configured ledger fail instead of omitting required hook evidence. Required error-notification audit
 failure keeps the audit type and original cause, while cancellation retains its primary control.
@@ -506,11 +563,11 @@ normalization repeats value-preservation proof, and the result links the adopted
 version. Neither record contains message/output bodies or a business verdict. Logical-request-only
 resume restores exact original materials and rechecks both audits, bindings and deterministic facts.
 No response authority is `not-retained`; adopted response without published result is `retained`;
-verified result is `processed`. Resume performs no send, new selection, result publication or C1 claim.
-These composition paths and real-file/Runtime cases are authored, unrun. The following J06 migration
+verified result is `processed`. Resume performs no send, new selection, result publication or protocol correction claim.
+These composition paths and real-file/Runtime cases are authored, unrun. The following scenario-outcome judgement migration
 now uses them in production source; executed gates and call-site falsification remain at G1.
 
-### J06 caller and original-evidence recovery
+### Scenario-outcome judgement caller and original-evidence recovery
 
 [`judgeRuntimeScenarioOutcome`](../../../src/runtime/scenario_outcome.ts) composes explicit required
 selection, retained business send and deterministic protocol processing from the real `runExecute`
@@ -537,7 +594,7 @@ distinguishes the Project-owned `scenario-judgement` and `project-planning-opera
 the strict pre-graph `planning-operation` branch. Each owner pins role/version, work and the resolved
 model-pool binding. `operationId` is a normalized UUID for caller correlation, not a canonical Domain
 ID. Pre-graph planning has no Project/Phase/Actor fields; its operation fixes the role and work.
-Project-owned P03 and J06 use a registered Actor and retain its `actorId` and role version. M-R
+Project-owned phase-decomposition and scenario-outcome judgement use a registered Actor and retain its `actorId` and role version. M-R
 changes owner material; pre-M-R workspaces are not migrated. Recovery of a retained current-contract
 request preserves its original bytes and digests rather than rebuilding identity from current definitions.
 
@@ -551,7 +608,7 @@ These pre-graph planning snapshots must have `requestKind: business` and no Proj
 verification, recovery and retained sending check this binding. Final attempt metadata and recovery
 require the original input's role and an originally allowed provider as well as its record/snapshot
 hashes; matching attempt/audit/provider roles alone are insufficient.
-Scenario binding retains its existing PM/Project contract, and the J06 consumer rejects a planning
+Scenario binding retains its existing PM/Project contract, and the scenario-outcome judgement consumer rejects a planning
 owner before reading scenario-specific fields. No new lifecycle, scoring or correction owner is
 introduced. Existing audit adapters already parse and preserve this shared input/attempt material.
 
@@ -559,7 +616,7 @@ The raw retained sender rejects `validate` and uses `scoreSuccess: false`; the s
 sender is used by the production ports described below. Those ports preserve
 original versioned parsing context/i18n messages, Router candidate validation/scoring and outer
 semantic feedback, with producer/protocol assessment before business validation. Post-graph
-planning now has its real Project context in the P03 milestone described below. These dated
+planning now has its real Project context in the phase-decomposition milestone described below. These dated
 foundation cases preceded milestone checks; G1 must falsify the actual role selection, snapshot ownership, attempt-input
 recovery binding and scenario-consumer ownership calls.
 
@@ -576,28 +633,28 @@ candidate feedback/fallback path. Required rejected-candidate audit retains its 
 messages, producer facts and structured error cause. Other callback failures/cancellation get a
 required `llm.provider_validation_error` and propagate without retries, fallback or scoring; audit
 failure preserves the original and storage causes. Plugin cannot replace the callback, and fixed
-Q0 correction explicitly rejects it. This does not add C1 allowance, adopt a response or migrate
+Q0 correction explicitly rejects it. This does not add protocol-correction allowance, adopt a response or migrate
 production Planner consumers. Real stream/HTTP/file cases and G1 call-site falsification are pending
 execution.
 
-### P02 production retention and audit-only context
+### Phase-plan production retention and audit-only context
 
 User choice A adds strict versioned `BusinessRequestInput.auditContext` in required audit only.
 The full input digest binds it, metadata omits it, and original parse language must match the Rule
-snapshot. Build injects the mandatory P02 port; original i18n system/user messages remain provider
-material, with required genesis declarations. The P02 rubric remains in i18n until its own extraction.
+snapshot. Build injects the mandatory phase-plan port; original i18n system/user messages remain provider
+material, with required genesis declarations. The phase-plan rubric remains in i18n until its own extraction.
 
 Separate validated send APIs preserve candidate feedback/scoring and prove the adopted response
 actually passed its callback. Raw sends still forbid validators and disable success scoring.
 Completion and independent full-response proof precede original typed business checks. Final
-Plugin identity precedes adoption/process and required P02 judgement audit. Explicit ID recovery
+Plugin identity precedes adoption/process and required phase-plan judgement audit. Explicit ID recovery
 verifies original context/evidence, re-runs pure parsing and sends/writes/advances nothing; no current
 i18n/Rules/project files or automatic request discovery are involved. Existing scoring precedes
-Plugin after/adoption/judgement storage and is not rolled back on later failure. P01/P03 are separate.
-Pure, real file/HTTP and Build cases passed during the P01 node's nearest-path checks; full 0.4
+Plugin after/adoption/judgement storage and is not rolled back on later failure. Clarification and phase-decomposition are separate.
+Pure, real file/HTTP and Build cases passed during the clarification node's nearest-path checks; full 0.4
 acceptance and the remaining call-site falsification are still open.
 
-### P01 clarification production retention
+### Clarification production retention
 
 Build injects `createRuntimeClarificationRequestPort` into the existing PM clarification caller.
 `Planner.clarify` requires that port; it cannot fall back to an unaudited direct send. It pins the
@@ -605,26 +662,26 @@ locale, original system/user messages and parsing flags before awaiting collabor
 `planning-clarification/1` context extends the existing audit-only union; input digests bind it,
 metadata excludes it, and required Rule snapshots retain the same language and PM operation.
 No raw parsing context is added to provider messages. Existing i18n instructions remain the single
-framework source until their own approved extraction; J01 policies and question-count/coverage
+framework source until their own approved extraction; clarification-judgement policies and question-count/coverage
 requirements remain in code.
 
 The complete response and independent normalization proof precede original clarification checks.
 The protocol root is `any` so existing arrays and `questions`/`items` containers remain business
 formats; scalar/no-question content fails the unchanged intake contract. Known contract refusals
 are typed business failures; protocol failures are separate. Cancellation and other errors escape
-candidate retry/fallback. There is no new outer repair loop or C1 allowance. Plugin final consistency
+candidate retry/fallback. There is no new outer repair loop or protocol-correction allowance. Plugin final consistency
 precedes adoption and required `llm.clarification_judgement`; existing Router success scoring still
 precedes Plugin after/adoption/judgement and is not rolled back on later storage failure.
 
 `resumeRuntimeClarificationRequest` restores one adopted original request/context/snapshot/reply,
 re-runs its original question checks and returns the questions. It sends, writes and advances nothing,
 reads no latest prompts/Rules/project files, and does not automatically discover interrupted intake
-or recreate user answers. This P01 milestone's implementation and regression cases were completed
+or recreate user answers. This clarification milestone's implementation and regression cases were completed
 before tests ran. Core, functional integration and e2e gates passed, and actual Build/validation calls
-were falsified and restored. Release-resource failures are separately recorded in HANDOVER; P03
+were falsified and restored. Release-resource failures are separately recorded in HANDOVER; phase-decomposition
 and full Executor migration remain separate.
 
-### P03 phase decomposition retention
+### Phase decomposition retention
 
 `planning-phase-decomposition/1` retains strict audit-only approved PhasePlan, current implementation
 phase, parsing context, clarifications, original available Skill names and semantic attempt/feedback.
@@ -646,9 +703,9 @@ state is added.
 It does not call a model, read current Skills/source/Rules, create evidence or advance phases. Original
 Skill names permit reference validation without activating Skills or granting tools. Required genesis
 selection, Router candidate budget/scoring and Planner two/three semantic attempts are preserved;
-full production C1 correction remains separate. This complete node passed core/functional integration/
+full production protocol correction remains separate. This complete node passed core/functional integration/
 e2e/typecheck/lint/build and fourteen actual-call removal checks, with all 334 restored focused
-cases passing. The shared phase validator rejects duplicate IDs before P02 adoption and Build
+cases passing. The shared phase validator rejects duplicate IDs before phase-plan adoption and Build
 checkpoint reuse, retaining existing feedback/rebuild behavior. Exact outcomes and deferred P1
 resource failures are recorded in HANDOVER.
 
@@ -668,22 +725,22 @@ round cost; conditional quality/debug checks retain existing Router feedback/fal
 grace. `scoreSuccess: false` leaves outcome scoring with its current owner. No new correction
 allowance is introduced, and compiler-local failures do not become product Bugs.
 
-P04-P14 keep their current authoring sources. The trusted provider projection verifies the captured
+The other inventoried instruction sources keep their current authoring sources. The trusted provider projection verifies the captured
 initial user renderer and original protected sequence, renders that one user's existing dynamic
 window values, then protects the exact full projected message array and provider capacity. Other
 messages and selected Rule bytes remain fixed; ToolContext receives that same window. The generic
-Planner/J06 literal boundary is unchanged. Plugins cannot replace trusted projection, validation,
+Planner/scenario-outcome judgement literal boundary is unchanged. Plugins cannot replace trusted projection, validation,
 identity, cancellation or scoring channels.
 
 `resumeRuntimeExecutionTurnRequest` returns one adopted original turn with pure original-context
 validation. It sends/writes nothing and cannot replay Tools, grant permission or advance execution.
 Actual Runtime-to-Runner-to-Executor-to-Tool, local HTTP/FS, recovery, rejection, scoring, Plugin and
-projection checks are recorded with their limits in HANDOVER. Production C1, expanded quote/escape
+projection checks are recorded with their limits in HANDOVER. Production protocol correction, expanded quote/escape
 proofs, per-source extraction and business-Rule activation remain separate work.
 
-The foundations above do not complete F1/R1 or Q5/Q6. Outstanding connections include additional
+The foundations above do not complete foundation and catalogue or Q5/Q6. Outstanding connections include additional
 caller-specific Rule resources and bindings; full request accounting at remaining instruction owners;
-production composition of the C1 calibration coordinator
+production composition of the protocol-correction calibration coordinator
 and additional per-transformation preservation proofs; controlled business-Rule candidate activation; and final
 Plugin/compaction/provider-capacity integrity across every production caller. The authored Runtime
 configuration and state paths above are not evidence of an installed end-to-end feature.

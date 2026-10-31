@@ -29,6 +29,7 @@ import {
   stepContextChars,
 } from './execution_context.js';
 import {
+  renderInvalidSupplementRepair,
   TestPhaseValidator,
   type PairedTestAssetInspection,
 } from './test_phase_validator.js';
@@ -89,6 +90,7 @@ import {
 } from './failure_classification.js';
 import { collectTestOutcomes, unresolvedTestFailures, type TestOutcome } from './test_outcome.js';
 import { acceptedContractChanges } from './accepted_contract_changes.js';
+import { planContractFor } from './plan_contract.js';
 import { roleProfile, type RoleId } from '../../domain/workflow/role.js';
 import { defaultRoleForStep, stepWork, type WorkId } from '../../domain/workflow/work.js';
 import type { RecordReplayController } from '../record_replay/controller.js';
@@ -113,6 +115,8 @@ import {
   extractWorkspacePaths,
 } from './debug_context_snippets.js';
 import { resolveCorrectionChainOrigin } from './correction_provenance.js';
+import { moveIntoRuntimeTemp, stepAttemptTempDir, workingChanges } from '../../workspace/runtime_temp.js';
+import { runtimeOwnedFile } from '../../domain/workspace/runtime_owned_file.js';
 
 export {
   prioritizeAttemptFailureEvidence,
@@ -412,6 +416,17 @@ export class DomainAttemptRunner {
       }
 
       const environment = await this.buildEnvironment(scope, input, debugContext?.suggestions);
+      if (verificationInspection && verificationInspection.invalidSupplements.length > 0) {
+        // First, so the renderer's per-snippet cap never cuts it: it is what this attempt must fix.
+        environment.snippets.unshift({
+          path: `.xcompiler/verification/${input.domainStep.name}-supplements.md`,
+          content: renderInvalidSupplementRepair(
+            this.testValidator(scope).supplementalRoot(input.executionStep),
+            verificationInspection.invalidSupplements,
+            input.plan.language,
+          ),
+        });
+      }
       if (environment.baselineGateExecution.mode !== 'not-applicable') {
         if (environment.verificationScope.testArgs.length === 0) {
           const failureLog = `${input.domainStep.name} declares no executable paired baseline test asset.`;
@@ -456,6 +471,10 @@ export class DomainAttemptRunner {
           },
         );
       }
+      // A retry repairs the latest failure, so its brief, not the opening one, names the category.
+      // It is built from that failure's log, whose typed failure decides the category: Rule
+      // applicability reads it, and the rendered retry text it would otherwise be parsed from is prose.
+      const retryBrief = previousAttempt ? briefForAttemptFailure(previousAttempt, input.executionStep.phase) : undefined;
       const result = await environment.executor.run({
         step: input.executionStep,
         stepName: input.domainStep.name,
@@ -468,6 +487,7 @@ export class DomainAttemptRunner {
         tools: environment.tools,
         ctx: environment.context,
         contextSnippets: environment.snippets,
+        project: { intent: input.plan.intent, projectType: input.plan.projectType },
         ticket: input.ticket,
         changeRequest: input.ticket.type === 'change-request' ? input.ticket : undefined,
         enhancement: input.ticket.type === 'enhancement' ? input.ticket : undefined,
@@ -483,15 +503,8 @@ export class DomainAttemptRunner {
             input.ticket.failure.message,
             retryFeedback,
           ),
-          debugBrief: retryFeedback
-            ? buildDebugBrief({
-                reason: 'The latest attempt for this Bug failed after partial progress.',
-                failureLog: retryFeedback,
-                phase: input.executionStep.phase,
-                targetPhase: input.executionStep.phase,
-                missingOutputs: previousMissingOutputs,
-              }).summary
-            : debugContext?.brief.summary,
+          debugBrief: retryBrief ? retryBrief.summary : debugContext?.brief.summary,
+          ...((retryBrief ?? debugContext?.brief) ? { failureCategory: (retryBrief ?? debugContext!.brief).category } : {}),
           suggestions: debugContext?.suggestions,
           repairRequired: true,
           verificationScope: environment.verificationScope.inheritedFromTicket
@@ -518,6 +531,7 @@ export class DomainAttemptRunner {
         } : undefined,
         layeredContext: assembled.text,
         globalPrompt: input.plan.globalPrompt,
+        planContract: planContractFor(input.plan),
         acceptedContractChanges: await acceptedContractChanges(this.options.repository, {
           projectId: input.domainStep.projectId, phaseId: input.domainStep.phaseId,
         }),
@@ -575,6 +589,42 @@ export class DomainAttemptRunner {
         result,
       );
       if (deliveredContractFailure) return deliveredContractFailure;
+
+      // A verification Step's own supplements are checked once it has run, never before: it is the
+      // only Step that may repair them. What it leaves invalid stays its work, not its source's.
+      const unrepairedSupplements = isVerification(input.domainStep)
+        ? await this.testValidator(scope).invalidSupplements(input.plan, input.executionStep)
+        : [];
+      if (unrepairedSupplements.length > 0) {
+        const failureLog = renderInvalidSupplementRepair(
+          this.testValidator(scope).supplementalRoot(input.executionStep),
+          unrepairedSupplements,
+          input.plan.language,
+        );
+        return await this.failAttempt(scope, baseline, input, {
+          reason: `${input.domainStep.type} verification supplements are not executable tests`,
+          failureLog,
+          failure: {
+            kind: 'execution',
+            category: 'test',
+            code: 'supplement_tests_invalid',
+            message: failureLog,
+            retryable: true,
+            switchProvider: false,
+          },
+          gateFindings: unrepairedSupplements.map((detail): DeliveryGateFinding => ({
+            category: 'test-incomplete',
+            code: 'supplement_asset_invalid',
+            summary: detail,
+            evidence: [failureLog],
+            target: 'current-step',
+            affectedArtifacts: [detail.split(':', 1)[0] ?? detail],
+            dependencyPackages: [],
+          })),
+          executor: result,
+          wikiEntryIds: wikiMatches.map((match) => match.entry.id),
+        });
+      }
 
       const pairedTestInspection = await inspectPairedSourceTests(
         scope.workspace,
@@ -643,6 +693,32 @@ export class DomainAttemptRunner {
           wikiEntryIds: wikiMatches.map((match) => match.entry.id),
         });
       }
+      // A CODE Step that delivers the program's entry has to deliver one that starts. Its unit tests
+      // import the modules directly and never run the entry, so a broken one would otherwise first
+      // fail at functional acceptance, several Steps later, as a Bug routed back here.
+      const entryLaunch = input.executionStep.phase === 'CODE'
+        ? await this.profile.probeEntry(scope.workspace, scope.sandbox)
+        : undefined;
+      if (entryLaunch && !entryLaunch.ok && entryLaunch.entry && input.executionStep.outputs.includes(entryLaunch.entry)) {
+        const detail = `${entryLaunch.command} exit=${entryLaunch.exitCode}${entryLaunch.timedOut ? ' (timed out)' : ''}\n` +
+          (entryLaunch.stderrTail || entryLaunch.stdoutTail);
+        return await this.failAttempt(scope, baseline, input, {
+          reason: `Entry point ${entryLaunch.entry} does not start: ${entryLaunch.command}`,
+          failureLog: detail,
+          assessment,
+          failure: {
+            kind: 'execution',
+            category: 'quality',
+            code: 'entrypoint_launch_failed',
+            message: detail,
+            retryable: true,
+            switchProvider: false,
+            details: { entry: entryLaunch.entry, command: entryLaunch.command, exitCode: entryLaunch.exitCode },
+          },
+          executor: result,
+          wikiEntryIds: wikiMatches.map((match) => match.entry.id),
+        });
+      }
       if (environment.baselineGateExecution.mode !== 'not-applicable') {
         const baselineCalls = result.toolCalls.filter((call) => call.tool === 'run_tests');
         await this.options.audit.event(
@@ -657,13 +733,12 @@ export class DomainAttemptRunner {
             ticketId: input.ticket.id,
             stageValidation: 'passed',
             baselineExecution: environment.baselineGateExecution.mode === 'defer'
-              ? environment.baselineGateExecution.reason === 'initial-pre-code'
-                ? 'skipped-initial-pre-code'
-                : 'skipped-pre-code-correction'
+              ? `skipped-${environment.baselineGateExecution.reason}`
               : baselineCalls.length > 0
                 ? 'passed'
                 : 'not-configured',
             baselineEvidence: baselineCalls.map((call) => call.summary ?? call.error ?? call.tool),
+            ...(entryLaunch?.ok ? { entryLaunch: entryLaunch.command } : {}),
           },
         );
       }
@@ -759,21 +834,10 @@ export class DomainAttemptRunner {
     const toolNames = [...new Set(resolvedToolNames)].filter((name) =>
       baselineGateExecution.mode !== 'defer' || name !== 'run_tests'
     );
-    const baseWrites = incremental
-      ? computeIncrementalAllowedWrites(
-          input.plan,
-          input.executionStep,
-          this.profile,
-          input.ticket,
-        )
-      : computeStepAllowedWrites(input.executionStep);
     const supplementalTestRoot = isVerification(input.domainStep)
       ? this.testValidator(scope).supplementalRoot(input.executionStep)
       : undefined;
-    const allowedWrites = [...new Set([
-      ...baseWrites,
-      ...(supplementalTestRoot ? [supplementalTestRoot, `${TEST_FIXTURE_DIR}/`] : []),
-    ])];
+    const allowedWrites = this.attemptAllowedWrites(scope, input);
     const retryFeedback = await this.latestAttemptFailure(input);
     const rewriteExistingFiles = input.mode === 'debug'
       ? await this.failureEvidenceRewriteTargets(scope, input, allowedWrites, retryFeedback)
@@ -1137,12 +1201,51 @@ export class DomainAttemptRunner {
     }
   }
 
+  /** What this attempt may write: its own outputs, and a verifier's supplement and fixture roots. */
+  private attemptAllowedWrites(scope: ExecutionScope, input: AttemptInput): string[] {
+    const baseWrites = input.mode !== 'normal'
+      ? computeIncrementalAllowedWrites(input.plan, input.executionStep, this.profile, input.ticket)
+      : computeStepAllowedWrites(input.executionStep);
+    const supplementalTestRoot = isVerification(input.domainStep)
+      ? this.testValidator(scope).supplementalRoot(input.executionStep)
+      : undefined;
+    return [...new Set([
+      ...baseWrites,
+      ...(supplementalTestRoot ? [supplementalTestRoot, `${TEST_FIXTURE_DIR}/`] : []),
+    ])];
+  }
+
+  /**
+   * Moves what running the product or its tests left outside this Step's writable scope into the
+   * runtime temp directory, so it never enters the project's history. The tools cannot write there,
+   * so anything found there was produced by a run. A live functional-test Step committed the
+   * workbook its CLI wrote, which a Phase gate then overwrote in the canonical working copy.
+   */
+  private async setAsideRunOutputs(scope: ExecutionScope, input: AttemptInput): Promise<void> {
+    const allowed = this.attemptAllowedWrites(scope, input);
+    const strays = (await workingChanges(scope.git.raw())).filter((change) =>
+      !isAllowedWrite(change.path, allowed) && !isRuntimeMaintained(change.path, input.plan.language));
+    if (strays.length === 0) return;
+    const tempDir = stepAttemptTempDir(input.domainStep.name, input.domainStep.attempts);
+    const moved = await moveIntoRuntimeTemp(scope.workspace, scope.git.raw(), strays, tempDir);
+    await this.options.audit.event('note', `${input.domainStep.name} run outputs set aside in ${tempDir}`, {
+      messageId: 'domain.run_outputs_set_aside',
+      projectId: input.domainStep.projectId,
+      phaseId: input.domainStep.phaseId,
+      stepId: input.domainStep.id,
+      ticketId: input.ticket.id,
+      tempDir,
+      paths: moved,
+    });
+  }
+
   private async recordTicketCommit(
     scope: ExecutionScope,
     input: AttemptInput,
     kind: TicketCommit['kind'],
     summary: string,
   ): Promise<string> {
+    await this.setAsideRunOutputs(scope, input);
     const revision = await scope.git.snapshot(
       input.domainStep.id,
       input.domainStep.attempts,
@@ -1479,6 +1582,15 @@ export function advisoryFailuresForStage(type: StepType): AdvisoryFailureRule[] 
   if (STEP_TYPE_ORDER[type] >= STEP_TYPE_ORDER.CODE) return [];
   // TypeScript names this case explicitly. Python has no equivalent: an empty package checks clean.
   return [{ tool: 'run_program', errorIncludes: 'TS18003' }];
+}
+
+/**
+ * Files Runtime or the sandbox maintains outside any Step's scope: the ignore file, the files Runtime
+ * owns, and the lockfiles a dependency install rewrites. Setting these aside would undo Runtime's work.
+ */
+function isRuntimeMaintained(file: string, language: Language): boolean {
+  return file === '.gitignore' || file === 'package-lock.json' || file === 'npm-shrinkwrap.json' ||
+    runtimeOwnedFile(file, language) !== undefined;
 }
 
 function debugContextFrom(ticket: BugTicket, brief: DebugBrief, matches: DebugWikiMatch[]) {

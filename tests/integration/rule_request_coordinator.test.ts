@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { writeRuleMaterialFile } from '../support/rule_request_files.js';
+import { ruleList } from '../support/rule_fixtures.js';
 import {
   RuleRequestCoordinator,
   type RuleReviewClaim,
@@ -30,7 +32,7 @@ const uuid = (value: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${value.toString(16).pa
 const requestId = uuid(800);
 const createdAt = '2026-09-20T01:02:03.000Z';
 const description = 'Diagnose the current operation from retained evidence';
-const protocolVersion = 'rule-selection-review/1';
+const protocolVersion = 'rule-selection-review/2';
 const requestDigest = `sha256:${'1'.repeat(64)}`;
 const stateRoot = () => path.join(root, 'requests');
 const store = () => new FileRuleRequestStateStore(stateRoot());
@@ -59,22 +61,22 @@ function preparation(options: {
     const catalogue = new RuleCatalogue([
       {
         source: { owner: { kind: 'compiler' }, location: path.join(root, 'base.yaml') },
-        definition: {
-          schemaVersion: '1', id: uuid(10), version: '1.0.0', title: 'Base declaration', slot: 0,
-          rules: [{ id: uuid(11), version: '1.0.0', category: 'general', level: 'announce',
-            instruction: 'Preserve accepted boundaries.', retrievalDescription: 'Base declaration' }],
-        },
+        definition: ruleList({
+          id: uuid(10), version: '1.0.0', title: 'Base declaration', slot: 0,
+          rules: [{ id: uuid(11), version: '1.0.0', level: 'announce',
+            instruction: 'Preserve accepted boundaries.', description: 'Base declaration' }],
+        }),
       },
       {
         source: { owner: { kind: 'compiler' }, location: path.join(root, 'debug.yaml') },
-        definition: {
-          schemaVersion: '1', id: uuid(20), version, title: 'Operation evidence', slot: 0x0300,
-          rules: [{ id: uuid(21), version, category: 'framework', level: 'advised',
-            instruction: `Retained instruction from version ${version}.`, retrievalDescription: description }],
-        },
+        definition: ruleList({
+          id: uuid(20), version, title: 'Operation evidence', slot: 0x00020000,
+          rules: [{ id: uuid(21), version, level: 'advised',
+            instruction: `Retained instruction from version ${version}.`, description: description }],
+        }),
       },
     ]);
-    const selection = await new RuleSelector(catalogue).retrieve({
+    const selection = await new RuleSelector(catalogue).retrieve({ strategy: 'embedding',
       requestKind, context: { projectId: uuid(900), language: 'python', role: 'python-developer', work: 'repair.debug' },
       required: [], taskSummary: 'Inspect the current failed operation.', errorSummary: 'The output lacks evidence.',
       retriever: new RuleVectorRetriever(embedding, new FileRuleVectorIndexStore(path.join(root, 'indexes'))),
@@ -118,6 +120,8 @@ function resultFor(claim: RuleReviewClaim, changes: Partial<RuleReviewResult> = 
 }
 async function writeState(section: string, value: unknown, id = requestId): Promise<void> {
   const target = stateFile(section, id);
+  // Drafts and snapshots keep their Rule bodies in the shared content store (revision 7a).
+  if (section === 'drafts' || section === 'snapshots') return writeRuleMaterialFile(target, path.join(stateRoot(), 'content'), value);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, JSON.stringify(value), 'utf8');
 }
@@ -126,6 +130,43 @@ function expectUnused(selected: ReturnType<typeof preparation>, reviews: ReturnT
   expect(selected.embed).not.toHaveBeenCalled();
   expect(reviews.review).not.toHaveBeenCalled();
 }
+
+describe('a selection its caller already pinned (D-6)', () => {
+  const pinned = (coordinator: RuleRequestCoordinator, selected: ReturnType<typeof preparation>, pinnedDigest: string) =>
+    coordinator.prepare({ logicalRequestId: selected.id, requestKind: selected.requestKind,
+      prepareSelection: selected.prepareSelection, pinnedDigest });
+
+  it('fails instead of selecting current Rules again when the snapshot and its draft are both lost', async () => {
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviewer()), preparation({ lowScore: false }));
+    await fs.rm(stateFile('snapshots'));
+    await fs.rm(stateFile('drafts'));
+    const newer = preparation({ version: '2.0.0' });
+    const reviews = reviewer();
+    await expect(pinned(new RuleRequestCoordinator(store(), reviews), newer, snapshot.digest)).rejects.toMatchObject({
+      name: 'RuleRequestError', reason: 'selection_lost', details: { logicalRequestId: requestId, pinnedDigest: snapshot.digest },
+    });
+    expectUnused(newer, reviews);
+    expect(await store().read(requestId)).toBeUndefined();
+    expect(await store().readDraft(requestId)).toBeUndefined();
+  });
+
+  it('restores a lost snapshot from its own retained draft', async () => {
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviewer()), preparation({ lowScore: false }));
+    await fs.rm(stateFile('snapshots'));
+    const newer = preparation({ version: '2.0.0' });
+    const reviews = reviewer();
+    expect(await pinned(new RuleRequestCoordinator(store(), reviews), newer, snapshot.digest)).toEqual(snapshot);
+    expectUnused(newer, reviews);
+  });
+
+  it('refuses any snapshot other than the pinned one', async () => {
+    const snapshot = await prepare(new RuleRequestCoordinator(store(), reviewer()), preparation({ lowScore: false }));
+    const other = `sha256:${'0'.repeat(64)}`;
+    await expect(pinned(new RuleRequestCoordinator(store(), reviewer()), preparation(), other)).rejects.toMatchObject({
+      reason: 'selection_changed', details: { pinnedDigest: other, snapshotDigest: snapshot.digest },
+    });
+  });
+});
 
 describe('Rule logical-request recovery and persistent review allowance', () => {
   it('reuses a direct selection snapshot without preparing or reviewing again', async () => {
@@ -237,30 +278,47 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     });
   });
 
-  it('keeps a consumed claim after reviewer failure and forbids another dispatch in this process or after restart', async () => {
+  it('keeps a consumed claim after an unrecognized reviewer failure, and reports that failure again on retry', async () => {
     const cause = new Error('Synthetic review failed after dispatch');
     const reviews = reviewer(async () => { throw cause; });
     const selected = preparation();
     const coordinator = new RuleRequestCoordinator(store(), reviews);
+    // The reviewer does not recognize this failure as its service failing, so it surfaces (11.3).
     await expect(prepare(coordinator, selected)).rejects.toBe(cause);
     const claim = await store().readReviewClaim(requestId);
     expect(claim).toBeDefined();
     expect(await store().readReviewResult(requestId)).toBeUndefined();
+    expect(await store().readReviewFailure(requestId)).toMatchObject({ claimId: claim!.claimId, cause: { code: 'unrecognized_failure' } });
 
+    // The one allowed review is spent and ended in that failure: a retry or a restart reports it
+    // again rather than falling back as if the review had been interrupted, and nothing is pinned.
     const currentRetry = preparation({ version: '2.0.0' });
-    await expect(prepare(coordinator, currentRetry)).rejects.toMatchObject({
-      code: 'rule_request_failed', reason: 'review_incomplete', details: { claimId: claim!.claimId },
-    });
+    const surfaced = { code: 'rule_request_failed', reason: 'review_failed', details: { claimId: claim!.claimId, cause: { code: 'unrecognized_failure' } } };
+    await expect(prepare(coordinator, currentRetry)).rejects.toMatchObject(surfaced);
     const restart = preparation({ version: '3.0.0' });
     const restartedReviewer = reviewer();
-    await expect(prepare(new RuleRequestCoordinator(store(), restartedReviewer), restart)).rejects.toMatchObject({
-      code: 'rule_request_failed', reason: 'review_incomplete', details: { reviewRequestId: claim!.reviewRequestId },
-    });
+    await expect(prepare(new RuleRequestCoordinator(store(), restartedReviewer), restart)).rejects.toMatchObject(surfaced);
+    expect(await store().read(requestId)).toBeUndefined();
     expect(reviews.review).toHaveBeenCalledTimes(1);
     expect(currentRetry.prepareSelection).not.toHaveBeenCalled();
     expect(currentRetry.embed).not.toHaveBeenCalled();
     expectUnused(restart, restartedReviewer);
     expect(await store().readReviewClaim(requestId)).toEqual(claim);
+  });
+
+  it('pins the required Rules when a claimed review was interrupted without a recorded failure', async () => {
+    const draft = await store().createDraft(await preparation().prepareSelection());
+    // A process that claimed the review and stopped before any outcome: a crash leaves no record.
+    await store().claimReview({
+      schemaVersion: 1, logicalRequestId: requestId, draftDigest: draft.digest,
+      claimId: uuid(501), reviewRequestId: uuid(502), createdAt: new Date().toISOString(),
+    });
+    const restart = preparation();
+    const reviews = reviewer();
+    const pinned = await prepare(new RuleRequestCoordinator(store(), reviews), restart);
+    expect(pinned.fallback).toEqual({ reason: 'review_failed', cause: { code: 'rule_request_failed', reason: 'review_incomplete' } });
+    expect(pinned.rules.map((rule) => rule.ruleId)).toEqual([uuid(11)]);
+    expectUnused(restart, reviews);
   });
 
   it('allows only one concurrent coordinator to dispatch the review', async () => {
@@ -286,16 +344,19 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     ];
     try {
       await started;
-      const loser = await Promise.race(attempts);
-      expect(loser).toMatchObject({ status: 'rejected', reason: { code: 'rule_request_failed', reason: 'review_incomplete' } });
+      // The second caller finds the claim without a result and publishes the required-only outcome.
+      const first = await Promise.race(attempts);
+      expect(first).toMatchObject({ status: 'fulfilled', value: { fallback: { reason: 'review_failed', cause: { code: 'rule_request_failed', reason: 'review_incomplete' } } } });
       expect(reviews.review).toHaveBeenCalledTimes(1);
     } finally {
       releaseReview();
       await Promise.all(attempts);
     }
+    // The first published outcome stands: the reviewing caller returns it instead of failing.
     const outcomes = await Promise.all(attempts);
-    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
-    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+    expect(outcomes.map((outcome) => outcome.status === 'rejected' ? outcome.reason : 'ok')).toEqual(['ok', 'ok']);
+    const [left, right] = outcomes.map((outcome) => outcome.status === 'fulfilled' ? outcome.value : undefined);
+    expect(left).toEqual(right);
     expect(reviews.review).toHaveBeenCalledTimes(1);
     expect(a.prepareSelection).not.toHaveBeenCalled();
     expect(b.prepareSelection).not.toHaveBeenCalled();
@@ -394,8 +455,9 @@ describe('Rule logical-request recovery and persistent review allowance', () => 
     expect(await store().readReviewResult(requestId)).toBeUndefined();
     const restart = preparation();
     const secondReviewer = reviewer();
+    // A mismatched answer is an integrity failure: recorded with its typed cause and reported again.
     await expect(prepare(new RuleRequestCoordinator(store(), secondReviewer), restart)).rejects.toMatchObject({
-      code: 'rule_request_failed', reason: 'review_incomplete',
+      code: 'rule_request_failed', reason: 'review_failed', details: { cause: { code: 'rule_request_failed', reason: 'invalid' } },
     });
     expectUnused(restart, secondReviewer);
   });

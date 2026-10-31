@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { withField } from '../support/domain_objects.js';
 import { simpleGit } from 'simple-git';
 import { createObjectId } from '../../src/domain/identity/object_id.js';
 import { createObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
@@ -156,7 +157,7 @@ describe('TicketChangeSetService', () => {
 
   it('creates one branch and worktree for a root Ticket', async () => {
     const { service, container, story, coding } = await fixture();
-    const result = await service.ensureFor(story, coding);
+    const result = withField(await service.ensureFor(story, coding), 'changeSet');
 
     expect(result.changeSet.sourceBranch).toBe(`xcompiler/ticket/${story.id}`);
     expect(result.root).toBe(path.join(container, 'worktrees', 'tickets', story.id));
@@ -167,10 +168,10 @@ describe('TicketChangeSetService', () => {
 
   it('gives a corrective Ticket the same branch, worktree, and ChangeSet as the work it repairs', async () => {
     const { service, repository, story, coding } = await fixture();
-    const first = await service.ensureFor(story, coding);
+    const first = withField(await service.ensureFor(story, coding), 'changeSet');
 
     const bug = await registerBug(repository, story);
-    const second = await service.ensureFor(bug, coding);
+    const second = withField(await service.ensureFor(bug, coding), 'changeSet');
 
     // Splitting the repair onto its own branch would put a half-finished change on the mainline.
     expect(second.changeSet.id).toBe(first.changeSet.id);
@@ -263,8 +264,8 @@ describe('TicketChangeSetService', () => {
 
   it('is idempotent, so an interrupted run does not open a second branch', async () => {
     const { service, repository, story, coding } = await fixture();
-    const first = await service.ensureFor(story, coding);
-    const again = await service.ensureFor(story, coding);
+    const first = withField(await service.ensureFor(story, coding), 'changeSet');
+    const again = withField(await service.ensureFor(story, coding), 'changeSet');
 
     expect(again.changeSet.id).toBe(first.changeSet.id);
     const all = await repository.list({ objectType: 'ticket-change-set', projectId: story.projectId });
@@ -298,7 +299,7 @@ describe('TicketChangeSetService', () => {
   // the suite locally could not see it. Stubbing the listing removes the platform from the question.
   it('recreates a deleted worktree even when git still reports it as registered', async () => {
     const { service, repository, projectContainer, story, coding } = await fixture();
-    const first = await service.ensureFor(story, coding);
+    const first = withField(await service.ensureFor(story, coding), 'changeSet');
     const worktreeGit = simpleGit({ baseDir: first.root });
     await fs.writeFile(path.join(first.root, 'work.txt'), 'ticket work\n');
     await worktreeGit.add('.');
@@ -322,7 +323,7 @@ describe('TicketChangeSetService', () => {
 
   it('recreates a worktree deleted underneath it, without losing the branch commits', async () => {
     const { service, canonical, story, coding } = await fixture();
-    const first = await service.ensureFor(story, coding);
+    const first = withField(await service.ensureFor(story, coding), 'changeSet');
 
     const worktreeGit = simpleGit({ baseDir: first.root });
     await fs.writeFile(path.join(first.root, 'work.txt'), 'ticket work\n');

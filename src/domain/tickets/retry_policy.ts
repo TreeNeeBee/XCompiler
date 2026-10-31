@@ -17,6 +17,8 @@ export interface AttemptFailureEvidence {
 export interface AttemptExtensionDecision {
   extend: boolean;
   reason: string;
+  /** The signature that kept recurring, when that is why the extension was refused. */
+  recurringSignature?: string;
 }
 
 const REPEATED_FAILURE_LIMIT = 3;
@@ -72,6 +74,7 @@ export function evaluateAttemptExtension(
       return {
         extend: false,
         reason: `same failure recurred ${count} times without convergence`,
+        recurringSignature: signature,
       };
     }
   }

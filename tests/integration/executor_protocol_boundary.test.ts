@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseObjectId } from '../../src/domain/identity/object_id.js';
 import { StepExecutor } from '../../src/agents/executor.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
@@ -26,8 +27,8 @@ import { randomUUID } from 'node:crypto';
 let root: string;
 const servers: Server[] = [];
 const stores: ScoreStore[] = [];
-const scope = { projectId: '01952f27-7900-7000-8000-000000000001', phaseId: '01952f27-7900-7000-8000-000000000002',
-  stepId: '01952f27-7900-7000-8000-000000000003', ticketId: '01952f27-7900-7000-8000-000000000004' };
+const scope = { projectId: parseObjectId('01952f27-7900-7000-8000-000000000001'), phaseId: parseObjectId('01952f27-7900-7000-8000-000000000002'),
+  stepId: parseObjectId('01952f27-7900-7000-8000-000000000003'), ticketId: parseObjectId('01952f27-7900-7000-8000-000000000004') };
 const step: Step = { id: scope.stepId, iterationId: 'P1', phase: 'CODE', title: 'Current implementation',
   description: 'Produce the declared implementation.', systemPrompt: 'Write only the declared output.',
   tools: ['write_file'], inputs: [], outputs: ['src/accepted.py'], dependsOn: [], acceptance: 'The output exists.', maxAttempts: 3 };

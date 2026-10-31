@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { ObjectId } from '../src/domain/identity/object_id.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectStatusProjectionService } from '../src/application/project_management/project_projection.js';
@@ -68,7 +69,7 @@ function withoutTimestamp(
 async function fixture(): Promise<{
   workspace: Workspace;
   repository: DomainObjectRepository;
-  projectId: string;
+  projectId: ObjectId;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-pm-projection-'));
   const workspace = new Workspace(root);

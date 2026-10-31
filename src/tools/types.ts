@@ -33,6 +33,18 @@ export interface ToolPermissionRequest {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * A permission Runtime cannot proceed without was refused — by the user, the configured policy, or
+ * because nothing could ask. That is a decision to honour, not a defect, so callers recognise it by
+ * type and report what was refused and how to continue rather than an unhandled error.
+ */
+export class PermissionDeniedError extends Error {
+  constructor(readonly request: ToolPermissionRequest, readonly decisionReason?: string) {
+    super(`permission denied for ${request.operationType}: ${request.target}`);
+    this.name = 'PermissionDeniedError';
+  }
+}
+
 export interface ToolPermissionDecision {
   approved: boolean;
   reason?: string;
@@ -141,7 +153,11 @@ export type ToolFailureCode =
   /** The dependency manifest belongs to another phase; the need has to travel there. */
   | 'dependency_not_owned'
   /** The command needs product source that CODE has not written yet. */
-  | 'product_not_implemented';
+  | 'product_not_implemented'
+  /** The test runner started but reached no verdict: the invocation was rejected or found no tests. */
+  | 'test_run_without_verdict'
+  /** run_tests refused: this Step's own declared test files are not written yet. */
+  | 'declared_tests_unwritten';
 
 /**
  * Whether a failure describes a condition this Step does not own and cannot repair.
@@ -155,6 +171,17 @@ export function isUnownedStepFailure(code: ToolFailureCode | undefined): boolean
   return code === 'manifest_missing' ||
     code === 'dependency_not_owned' ||
     code === 'product_not_implemented';
+}
+
+/**
+ * Whether a failed test run is no evidence about the product: no test ran to a verdict.
+ *
+ * Both causes are the Step's own to repair — its invocation or its unwritten files — so neither is
+ * unowned. But neither says the product failed a test either, and a live UNIT_TEST Step whose first
+ * invocation pytest rejected as a usage error was handed to CODE as a product validation defect.
+ */
+export function isTestRunWithoutVerdict(code: ToolFailureCode | undefined): boolean {
+  return code === 'test_run_without_verdict' || code === 'declared_tests_unwritten';
 }
 
 /** 单次工具调用的结果统一结构。 */

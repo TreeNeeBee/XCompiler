@@ -1,5 +1,7 @@
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { describe, expect, it } from 'vitest';
+import { stageAssessment } from './support/quality.js';
+import { present } from './support/domain_objects.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,7 +31,7 @@ import {
 } from '../src/application/execution/attempt_runner.js';
 import type { DomainLog } from '../src/domain/observability/records.js';
 import { agentExecutionStallFailure, classifyAttemptFailure, classifyFailure } from '../src/application/execution/failure_classification.js';
-import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
 import type { Ticket } from '../src/domain/tickets/ticket.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { computeIncrementalAllowedWrites } from '../src/application/execution/execution_context.js';
@@ -47,6 +49,44 @@ describe('attempt verification evidence', () => {
 
     expect(unresolvedTestFailures([failing, product])).toEqual([failing]);
     expect(unresolvedTestFailures([failing, passing, product])).toEqual([]);
+  });
+
+  // A live MODULE_TEST attempt: its own run carried `-p no:cacheprovider` and failed; the gate Runtime
+  // appended after the fix passed without it, and the stale failure outlived every pass.
+  it('settles a gated run by the tests Runtime ran for it, whatever options the caller added', () => {
+    const tests = ['tests/modules/test_writer.py', 'tests/verification/p1/module-test/s007/test_risks.py'];
+    const failing = { tool: 'run_tests', ok: false, args: { args: [...tests, '-q', '-p', 'no:cacheprovider'] },
+      error: 'pytest exit=1', data: { runner: 'pytest', selectors: tests } };
+    const gate = { tool: 'run_tests', ok: true, args: {}, data: { runner: 'pytest', selectors: [...tests].reverse() } };
+    expect(unresolvedTestFailures([failing, gate])).toEqual([]);
+    // A gate that ran fewer tests than the failing run is no evidence for the ones it left out.
+    const narrower = { ...gate, data: { runner: 'pytest', selectors: [tests[0]] } };
+    expect(unresolvedTestFailures([failing, narrower])).toEqual([failing]);
+    // A later failure of the same tests is still a failure.
+    expect(unresolvedTestFailures([gate, failing])).toEqual([failing]);
+  });
+
+  it('lets a pytest run that only reports differently stand for the same tests, as a live UNIT_TEST attempt needed', () => {
+    // The sequence a live UNIT_TEST attempt produced: coverage options without pytest-cov, then the same suite verbose.
+    const withCoverage = { tool: 'run_program', ok: false, args: { args: ['-m', 'pytest', 'tests/unit', '-q', '--cov=src/signal_export',
+      '--cov-report=term-missing', '--cov-branch'] }, error: 'unrecognized arguments: --cov', data: { exitCode: 4 } };
+    const verbose = { tool: 'run_program', ok: true, args: { args: ['-m', 'pytest', 'tests/unit', '-v', '--no-header', '-p', 'no:cacheprovider'] },
+      data: { exitCode: 0 } };
+    const failing = { ...withCoverage, error: 'AssertionError', data: { exitCode: 1 } };
+    expect(unresolvedTestFailures([failing, verbose])).toEqual([]);
+    // A run that selects other tests is no evidence for these.
+    const selected = { ...verbose, args: { args: ['-m', 'pytest', 'tests/unit', '-k', 'parser'] } };
+    expect(unresolvedTestFailures([failing, selected])).toEqual([failing]);
+  });
+
+  it('does not count a run its tool reports as reaching no verdict, but keeps collection errors', () => {
+    const run = (exitCode: number, code?: 'test_run_without_verdict' | 'declared_tests_unwritten') => ({
+      tool: 'run_program', ok: false, args: { args: ['-m', 'pytest', 'tests/unit', `--opt-${exitCode}`] },
+      data: { exitCode }, ...(code ? { code } : {}) });
+    expect(unresolvedTestFailures([run(4, 'test_run_without_verdict'), run(0, 'declared_tests_unwritten')])).toEqual([]);
+    // pytest returns 2 for errors while collecting, such as a product module that fails to import.
+    expect(unresolvedTestFailures([run(2)])).toEqual([run(2)]);
+    expect(unresolvedTestFailures([run(1)])).toEqual([run(1)]);
   });
 
   it('does not infer that a different tool invocation proves an earlier test contract', () => {
@@ -189,6 +229,23 @@ describe('attempt verification scope', () => {
     }, 'typescript')).toEqual(['tests/integration/core.test.ts']);
   });
 
+  it('enables pytest-cov line and branch measurement for the Python unit-test gate', () => {
+    expect(resolveAttemptTestArgs({
+      testArgs: ['tests/unit/test_core.py'],
+      inheritedFromTicket: false,
+      verificationStepId: 'unit-id',
+      verificationPhase: 'UNIT_TEST',
+    }, 'python')).toEqual([
+      'tests/unit/test_core.py', '--cov=src', '--cov-branch', '--cov-report=json:coverage/coverage.json',
+    ]);
+    expect(resolveAttemptTestArgs({
+      testArgs: ['tests/integration/test_core.py'],
+      inheritedFromTicket: false,
+      verificationStepId: 'integration-id',
+      verificationPhase: 'INTEGRATION_TEST',
+    }, 'python')).toEqual(['tests/integration/test_core.py']);
+  });
+
   it('defers only the executable baseline on an initial S1-S3 pass', () => {
     const plan = fixturePlan();
     const design = {
@@ -231,6 +288,34 @@ describe('attempt verification scope', () => {
       originStepId: 'code-id',
       originPhase: 'CODE',
     });
+  });
+
+  // A live delivery-gate contract change travelled through requirement analysis and high-level
+  // design; each kept its old assertions, because its baseline had to pass on the unchanged product.
+  it('defers the baseline run of a contract-change hop ahead of S4, wherever the change was found', () => {
+    const plan = fixturePlan();
+    const design = {
+      ...plan.steps[0]!,
+      id: 'design-id',
+      phase: 'HIGH_LEVEL_DESIGN' as const,
+      outputs: ['docs/02-high-level-design.md', 'tests/module/core.test.ts'],
+    };
+    plan.steps.unshift(design);
+    const hop = (changeKind: string) => ({
+      type: 'change-request', changeKind, triggerStepId: 'design-id', sourceTicketIds: [],
+      originFailures: [{ failedStepId: 'unit-id', failedStepType: 'UNIT_TEST' }],
+    }) as unknown as Ticket;
+
+    expect(resolveBaselineGateExecution(plan, design, hop('contract-change'))).toEqual({
+      mode: 'defer', reason: 'contract-change', originStepId: 'unit-id', originPhase: 'UNIT_TEST',
+    });
+    // A corrective hop changes no contract, so the product it repairs must still pass its baseline.
+    expect(resolveBaselineGateExecution(plan, design, hop('corrective'))).toMatchObject({
+      mode: 'execute', reason: 'post-code-correction',
+    });
+    // CODE applies the change and always runs its own baseline.
+    expect(resolveBaselineGateExecution(plan, plan.steps.find((step) => step.phase === 'CODE')!, hop('contract-change')))
+      .toEqual({ mode: 'execute', reason: 'code-step' });
   });
 
   it('keeps a pre-CODE corrective retry deferred until a code baseline exists', () => {
@@ -299,6 +384,7 @@ describe('quality failure evidence', () => {
           'Import and exercise the planned product entrypoint before CODE.',
         ],
         target: 'current-step',
+        affectedArtifacts: [],
         dependencyPackages: [],
       }],
     });
@@ -558,12 +644,12 @@ describe('attempt mutation policy', () => {
 
 describe('measured test quality evidence', () => {
   it('overrides model-reported unit metrics with run_tests measurements', () => {
-    const result = reconcileMeasuredQualityAssessment({
+    const result = reconcileMeasuredQualityAssessment(stageAssessment({
       metrics: { lineCoverage: 0.9, branchCoverage: 0.9, testCasePassRate: 0.5 },
       tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
       evidence: ['model report'],
       gaps: [],
-    }, [{
+    }), [{
       tool: 'run_tests',
       ok: true,
       summary: [
@@ -577,6 +663,22 @@ describe('measured test quality evidence', () => {
     expect(result?.metrics.branchCoverage).toBeCloseTo(0.8666);
     expect(result?.metrics.testCasePassRate).toBe(1);
     expect(result?.evidence.at(-1)).toContain('src/cli.ts=0%');
+  });
+
+  it('takes Python line and branch coverage from the report the run measured', () => {
+    const result = reconcileMeasuredQualityAssessment(stageAssessment({
+      metrics: { lineCoverage: 0.95, branchCoverage: 0.95 },
+      tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
+      evidence: ['model report'],
+      gaps: [],
+    }), [{
+      tool: 'run_tests',
+      ok: true,
+      summary: 'pytest exit=0 args=tests/unit/test_core.py --cov=src\ncoverage lines=91.5% branches=62.5%',
+      data: { coverage: { lines: 91.5, branches: 62.5 } },
+    }]);
+    expect(result?.metrics.lineCoverage).toBeCloseTo(0.915);
+    expect(result?.metrics.branchCoverage).toBeCloseTo(0.625);
   });
 
   it('measures module and contract coverage from validated selectors actually executed by Runtime', () => {
@@ -724,7 +826,7 @@ function fixturePlan(): Plan {
     outputs: ['reports/unit.md'], dependsOn: ['code-id'], acceptance: 'tests pass', maxAttempts: 3,
   };
   return {
-    version: '1', language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
+    version: PLAN_VERSION, language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
     requirementDigest: 'fixture',
     complexityAssessment: {
       level: 'simple', rationale: 'fixture', splitRecommended: false, userForcedPhaseSplit: false,
@@ -956,6 +1058,63 @@ function contractAttempt(phase: Step['phase']): AttemptInput {
     mode: 'normal',
   } as unknown as AttemptInput;
 }
+
+describe('a CODE Step that delivers the entry point', () => {
+  const BROKEN = 'Traceback (most recent call last):\nModuleNotFoundError: No module named \'cli\'';
+  const run = async (outputs: string[]) => {
+    const workspace = new Workspace(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-entry-launch-')));
+    await workspace.writeFile('src/main.py', 'import sys\nfrom cli import main\n\nif __name__ == "__main__":\n    sys.exit(main())\n');
+    const launched: string[][] = [];
+    const runner = new DomainAttemptRunner(withFixtureExecutionRequests({
+      workspace,
+      git: { ensureRepo: async () => {}, raw: () => ({ status: async () => ({ isClean: () => true, files: [] }), revparse: async () => 'a'.repeat(40) }) },
+      sandbox: { kind: 'subprocess', runProgram: async (argv: string[]) => {
+        launched.push(argv);
+        return { exitCode: 1, stdout: '', stderr: BROKEN, timedOut: false, durationMs: 1 };
+      } },
+      router: {}, repository: { list: async () => [] }, audit: { event: async () => {} },
+      plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-entry-launch-wiki'),
+    } as never), 'python');
+    const internals = runner as unknown as Record<string, unknown>;
+    internals.recordTicketRevision = async () => {};
+    internals.assembleContext = async () => ({ assembled: { text: '', debugWikiMatches: [] }, debugBrief: undefined });
+    internals.rejectInvalidProjectContract = async () => undefined;
+    internals.recordAssessment = async (_step: unknown, value: unknown) => ({ ...(value as object), passed: true });
+    internals.buildEnvironment = async () => ({
+      baselineGateExecution: { mode: 'not-applicable', reason: 'fixture' },
+      verificationScope: { testArgs: [], inheritedFromTicket: false },
+      tools: [], context: {}, snippets: [], hints: [],
+      executor: { run: async () => ({
+        success: true, rounds: 1, toolCalls: [],
+        qualityAssessment: { metrics: {}, tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 }, evidence: [], gaps: [] },
+        metrics: { rounds: 1, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 0, progressRatio: 1, healthScore: 1, providers: [] },
+      }) },
+    });
+    const failures: Array<Record<string, unknown>> = [];
+    internals.failAttempt = async (_scope: unknown, _baseline: string, _input: unknown, failure: Record<string, unknown>) => {
+      failures.push(failure);
+      return { ok: false, changedFiles: [], wikiEntryIds: [], testOutcomes: [], ...failure };
+    };
+    const input = contractAttempt('CODE');
+    input.executionStep.outputs = outputs;
+    const outcome = await runner.run(input).then((result) => result, (error: unknown) => error);
+    return { outcome, failures, launched };
+  };
+
+  it('fails the attempt when the entry it delivers does not start, so the broken entry never leaves CODE', async () => {
+    const { outcome, launched } = await run(['src/main.py', 'src/signal_export/cli.py']);
+    expect(launched).toEqual([['src/main.py', '--help']]);
+    expect(outcome).toMatchObject({ ok: false, failure: { category: 'quality', code: 'entrypoint_launch_failed',
+      details: { entry: 'src/main.py', command: 'python src/main.py --help', exitCode: 1 } } });
+    expect((outcome as { failureLog: string }).failureLog).toContain("No module named 'cli'");
+  });
+
+  it('leaves an entry the Step does not deliver to the Step that does', async () => {
+    const { failures, launched } = await run(['src/signal_export/cli.py']);
+    expect(launched).toEqual([['src/main.py', '--help']]);
+    expect(failures.map((failure) => (failure.failure as { code?: string } | undefined)?.code)).not.toContain('entrypoint_launch_failed');
+  });
+});
 
 describe('quality gaps a Step does not own', () => {
   const assessment = (gaps: string[]) => ({
@@ -1248,7 +1407,7 @@ describe('ticket context snapshot', () => {
     expect(String(trimmed.description).length).toBeLessThan(1400);
     expect(String(trimmed.description)).toContain('ImportError');
     expect(String(trimmed.description)).toContain('ticket history trimmed');
-    expect((trimmed.failure as Record<string, string>).message.length).toBeLessThan(1400);
+    expect(present((trimmed.failure as Record<string, string>).message, 'failure message').length).toBeLessThan(1400);
     // The fields the routed role needs survive intact.
     expect(trimmed.acceptance).toEqual(['Repair P1-S002 without unrelated rewrites.']);
     expect((trimmed.failure as Record<string, string>).code).toBe('test_command_failed');

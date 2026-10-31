@@ -20,17 +20,17 @@
 
 | ID | 决策 | 与既有合同的关系 |
 |---|---|---|
-| D-1 | 0.4 的 Rule 从已有规则和逻辑中抽取，第一版只做最小集，后续版本逐步追加和替换 | 收窄 V2 的抽取范围；P01–P14 不在 0.4 全量抽取 |
+| D-1 | 0.4 的 Rule 从已有规则和逻辑中抽取，第一版只做最小集，后续版本逐步追加和替换 | 收窄 V2（其余调用方接入） 的抽取范围；P01–P14 不在 0.4 全量抽取 |
 | D-2 | 派生工程业务 Rule（受控 1B）推迟到 0.5，和 Story/V+V 一起设计；0.4 不启用业务段 `0x1000+` | **修改合同**：替代 [remaining-decisions](remaining-decisions.md) 第 1 项"优化后的 B 已确认" |
-| D-3 | C1 模型校准：对引号/转义类、无法确定性修复的原文，接受"候选只在原文中插入转义符"的机械证明；业务正确性仍由原调用方校验 | **修改合同**：放宽第 4 项 B 和 Q6 中"原值唯一可证明"的要求 |
+| D-3 | C1（协议纠正） 模型校准：对引号/转义类、无法确定性修复的原文，接受"候选只在原文中插入转义符"的机械证明；业务正确性仍由原调用方校验 | **修改合同**：放宽第 4 项 B 和 Q6 中"原值唯一可证明"的要求 |
 | D-4 | ~~审计核验改为按事件字节区间读取~~（2026-10-16 由 D-21 替代）；保留/归档策略先测量再决定，0.4 不删除历史 | 补充 Q5 的存储实现 |
 | D-5 | 某个 provider 容量放不下必需内容时，跳过它；整个模型池都放不下才失败 | 落实影响评审 I08 |
 | D-6 | Rule 选择以一次执行为单位只做一次，各轮请求引用同一份快照 | **修改合同**：Q5 快照的组织方式改变，"保留实际内容和版本"的语义不变 |
 | D-7 | 一次尝试的失败归类收敛到单一所有者，由生产方设置类型码；停滞不计入 Wiki 失败；`run_tests` 只看最后一次结果 | 落实 AGENTS"按类型码分支"和影响评审 I09 |
-| D-8 | 契约变更 CR 合入后，把 `contractDelta.after` 确定性地追加进"项目全局约束"和 J06 的输入 | 新增行为，不新增模型调用 |
+| D-8 | 契约变更 CR 合入后，把 `contractDelta.after` 确定性地追加进"项目全局约束"和 J06（场景结果判定） 的输入 | 新增行为，不新增模型调用 |
 | D-9 | 当前进度只在 HANDOVER 维护一张状态表，设计文档只写合同 | 文档结构调整 |
 | D-10 | **角色**（你是谁）和**工作内容**（做什么、怎么做）拆成两个独立概念，不再一一对应；取消现有的两套角色枚举（6 个 Domain 角色、6 个模型角色） | **修改合同**：替代 Domain 角色/模型角色模型，以及影响评审 I02 的未决项 |
-| D-11 | 计划只记录工作，不再指定角色；执行者由 PM 在运行时按"角色 + 模型"组装，登记到现有的全局对象注册表；取消每个项目里的 RoleDefinition 副本 | 改变 P03 的输出协议和执行者的生命周期 |
+| D-11 | 计划只记录工作，不再指定角色；执行者由 PM 在运行时按"角色 + 模型"组装，登记到现有的全局对象注册表；取消每个项目里的 RoleDefinition 副本 | 改变 P03（阶段拆解） 的输出协议和执行者的生命周期 |
 | D-12 | 角色定义新写身份文本，作为 D-1 的例外；开发类角色按语言区分（Python 开发工程师、TypeScript 开发工程师） | D-1 的例外 |
 | D-13 | RuleChain 分段：角色段、工作段、其他框架段；J06 从 `0x0207` 移入工作段；角色段在前 | **修改合同**：替代 2026-09-04 的 `0x0201-0x0206` 六个角色槽 |
 | D-14 | 组合规则放在业务层：谁能做（资格）和本次绑定哪些 Rule（绑定计算）都由代码确定；RuleChain 只放给模型看的说明 | 落实"Rule 不能分配 Ticket" |
@@ -41,6 +41,46 @@
 | D-19 | 三个范围索引块（`0x0100/0x0200/0x1000`）保留槽位，0.4 不生成索引记录 | **修改合同**：推迟 Q1"生成并校验的索引"的交付 |
 | D-20 | M-D 完成后做一次小规模真实项目验证，范围和花费届时单独确认 | 流程安排 |
 | D-21 | （2026-10-16 追加）`audit.jsonl` 只用于追溯检查和崩溃/重启恢复。正常业务路径只写审计（写入仍为必需，失败即失败），不回读；LLM 回复的业务结果放在对应的 Ticket 或业务对象中，上下文直接使用业务数据。重启恢复仍以审计为来源，状态存储只存摘要 | **修改合同**：替代 D-4 的字节区间读取；Q5 的写后回读核验改为只在恢复时核验 |
+| D-22 | （2026-10-18～20 追加）RuleChain 修订：按 [RuleChain 修订合同](2026-10-18-rulechain-revision.md) 实施，第 11 节为 Rule 规范与流程 | 下列 D-23 至 D-34 的总入口；与本清单冲突时以修订合同为准 |
+| D-23 | 槽位扩展为 32 位，只使用 `0x00000000`–`0x000FFFFF`；取消索引槽位；新布局见修订合同 5.1 | **修改合同**：替代本清单 1.8 的 16 位布局与 D-19 |
+| D-24 | Rule 与 RuleList 结构精简（schema `"2"`）：保留 UUID，增加 8 位短键作为定位键；增加 name、description、version、ctime、mtime、digest；删除 category 与 retrievalDescription；列表摘要包含各条版本 | **修改合同**：替代原 Rule 字段定义 |
+| D-25 | `xcompiler rule` 子命令维护 Rule；基础层只读，用户改动写入安装级本地差异层（`<XC_PATH 或 ~/.xc>/rules-local`，`XC_RULES_LOCAL` 可覆盖）；基础升级后差异待审不生效；`export`/`promote` 上送主仓库；`rm` 暂时置空，差异层不记录删除 | 新增 |
+| D-26 | 语言列表的必需条目由代码中的最小规则集按工作指定（`codeAndTests`、`projectSetup`）；0.4 不对语言列表做相关性选择 | **修改合同**：落实 D-14 的绑定由代码决定；替代"语言列表整表必需" |
+| D-27 | 适用维度增加项目模式、项目类型、工具、产出路径、失败类别，经登记表扩展；绑定列表按维度过滤，缺少上下文时跳过，显式要求的报错 | 新增 |
+| D-28 | 相关性选择分为 bound-only、inline、embedding、review 四种策略，由代码按工作限定、配置给默认（0.4 只接受 bound-only）、运行时降级；开放段按工作分区；选择服务失败时降级为只带必需条目，完整性问题照常报错 | **修改合同**：Q4 C 的机制保留，改为可选策略之一 |
+| D-29 | 基础段新增级别定义（`0x00000001`）与产出语言（`0x00000002`，按 `config.locale` 取变体）；Rule 块改为分组纯文本渲染，按作者顺序编号并附级别含义；业务提示版本升为 `rule-business-request/2` | **修改合同**：替代 JSON 渲染格式 |
+| D-30 | 新增 Python 语言列表；语言约定只在语言列表中维护，i18n 执行与拆解提示中的重复内容删除；入口要求暂留拆解模板，待规划工作列表审定后迁出 | 新增 |
+| D-31 | Rule 请求的草稿与快照按内容去重存放 Rule 正文（O-9） | 新增；存储格式随 0.4 发布，不兼容旧工作区 |
+| D-32 | `rule check` 增加绑定解析校验、开放段 description 写法检查与段内相近条目提示 | 新增 |
+| D-33 | J06、P01–P03、C1 等指代事物的代号在代码、测试与在用文档中改为有意义的名称；D-x 等决策编号保留 | 文档与命名约定 |
+| D-34 | 代码规范、Step 工作列表重写、规划工作列表以草案形式提交审定（`drafts/`），审定前不生效 | 待用户审定 |
+| D-35 | （2026-10-20）Codex 审计 RC-01～RC-07 的处理（用户确认推荐方案）：`paths` 维度改读请求可写入的路径（声明的产出与 Runtime 授予的写入目录）；新版基础层占用本地列表槽位时本地列表待审（`slot_taken`），损坏的差异文件阻止请求但可由 `check` 报告、`discard` 删除；快照记录本地差异的来源证据；`promote` 整批校验、改写同批引用并保留注释；评审完整性错误记录后重试再次报出；失败类别取类型化失败；查询上限按码点计 | **修改合同**：修订合同 4.3、4.4、11.3、11.4、11.7 |
+| D-36 | （2026-10-21）build 需求接收改为动态澄清（用户确认推荐方案）：语言、交付形态两道固定题由代码以类型化选项提问，需求原文或已有项目已确定的跳过；之后每轮一次 PM 请求生成下一题，模型附六维覆盖状态，代码校验（有 open 维度不得判定清晰、题目须针对 open 维度、不得重复、2–5 个选项、题号由代码分配）；以模型判定清晰、`planning.clarification.max_questions`（默认 12，含固定题）或用户输入 `/done` 结束，仍为 open 的维度写入 topic.md；topic.md 以 front matter 记录决定，Gate 1 后与 `--topic` 重跑以其为准；阶段规划的 `projectType` 固定为已决定值 | **修改合同**：澄清模板 `planning-clarification/1` → `/2`，一题一请求取代整批题；`/1` 的原始输入不再可恢复；新增配置段 `planning` |
+| D-37 | （2026-10-21）澄清中由模型判断可实施性（用户确认推荐方案）：只按 XCompiler 能力边界判断（语言、交付形态、命令可验收、配置的沙箱与网络）；每轮回复带 `feasible`/`uncertain`/`infeasible` 与类型化阻碍；结束由模型判定，代码只校验自洽并保留问题上限与 `/done`；判为无法交付时展示原因，由用户选择缩小范围、修改需求、仍继续或取消 | **修改合同**：D-36 的回复契约增加 `feasibility` 与 `infeasible` 状态，`parseContext` 增加 `sandbox`（模板仍为未提交的 `planning-clarification/2`） |
+| D-38 | （2026-10-21）澄清改以上下文为界（用户确认）：去掉 `/done` 与 `max_questions`；预算取澄清与规划模型窗口较小者扣除安全余量和回复预留后乘 `context_ratio`（默认 0.7）；达到预算或连续 `stall_turns`（默认 4）个回答未改变覆盖与判断时，由模型做最终评估（`clear`/`infeasible`/`unresolved`），用户选择缩小、修改、按已确定内容继续或取消，停滞触发时可继续澄清；中途判为无法交付仍立即中断；顺带：规划只读 topic.md、中文 token 估算修正、断点续问与进度显示 | **修改合同**：D-36/D-37 的回复契约增加 `unresolved` 与最终评估模式，`parseContext` 以 `budgetUsedPercent`、`finalAssessment` 替代 `remainingQuestions`；配置 `planning.clarification` 改为 `context_ratio`、`stall_turns`；全局容量估算改为按文字类别计 |
+| D-39 | （2026-10-21）需求接收自我审查后的修正（用户确认）：预算分澄清与规划两侧，规划侧按渲染的 topic.md 加阶段拆解自身提示与 PhasePlan 预留计算；模型给不出最终评估（内容被拒或容量不足）时由代码生成；前端关闭提示（`interaction_dismissed`）按取消结束，Gate 1 只接受三个值；修改需求后重新判定由原文推断的语言与形态；topic.md 只保留问题与回答；空回答取推荐项 A；回答按审计规则脱敏；最终评估判定清晰也记入审计；预算百分比向下取整；缩小范围后停滞清零 | **修改合同**：Runtime 交互合同新增 `InteractionDismissedError`；ACP 选择、输入、编辑被拒绝时改抛它；`compile.beforeDecompose` 的 `clarifications` 为空（已写入插件文档）；topic.md 问答格式变化 |
+| D-40 | （2026-10-21）语言与提示翻译（用户确认推荐方案）：`locale` 限定为用户语言（CLI、交互展示、报告和写进工程的交付物）；新增可选 `prompt_translate: off|on`（默认 off）。off 时模型读 locale；on 且 locale 不是 en 时模型读英文：有预设的模板、Rule、工具描述与反馈、Step 契约与 calibration 文字直接取英文版本，用户自由文字（需求、自定义回答、topic 正文、userAddenda）送模型前由 LLM 译成英文，模型的问题与结论译回 locale 后再显示；topic.md 保持用户语言；交付物由模型直接用用户语言写，Rule 以 `{{outputLanguage}}` 变量表达；翻译走保留请求路径（`text-translation/1`，work `text.translate`，可选 `llm.pools.translation`，默认 management），结果按内容缓存，服务失败时保留原文并告警；框架中硬编码的中文全部迁入 i18n | **修改合同**：Rule 文本新增变量（仅 `outputLanguage`，校验拒绝未知变量与各语言变量不一致）；`base-output-language` 1.0.0 → 1.1.0；规划与执行载荷新增可选 `outputLocale`；新增 owner 种类 `text-translation` 与 work `text.translate`；calibration 与 Step 契约文字改由解析器自有的语言表提供（解析时只用于校验的规范化固定按英文）；topic 送模型时预设行直接替换、只翻译其间文字；`rule render` 新增 `--output-language`；新增配置 `prompt_translate` 与可选池 `translation` |
+| D-41 | （2026-10-21）D-40 自我审查后的修正与优化（用户确认推荐方案；翻译粒度按用户方案）：架构复杂度判断的补充需求标题正则覆盖中文 topic 的“用户补充需求 (Addenda)”；规划与后续 Phase 只读 topic.md，补充需求不再单独发送；模型读的英文 topic 由澄清中已有的译文拼出，按节写入翻译缓存，之后读取 topic.md 时按节翻译、每节一次请求，只翻译改动过或没有译文的节；Gate 2 计划预览译成用户语言；响应校验失败时的重答提示与入口门禁合成说明改按提示语言；验证前最终检查：`plan.userAddenda` 改取 Gate 1 之后 topic 的补充需求一节，接收草稿只在用户语言与提示语言都相同时续问 | **修改合同**：`compile.beforeDecompose` 的 `input.userAddenda` 为空字符串，规划请求载荷 `parseContext.userAddenda` 为空；翻译请求由每次全部待译文字改为每节一次 |
+| D-42 | （2026-10-22）首次真实运行（dbc2excel，`deepseek/deepseek-v4.1-flash-1017`）后的修正（用户确认推荐方案）：澄清问了 16 题，后几题都是格式细节，覆盖状态来回变化使停滞计数不断清零。停滞改为只在已澄清维度数超过此前最高或可实施性判断改变时清零，最高值随草稿保存；澄清提示要求不就规划可按默认处理的呈现细节提问。顺带修正配置错误信息中写死的版本号 | **修改合同**：`stall_turns` 的含义由“覆盖状态不变”改为“没有推进”；接收草稿以 `progress` 取代 `lastSignature`；澄清系统提示新增一条（模板仍为未提交的 `planning-clarification/2`） |
+| D-43 | （2026-10-27）用户本地验证后的反馈（用户选择）：同一模型三次运行的澄清题数为 16、9、4，4 题那次没问的事项（导出列等）由规划按默认处理且用户看不到。模型判定清晰时须列出默认假设（1–12 条，每条为未提问的事项及默认值），写入 topic.md“默认假设”一节，注明与已接受需求同样有效、可在 Gate 1 编辑；开启提示翻译时用户看译文、规划读原文 | **修改合同**：澄清回复的 `clear` 增加必填 `assumptions`（模板仍为未提交的 `planning-clarification/2`）；topic.md 新增“默认假设”一节与两个预设行；`compile.clarification_ended` 增加 `assumptions` |
+| D-44 | （2026-10-28）用户本地 run 中监控发现并中断后的修复（用户选择推荐方案）：①单元测试 Step 的 `pytest --cov` 因未装 pytest-cov 以退出码 4 结束、随后同批测试已通过，却被判为测试失败并作为 Bug 派给 CODE；改为 pytest 去掉只影响输出的选项后按同一组测试取最后结果，退出码 3/4/5 不算测试失败（2 保留），没有仍未推翻的测试失败时按执行器原因归类。②CODE 产出 `src/main.py` 的 `from cli import main` 导入错误，单元测试不运行入口而未被发现；CODE 交付门禁在 Step 拥有入口文件时执行一次 `--help`，失败以 `entrypoint_launch_failed` 在本 Step 内修正。③本地配置 `agent.max_rounds_per_step` 调为 10 | **修改合同**：尝试失败归类规则（`unresolvedTestFailures`）；CODE 交付门禁新增入口启动检查与失败码 `entrypoint_launch_failed`；入口探测结果增加 `entry` |
+| D-45 | （2026-10-28）dbc2excel-3 run 失败分析后的修复（用户要求从工程角度修、不针对生成工程的业务；A、B、C 一起做）：①UNIT_TEST 要求行与分支覆盖率，Python 工程却没有覆盖率工具：模型自带的 `--cov` 使 pytest 以退出码 4 结束，改用 `python -m coverage` 也失败，首轮即被当作产品验证缺陷交给 CODE，最终因不收敛停止。Python 依赖清单固定包含 `pytest-cov`；UNIT_TEST 门禁为 Python 加 `--cov=src --cov-branch --cov-report=json:coverage/coverage.json`；`run_tests` 运行前删除旧报告，测试通过后读取 coverage.py 的 `totals` 写入 `data.coverage`，测得的值覆盖模型填写的值；开启分支测量而分支数为 0 时按 100%。②失败归类补全：是否得到测试结论由运行测试的工具以失败码表达——`test_run_without_verdict`（pytest 退出码 3/4/5；`run_tests` 与以 pytest 为命令的 `run_program`）、`declared_tests_unwritten`（声明的测试文件尚未写出时拒绝运行）。执行器测试阶段闸门、失败运行次数上限、`unresolvedTestFailures`、测试结果状态（`incomplete`）都只读失败码；`run_tests` 数据记录 `runner`，pytest 输出选项归一据此判断。D-44 在归类处按退出码与参数判断，改为由工具判定。"No module named coverage" 不做文字匹配，由①消除。③审计 `tool.result` 在失败时记录工具给出的 `error` 与 `code`。④报错信息：pytest 没有结论时说明原因与应改动；Run 必需的权限被拒时抛 `PermissionDeniedError`，Run 说明被拒的操作、拒绝来源、后果和继续方法，不再显示"未处理错误"与堆栈（状态与退出码不变）；不收敛停止信息写明复现失败的失败码与原因第一行 | **修改合同**：Python 依赖清单固定项增加 `pytest-cov`；`ToolFailureCode` 新增 `test_run_without_verdict`、`declared_tests_unwritten`（均不属于 `isUnownedStepFailure`）；`run_tests` 数据新增 `runner`、`coverage`；`TestOutcome.status` 开始使用 `incomplete`；`tool.result` 审计数据新增 `error`、`code`；新增 `PermissionDeniedError`；`AttemptExtensionDecision` 新增 `recurringSignature`；不收敛停止信息格式变化 |
+| D-46 | （2026-10-28）用户用新版本在原目录 dbc2excel-3 继续 run：20 秒内 S005 连续 3 次尝试在入口检查失败、没有调用模型，被不收敛守卫停止。原因是上一轮无覆盖率工具时模型在补充目录写的探针脚本不是测试，入口检查把这类只有本 Step 能修的问题与基线问题一起在执行前拦截。处理（用户选择推荐方案“交给本 Step 修复”）：入口检查只因基线问题拦截；本 Step 的无效补充文件列入上下文最前，要求替换为可执行测试（没有删除工具）；执行后仍无效则以 `supplement_tests_invalid` 失败，finding `supplement_asset_invalid` 指向当前 Step | **修改合同**：`PairedTestAssetInspection` 新增 `invalidSupplements`，补充文件不再计入 `invalid`/`ok`；`TestPhaseValidator` 新增 `invalidSupplements()`；新增尝试失败码 `supplement_tests_invalid` 与 finding 码 `supplement_asset_invalid` |
+| D-47 | （2026-10-28）dbc2excel-4 run 监控发现：CODE Step 用坏文件验证 CLI，得到需求规定的退出码 1，并用断言脚本确认，但该 `run_program` 调用一直是未解决失败，只有同一命令以 0 退出才能消除，Step 花 5 轮后轮数用完。处理（用户选择推荐方案“声明预期退出码”，run 继续）：`run_program` 新增可选 `expectExitCode`（0～255 的整数）：恰好以该码退出即成功，声明非 0 却以 0 或其他码退出则失败；测试运行器不能声明非 0 预期；未声明的产品非 0 退出在错误中提示可声明重跑；`expectExitCode` 与 `timeoutMs` 一样不计入未解决失败的命令身份。顺带：验证失败交回信息的 "Cases under test" 不再列出门禁的运行选项（D-45 后单元测试门禁参数含覆盖率选项） | **修改合同**：`run_program` 参数新增 `expectExitCode`，数据新增 `expectedExitCode`；工具说明（中英）增加一句；未解决失败的命令身份忽略 `expectExitCode` |
+| D-48 | （2026-10-28）dbc2excel-4 run 监控发现：S006 集成测试自己的补充测试期望值写错（11 行，实际 10 行），模型已判断出原因，但每次尝试都在同一轮读取并运行测试，测试阶段闸门在首个失败即结束 Step 交回；交回因失败全在补充内而回到 S006 自己，6 次尝试后被不收敛守卫停止，补充测试从未被修改。处理（用户选择推荐方案“留在本次尝试内修正”）：全部失败用例在本 Step 补充目录内时，执行器不结束 Step、不计入失败运行次数上限，失败作为普通工具结果交给模型；有任一基线用例失败时行为不变 | **修改合同**：执行器测试阶段闸门与失败运行计数的判定新增“失败是否全在本 Step 补充目录内”（读 `run_tests` 数据的 `failedTests` 与上下文 `supplementalTestRoot`） |
+| D-49 | （2026-10-28）dbc2excel-4 续跑监控发现：S002 的 5 个模块契约测试以中文命名用例（如 `test_mt_m005_01_参数解析契约`），pytest 可正常收集，但用例声明检测只接受 ASCII，S007 入口检查判 5 个文件都没有用例并转给 S002 修正；同类问题：失败用例标识提取遇到非 ASCII 名称会截断成无效选择器。处理（无歧义的缺陷，直接修复）：Python 用例声明与 pytest 失败用例标识改按 Unicode 标识符字符识别 | **修改合同**：无（识别范围按 Python 标识符规则放宽） |
+| D-50 | （2026-10-28）dbc2excel-4 run 在 Phase 交付门禁以 error 结束：场景运行 `samples/*.dbc`，但没有任何 Step 产出 `samples/`，三个文件都读不到，CLI 以 1 退出；裁判拿到的是 xlsx 的 zip 字节，无从核对却判为通过；门禁把"非 0 退出 + 裁判通过"当作内部矛盾抛出异常、打印堆栈。处理（用户决定）：①场景 `execution.expectExitCode` 由规划器声明，进程结果按它判定；②场景 `inputs` 显式声明，输入必须在编码之前给出（REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN）或由 FUNCTIONAL_TEST 在测试阶段获取，CODE 不提供，规划校验拒绝违反者，门禁运行前检查存在；③进程结果与裁判矛盾时门禁以明确原因失败、不建 Ticket，并给出追加需求（topic.md「用户补充需求」）与重新 build 的修改建议；追加需求与原需求冲突时以追加需求为准，规划提示写明；④二进制产物只告诉裁判"二进制、N 字节、不可读" | **修改合同**：`DeliveryGateScenario` 新增可选 `inputs` 与 `execution.expectExitCode`；StepPlan 校验新增场景输入归属；规划提示（中英）新增场景输入、预期退出码与追加需求优先的说明；交付门禁的矛盾结果由异常改为失败检查；`scenarioArtifactText` |
+| D-51 | （2026-10-28）D-50 后在 dbc2excel-4 直接 run：交付门禁按设计以 failed 结束并给出修改建议，工作簿以"二进制、不可读"交给裁判；但裁判以"不可读，所以没有内容与期望矛盾"判通过，把无法核对当成满足。处理（用户选择"无法核对即不通过"，并选"场景声明检查命令"让二进制结果仍可验证）：场景新增 `inspect` 检查命令（规划器写入，校验与 execution 相同），门禁在场景后运行并把输出写入 scene 的 `inspections` 交给裁判；裁判规则 `scenario-outcome` 3.0.0 → 3.1.0（经 `xcompiler rule update`/`promote`）：没有可读证据证明的期望部分视为未满足，唯一原因时返回 `unverifiable: true`；门禁遇到 `unverifiable` 以明确原因失败、不建 Ticket，并建议追加需求为场景声明检查命令 | **修改合同**：`DeliveryGateScenario` 新增可选 `inspect`，`DeliveryGateScene` 新增可选 `inspections`；裁判输出新增可选 `unverifiable`，`ScenarioOutcomeVerdict` 新增该变体；裁判模板 `scenario-outcome/2` → `/3`；RuleList `scenario-outcome` 与 Rule `a707ec22` 版本 3.1.0；规划提示（中英）新增检查命令说明 |
+| D-52 | （2026-10-29）dbc2excel-5 run 监控发现：S007 的 `run_tests` 传 `-v --no-header -p no:cacheprovider`，合并时只保留以 `-` 开头的 token，pytest 收到不带值的 `-p`，以退出码 4 结束（D-45 正确识别为无结论，未交回）。处理（用户选择推荐方案“输出类保留、缩小范围类拒绝”）：输出类选项连同其值保留；`-k`/`-m`/`--deselect`/`--ignore`/`--lf`/`-x`/`--collect-only` 等缩小或跳过执行的选项连同其值拒绝并在结果中说明；已知无值选项不吞后续 token，未知选项后紧跟的值一并保留 | **修改合同**：`run_tests` 门禁参数合并规则；被拒选项写入结果摘要 |
+| D-53 | （2026-10-29）dbc2excel-5 run：交付门禁经 inspect 读到工作簿并判出真实产品缺陷（列名与固定 16 列不符），纠正后合并 master 时被拒：`artifacts/signals.xlsx` 有未提交改动。原因：S008 运行 CLI 时写出的工作簿随其提交进入 master（`git add -A`，不在声明产出内），门禁场景又在规范工作区覆盖了它。处理（用户决定）：门禁与 Step 运行留下的临时产物放到 `.xc-tmp/`（加入 .gitignore，按门禁/尝试分子目录），不提交、Runtime 不删除（由用户删除）；门禁报告写入 `docs/delivery/<Phase>-delivery-gate.md` 并提交，作为交付物 | **修改合同**：运行时忽略清单新增 `.xc-tmp/`；Step 提交前把可写范围外的改动移入 `.xc-tmp/steps/…`（审计 `domain.run_outputs_set_aside`）；交付门禁运行后把门禁产生的改动移入 `.xc-tmp/gates/…`（审计 `domain.phase_delivery_gate_outputs_set_aside`），写并提交门禁报告；新增 i18n `deliveryGateReport` |
+| D-54 | （2026-10-30）dbc2excel-5 恢复后 run：纠正链交付到 S008，交付门禁每约 5 秒重跑一次，判同一真实缺陷（信号表表头 17 列、列名与固定 16 列不符），提交门禁报告，用户 Ctrl-C 停止。原因：该缺陷的 BUG-P1-003 上一轮经变更请求修复后已解决，门禁复现后被重开，但调度器把挂接变更请求的 Bug 一律视为由变更请求承载（不看其是否已关闭），重开的 Bug 永远不被调度；每轮新 finding 被停放为它的重复票，无工作可做又重跑门禁；每轮新建对象使进展守卫不触发。处理（用户选择推荐方案“调度修正 + 空转保护”）：只在关联的变更请求仍未关闭时跳过 Bug；门禁失败、接收问题后仍无可调度工作时以明确原因停止 | **修改合同**：调度器选择纠正票的条件；编排器门禁失败后的继续条件与失败原因 |
+| D-55 | （2026-10-30）D-54 后 dbc2excel-5 run：交付门禁 6 次判同一失败、每次把 BUG-P1-003 交 CODE 修复，CODE 均无改动，用户 Ctrl-C。原因：PhasePlan（用户在 Gate 2 确认）把「信号」表定为 16 列，但 Runtime 从不把规划的需求摘要与 Phase 范围交给执行 Step；S001 只看到选题中“列顺序和列名由规划确定”和“冻结信号表列顺序”的任务，自行冻结了 17 列需求与功能基线测试，此后各 Step 都以它为上游而自洽；只有交付门禁裁判拿规划对照，又看不到冻结需求，于是判成 CODE 缺陷，而 CODE 改成 16 列会违反冻结测试（10-28 曾被回滚）。处理（用户选择“源头注入 + 裁判改进都做”）：每个 Step 的提示加入「已确认的规划契约」（需求摘要、当前 Phase 目标与范围），冲突时范围内修正、范围外写入 blockedBy；交付门禁裁判同时获得 `plannedScope` 与本 Phase 冻结需求文档，规则规定证据符合冻结需求而冻结需求偏离规划时判 `change-request` → `requirement-analysis` | **修改合同**：执行器输入新增 `planContract`；裁判载荷新增可选 `plannedScope`、`frozenRequirements`，模板 `scenario-outcome/3` → `/4`；RuleList `scenario-outcome` 3.1.0 → 3.2.0（经 `xcompiler rule update`/`promote`） |
+| D-56 | （2026-10-30）同上：门禁失败 → 重开同一 Bug → CODE 无改动交付 → S005～S008 空提交 → 门禁同样失败，循环 6 轮；按复现重开没有上限，每次重开还把尝试上限一起抬高（6→8），D-54 的空转保护只覆盖“没有可调度工作”。处理（用户选择“无改动修复后同一失败复现就停”）：已解决的 Bug 被同一失败身份复现、且其在目标 Step 上最近一次修复的 changelist 没有文件条目时，不重开，抛出类型码 `repair_recurred_unchanged`；编排器在门禁接收、Step 结果处理、Ticket 合并失败三条路径按类型转为停止，记审计并给出追加需求 / 修正实现的建议 | **修改合同**：按复现重开的前置条件；编排器新增停止原因与审计事件 `domain.repair_recurred_unchanged` |
+| D-57 | （2026-10-30）D-55/D-56 后 dbc2excel-5 run：门禁裁判（deepseek-v4.1-flash，配置中唯一模型）已拿到规划范围（16 列）、冻结需求（17 列）与 3.2.0 规则，仍按冻结需求判“固定 17 列表头”满足，只因检查命令按规划列序取第 3 列取到「报文ID」而判 DupSig 无法核对；门禁以“无法核对”停止，并错误地建议“为场景声明检查命令”（场景已声明）。处理（用户选择“结构化比对字段”“区分两种情况”，业务上以规划的 16 列为准）：有冻结需求时裁判必须单独回答 `planConflict`，缺少即不可用；冲突时 Runtime 不论其余结论建 `change-request` → `requirement-analysis`（`scenario_plan_conflict:<场景>`）；无法核对的建议按是否已声明 inspect 区分 | **修改合同**：裁判输出新增 `planConflict`，有冻结需求时必填；`ScenarioOutcomeVerdict` 新增 `planConflict` 变体；模板 `scenario-outcome/4` → `/5`；RuleList `scenario-outcome` 3.2.0 → 3.3.0；`consumeScenarioOutcomeProtocol` 新增 `comparePlan` 选项 |
+| D-58 | （2026-10-30）D-57 后 dbc2excel-5 run：裁判回答 `planConflict`，冲突点准确，变更请求交给 S001；S001 按规划契约把需求文档改为 16 列，但功能基线 `tests/test_functional_acceptance.py` 的表头仍为 17 列，因为变更请求的可写范围只有 `docs/01-requirement-analysis.md`：`scenarioFindingTarget` 为每个设计阶段目标写死单个 P1 文档。用户中断 run。处理（用户选择“该 Step 的全部声明产出”）：场景 finding 交给需求分析 / 高层设计 / 详细设计时，可修改产物取当前 StepPlan 中该 Step 的全部声明产出；CODE 仍为 `src/` | **修改合同**：交付门禁场景 finding 的 `affectedArtifacts`（设计阶段目标）由 StepPlan 派生 |
+| D-59 | （2026-10-31）D-58 后 dbc2excel-5 run：门禁规划冲突的变更请求传到 S002（高层设计），S002 只改文档，模块测试仍断言 17 列，理由是“测试在现有产品上已通过，16 列对齐需随 CODE 同步”；该跳基线门禁为 `execute / post-code-correction`，改成新契约的断言在 CODE 应用变更前必然失败，门禁会拒绝。CODE 改为 16 列后 S007 模块测试失败，BUG-P1-013 退回 S002。处理（用户选择“契约变更的上游跳延后执行”）：S1-S3 的契约变更跳（`changeKind: contract-change`）只做静态校验，跳过基线的可执行运行（原因 `contract-change`），由同一变更链中配对的 S5-S8 执行；提示要求把基线断言改到新契约，不为保持通过而保留旧断言；Bug 修复与纠正型变更仍须执行 | **修改合同**：`BaselineGateExecution` 的 defer 原因新增 `contract-change`；执行请求 `baselineTestExecutionReason` 枚举新增该值；门禁证据 `skipped-contract-change` |
+| D-60 | （2026-10-31）同一 run 中 S007（模块测试）修正自己的补充测试后，Runtime 追加的门禁通过（88 个用例全绿），但尝试以“max rounds exceeded; unresolved tool failures remain”失败：它最初一次带 `-q --tb=short -p no:cacheprovider` 的运行失败；修正后门禁以 `{}` 运行并通过，之后同参的重跑请求均被“本次修改已通过强制门禁”复用、不再执行；执行器与尝试级判定都按请求参数识别运行，两者永远对不上。处理（用户选择“按实际运行的测试集判定”）：有门禁的 `run_tests` 在结果中记录 `selectors`（Runtime 选定的测试）；同一工作目录下，覆盖某次失败运行测试集的后一次通过运行解决该失败，调用方追加的选项不计入；`run_program` 不变 | **修改合同**：`run_tests` 结果新增 `selectors`（有门禁时）；执行器 `updateUnresolvedToolFailures` 与 `unresolvedTestFailures` 对有门禁运行按测试集识别并允许覆盖 |
+| D-61 | （2026-10-31）D-59/D-60 后 dbc2excel-5 run：剩余传导中 S007、S008 各因上游配对测试仍用旧列名退回 S002、S001 一次，修正后 8 个 Step 全部交付；交付门禁通过（16 列表头、DupSig 两行来源不同、错误表记录 broken.dbc、退出码 1）。随后 run 以 `Ticket BUG-P1-015 cannot close without a verified solution` 报错退出：该交付门禁 Bug 的修复链曾被诊断否定、又被中断，方案停在 `proposed`；门禁通过后 `reconcilePhaseDeliveryBugs` 直接 `closeVerified`，而其他关闭路径都会先把方案标为 verified。处理：门禁对账在关闭前，对已证明的 Bug 把方案标为 verified，证据为本次通过的 Phase 门禁评估 | **修改合同**：交付门禁 Bug 的方案在门禁通过时由对账标为 verified |
 
 ## 1. 角色与工作模型（D-10 到 D-17 的详细定义）
 
@@ -110,7 +150,7 @@
 | `verify.unit`、`verify.module`、`verify.functional` | 单元、模块、功能测试 | 同上 | test-engineer | ROLE_PROMPTS 中 tester 的文本 |
 | `verify.integration` | 集成测试 | 同上 | integration-test-engineer | ROLE_PROMPTS 中 integrator 的文本 |
 | `plan.clarify` | P01 | project-management | project-manager | 0.4 仍用 i18n 正文，只把身份句移入角色定义 |
-| `plan.phase`、`plan.decompose` | P02、P03 | planning | planner | 同上 |
+| `plan.phase`、`plan.decompose` | P02（阶段规划）、P03 | planning | planner | 同上 |
 | `judge.scenario` | J06 | delivery-control | project-manager | 现有的 `rules/scenario-outcome.yaml`，迁入工作段 |
 | `manage.project` | 管理类 Step（[compiler.ts:357](../../../src/domain/planning/compiler.ts)、648 行） | project-management | project-manager | 不新增文本 |
 
@@ -177,6 +217,8 @@ When、Where、Why 是本次执行的事实，不能写成 Rule。
 0.5 的工作：Planner 的 Step 自由文本改为结构化输出，用户提示按 5W1H 重排。
 
 ### 1.8 RuleChain 槽位分配（D-13）
+
+> **已被替代**：2026-10-18 起槽位扩展为 32 位，布局以 [RuleChain 修订合同](2026-10-18-rulechain-revision.md) 5.1 为准（D-23）。下表保留为决策历史。
 
 | 槽位 | 用途 |
 |---|---|
@@ -459,10 +501,15 @@ llm:
 - **配置不兼容**：`llm.roles` 改为 `llm.pools`，现有 `config.yaml` 需要迁移；早期 0.4 工作区不能继续使用。
 - **C1 放宽**：模型选择的引号解释可能不对，只能依靠业务校验兜底。
 - **审计和存储体积**：正常路径已不读审计（D-21），体积只影响磁盘占用和重启恢复的全量扫描耗时。G1 记录长运行审计体积，据此决定是否需要保留/归档策略或恢复索引。
+- **澄清以上下文为界（D-38）**：没有题数上限，提问次数取决于模型何时判定清晰和预算大小；每轮重发全部问答，输入 token 随题数近似平方增长，需真实运行观察平均题数与费用。中文 token 估算改为每字约 1 token 后，所有容量检查对中文更保守，接近窗口时会更早换到更大窗口的 provider 或报容量不足。
+- **可实施性由模型判断（D-37）**：判断只依据提示中列出的能力边界，可能误判；误判为无法交付时由用户选择继续，误判为可交付时问题会留到规划或执行阶段才暴露。ACP 中编辑器只能原样接受或拒绝，“修改需求”在 ACP 下无法真正修改。
+- **需求接收变为逐题请求（D-36）**：一次 build 的澄清从一次请求变为最多 `max_questions − 固定题数` 次请求，耗时和费用随问题数增长；提问质量与何时判定清晰依赖模型的覆盖评估，需真实运行观察平均问题数和是否过早判定清晰。
+- **提示翻译（D-40）**：开启后每段用户自由文字和每道模型提问都多一次翻译请求，费用与耗时增加（缓存只省去重复文本）；译文质量未经真实模型验证（D-20），误译会让规划读到与用户本意不同的需求，而用户在 topic.md 中看到的仍是原文，二者可能不一致；翻译失败时退回原文，模型会读到混合语言的内容；`language_support` 引擎消息（`t().engine.*`）仍按界面语言生成，作为证据送给模型时不随提示语言切换；Rule 文本变量是新合同，本地 Rule 引用未知变量会被拒绝。D-41 之后，澄清中已译的内容在规划时复用，topic 只有 Gate 1 改过的节、可实施性一节和陌生 topic 文件才按节翻译；可实施性一节因此由翻译回英文而非模型原文。
 - **正常路径不再以审计核验**：状态存储被篡改（重算摘要）时，正常路径不会发现，只在重启恢复时由审计核对发现（D-21 的取舍）。
 
 ## 5. 推迟到 0.5
 
+- RuleChain：开放 embedding 与 review 策略配置、inline 策略、按单条规则缓存向量、列表级选择、项目规则与 Debug Wiki 转化、规则与门禁的关联（修订合同 11.8）。
 - 派生工程业务 Rule（D-2）。
 - 多执行者并行：扩容、亲和、负载与成本策略、可写范围互斥、显式职责分离、工作拆分（Story/Task）。
 - Planner 的 Step 自由文本结构化、用户提示按 5W1H 重排、`plan.*` 工作的说明文本迁入工作段。

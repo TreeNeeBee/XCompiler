@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../../workspace/workspace.js';
-import type { Language, PlanIntent } from '../../domain/planning/execution_plan.js';
+import type { Language, PlanIntent, ProjectType } from '../../domain/planning/execution_plan.js';
 import { DEFAULT_PHASE_PLAN_FILE } from '../../domain/planning/phase_plan_checkpoint.js';
 import type { PlanStorePort } from '../../domain/ports/plan_store.js';
 import { PROJECT_MEMORY_PATH, refreshProjectMemory } from '../context/project_memory.js';
@@ -12,6 +12,8 @@ export interface IncrementalBaseline {
   sources: string[];
   language?: Language;
   languageSource?: string;
+  /** The existing project's deliverable form, from its plan; intake does not ask again. */
+  projectType?: ProjectType;
 }
 
 /**
@@ -32,6 +34,7 @@ export async function loadIncrementalBaseline(
   const maxChars = opts.maxChars ?? 14_000;
   let language: Language | undefined;
   let languageSource: string | undefined;
+  let projectType: ProjectType | undefined;
 
   const planSource = opts.planPath ? path.resolve(opts.planPath) : await defaultBaselinePlanPath(ws.root);
   const relPlan = relInsideWorkspace(ws.root, planSource);
@@ -42,6 +45,7 @@ export async function loadIncrementalBaseline(
     sources.push(planLabel || DEFAULT_PHASE_PLAN_FILE);
     language = plan.language;
     languageSource = plan.language ? planLabel || DEFAULT_PHASE_PLAN_FILE : undefined;
+    projectType = plan.projectType;
   }
 
   const memory = await refreshProjectMemory(ws, state, {
@@ -78,7 +82,7 @@ export async function loadIncrementalBaseline(
   }
 
   const summary = joinCappedSections(sections, maxChars);
-  return { summary, sources: dedup(sources), language, languageSource };
+  return { summary, sources: dedup(sources), language, languageSource, ...(projectType ? { projectType } : {}) };
 }
 
 function joinCappedSections(sections: string[], maxChars: number): string {
@@ -102,7 +106,7 @@ async function loadPlanSummary(
   planStore: Pick<PlanStorePort, 'readPlanDocument' | 'loadPlanTarget'>,
   planPath: string,
   label: string,
-): Promise<{ text: string; language?: Language; intent?: PlanIntent } | null> {
+): Promise<{ text: string; language?: Language; intent?: PlanIntent; projectType?: ProjectType } | null> {
   try {
     const document = await planStore.readPlanDocument(planPath);
     if (document.kind === 'phase-plan') {
@@ -129,12 +133,14 @@ async function loadPlanSummary(
           ].join('\n'),
           language: loaded.plan.language,
           intent: loaded.plan.intent,
+          projectType: loaded.plan.projectType ?? phasePlan.projectType,
         };
       } catch {
         return {
           text: `## Existing phase plan summary\n- path: ${label}\n- status: current phase plan is unreadable`,
           language: phasePlan.language,
           intent: phasePlan.intent,
+          projectType: phasePlan.projectType,
         };
       }
     }
@@ -156,6 +162,7 @@ async function loadPlanSummary(
       ].join('\n'),
       language: plan.language,
       intent: plan.intent,
+      projectType: plan.projectType,
     };
   } catch {
     return null;

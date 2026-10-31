@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { RuleCatalogue, ruleInstructionText, type RuleLookup } from '../../domain/rules/catalogue.js';
-import { isBoundRuleSlot, isProtectedRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
+import { RuleCatalogue, promptRuleText, type RuleLookup } from '../../domain/rules/catalogue.js';
+import { isSearchableRuleSlot } from '../../domain/rules/partitions.js';
+import { isProtectedRuleSlot, RULE_SLOTS } from '../../domain/rules/slots.js';
 import {
   compareRuleIds,
   normalizedCosine,
@@ -11,6 +12,9 @@ import {
   type RuleApplicabilityIssue,
   type RuleContext,
   type RuleRetrievalProfile,
+  RULE_QUERY_SUMMARY_LIMIT,
+  RUNNABLE_RULE_SELECTION_STRATEGIES,
+  type RunnableRuleSelectionStrategy,
 } from '../../domain/rules/selection.js';
 import type { RulePromptEntry } from './rule_decorator.js';
 import type { RuleVectorRetriever, RuleVectorRetrieval } from './rule_vector_retriever.js';
@@ -25,7 +29,8 @@ export class RuleSelectionError extends Error {
   readonly code = 'rule_selection_failed';
   constructor(
     readonly reason: 'calibration_forbidden' | 'invalid_request' | 'base_missing' | 'required_missing'
-      | 'required_version_mismatch' | 'required_inapplicable' | 'invalid_vectors' | 'invalid_review',
+      | 'required_version_mismatch' | 'required_inapplicable' | 'invalid_vectors' | 'invalid_review'
+      | 'too_many_candidates',
     readonly details: Readonly<Record<string, unknown>> = {},
     options?: ErrorOptions,
   ) {
@@ -38,7 +43,21 @@ const SelectionRequestSchema = z.object({
   requestKind: z.enum(['business', 'rule-selection']),
   context: RuleContextSchema,
   required: z.array(z.object({ ruleId: z.uuid(), version: z.string().min(1) }).strict()),
+  searchOpenSegments: z.boolean().default(true),
 }).strict();
+
+/** What relevance selection judges: the caller's task and error summaries, never project context (R-2). */
+export interface RuleSelectionQuery {
+  readonly taskSummary: string;
+  readonly errorSummary?: string;
+}
+
+/** The query selection runs on: each summary trimmed and cut to the limit; an empty error is left out. */
+export function ruleSelectionQuery(taskSummary: string, errorSummary?: string): RuleSelectionQuery {
+  const bound = (text: string) => [...text.trim()].slice(0, RULE_QUERY_SUMMARY_LIMIT).join('').trimEnd();
+  const error = errorSummary === undefined ? '' : bound(errorSummary);
+  return { taskSummary: bound(taskSummary), ...(error ? { errorSummary: error } : {}) };
+}
 
 export interface PreparedRuleSelection {
   readonly context: RuleContext;
@@ -47,6 +66,12 @@ export interface PreparedRuleSelection {
   readonly excluded: readonly { ruleId: string; issues: readonly RuleApplicabilityIssue[] }[];
 }
 export interface RankedRuleSelection {
+  /**
+   * The strategy that produced this ranking (revision 11.2): `bound-only` has no candidates;
+   * `embedding` ranks by similarity (Q4 C); `review` has no similarity and always asks the caller's
+   * role to choose from the candidates' descriptions, so its scores are all 0.
+   */
+  readonly strategy: RunnableRuleSelectionStrategy;
   readonly decision: 'direct' | 'review-required' | 'no-candidates';
   readonly candidates: readonly { ruleId: string; score: number }[];
   readonly profile: RuleRetrievalProfile;
@@ -65,6 +90,7 @@ export class RuleSelector {
     ranked: RankedRuleSelection;
     retrieval?: RuleVectorRetrieval;
     review?: RuleSelectionReviewReference;
+    query?: RuleSelectionQuery;
     store: RuleRequestSnapshotStore;
   }): Promise<RuleRequestSnapshot> {
     const result = this.finish({ prepared: input.prepared, ranked: input.ranked, reviewedRuleIds: input.review?.selectedRuleIds });
@@ -72,26 +98,45 @@ export class RuleSelector {
     return input.store.create(snapshot);
   }
 
-  /** Applicability precedes every embedding call; an empty optional set needs no model or index. */
+  /**
+   * Runs one request's selection with the strategy the caller resolved (revision 11.2). `bound-only`
+   * searches no open segment. Applicability precedes every embedding call, and an empty optional
+   * set needs no model or index. Whenever there are candidates, the result carries the query they
+   * were ranked against.
+   */
   async retrieve(input: {
     requestKind: 'business' | 'rule-selection' | 'calibration';
     context: RuleContext;
     required: readonly { ruleId: string; version: string }[];
+    strategy: RunnableRuleSelectionStrategy;
     taskSummary: string;
     errorSummary?: string;
     profile?: Partial<RuleRetrievalProfile>;
-    retriever: RuleVectorRetriever;
+    /** Required by, and only by, `embedding`. */
+    retriever?: RuleVectorRetriever;
     signal?: AbortSignal;
-  }): Promise<{ prepared: PreparedRuleSelection; ranked: RankedRuleSelection; retrieval?: RuleVectorRetrieval }> {
-    const prepared = this.prepare({ requestKind: input.requestKind, context: input.context, required: input.required });
+  }): Promise<{ prepared: PreparedRuleSelection; ranked: RankedRuleSelection; retrieval?: RuleVectorRetrieval; query?: RuleSelectionQuery }> {
+    if (!(RUNNABLE_RULE_SELECTION_STRATEGIES as readonly string[]).includes(input.strategy)) {
+      throw new RuleSelectionError('invalid_request', { strategy: input.strategy, field: 'strategy' });
+    }
+    if ((input.strategy === 'embedding') !== (input.retriever !== undefined)) {
+      throw new RuleSelectionError('invalid_request', { strategy: input.strategy, field: 'retriever' });
+    }
+    const prepared = this.prepare({
+      requestKind: input.requestKind, context: input.context, required: input.required,
+      searchOpenSegments: input.strategy !== 'bound-only',
+    });
     const profileResult = RuleRetrievalProfileSchema.safeParse(input.profile ?? {});
     if (!profileResult.success) throw new RuleSelectionError('invalid_request', {}, { cause: profileResult.error });
     input.signal?.throwIfAborted();
+    if (input.strategy === 'bound-only') return { prepared, ranked: this.boundOnly({ prepared, profile: profileResult.data }) };
     if (!prepared.optional.length) return {
-      prepared, ranked: this.rank({ prepared, query: [], vectors: [], profile: profileResult.data }),
+      prepared, ranked: { ...this.boundOnly({ prepared, profile: profileResult.data }), strategy: input.strategy },
     };
-    const retrieval = await input.retriever.retrieve({
-      rules: prepared.optional, taskSummary: input.taskSummary, errorSummary: input.errorSummary,
+    const query = ruleSelectionQuery(input.taskSummary, input.errorSummary);
+    if (input.strategy === 'review') return { prepared, ranked: this.summarize({ prepared, profile: profileResult.data }), query };
+    const retrieval = await input.retriever!.retrieve({
+      rules: prepared.optional, taskSummary: query.taskSummary, errorSummary: query.errorSummary,
       context: prepared.context, signal: input.signal,
     });
     const ranked = this.rank({
@@ -100,18 +145,20 @@ export class RuleSelector {
         ruleId: document.ruleId, vector: retrieval.index.vectors[index]!,
       })),
     });
-    return { prepared, ranked, retrieval };
+    return { prepared, ranked, retrieval, query };
   }
 
   prepare(input: {
     requestKind: 'business' | 'rule-selection' | 'calibration';
     context: RuleContext;
     required: readonly { ruleId: string; version: string }[];
+    /** False for `bound-only`: no open segment is searched at all. */
+    searchOpenSegments?: boolean;
   }): PreparedRuleSelection {
     if (input.requestKind === 'calibration') throw new RuleSelectionError('calibration_forbidden');
     const parsed = SelectionRequestSchema.safeParse(input);
     if (!parsed.success) throw new RuleSelectionError('invalid_request', {}, { cause: parsed.error });
-    const { context, required: bindings } = parsed.data;
+    const { context, required: bindings, searchOpenSegments } = parsed.data;
     if (!this.catalogue.lists.some((entry) => entry.definition.slot === RULE_SLOTS.genesis)) {
       throw new RuleSelectionError('base_missing', { slot: RULE_SLOTS.genesis });
     }
@@ -136,10 +183,11 @@ export class RuleSelector {
     }
     const optional: RuleLookup[] = [];
     const excluded: { ruleId: string; issues: readonly RuleApplicabilityIssue[] }[] = [];
-    for (const list of this.catalogue.lists) for (const rule of list.definition.rules) {
+    for (const list of searchOpenSegments ? this.catalogue.lists : []) for (const rule of list.definition.rules) {
       if (required.has(rule.id.toLowerCase())) continue;
-      // Language, role and work Rules are never retrieval candidates: only Runtime binds them.
-      if (isBoundRuleSlot(list.definition.slot)) continue;
+      // Only the open segments in the work's partition are searched (revision 3.5); language, role
+      // and work lists are not open and enter only as required bindings (D-14).
+      if (!isSearchableRuleSlot(list.definition.slot, context.work)) continue;
       const entry = { list, rule };
       const issues = ruleApplicability(entry, context);
       if (issues.length) excluded.push({ ruleId: rule.id, issues });
@@ -174,11 +222,39 @@ export class RuleSelector {
     candidates.sort((left, right) => right.score - left.score || compareRuleIds(left.ruleId, right.ruleId));
     const bounded = candidates.slice(0, profile.maxCandidates);
     return {
+      strategy: 'embedding',
       decision: !bounded.length ? 'no-candidates'
         : bounded.some((entry) => entry.score >= profile.threshold) ? 'direct' : 'review-required',
       candidates: bounded,
       profile,
     };
+  }
+
+  /**
+   * Relevance selection without embeddings (R-2): the caller's role reads every candidate's
+   * description. Candidates are in identity order with no score, and always need review. Without
+   * scores there is no meaningful cut, so more candidates than the cap is an error, not a truncation.
+   */
+  summarize(input: { prepared: PreparedRuleSelection; profile?: Partial<RuleRetrievalProfile> }): RankedRuleSelection {
+    const parsed = RuleRetrievalProfileSchema.safeParse(input.profile ?? {});
+    if (!parsed.success) throw new RuleSelectionError('invalid_request', {}, { cause: parsed.error });
+    if (input.prepared.optional.length > parsed.data.maxCandidates) {
+      // The caller can raise rules.retrieval.max_candidates or configure embedding.
+      throw new RuleSelectionError('too_many_candidates', {
+        candidates: input.prepared.optional.length, maxCandidates: parsed.data.maxCandidates,
+      });
+    }
+    const candidates = [...input.prepared.optional].sort((left, right) => compareRuleIds(left.rule.id, right.rule.id))
+      .map((entry) => ({ ruleId: entry.rule.id, score: 0 }));
+    return { strategy: 'review', decision: candidates.length ? 'review-required' : 'no-candidates', candidates, profile: parsed.data };
+  }
+
+  /** The required Rules alone: no candidate is offered or ranked (revision 11.2). */
+  boundOnly(input: { prepared: PreparedRuleSelection; profile?: Partial<RuleRetrievalProfile> }): RankedRuleSelection {
+    const parsed = RuleRetrievalProfileSchema.safeParse(input.profile ?? {});
+    if (!parsed.success) throw new RuleSelectionError('invalid_request', {}, { cause: parsed.error });
+    if (input.prepared.optional.length) throw new RuleSelectionError('invalid_request', { field: 'optional' });
+    return { strategy: 'bound-only', decision: 'no-candidates', candidates: [], profile: parsed.data };
   }
 
   finish(input: {
@@ -209,9 +285,10 @@ export class RuleSelector {
     });
     const resolved = resolveRuleConflicts([...prepared.required, ...chosen]);
     return { ...resolved, promptRules: resolved.rules.map(({ rule, list }) => ({
-      ruleId: rule.id, ruleVersion: rule.version, ruleListId: list.definition.id,
-      ruleListVersion: list.definition.version, slot: list.definition.slot,
-      level: rule.level, instruction: ruleInstructionText(rule.instruction, prepared.context.locale),
+      ruleId: rule.id, ruleVersion: rule.version, ruleName: rule.name, ruleListId: list.definition.id,
+      ruleListVersion: list.definition.version, ruleListTitle: promptRuleText(list.definition.title, prepared.context),
+      slot: list.definition.slot, position: list.definition.rules.findIndex((item) => item.id === rule.id),
+      level: rule.level, instruction: promptRuleText(rule.instruction, prepared.context),
     })) };
   }
 }

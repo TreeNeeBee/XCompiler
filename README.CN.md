@@ -52,11 +52,11 @@ V 模型行为：
 - `HIGH_LEVEL_DESIGN` 定义系统级接口、外部 API、第三方库选型和依赖确认。
 - `DETAILED_DESIGN` 定义模块内部结构和具体实现方案。
 - Ticket 类型固定为 `epic`、`story`、`task`、`bug`、`enhancement`、`change-request`。展示名如 `P1-S004` 只用于阅读，所有关系都使用全局 ID。
-- 测试或执行失败创建 Bug，并路由到配对的上游 Step；完成度、对齐度或覆盖指标不足创建 Enhancement。
+- 测试或执行失败创建 Bug，并路由到配对的上游 Step；完成度、对齐度或覆盖指标不足创建 Enhancement。单元测试的行与分支覆盖率由 Runtime 测量（TypeScript 用 Vitest V8 覆盖率，Python 用 pytest-cov，Python 工程的依赖固定包含它），不采信模型自报；没有得到测试结论的运行（如 pytest 用法错误、未收集到用例、声明的测试文件尚未写出）不算测试失败，由本 Step 自己修正。
 - 失败归属发现它的 Step，目标由 V 模型配对关系决定，不继承当时恰好活跃的 CR 链起点。
-- 验证 Step 的门禁同时跑配对基线和该 Step 自己撰写的补充测试。缺陷只落在补充里就留在写它的 Step——交给配对源等于给它一个无权写入的文件；只要有一个失败用例属于基线，整条 finding 仍回到配对源。
+- 验证 Step 的门禁同时跑配对基线和该 Step 自己撰写的补充测试。补充目录里不是测试的文件由该 Step 在执行中修正，不会在它运行之前就拦截尝试。缺陷只落在补充里就留在写它的 Step——交给配对源等于给它一个无权写入的文件；只要有一个失败用例属于基线，整条 finding 仍回到配对源。
 - 两条 CR 传导同一跳（相同源 Step、相同目标 Step、相同起因失败）时并入已承载该跳的那条，不各自开链。
-- 同一失败反复出现时 Ticket 会停止，而不是耗尽预算。是否「同一个失败」由结构化签名判定：签名只含失败本身（失败用例、失败类型、原因的稳定部分），不含工具命令行、运行器分配的临时目录、地址或计数器——这些在两次完全相同的失败之间也会变。
+- 同一失败反复出现时 Ticket 会停止，而不是耗尽预算，停止信息写明是哪个失败。是否「同一个失败」由结构化签名判定：签名只含失败本身（失败用例、失败类型、原因的稳定部分），不含工具命令行、运行器分配的临时目录、地址或计数器——这些在两次完全相同的失败之间也会变。
 - 上游修复先形成 CR，携带契约差异、影响 Step/产物、实施方案、changelist、commit 和验证门禁；下游只实施增量变化。
 - CR 下游失败会创建关联 Bug 并阻塞父 CR；配对源 Step 修复和子 CR 验证通过后，只恢复父 CR 尚未完成的应用步骤。
 - Bug 只有在开票的那个失败于观察到它的 Step 重跑并通过后才关闭。每张 Bug 携带验证契约（该 Step 与要重放的选择器），满足时追加不可变的验证记录。未满足则**拒绝关闭而非抛错**：未完成的纠正链让 Bug 保持打开、Story 保持阻塞，下一条到达该门禁的链仍能把它做完。
@@ -168,6 +168,11 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler acp` | 启动 ACP Code Agent stdio adapter |
 | `xcompiler doctor` | 检查配置、LLM provider、sandbox、skills 是否可用 |
 | `xcompiler ls` / `xcompiler show <stepId>` | 查看计划和最近审计 |
+| `xcompiler rule ls` / `rule show <列表>[/<短键>]` | 查看当前生效的 Rule：发布的基础层加本机的本地差异层 |
+| `xcompiler rule add <列表>` / `update <Rule>` / `create-list` | 在本地差异层编辑 Rule；`--scope <维度>=<值>`（可重复）限定适用范围，`update --clear-scope` 清除 |
+| `xcompiler rule render --role <角色> --work <工作> [...]` | 打印某个请求会带的 Rule 块；`--intent`、`--tool`、`--writable`（声明的产出，或以 `/` 结尾的授权目录）等请求事实按真实请求的方式过滤有适用范围的 Rule |
+| `xcompiler rule check` | 校验 Rule、编译清单、本地差异和全部绑定；绑定错误退出码 1，待审差异或写法警告退出码 2 |
+| `xcompiler rule export` / `promote` / `discard <列表>` | 导出差异供审阅、在源码仓库中写入 `rules/`、丢弃某列表的差异。本版本 `rule rm` 不可用 |
 | `npm run release:local -- vX.Y.Z` | 本地准备 release commit 和 tag，不 push |
 
 ---
@@ -177,10 +182,13 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 - **LLM**：默认 OpenRouter Free mode。key 缺失或无效时会输出 provider、model、base URL、HTTP 状态/响应体，并明确提示 `OPENROUTER_API_KEY`。
 - **LLM 路由**：角色专用 provider 链、XCompiler 自动维护的动态评分、`llm_scores_user.yaml` 用户覆盖，以及 `tags: [cluster]` 聚合路由兜底评分带。
 - **语言**：支持 Python 与 TypeScript 的工程生成、测试、运行和入口检查。
+- **界面语言与提示翻译**：`locale`（`en`/`zh`）是用户的语言，CLI、提问、报告以及写进工程的自然语言交付物（文档、报告、提交信息、生成代码中的注释）都用它。模型默认读同一种语言；设为 `prompt_translate: on` 后模型读英文：提示模板、Rule、工具描述和反馈直接换成英文版本，用户自己写的文字（需求、自定义回答、补充需求）在输入时由模型译成英文，模型给出的问题、结论和 Gate 2 计划预览译回用户语言后再显示。topic.md 保持用户语言；规划读的英文 topic 由这些译文拼出，之后再读取时只翻译用户改过的节。译文缓存在工程状态目录；配置了 `llm.pools.translation` 时在该池翻译，否则用 management 池；翻译服务不可用时保留原文并给出警告。`locale: en` 时该开关不起作用。
+- **需求接收**：`build` 先问两道固定选择题：开发语言，以及交付形态（可运行程序、库或两者兼有）。需求原文或已有项目已经确定的，不再询问。之后每次只问一道由模型生成的问题，每题都基于此前全部回答。模型每轮还会按 XCompiler 自身的能力边界判断需求能否交付，依据是：已定的语言、交付形态、能用命令检查的验收方式，以及配置的沙箱。判断为无法交付时，会列出原因，由用户选择：接受模型建议的最接近的可交付范围、修改需求、仍按原需求继续，或取消。模型判定需求可交付且各维度均已澄清时，结束提问，同时列出交给规划按默认处理的事项（例如输出包含哪些字段），写入 topic.md 的“默认假设”一节，可在 Gate 1 修改。每道题都会重新发送此前确认的全部内容，所以澄清有上下文预算。预算用完，或连续几次回答都没有确定新内容时，模型不再提问，而是做最终评估，列出仍未确定或无法交付的内容，由用户选择：接受最接近的可交付范围、修改需求、按已确定的内容继续，或取消。因回答停滞触发时，还可以选择继续澄清。直接回车即选推荐的 A；回答中疑似凭据的内容在保存前会被替换。每道题都会显示已澄清的维度数、可交付判断和预算用量。回答随时保存，澄清中途中断的 build 会询问是否继续。topic.md 用 front matter（`xcompiler-topic: 1`、`language`、`projectType`）记录这两项决定；规划和 `--topic` 重跑都只读取澄清后的 topic，不再另外读取一份问答列表。
 - **Sandbox**：默认 `subprocess` 且隔离宿主环境变量（`inherit_env: false`）；可切换 `docker` 获得可执行的网络/资源隔离。subprocess 无法兑现 `network: off`，因此该组合会明确报错。
 - **Audit**：每次运行写入人类可读日志，并持久化带 correlation/causation ID 的领域 AuditEvent 和 Log 对象。
-- **Debug wiki**：Debugger 处理 Bug Ticket 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 Bug 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用；`log.md` 则保留为本地追加式操作流水，不由索引或摘要重建。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。Bug 的全部 CR 验证通过后才把 `bugResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
+- **Debug wiki**：Debugger 处理 Bug Ticket 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 Bug 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用；`log.md` 则保留为本地追加式操作流水，不由索引或摘要重建。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录；单文件可执行程序为其所在目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。Bug 的全部 CR 验证通过后才把 `bugResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
 - **Record/Replay**：针对 HTTP、LLM 和 Tool 的外部数据提供记录与重放；当前工程的代码、构建和测试始终真实执行，Replay 只提供外部 fixture，不复用旧进程退出码。Phase 交付门禁中的真实用户场景会关闭 Replay。
+- **Rule**：每个模型请求带上代码按角色、工作和语言绑定的 Rule（`rules/*.yaml`，由编译进程序的清单校验），再按各条的适用范围过滤：项目模式与类型、工具、产出路径、失败类别。本地修改存放在 `<XC_PATH 或 ~/.xc>/rules-local`（可用 `XC_RULES_LOCAL` 覆盖）；所修改的基础列表升级后，差异标为待审并停止生效。每个请求的 Rule 选择记录为不可变快照，Rule 正文按摘要只存一份。
 - **Agent Skills**：内置文件、Web、测试、Debug、Record/Replay、Debug Wiki、依赖、评审、安全、性能、CR 和交付工作流。Planner 只读取 `name + description`，Run 只激活所选 Skill 的正文与按需资源；Plugin API 4 可引入标准 Skill 目录，但不能绕过 Runtime 权限、路径、Ticket 或门禁。
 - **安全门禁**：项目文件访问受控，写工具限制在 Step 声明 outputs 内，每个敏感操作都必须经过 Adapter 的明确权限策略；缺少授权处理器时默认拒绝。
 
@@ -210,6 +218,12 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | `providers.<name>.tcp_keepalive_ms` | `30000` | 连接静默多久后内核开始发探活包。断网留下的 socket 收不到 RST/FIN，探活是唯一能把它变成真正连接错误的机制；`0` 关闭 |
 | `providers.<name>.stream_headers_timeout_ms` | `30000` | 仅对流式生效的响应头期限。流式服务端先写响应头再开始思考，所以「头没来」是连接问题、「头来了但 token 慢」是模型问题；`0` 不限制 |
 | `stall_diagnosis_after_ms` | `600000` | 对端持续这么久未送来任何字节时跑一次环境诊断，并把结论随失败一起交出 |
+| `planning.clarification.context_ratio` | `0.7` | 澄清最多可占用的窗口比例，达到后做最终评估（0.2–0.9）。分两侧检查：澄清提示对澄清模型的窗口；规划要读的 topic（连同规划自身提示和 PhasePlan）对规划模型的窗口。窗口均扣除安全余量和回复预留 |
+| `planning.clarification.stall_turns` | `4` | 连续多少次回答都没有让已澄清维度数超过此前最高、也没有改变可实施性判断时，做最终评估（2–20）；维度被改回 open 再改回来不算推进 |
+| `locale` | `en`（模板设为 `zh`） | 用户语言：CLI、提问、报告和工程的自然语言交付物 |
+| `prompt_translate` | `off` | 设为 `on` 时模型读英文、用户仍读自己的语言；预设文字直接替换，用户文字与模型提问由模型翻译 |
+| `llm.pools.translation` | 不存在 | 提示翻译使用的模型池；未配置时使用 management 池 |
+| `rules.selection.strategy` | `bound-only` | 请求如何选择可选 Rule。本版本只接受 `bound-only`：请求只带代码绑定的 Rule，不发起选择调用 |
 
 审计不会为了控制体积裁剪原始数据：`.xcompiler/audit/audit.jsonl` 和 `process_log.md` 完整追加保存；`summary.md` 是独立的可重建摘要，保留原始行号和不可变对象 revision 链接，供按需访问详细记录。
 

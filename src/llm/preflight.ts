@@ -116,10 +116,7 @@ export async function preflightProviders(
   if (rolesNeedingRescue.length > 0) {
     const reachable = baseUrls.filter((u) => result.tags[u] && result.tags[u]!.length > 0);
     if (reachable.length === 0) {
-      throw new Error(
-        `LLM preflight failed: 模型池 [${rolesNeedingRescue.join(', ')}] 没有可用的 provider，` +
-          `且没有任何 ollama 服务器可达。请检查 config.yaml 的 base_url / 启动 ollama 服务后重试。`,
-      );
+      throw new Error(t().system.preflightNoProvider(rolesNeedingRescue.join(', ')));
     }
     // 4a) 在第一个可达的 server 上把所有模型注册为合成 provider
     const sourceUrl = reachable[0]!;
@@ -157,10 +154,7 @@ export async function preflightProviders(
     // 4c) 再次校验：仍为空就退出
     const stillEmpty = listRolesWithoutLiveProvider(cfg, scores, unavailable);
     if (stillEmpty.length > 0) {
-      throw new Error(
-        `LLM preflight failed: ollama server ${sourceUrl} 已加载，但模型池 [${stillEmpty.join(', ')}] ` +
-          `仍无可用 provider（自动导入后评分仍全为 0）。`,
-      );
+      throw new Error(t().system.preflightStillEmpty(sourceUrl, stillEmpty.join(', ')));
     }
   }
 

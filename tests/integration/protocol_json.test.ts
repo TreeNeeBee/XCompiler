@@ -288,7 +288,7 @@ describe('full candidate value preservation', () => {
   });
 });
 
-describe('C1 completion boundary before JSON inspection', () => {
+describe('protocol-correction completion boundary before JSON inspection', () => {
   it('accepts an explicit producer stop before inspecting a complete representation', () => {
     // Model correction proves escape insertion (D-3); it is offered only an E1-admitted original.
     const permitting = { ...protocol, transformations: [...protocol.transformations, 'escape-insertion'] } as JsonOutputProtocol;

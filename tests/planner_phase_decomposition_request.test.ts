@@ -164,7 +164,8 @@ describe('Planner Phase decomposition retained request port', () => {
       userAddenda: 'Preserve signs.', baselineSummary: 'Original helper.', intent: 'greenfield' });
     expect(sent.payload.clarifications).toEqual(originalClarifications);
     expect(plans[0]!.payload.clarifications).toEqual(originalClarifications);
-    const qa = 'Q1 [data]: Which values?\n澄清目的: Fix the input type.\n候选设定:\n- A. Whole numbers.\nA1: Whole numbers.';
+    const labels = tFor('en').prompts.clarificationTranscript;
+    const qa = `Q1 [data]: Which values?\n${labels.why}: Fix the input type.\n${labels.options}:\n- A. Whole numbers.\nA1: Whole numbers.`;
     expect(sent.messages[1]!.content).toBe(tFor('en').prompts.plannerPhaseDecompose('Format a single integer.', qa, 'Preserve signs.', {
       intent: 'greenfield', baseline: 'Original helper.', phasePlan: JSON.stringify(sent.payload.phasePlan, null, 2), phaseId: 'P1',
     }));
@@ -188,7 +189,8 @@ describe('Planner Phase decomposition retained request port', () => {
     const catalog = renderSkillCatalog(value.skills.list());
     await value.planner.decomposePhase({ ...source(), intent: 'self' }, phasePlan(), 'P1');
     const sent = seen[0]!;
-    const qa = 'Q1 [data]: Which values?\n澄清目的: Fix the input type.\n候选设定:\n- A. Whole numbers.\nA1: Whole numbers.';
+    const labels = tFor('en').prompts.clarificationTranscript;
+    const qa = `Q1 [data]: Which values?\n${labels.why}: Fix the input type.\n${labels.options}:\n- A. Whole numbers.\nA1: Whole numbers.`;
     expect(sent.messages).toEqual([
       { role: 'system', content: tFor('en').prompts.plannerPhaseDecomposeSystem(getLanguageProfile('python')) +
         `\n\n${catalog}\n\n${tFor('en').prompts.plannerSelfMode}` },

@@ -8,7 +8,7 @@ const config = (provider: 'openai' | 'ollama' = 'openai') => ({
 
 describe('explicit HTTP Rule embedding adapter', () => {
   it('restores input order from OpenAI indices and preserves configured identity', async () => {
-    const fetcher = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+    const fetcher = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       expect(String(input)).toContain('/embeddings');
       expect(JSON.parse(String(init?.body))).toEqual({ model: 'embed-1', input: ['one', 'two'], encoding_format: 'float' });
       return new Response(JSON.stringify({ model: 'embed-1', data: [{ index: 1, embedding: [0, 1] }, { index: 0, embedding: [1, 0] }] }), { status: 200 });
@@ -20,7 +20,7 @@ describe('explicit HTTP Rule embedding adapter', () => {
   });
 
   it('uses Ollama input shape without silently changing the model space', async () => {
-    const fetcher = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+    const fetcher = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       expect(String(input)).toContain('/api/embed');
       expect(JSON.parse(String(init?.body))).toEqual({ model: 'embed-1', input: ['one'] });
       return new Response(JSON.stringify({ model: 'embed-1', embeddings: [[1, 0]] }), { status: 200 });

@@ -16,7 +16,7 @@ retention of actual Rule content/versions and retrieval evidence; that business-
 does not become correction-prompt input. See the [implementation plan](implementation-plan.md)
 for the confirmed directions and remaining details.
 
-The 2026-10-04 C1 continuation corrects the classifier's earlier omission of `finishReasons`.
+The 2026-10-04 C1 (protocol correction) continuation corrects the classifier's earlier omission of `finishReasons`.
 `length`/`incomplete` remain truncated even with terminal transport markers. A unique explicit `stop`
 and complete producer/choice facts are required for calibration eligibility. Missing/unknown/mixed
 reasons, ambiguous producer/choice facts and discarded frames remain unavailable; EOF/local-stop
@@ -88,7 +88,7 @@ missing-quote failure or a safety bypass.
   them before migrating either caller, so plan or evidence rejection cannot enter generic repair.
 - At the reviewed `77ff6e2` baseline, a rejected Router candidate had only head/tail previews in its
   validation event. The 2026-09-10 continuation now adds complete rejected output, actual attempt
-  messages and logical-request/provider-attempt IDs to that event. The subsequent F1 change makes
+  messages and logical-request/provider-attempt IDs to that event. The subsequent F1 (request-and-evidence foundation) change makes
   this record required: storage failure interrupts the request outside provider retry/scoring.
   Initialization/JSONL/Markdown failures preserve a typed storage cause through Executor, Runner,
   PM and Plugin handling. The in-memory failed record is diagnostic context, not durable recovery.
@@ -291,7 +291,7 @@ insertion.
 of the same logical request returns `exhausted` without a model call. Live `begin`/`complete` read no
 raw audit (D-21); recovery does.
 
-**Production wiring (E3).** The five production protocols (Executor turn, P01, P02, P03, J06) are
+**Production wiring (E3).** The five production protocols (Executor turn, P01 (clarification), P02 (phase plan), P03 (phase decomposition), J06 (scenario-outcome judgement)) are
 version 2 and declare `escape-insertion`. On a protocol rejection, Executor and P01–P03 call
 `correctRuntimeProtocolResponse` inside their response validator; J06 calls it after adopting an
 unresolved reply. A preserved correction is then validated by the caller's original business contract
@@ -568,7 +568,7 @@ separate persisted Rule-review allowance. C1 now has authored dual-response evid
 and a fixed protocol-only prompt, exact message guard, allowance ledger, immutable file state,
 actual-producer Router, concrete raw-audit authority and internal coordinator. It still needs
 additional quote/escape proof classes and production wiring. Internal Runtime composition and
-request-ID-only correction recovery are now authored. The following V1 input-only batch retains
+request-ID-only correction recovery are now authored. The following V1 (scenario vertical slice) input-only batch retains
 original business messages and Rule snapshot references separately. Its immutable capture/recovery
 does not grant correction allowance, impose a business send budget or put those messages/Rules into
 the calibration prompt. The 2026-10-12 V1 continuation adds final-request/attempt evidence and

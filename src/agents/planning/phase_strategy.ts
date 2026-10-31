@@ -80,6 +80,12 @@ export function validateImplementationPhaseDraft(
       if (executionIssue) {
         return `${phase.id} deliveryGate scenario ${scenario.name} ${executionIssue}`;
       }
+      for (const inspection of scenario.inspect ?? []) {
+        const inspectionIssue = validateDeliveryExecution(inspection, context.language);
+        if (inspectionIssue) {
+          return `${phase.id} deliveryGate scenario ${scenario.name} inspect ${inspectionIssue}`;
+        }
+      }
     }
   }
   return undefined;
@@ -106,6 +112,41 @@ export function validateCurrentPhaseDeliveryEntrypoints(
     if (missing.length > 0) {
       return `${phase.id} deliveryGate scenario ${scenario.name} references entry file(s) not delivered by ` +
         `the current phase CODE Step: ${missing.join(', ')}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Phases whose Steps may provide a delivery scenario's inputs: those that run before CODE, and the
+ * functional test, which may obtain real data at test time. CODE never does — the acceptance a
+ * product is checked against is not the product's to supply.
+ */
+const SCENARIO_INPUT_OWNER_PHASES: ReadonlySet<Step['phase']> = new Set([
+  'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'FUNCTIONAL_TEST',
+]);
+
+/**
+ * Every declared scenario input has a Step that delivers it. A live delivery gate ran its scenario
+ * on three sample files no Step had been asked to produce, and judged a run that read nothing.
+ */
+export function validateCurrentPhaseScenarioInputs(
+  phase: ImplementationPhase,
+  steps: Step[],
+): string | undefined {
+  for (const scenario of phase.deliveryGate?.scenarios ?? []) {
+    for (const input of scenario.inputs ?? []) {
+      const path = normalizePlanPath(input);
+      const owners = steps.filter((step) => step.outputs.map(normalizePlanPath).includes(path));
+      if (owners.length === 0) {
+        return `${phase.id} deliveryGate scenario ${scenario.name} input ${input} is not a declared output of any Step; ` +
+          'declare it as an output of REQUIREMENT_ANALYSIS, HIGH_LEVEL_DESIGN, DETAILED_DESIGN or FUNCTIONAL_TEST';
+      }
+      if (!owners.some((step) => SCENARIO_INPUT_OWNER_PHASES.has(step.phase))) {
+        return `${phase.id} deliveryGate scenario ${scenario.name} input ${input} is provided by ` +
+          `${owners.map((step) => `${step.id} ${step.phase}`).join(', ')}; scenario inputs come before coding ` +
+          '(REQUIREMENT_ANALYSIS, HIGH_LEVEL_DESIGN, DETAILED_DESIGN) or from FUNCTIONAL_TEST, never from CODE';
+      }
     }
   }
   return undefined;

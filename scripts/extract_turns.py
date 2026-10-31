@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
+# Summarises the user turns of an exported IDE session (.jsonl) as a Markdown table.
+# Usage: python3 scripts/extract_turns.py <session.jsonl> > turns.md
 import json, re, sys
-with open('docs/audit/copilot-session-ab5315cf.jsonl') as f:
+if len(sys.argv) != 2:
+    sys.exit('usage: python3 scripts/extract_turns.py <session.jsonl>')
+with open(sys.argv[1]) as f:
     events = [json.loads(l) for l in f if l.strip()]
 rows = []
 turn = 0

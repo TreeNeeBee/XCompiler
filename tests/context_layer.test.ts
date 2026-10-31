@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { DebugWikiRetrievalPort } from '../src/application/context/context_assembler.js';
+import type { DebugWikiEntry, DebugWikiMatch } from '../src/application/knowledge/debug_wiki.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import { ContextService } from '../src/application/context/context_service.js';
@@ -310,11 +312,18 @@ function stubRepository(tickets: Record<string, unknown>) {
   } as never;
 }
 
-class RecordingWiki {
+/** A wiki returning one complete match, shaped as the real retrieval port returns it. */
+class RecordingWiki implements DebugWikiRetrievalPort {
   public searches = 0;
-  async search(): Promise<Array<{ entry: { id: string; solution: string } }>> {
+  async search(): Promise<DebugWikiMatch[]> {
     this.searches += 1;
-    return [{ entry: { id: 'WIKI-1', solution: 'restart the fixture between cases' } }];
+    const entry: DebugWikiEntry = {
+      id: 'WIKI-1', layer: 'project', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+      status: 'active', category: 'test_failure', summary: 'A shared fixture leaked state between cases.',
+      primaryError: 'assertion failed', debugDemand: 'Isolate each case.', fingerprints: [], symptoms: [],
+      solution: 'restart the fixture between cases', evidence: [], stats: { uses: 0, successes: 0, failures: 0 }, feedback: [],
+    };
+    return [{ entry, score: 1, confidence: 1, reasons: ['fixture'] }];
   }
 }
 

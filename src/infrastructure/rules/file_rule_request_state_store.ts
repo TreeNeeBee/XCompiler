@@ -1,28 +1,33 @@
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  RuleRequestError, RuleReviewClaimSchema, RuleReviewResultSchema,
-  type RuleRequestStateStore, type RuleReviewClaim, type RuleReviewResult,
+  RuleRequestError, RuleReviewClaimSchema, RuleReviewFailureSchema, RuleReviewResultSchema,
+  type RuleRequestStateStore, type RuleReviewClaim, type RuleReviewFailure, type RuleReviewResult,
 } from '../../application/rules/rule_request_coordinator.js';
 import { canonicalRuleJson } from '../../application/rules/rule_evidence_encoding.js';
 import { validateRuleSelectionDraft, type RuleSelectionDraft } from '../../application/rules/rule_request_snapshot.js';
 import { FileRuleRequestSnapshotStore } from './file_rule_request_snapshot_store.js';
+import { compactRuleMaterial, RuleContentError } from './rule_content_store.js';
 import { publishImmutableJson, readImmutableJson, artifactPath } from '../persistence/immutable_json_artifact.js';
 
 /** Runtime owns root; state is isolated from candidate worktrees and contains no model-chosen paths. */
 export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore implements RuleRequestStateStore {
   constructor(private readonly stateRoot: string, private readonly containerRoot?: string) {
-    super(path.join(stateRoot, 'snapshots'), containerRoot);
+    super(path.join(stateRoot, 'snapshots'), containerRoot, path.join(stateRoot, 'content'));
   }
 
   async readDraft(id: string): Promise<RuleSelectionDraft | undefined> {
     const raw = await this.readState('drafts', id);
-    return raw === undefined ? undefined : validateRuleSelectionDraft(raw, id);
+    return raw === undefined ? undefined : validateRuleSelectionDraft(await this.expandDraft(raw, id), id);
   }
 
   async createDraft(draft: RuleSelectionDraft): Promise<RuleSelectionDraft> {
     const validated = validateRuleSelectionDraft(draft, draft.logicalRequestId);
-    const stored = validateRuleSelectionDraft(await this.publishState('drafts', draft.logicalRequestId, validated), draft.logicalRequestId);
+    const { document, contents } = compactRuleMaterial(validated);
+    try { await this.content.publish(contents); }
+    catch (cause) { throw new RuleRequestError('write_failed', { logicalRequestId: draft.logicalRequestId }, { cause }); }
+    const published = await this.publishState('drafts', draft.logicalRequestId, document);
+    const stored = validateRuleSelectionDraft(await this.expandDraft(published, draft.logicalRequestId), draft.logicalRequestId);
     if (stored.digest !== validated.digest) throw new RuleRequestError('identity_conflict', {
       logicalRequestId: draft.logicalRequestId, existingDigest: stored.digest, proposedDigest: validated.digest,
     });
@@ -49,6 +54,24 @@ export class FileRuleRequestStateStore extends FileRuleRequestSnapshotStore impl
     const stored = this.parse(RuleReviewResultSchema, await this.publishState('review-results', result.logicalRequestId, validated), result.logicalRequestId);
     if (canonicalRuleJson(stored) !== canonicalRuleJson(validated)) throw new RuleRequestError('identity_conflict', { logicalRequestId: result.logicalRequestId });
     return stored;
+  }
+
+  async readReviewFailure(id: string): Promise<RuleReviewFailure | undefined> {
+    const raw = await this.readState('review-failures', id);
+    return raw === undefined ? undefined : this.parse(RuleReviewFailureSchema, raw, id);
+  }
+
+  async recordReviewFailure(failure: RuleReviewFailure): Promise<RuleReviewFailure> {
+    const validated = this.parse(RuleReviewFailureSchema, failure, failure.logicalRequestId);
+    return this.parse(RuleReviewFailureSchema, await this.publishState('review-failures', failure.logicalRequestId, validated), failure.logicalRequestId);
+  }
+
+  private async expandDraft(raw: unknown, id: string): Promise<unknown> {
+    try { return await this.content.expand(raw); }
+    catch (cause) {
+      const reason = cause instanceof RuleContentError && cause.reason === 'invalid' ? 'invalid' : 'read_failed';
+      throw new RuleRequestError(reason, { logicalRequestId: id }, { cause });
+    }
   }
 
   private parse<T extends { logicalRequestId: string }>(schema: z.ZodType<T>, raw: unknown, id: string): T {

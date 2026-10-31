@@ -39,8 +39,8 @@ jobs:
       - name: Verify version metadata
         run: npm run version:check
 
-      - name: Type-check
-        run: npx tsc --noEmit
+      - name: Type-check (product and tests)
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint

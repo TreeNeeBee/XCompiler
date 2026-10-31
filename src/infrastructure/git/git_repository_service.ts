@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { isRuntimeArtifactPath } from '../../workspace/git.js';
+import { isRuntimeArtifactPath, restoreRuntimeIgnoreRules } from '../../workspace/git.js';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { MergeConflictError } from '../../application/workspace/git_port.js';
 import type { GitCommitRecord } from '../../application/workspace/git_port.js';
@@ -274,6 +274,7 @@ export class GitRepositoryService {
     // was therefore strictly worse than git: it added no protection and blocked merges git would
     // have made. A phase delivery gate runs the product to judge what it produces, so that evidence
     // is sitting untracked in the canonical copy by design, and the next merge refused because of it.
+    await restoreRuntimeIgnoreRules(this.git, this.cwd);
     const status = await this.git.status();
     // A runtime artifact is not work to lose. A product that rewrites its own output on every
     // delivery gate leaves that file modified in the canonical copy by design, and once an older

@@ -2,23 +2,27 @@ import { fixtureAcceptedContractSource } from './support/accepted_contract_fixtu
 import { executorBugTicketFixture, executorChangeRequestFixture } from './helpers/executor_ticket_fixtures.js';
 import { withFixtureExecutionRequest } from './support/execution_request_fixture.js';
 import { boundRuleBlock } from './support/compiler_rules.js';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
+import { setLocale, setPromptTranslation, tFor } from '../src/i18n/index.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
-import { isCompleteTurnJson, StepExecutor, verifyOutputs } from '../src/agents/executor.js';
+import { isCompleteTurnJson, StepExecutor, verifyOutputs, type ExecutorOptions } from '../src/agents/executor.js';
 import { ExecutionTurnProtocolError, rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import { LLMRequestError } from '../src/llm/errors.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
+import { AuditLogger } from '../src/audit/audit.js';
 import type { Step } from '../src/domain/planning/execution_plan.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
-import type { Tool, ToolContext, ToolExecutionEvent } from '../src/tools/types.js';
+import type { Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
-import { runTestsTool } from '../src/tools/sandbox.js';
-import { ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError } from '../src/application/execution/execution_turn_request.js';
+import { runProgramTool, runTestsTool } from '../src/tools/sandbox.js';
+import {
+  ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError, type ExecutionTurnRequestPort,
+} from '../src/application/execution/execution_turn_request.js';
 
 class CapturingLLM implements LLMClient {
   readonly name = 'cap';
@@ -67,7 +71,9 @@ describe('StepExecutor Runtime request ownership', () => {
   it('requires an explicit request port before invoking any bare client or Tool', async () => {
     const chat = vi.fn(async () => { throw new Error('A bare client is not the execution boundary'); });
     const permission = vi.fn(async () => ({ approved: true }));
-    await expect(new StepExecutor({ llm: { name: 'bare', chat }, maxRounds: 1 }).run({
+    // The removed `llm` option, as an untyped caller (JavaScript, an old plugin) could still pass it.
+    const legacy: ExecutorOptions & { llm: unknown } = { llm: { name: 'bare', chat }, maxRounds: 1 };
+    await expect(new StepExecutor(legacy).run({
       step: baseStep, tools: [writeFileTool], ctx: { ...ctx, requestPermission: permission },
     })).rejects.toBeInstanceOf(ExecutionTurnRequestConfigurationError);
     expect(chat).not.toHaveBeenCalled();
@@ -77,9 +83,10 @@ describe('StepExecutor Runtime request ownership', () => {
 
   it('uses the explicit request port for the actual model turn and pins its original business context', async () => {
     const chat = vi.fn(async () => { throw new Error('The legacy client must not be called'); });
-    const send = vi.fn(async () => ({ provider: 'retained-model', text: JSON.stringify({ thoughts: 'Deliver through the port',
+    const send = vi.fn(async (_input: Parameters<ExecutionTurnRequestPort['send']>[0]) => ({ provider: 'retained-model', text: JSON.stringify({ thoughts: 'Deliver through the port',
       actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'retained\r\n' } }], done: true }) }));
-    const result = await new StepExecutor({ llm: { name: 'bare', chat }, request: { name: 'retained', send }, maxRounds: 1 })
+    const legacy: ExecutorOptions & { llm: unknown } = { llm: { name: 'bare', chat }, request: { name: 'retained', send }, maxRounds: 1 };
+    const result = await new StepExecutor(legacy)
       .run({ step: baseStep, tools: [writeFileTool], ctx });
     expect(result.success).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
@@ -89,6 +96,27 @@ describe('StepExecutor Runtime request ownership', () => {
     expect(chat).not.toHaveBeenCalled();
     expect(result.metrics.providers).toEqual(['retained-model']);
     expect(await ws.readFile('src/x.py')).toBe('retained\r\n');
+  });
+});
+
+describe('StepExecutor prompt language', () => {
+  afterEach(() => {
+    setPromptTranslation(false);
+    setLocale('en');
+  });
+
+  it('writes to the model in English when prompt translation is on, recording the user\'s language for deliverables', async () => {
+    setLocale('zh');
+    setPromptTranslation(true);
+    const send = vi.fn(async (_input: Parameters<ExecutionTurnRequestPort['send']>[0]) => ({ provider: 'retained-model', text: JSON.stringify({ thoughts: 'Deliver',
+      actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x\n' } }], done: true }) }));
+    await new StepExecutor({ request: { name: 'retained', send }, maxRounds: 1 } as ExecutorOptions).run({ step: baseStep, tools: [writeFileTool], ctx });
+    const sent = send.mock.calls[0]![0];
+    expect(sent.payload).toMatchObject({ locale: 'en', outputLocale: 'zh' });
+    // The framework's own text (templates, tool descriptions) is English; only the Step's content, written by the planner, is not.
+    const framework = sent.messages.map((message) => message.content).join('\n').replaceAll(baseStep.systemPrompt, '');
+    expect(framework).not.toMatch(/[\u4e00-\u9fff]/u);
+    expect(framework).toContain(tFor('en').tools.writeFile.description);
   });
 });
 
@@ -183,6 +211,28 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.lastSystem).toContain('CLI 工具');
     expect(llm.lastSystem).toContain('## Current Step prompt');
     expect(llm.lastSystem).toContain('禁止触碰其它文件');
+  });
+
+  // A live requirement-analysis Step froze a column order of its own: the plan had already fixed one,
+  // but the Step was shown neither the digest nor the Phase scope that said so.
+  it('gives the Step the plan the user confirmed, ahead of the context it builds on', async () => {
+    const llm = new CapturingLLM();
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
+    await exec.run({
+      step: baseStep, tools: [writeFileTool], ctx, layeredContext: 'objective: freeze the CLI contract',
+      planContract: {
+        requirementDigest: 'Export signals to a workbook.',
+        phaseObjective: 'Deliver the core export.',
+        phaseScope: ['The signal sheet columns are, in order: source, message, signal.'],
+      },
+    });
+    const block = llm.lastSystem.slice(llm.lastSystem.indexOf('## Confirmed plan contract'));
+    expect(block).toContain('Requirement: Export signals to a workbook.');
+    expect(block).toContain("This Phase's objective: Deliver the core export.");
+    expect(block).toContain('- The signal sheet columns are, in order: source, message, signal.');
+    expect(block).toContain('qualityAssessment.blockedBy');
+    expect(llm.lastSystem.indexOf('## Confirmed plan contract'))
+      .toBeLessThan(llm.lastSystem.indexOf('# Assembled context'));
   });
 
   it('injects required path contracts and current Step path candidates into tool docs', async () => {
@@ -700,6 +750,75 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.success).toBe(true);
     expect(executions).toBe(1);
     expect(result.toolCalls.filter((call) => call.tool === 'run_tests')).toHaveLength(1);
+  });
+
+  // A live MODULE_TEST Step fixed its supplement, the gate Runtime appended passed, and every rerun it
+  // asked for was reused; the failure of its first run, made with `-p no:cacheprovider`, was never
+  // settled, and the Step ran out of rounds with all 88 tests green.
+  it('lets the gate Runtime appends after a fix settle an earlier run of the same tests made with other options', async () => {
+    const SUPPLEMENT_ROOT = 'tests/verification/p1/unit-test/S005/';
+    const SUPPLEMENT = `${SUPPLEMENT_ROOT}test_header.py`;
+    class FixThenFinishLLM implements LLMClient {
+      readonly name = 'fix-then-finish';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({ thoughts: 'run the frozen set', done: false,
+            actions: [{ tool: 'run_tests', args: { args: ['tests/unit/x.test.ts', SUPPLEMENT, '-q', '-p', 'no:cacheprovider'] } }] });
+        }
+        if (this.calls === 2) {
+          return JSON.stringify({ thoughts: 'fix the stale assertion', done: false,
+            actions: [{ tool: 'write_file', args: { path: SUPPLEMENT, content: 'def test_header():\n    assert 16 == 16\n' } }] });
+        }
+        if (this.calls === 3) {
+          return JSON.stringify({ thoughts: 'rerun exactly as before', done: false,
+            actions: [{ tool: 'run_tests', args: { args: ['tests/unit/x.test.ts', SUPPLEMENT, '-q', '-p', 'no:cacheprovider'] } }] });
+        }
+        return JSON.stringify({
+          thoughts: 'the gate passed after the fix',
+          qualityAssessment: {
+            metrics: { lineCoverage: 0.9, branchCoverage: 0.8, testCasePassRate: 1 },
+            tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
+            evidence: ['mandatory gate passed after the fix'], unavailableMetrics: [], gaps: [], blockedBy: [],
+          },
+          actions: [], done: true,
+        });
+      }
+    }
+    await ws.writeFile('tests/unit/x.test.ts', 'test("x", () => {});\n');
+    await ws.writeFile(SUPPLEMENT, 'def test_header():\n    assert 17 == 16\n');
+    let executions = 0;
+    const tests: Tool = {
+      name: 'run_tests',
+      description: 'run exact unit tests',
+      argsSchema: {},
+      async run() {
+        executions++;
+        const data = { runner: 'pytest', selectors: ['tests/unit/x.test.ts', SUPPLEMENT] };
+        return executions === 1
+          // Confined to this Step's own supplement, so the Step repairs it in this attempt (D-48).
+          ? { ok: false, error: 'pytest exit=1 AssertionError', data: { ...data, failedTests: [`${SUPPLEMENT}::test_header`] } }
+          : { ok: true, summary: 'Tests 1 passed (1)', data };
+      },
+    };
+    const step: Step = {
+      ...baseStep, id: 'S005', phase: 'UNIT_TEST', tools: ['run_tests', 'write_file'], outputs: ['tests/unit/x.test.ts'],
+      qualityGate: {
+        metrics: { lineCoverage: 0.8, branchCoverage: 0.7, testCasePassRate: 1 },
+        tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
+      },
+    };
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new FixThenFinishLLM(), maxRounds: 4 })).run({
+      step, tools: [tests, writeFileTool],
+      ctx: { ...ctx, allowedWrites: [SUPPLEMENT_ROOT], stepId: step.id, testGateArgs: ['tests/unit/x.test.ts'],
+        supplementalTestRoot: SUPPLEMENT_ROOT },
+    });
+
+    expect(result.error ?? '', result.error).not.toContain('unresolved tool failures remain');
+    expect(result.success, result.error).toBe(true);
+    // The fix's gate ran once; the rerun after it was reused, not executed.
+    expect(executions).toBe(2);
   });
 
   it('updates skill operation windows when the active LLM provider switches', async () => {
@@ -1478,6 +1597,96 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.qualityAssessment?.evidence.join('\n')).toContain('remains deferred');
   });
 
+  // A refused run never reached the suite, so there is no failed gate to hand downstream. The
+  // refusal used to be recognised by the words "permission denied", which a timed-out or
+  // hard-denied permission does not render.
+  it.each(['denied', 'timed_out', 'hard_denied'] as const)(
+    'does not defer a paired gate whose run_tests permission was %s',
+    async (outcome) => {
+      class RefusedDeferredGateLLM implements LLMClient {
+        readonly name = 'refused-deferred-gate';
+        calls = 0;
+
+        async chat(): Promise<string> {
+          this.calls++;
+          if (this.calls === 1) {
+            return JSON.stringify({
+              thoughts: 'repair the upstream test contract and collect the downstream failure once',
+              bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+              actions: [
+                { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 3\n' } },
+                { tool: 'run_tests', args: { args: ['tests/functional/cli.test.ts'] } },
+              ],
+              done: false,
+            });
+          }
+          return JSON.stringify({
+            thoughts: 'the upstream repair is complete and the remaining failure belongs to CODE',
+            bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+            qualityAssessment: {
+              completion: 1,
+              upstreamAlignment: 1,
+              metrics: {},
+              tolerance: { failedTests: 1, skippedTests: 0, warnings: 0 },
+              evidence: ['src/x.py updated'],
+              unavailableMetrics: [],
+              gaps: [],
+              blockedBy: ['src/cli.ts must be implemented by downstream CODE'],
+            },
+            actions: [],
+            done: true,
+          });
+        }
+      }
+      const audit = new AuditLogger({ root: tmp, command: 'refused-deferred-gate', contentMode: 'full' });
+      await audit.start();
+      const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new RefusedDeferredGateLLM(), maxRounds: 2 })).run({
+        step: {
+          ...baseStep,
+          phase: 'REQUIREMENT_ANALYSIS',
+          tools: ['write_file', 'run_tests'],
+          qualityGate: {
+            completionMin: 0.95,
+            upstreamAlignmentMin: 0.9,
+            metrics: {},
+            tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
+          },
+        },
+        work: 'repair.debug',
+        tools: [writeFileTool, runTestsTool],
+        ctx: {
+          ...ctx,
+          audit,
+          requestPermission: async (request) => request.operationType === 'test_command'
+            ? { approved: false, outcome, reason: 'test execution was not granted' }
+            : { approved: true, outcome: 'approved' as const },
+          sandbox: {
+            async runProgram() { throw new Error('not used'); },
+            async runTests() { throw new Error('a refused run_tests must not reach the sandbox'); },
+            async installDeps() { throw new Error('not used'); },
+          } as never,
+        },
+        debugContext: {
+          bugTicketId: 'BUG-REFUSED-DEFERRED-GATE',
+          reason: 'functional test failed',
+          failureLog: 'CLI output was not created',
+          repairRequired: true,
+          deferredVerificationScope: { stepId: 'S008', phase: 'FUNCTIONAL_TEST' },
+        },
+      });
+
+      expect(result.toolCalls).toContainEqual(expect.objectContaining({
+        tool: 'run_tests', ok: false, executionStatus: 'permission-blocked',
+      }));
+      // Deferral would rewrite the assessment to say the suite failed and was handed on.
+      expect(result.qualityAssessment?.tolerance.failedTests).toBe(1);
+      expect(result.qualityAssessment?.evidence.join('\n')).not.toContain('remains deferred');
+      const events = (await fs.readFile(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8')).split('\n')
+        .filter((line) => line.trim()).map((line) => JSON.parse(line) as { messageId?: string });
+      expect(events.some((event) => event.messageId === 'audit.executor_deferred_verification_completion')).toBe(false);
+    },
+  );
+
   it('hands an aligned upstream phase onward without inventing a repair', async () => {
     class DeferredNoopLLM implements LLMClient {
       readonly name = 'deferred-noop';
@@ -2063,6 +2272,110 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.toolCalls.find((call) => !call.ok)?.error).toContain('permission denied for file_write');
     expect(await ws.readFile('docs/design.md')).toBe('# accepted design\n');
   });
+
+  // The two refusals together are what only the explicit no-op accepts: neither the permission-only
+  // nor the unauthorized-verification allowance covers the mix. The rewrite's refusal was recognised
+  // by the words "permission denied for file_write", which a timed-out or hard-denied permission
+  // does not render, so the same pass-through failed or passed on how the refusal was worded.
+  it.each(['denied', 'timed_out', 'hard_denied'] as const)(
+    'accepts an audited pass-through CR after a %s phase rewrite and an ungranted test run',
+    async (outcome) => {
+      class RefusedRewriteThenPassThroughLLM implements LLMClient {
+        readonly name = 'refused-rewrite-pass-through';
+        calls = 0;
+
+        async chat(): Promise<string> {
+          this.calls++;
+          if (this.calls === 1) {
+            return JSON.stringify({
+              thoughts: 'inspect the downstream artifact named by the CR',
+              actions: [{ tool: 'read_file', args: { path: 'src/cli.ts' } }],
+              done: false,
+            });
+          }
+          if (this.calls === 2) {
+            return JSON.stringify({
+              thoughts: 'incorrectly rewrite this phase output and run a suite this Step is not granted',
+              actions: [
+                { tool: 'write_file', args: { path: 'docs/design.md', content: '# rewritten\n' } },
+                { tool: 'run_tests', args: {} },
+              ],
+              done: false,
+            });
+          }
+          return JSON.stringify({
+            thoughts: 'the CR belongs to the downstream CODE owner, so preserve this accepted design',
+            changeRequestDisposition: {
+              outcome: 'not-applicable',
+              reasonCategory: 'outside-step-scope',
+              rationale: 'This design Step does not own the executable CLI artifact; the accepted design remains aligned and the CODE owner must repair runtime behavior.',
+              inspectedArtifacts: ['src/cli.ts'],
+              evidence: ['read_file confirmed the affected CLI artifact exists downstream'],
+            },
+            qualityAssessment: {
+              completion: 1,
+              upstreamAlignment: 1,
+              metrics: {},
+              tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
+              evidence: ['docs/design.md remains the accepted baseline'],
+              unavailableMetrics: [],
+              gaps: [],
+              blockedBy: ['CODE owner must repair the executable CLI behavior'],
+              postToolEvidence: 'src/cli.ts was inspected after CR assignment',
+            },
+            actions: [],
+            done: true,
+          });
+        }
+      }
+
+      await ws.writeFile('src/cli.ts', 'export async function run(): Promise<number> { return 1; }\n');
+      await ws.writeFile('docs/design.md', '# accepted design\n');
+      const result = await new StepExecutor(withFixtureExecutionRequest({
+        llm: new RefusedRewriteThenPassThroughLLM(),
+        maxRounds: 4,
+      })).run({
+        step: {
+          ...baseStep,
+          phase: 'HIGH_LEVEL_DESIGN',
+          tools: ['read_file', 'write_file'],
+          outputs: ['docs/design.md'],
+        },
+        tools: [readFileTool, writeFileTool],
+        ctx: {
+          ...ctx,
+          allowedWrites: ['docs/'],
+          requestPermission: async () => ({
+            approved: false,
+            outcome,
+            reason: 'CR does not apply to this accepted design artifact',
+          }),
+        },
+        changeRequest: executorChangeRequestFixture({
+          id: 'CR-REFUSED-PASS-THROUGH',
+          revision: 1,
+          state: 'in_progress',
+          sourceTicketIds: ['BUG-FUNCTIONAL'],
+          originFailures: [],
+          description: 'Repair the executable CLI behavior.',
+          contractDelta: {
+            summary: 'CLI must produce an output file.',
+            before: ['CLI exits with status 1.'],
+            after: ['CLI exits successfully and writes output.'],
+            affectedArtifacts: ['src/cli.ts'],
+          },
+        }),
+      });
+
+      expect(result.toolCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tool: 'write_file', ok: false, executionStatus: 'permission-blocked' }),
+        expect.objectContaining({ tool: 'run_tests', ok: false, executionStatus: 'tool-not-allowed' }),
+      ]));
+      expect(result.success).toBe(true);
+      expect(result.changeRequestDisposition?.outcome).toBe('not-applicable');
+      expect(await ws.readFile('docs/design.md')).toBe('# accepted design\n');
+    },
+  );
 
   it('extends past the base round limit when successful writes reduce missing outputs', async () => {
     class ProductiveLLM implements LLMClient {
@@ -2692,6 +3005,18 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.success, result.error).toBe(true);
     expect(result.rounds).toBe(1);
     expect(llm.calls).toBe(1);
+  });
+
+  it('tells a contract-change hop to move its baseline to the new contract instead of keeping it green', async () => {
+    const llm = new CapturingLLM();
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
+      step: { ...baseStep, phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md', 'tests/modules/contract.test.ts'] },
+      baselineTestExecution: 'defer', baselineTestExecutionReason: 'contract-change',
+      tools: [writeFileTool], ctx: { ...ctx, allowedWrites: ['docs/', 'tests/'] },
+    });
+    expect(llm.lastUser).toContain('This hop carries a contract change ahead of S4');
+    expect(llm.lastUser).toContain('do not keep an assertion of the old contract to stay green');
+    expect(llm.lastUser).not.toContain('This is the initial pre-CODE pass');
   });
 
   it('keeps a gated Step in the same conversation until quality evidence is supplied', async () => {
@@ -3777,6 +4102,30 @@ describe('StepExecutor system prompt assembly', () => {
     await expect(fs.readFile(path.join(tmp, 'src/x.py'), 'utf8')).resolves.toBe('x = 1\n');
   });
 
+  // Above, the later write to the probed path clears the failure on its own; here nothing ever
+  // touches the probed path, so only recognising the refused read-only probe lets the Step finish.
+  it('does not hold an unauthorized read-only probe of an untouched path against completion', async () => {
+    class UnrelatedReadProbeThenWriteLLM implements LLMClient {
+      readonly name = 'unrelated-read-probe-then-write';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'look at a neighbouring document, then write the required output',
+          actions: [
+            { tool: 'list_dir', args: { path: 'docs' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new UnrelatedReadProbeThenWriteLLM(), maxRounds: 1 }));
+    const r = await exec.run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(r.toolCalls).toContainEqual(expect.objectContaining({
+      tool: 'list_dir', ok: false, executionStatus: 'tool-not-allowed',
+    }));
+    expect(r.success).toBe(true);
+  });
+
   it('does not make unauthorized downstream verification tools permanent blockers in a development phase', async () => {
     class DeferredVerificationLLM implements LLMClient {
       readonly name = 'deferred-verification';
@@ -3941,6 +4290,179 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.validationDefect).toContain('src/parser.py: receivers bug');
     expect(r.error).toContain('validation defect reported');
     await expect(fs.stat(path.join(tmp, 'src/x.py'))).rejects.toThrow();
+  });
+
+  describe('a test run that reached no verdict', () => {
+    // A live UNIT_TEST Step's first invocation carried coverage options pytest did not recognise.
+    // pytest exited 4 without running a test, and the Step was stopped and handed to CODE as a
+    // product validation defect — a repair CODE could not make, so the run looped until stopped.
+    class VaryingRunLLM implements LLMClient {
+      readonly name = 'varying-run';
+      calls = 0;
+      users: string[] = [];
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        this.users.push(messages.filter((m) => m.role === 'user').at(-1)?.content ?? '');
+        // A different selector each round, so the repeat breaker does not end the loop first.
+        return JSON.stringify({
+          thoughts: 'run the suite',
+          actions: [{ tool: 'run_tests', args: { args: ['-k', `case${this.calls}`] } }],
+          done: false,
+        });
+      }
+    }
+    const runTests = (code?: ToolFailureCode): Tool<{ args?: string[] }, never> => ({
+      name: 'run_tests',
+      description: 'runs pytest and reaches no verdict',
+      argsSchema: { args: 'string[]' },
+      async run() {
+        return { ok: false, ...(code ? { code } : {}), error: 'pytest exit=4\npytest rejected the invocation itself' };
+      },
+    });
+
+    it('returns it to the test Step to correct instead of handing it on as a product defect', async () => {
+      const llm = new VaryingRunLLM();
+      const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
+      const r = await exec.run({
+        step: { ...baseStep, phase: 'UNIT_TEST', tools: ['run_tests'], outputs: [] },
+        tools: [runTests('test_run_without_verdict')],
+        ctx,
+      });
+      expect(r.validationDefect).toBeUndefined();
+      expect(llm.calls).toBe(2);
+      expect(llm.users[1]).toContain('pytest rejected the invocation itself');
+    });
+
+    it('does not count toward the failed-run limit that hands the paired source phase a repair', async () => {
+      const step = { ...baseStep, phase: 'CODE' as const, tools: ['run_tests'], outputs: [] };
+      const limited = (code?: ToolFailureCode) => new StepExecutor(withFixtureExecutionRequest({
+        llm: new VaryingRunLLM(), maxRounds: 3, maxFailedTestRuns: 2,
+      })).run({ step, tools: [runTests(code)], ctx });
+      // The control: the same runs reaching a failing verdict do hit the limit.
+      expect((await limited()).error).toContain('run_tests failed 2 time(s)');
+      expect((await limited('test_run_without_verdict')).error ?? '').not.toContain('run_tests failed');
+    });
+
+    it('keeps the tool\'s diagnosis and failure code in the audit record, not only its output', async () => {
+      // A failed runner's audit row carried its output tail and `ok: false`; the diagnosis the Step
+      // was given, and the typed code every later decision read, were in no persisted record.
+      const audit = new AuditLogger({ root: tmp, command: 'xcompiler_test', contentMode: 'redacted' });
+      const tool: Tool<{ args?: string[] }, never> = {
+        name: 'run_tests',
+        description: 'runs pytest and reaches no verdict',
+        argsSchema: { args: 'string[]' },
+        async run() {
+          return {
+            ok: false,
+            code: 'test_run_without_verdict',
+            summary: 'pytest exit=4\n--- stderr (last lines) ---\nerror: unrecognized arguments',
+            error: 'pytest exit=4\npytest rejected the invocation itself; token sk-or-v1-0123456789abcdef0123456789abcdef',
+          };
+        },
+      };
+      await new StepExecutor(withFixtureExecutionRequest({ llm: new VaryingRunLLM(), maxRounds: 1 })).run({
+        step: { ...baseStep, phase: 'UNIT_TEST', tools: ['run_tests'], outputs: [] },
+        tools: [tool],
+        ctx: { ...ctx, audit },
+      });
+      const rows = (await fs.readFile(path.join(tmp, 'audit/audit.jsonl'), 'utf8')).trim().split('\n')
+        .map((line) => JSON.parse(line) as { kind: string; data?: Record<string, unknown> });
+      const result = rows.find((row) => row.kind === 'tool.result' && row.data?.tool === 'run_tests');
+      expect(result?.data).toMatchObject({ ok: false, code: 'test_run_without_verdict' });
+      expect(result?.data?.error).toContain('pytest rejected the invocation itself');
+      expect(result?.data?.error).not.toContain('0123456789abcdef0123456789abcdef');
+    });
+  });
+
+  describe('a test failure confined to the Step\'s own supplements', () => {
+    // A live INTEGRATION_TEST Step diagnosed its own supplement's wrong row count, but read it and
+    // reran the suite in the same turn; the gate stopped it there, six attempts running, and the
+    // Ticket ended on the recurrence guard without the supplement ever being edited.
+    const root = 'tests/verification/p1/integration-test/S010/';
+    class RunSuiteLLM implements LLMClient {
+      readonly name = 'run-suite';
+      calls = 0;
+      users: string[] = [];
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        this.users.push(messages.filter((m) => m.role === 'user').at(-1)?.content ?? '');
+        return JSON.stringify({
+          thoughts: 'run the suite',
+          actions: [{ tool: 'run_tests', args: { args: ['-k', `case${this.calls}`] } }],
+          done: false,
+        });
+      }
+    }
+    const suite = (failedTests: (call: number) => string[]): Tool<{ args?: string[] }, never> => {
+      let call = 0;
+      return {
+        name: 'run_tests',
+        description: 'runs the frozen suite',
+        argsSchema: { args: 'string[]' },
+        async run() {
+          call++;
+          const failing = failedTests(call);
+          return failing.length === 0
+            ? { ok: true, summary: 'pytest exit=0' }
+            : { ok: false, error: `pytest exit=1\nFAILED ${failing.join('\nFAILED ')}`, data: { exitCode: 1, failedTests: failing } as never };
+        },
+      };
+    };
+    const step = { ...baseStep, phase: 'INTEGRATION_TEST' as const, tools: ['run_tests'], outputs: [] };
+    const run = (llm: LLMClient, tool: Tool<{ args?: string[] }, never>, options: { maxRounds: number; maxFailedTestRuns?: number }) =>
+      new StepExecutor(withFixtureExecutionRequest({ llm, ...options })).run({
+        step, tools: [tool], ctx: { ...ctx, supplementalTestRoot: root },
+      });
+
+    it('stays with the Step to repair instead of ending it as a validation defect', async () => {
+      const llm = new RunSuiteLLM();
+      const r = await run(llm, suite((call) => call === 1 ? [`${root}test_risk.py::test_rows`] : []), { maxRounds: 2 });
+      expect(r.validationDefect).toBeUndefined();
+      expect(llm.calls).toBe(2);
+      expect(llm.users[1]).toContain(`${root}test_risk.py::test_rows`);
+    });
+
+    it('still hands on a failure that reaches a baseline case', async () => {
+      const llm = new RunSuiteLLM();
+      const r = await run(llm, suite(() => [`${root}test_risk.py::test_rows`, 'tests/integration/test_pipeline.py::test_merge']), { maxRounds: 2 });
+      expect(r.validationDefect).toContain('tests/integration/test_pipeline.py::test_merge');
+      expect(llm.calls).toBe(1);
+    });
+
+    it('does not count toward the limit that hands the paired source phase a repair', async () => {
+      const r = await run(new RunSuiteLLM(), suite(() => [`${root}test_risk.py::test_rows`]), { maxRounds: 3, maxFailedTestRuns: 2 });
+      expect(r.error ?? '').not.toContain('run_tests failed');
+    });
+  });
+
+  it('resolves a failed product run once the same command meets its declared exit code', async () => {
+    // A live CODE Step verified that a broken input exits 1, as specified, and could not deliver: the
+    // call stayed unresolved until the same command exited 0, which the contract forbids.
+    class DeclareExpectedExitLLM implements LLMClient {
+      readonly name = 'declare-expected-exit';
+      calls = 0;
+      users: string[] = [];
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        this.users.push(messages.filter((m) => m.role === 'user').at(-1)?.content ?? '');
+        const args = { args: ['src/x.py', 'broken.dbc'], ...(this.calls > 1 ? { expectExitCode: 1 } : {}) };
+        return JSON.stringify({ thoughts: 'run the product on a broken input', actions: [{ tool: 'run_program', args }], done: false });
+      }
+    }
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    const llm = new DeclareExpectedExitLLM();
+    const r = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
+      step: { ...baseStep, tools: ['run_program'], outputs: ['src/x.py'] },
+      tools: [runProgramTool],
+      ctx: {
+        ...ctx,
+        language: 'python',
+        sandbox: { runProgram: async () => ({ exitCode: 1, stdout: '', stderr: 'broken.dbc: parse error', timedOut: false, durationMs: 1 }) } as never,
+      },
+    });
+
+    expect(llm.users[1]).toContain('expectExitCode: 1');
+    expect(r.success, r.error).toBe(true);
   });
 
   it('accepts completion evidence from a successful verification tool even without done=true', async () => {
@@ -5286,7 +5808,7 @@ describe('StepExecutor system prompt assembly', () => {
         ...baseStep,
         outputs: ['src/x.ts'],
         tools: ['add_dependency', 'run_program', 'run_tests'],
-        qualityGate: { metrics: {}, tolerance: { maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 } },
+        qualityGate: { metrics: {}, tolerance: { metricShortfall: 0, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 } },
       },
       work: 'repair.debug',
       tools: [addDependency, runProgram, runTests],
@@ -5596,24 +6118,24 @@ describe('glob outputs', () => {
     // pattern as a literal filename can never succeed, so the Step could not report completion no
     // matter what it wrote — and stopped for no progress instead.
     const step = { ...baseStep, outputs: ['tests/functional/**/*.test.ts'] };
-    expect((await verifyOutputs({ step, tools: [], ctx })).missing)
+    expect((await verifyOutputs({ step, ctx })).missing)
       .toEqual(['tests/functional/**/*.test.ts']);
 
     await ws.writeFile('tests/functional/cli-acceptance.test.ts', 'export const x = 1;\n');
-    expect((await verifyOutputs({ step, tools: [], ctx })).ok).toBe(true);
+    expect((await verifyOutputs({ step, ctx })).ok).toBe(true);
   });
 
   it('is not satisfied by a file that fails to match, or by an empty one', async () => {
     const step = { ...baseStep, outputs: ['tests/unit/*.test.ts'] };
     await ws.writeFile('tests/unit/notes.md', 'not a test\n');
     await ws.writeFile('tests/unit/deep/nested.test.ts', 'export const y = 1;\n');
-    expect((await verifyOutputs({ step, tools: [], ctx })).ok).toBe(false);
+    expect((await verifyOutputs({ step, ctx })).ok).toBe(false);
 
     // `*` does not cross a separator, so the nested file above must not count; a direct one does.
     await ws.writeFile('tests/unit/empty.test.ts', '   \n');
-    expect((await verifyOutputs({ step, tools: [], ctx })).ok).toBe(false);
+    expect((await verifyOutputs({ step, ctx })).ok).toBe(false);
     await ws.writeFile('tests/unit/real.test.ts', 'export const z = 1;\n');
-    expect((await verifyOutputs({ step, tools: [], ctx })).ok).toBe(true);
+    expect((await verifyOutputs({ step, ctx })).ok).toBe(true);
   });
 });
 

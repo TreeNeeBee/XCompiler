@@ -16,7 +16,7 @@ import {
   type EntrypointProbe,
 } from './entry_gate.js';
 import { detectNetworkApiFailureInExec } from './network_failure.js';
-import { t } from '../../i18n/index.js';
+import { getPromptLocale, tFor } from '../../i18n/index.js';
 
 /**
  * LanguageProfile：把"某种目标语言的工程化知识"集中到一处，
@@ -104,6 +104,11 @@ export function getLanguageProfile(language: Language): LanguageProfile {
 }
 
 /** Phase delivery fallback (TypeScript): probe `node src/main.ts --help` when no concrete case command exists. */
+/** The file a TypeScript probe starts: its source, or package.json when it runs the start script. */
+function tsEntrySource(entry: NonNullable<Awaited<ReturnType<typeof detectTsEntrypoint>>>): string {
+  return entry.type === 'run-program' ? entry.entry : entry.type === 'exec' ? entry.argv[0]! : 'package.json';
+}
+
 async function probeTsEntrypoint(
   ws: Workspace,
   sandbox: Sandbox,
@@ -117,7 +122,7 @@ async function probeTsEntrypoint(
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
-      stderrTail: t().engine.missingTypeScriptEntrypoint,
+      stderrTail: tFor(getPromptLocale()).engine.missingTypeScriptEntrypoint,
     };
   }
   let r;
@@ -126,7 +131,8 @@ async function probeTsEntrypoint(
   } catch (err) {
     return {
       ok: false,
-      command: entry.command,
+      entry: tsEntrySource(entry),
+    command: entry.command,
       exitCode: -1,
       timedOut: false,
       stdoutTail: '',
@@ -137,7 +143,8 @@ async function probeTsEntrypoint(
   if (helpNetworkFailure) {
     return {
       ok: false,
-      command: entry.command,
+      entry: tsEntrySource(entry),
+    command: entry.command,
       exitCode: r.exitCode,
       timedOut: r.timedOut ?? false,
       stdoutTail: tail(r.stdout),
@@ -147,11 +154,12 @@ async function probeTsEntrypoint(
   const ok = r.exitCode === 0 && !r.timedOut && helpOutputLooksMeaningful(r.stdout, r.stderr);
   return {
     ok,
+    entry: tsEntrySource(entry),
     command: entry.command,
     exitCode: r.exitCode,
     timedOut: r.timedOut ?? false,
     stdoutTail: tail(r.stdout),
-    stderrTail: ok ? tail(r.stderr) : tail(r.stderr || t().engine.entrypointHelpOutputMissing(entry.command)),
+    stderrTail: ok ? tail(r.stderr) : tail(r.stderr || tFor(getPromptLocale()).engine.entrypointHelpOutputMissing(entry.command)),
   };
 }
 

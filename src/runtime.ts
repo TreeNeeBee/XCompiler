@@ -19,6 +19,7 @@ export {
   type RuntimeRunCommandOptions,
 } from './runtime/commands.js';
 export {
+  InteractionDismissedError,
   silentRuntimeIO,
   runtimePermissionAuthorizer,
   type RuntimeEvent,
@@ -137,6 +138,31 @@ export {
   type RecordReplayFailureCode,
   type RecordReplayMode,
 } from './application/record_replay/types.js';
+export {
+  addRuleToList,
+  checkRules,
+  createLocalRuleList,
+  discardRuleOverlay,
+  exportRuleOverlays,
+  listRuleLists,
+  promoteRuleOverlays,
+  renderRules,
+  showRule,
+  updateRuleInList,
+  type RuleCheckReport,
+  type RuleListRow,
+  type RuleMaintenanceRoots,
+  type RuleRenderRequest,
+} from './runtime/rule_maintenance.js';
+export type { RuleFields } from './application/rules/rule_overlay.js';
+export type { RuleBindingRequest } from './application/rules/rule_binding.js';
+export { RULE_LEVELS, RULE_LOCALES, type RuleLocale, type RuleLocalizedText } from './domain/rules/catalogue.js';
+export { LANGUAGES, PROJECT_TYPES, type Language, type ProjectType } from './domain/planning/execution_plan.js';
+export { DEBUG_FAILURE_CATEGORIES, type DebugFailureCategory } from './domain/quality/failure_category.js';
+export { RULE_APPLICABILITY_DIMENSIONS } from './domain/rules/selection.js';
+export type { RuleApplicability } from './domain/rules/catalogue.js';
+export { RoleIdSchema, type RoleId } from './domain/workflow/role.js';
+export { STEP_WORK_IDS, WorkIdSchema, type StepWorkId, type WorkId } from './domain/workflow/work.js';
 export { PluginHost } from './plugins/host.js';
 export { checkPluginCompatibility } from './plugins/compatibility.js';
 export type {

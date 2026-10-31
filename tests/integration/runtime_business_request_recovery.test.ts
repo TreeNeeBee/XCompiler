@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ruleList } from '../support/rule_fixtures.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
 import { createBusinessRequestAttemptRecord, validateBusinessRequestAttempt } from '../../src/application/execution/business_request_attempt.js';
@@ -90,9 +91,9 @@ async function fixture(options: { endpoint: string; plugins?: PluginHost; redact
   const { config } = await loadConfigWithPath(configPath);
   const catalogue = new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: path.join(root, 'base-fixture.yaml') },
-    definition: { schemaVersion: '1', id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10', version: '1', title: 'Base', slot: 0,
-      rules: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11', version: '1', category: 'general', level: 'announce',
-        instruction: 'PINNED_RULE: inspect only the current evidence.', retrievalDescription: 'Current evidence declaration' }] },
+    definition: ruleList({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa10', version: '1', title: 'Base', slot: 0,
+      rules: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa11', version: '1', level: 'announce',
+        instruction: 'PINNED_RULE: inspect only the current evidence.', description: 'Current evidence declaration' }] }),
   }]);
   const selector = new RuleSelector(catalogue);
   const prepared = selector.prepare({ requestKind: 'business', context: { projectId, role: 'project-manager',
@@ -268,7 +269,8 @@ describe('Runtime recovery of the original business response', () => {
       const server = await endpoint();
       const current = await fixture({ endpoint: server.url });
       const sent = await current.send();
-      const response = structuredClone(sent.source.response);
+      // A tampered copy of the retained response: the type is readonly, the evidence check is what defends it.
+      const response: { -readonly [K in keyof typeof sent.source.response]: (typeof sent.source.response)[K] } = structuredClone(sent.source.response);
       if (change === 'logical-id') response.logicalRequestId = randomUUID();
       if (change === 'attempt-id') response.providerAttemptId = randomUUID();
       if (change === 'provider') response.provider = 'another-provider';

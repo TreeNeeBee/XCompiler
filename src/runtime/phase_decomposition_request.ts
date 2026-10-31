@@ -39,11 +39,11 @@ export class PhaseDecompositionProtocolError extends Error {
   }
 }
 
-/** P03 retains pre-graph or real Project ownership without granting Domain lifecycle authority. */
+/** Phase decomposition retains pre-graph or real Project ownership without granting Domain lifecycle authority. */
 export function createRuntimePhaseDecompositionRequestPort(input: {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
   router: LLMRouter; audit: AuditLogger; projectId?: string;
-  /** PM resolves the registered planner only when an existing Project actually needs P03. */
+  /** PM resolves the registered planner only when an existing Project actually needs a phase decomposition. */
   resolveActor?: () => Promise<OperationActorBinding>;
 }): PhaseDecompositionRequestPort {
   const { config, container, recordReplay, router, audit, projectId } = input;
@@ -91,7 +91,8 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'planner', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'], locale: payload.locale,
+          work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'], intent: payload.parseContext.intent, locale: payload.locale,
+          outputLanguage: payload.outputLocale ?? payload.locale,
           ...(owner.kind === 'project-planning-operation' ? { projectId: owner.projectId } : {}) },
         bind: { role: 'planner', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS['phase-decomposition'] },
         taskSummary: payload.parseContext.rawRequirement, signal,
@@ -140,7 +141,7 @@ export function createRuntimePhaseDecompositionRequestPort(input: {
   });
 }
 
-/** Restore one adopted P03 reply against its original phase and Skill names; no sends, writes or advancement. */
+/** Restore one adopted phase-decomposition reply against its original phase and Skill names; no sends, writes or advancement. */
 export async function resumeRuntimePhaseDecompositionRequest(input: {
   container: ProjectContainer; audit: AuditLogger; logicalRequestId: string; signal?: AbortSignal;
 }) {

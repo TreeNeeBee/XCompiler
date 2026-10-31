@@ -133,6 +133,8 @@ export class ProjectController {
       toolchainBuildId?: string;
       stepContextFingerprint?: string;
     }> = [];
+    // What each recorded failure was, by signature, so a refusal can name the one that recurred.
+    const failureBySignature = new Map<string, { code?: string; reason: string }>();
     const recordedAttemptNumbers = new Set<number>();
     for (const logId of ticket.logIds) {
       const object = await this.repository.read(logId);
@@ -145,6 +147,14 @@ export class ProjectController {
         recordedAttemptNumbers.add(object.data.attempt);
       }
       if (object.level !== 'error') continue;
+      if (typeof object.data.failureSignature === 'string') {
+        const structured = object.data.structuredFailure;
+        const code = typeof structured === 'object' && structured !== null &&
+          typeof (structured as { code?: unknown }).code === 'string'
+          ? (structured as { code: string }).code
+          : undefined;
+        failureBySignature.set(object.data.failureSignature, { code, reason: object.message });
+      }
       evidence.push({
         signature: typeof object.data.failureSignature === 'string'
           ? object.data.failureSignature
@@ -186,8 +196,13 @@ export class ProjectController {
       stepForContext ? stepContextFingerprint(stepForContext) : undefined,
     );
     if (!decision.extend) {
+      // "The same failure" names nothing the reader can act on; say which one it was.
+      const recurring = decision.recurringSignature ? failureBySignature.get(decision.recurringSignature) : undefined;
+      const recurringDetail = recurring
+        ? ` — ${recurring.code ? `${recurring.code}: ` : ''}${recurring.reason.split('\n')[0]!.slice(0, 300)}`
+        : '';
       throw new Error(
-        `Ticket ${ticket.name} stopped after ${ticket.attempts} attempts: ${decision.reason}`,
+        `Ticket ${ticket.name} stopped after ${ticket.attempts} attempts: ${decision.reason}${recurringDetail}`,
       );
     }
     const project = await this.requireProject(ticket.projectId);

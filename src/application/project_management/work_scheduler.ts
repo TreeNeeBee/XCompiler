@@ -164,6 +164,13 @@ export class WorkScheduler {
 }
 
 function activeCorrectiveTickets(step: Step, tickets: readonly Ticket[]): Ticket[] {
+  // A Bug linked to a Change Request is carried by it — while that Change Request is still open. Once
+  // every one has closed, a Bug the delivery gate reopened has nothing carrying it: a live Phase
+  // reran its gate every five seconds, parking a new duplicate each time, because the reopened Bug
+  // still counted as the closed Change Request's work.
+  const openChangeRequests = new Set(tickets
+    .filter((ticket) => ticket.type === 'change-request' && isActiveTicket(ticket))
+    .map((ticket) => ticket.id));
   return tickets
     .filter((ticket) => isActiveTicket(ticket))
     // Resolved work is finished and waiting for a verdict, so it is not work to hand out. Offering
@@ -178,7 +185,7 @@ function activeCorrectiveTickets(step: Step, tickets: readonly Ticket[]): Ticket
       // matched against whichever of them still lacks an application.
       ((ticket.type === 'bug' || ticket.type === 'enhancement') &&
         workStepId(ticket) === step.id &&
-        ticket.changeRequestTicketIds.length === 0) ||
+        !ticket.changeRequestTicketIds.some((id) => openChangeRequests.has(id))) ||
       (ticket.type === 'change-request' &&
         ticket.targetStepId === step.id &&
         !ticket.applications.some((application) => application.stepId === step.id)))

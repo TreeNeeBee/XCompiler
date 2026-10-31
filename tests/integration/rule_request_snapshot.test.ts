@@ -2,6 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { storedRuleMaterial, writeRuleMaterialFile } from '../support/rule_request_files.js';
+import { ruleList, type RuleFixture } from '../support/rule_fixtures.js';
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { ruleEvidenceDigest } from '../../src/application/rules/rule_evidence_encoding.js';
 import {
@@ -11,7 +13,7 @@ import {
 } from '../../src/application/rules/rule_request_snapshot.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { RuleVectorRetriever, type RuleEmbeddingPort } from '../../src/application/rules/rule_vector_retriever.js';
-import { RuleCatalogue, type RuleDefinition } from '../../src/domain/rules/catalogue.js';
+import { RuleCatalogue } from '../../src/domain/rules/catalogue.js';
 import type { RuleContext } from '../../src/domain/rules/selection.js';
 import { parseRuleSlot } from '../../src/domain/rules/slots.js';
 import type { RuleEmbeddingIdentity } from '../../src/domain/rules/vector_index.js';
@@ -38,12 +40,13 @@ const projectDescription = 'Project repair requirements';
 const requestDirectory = () => path.join(root, 'requests');
 const requestFile = (id = logicalRequestId) => path.join(requestDirectory(), `${id.toLowerCase()}.json`);
 const store = () => new FileRuleRequestSnapshotStore(requestDirectory());
+/** Where the store keeps Rule bodies by content, beside the request files (revision 7a). */
+const contentDirectory = () => path.join(path.dirname(requestDirectory()), 'content');
 
-function rule(id: number, changes: Partial<RuleDefinition> = {}): RuleDefinition {
+function rule(id: number, changes: Partial<RuleFixture> = {}): RuleFixture {
   return {
-    id: uuid(id), version: '1.0.0', category: 'framework', level: 'advised',
-    instruction: `Instruction ${id}.`, retrievalDescription: compilerDescription,
-    applicability: {}, conflicts: [], ...changes,
+    id: uuid(id), version: '1.0.0', level: 'advised',
+    instruction: `Instruction ${id}.`, description: compilerDescription, ...changes,
   };
 }
 
@@ -61,29 +64,29 @@ interface FixtureOptions {
 function catalogue(options: FixtureOptions): RuleCatalogue {
   const entries: ConstructorParameters<typeof RuleCatalogue>[0][number][] = [{
     source: { owner: { kind: 'compiler' }, location: path.join(root, 'compiler/base.yaml') },
-    definition: {
-      schemaVersion: '1', id: uuid(10), version: '1.0.0', title: 'Base declaration', slot: 0,
-      rules: [rule(11, { category: 'general', level: 'announce' })],
-    },
+    definition: ruleList({
+      id: uuid(10), version: '1.0.0', title: 'Base declaration', slot: 0,
+      rules: [rule(11, { level: 'announce' })],
+    }),
   }];
   if (!options.baseOnly) entries.push({
     source: { owner: { kind: 'compiler' }, location: path.join(root, 'compiler/debug.yaml') },
-    definition: {
-      schemaVersion: '1', id: uuid(20), version: '1.0.0', title: 'Compiler rules', slot: 0x0300,
+    definition: ruleList({
+      id: uuid(20), version: '1.0.0', title: 'Compiler rules', slot: 0x00020000,
       rules: [rule(21, { conflicts: options.conflict ? [{ key: 'code.indent', value: 2 }] : [] })],
-    },
+    }),
   }, {
     source: { owner: { kind: 'project', projectId: uuid(900) }, location: path.join(root, 'project/业务 rules.yaml') },
-    definition: {
-      schemaVersion: '1', id: uuid(30), version: options.version ?? '1.0.0', title: 'Project rules', slot: 0x1001,
+    definition: ruleList({
+      id: uuid(30), version: options.version ?? '1.0.0', title: 'Project rules', slot: 0x00080001,
       applicability: { projectIds: [uuid(900)], languages: ['python'] },
       references: [{ ruleListId: uuid(20), version: '1.0.0' }],
       rules: [rule(31, {
-        version: options.version ?? '1.0.0', category: 'business', instruction: options.instruction ?? instruction,
-        retrievalDescription: projectDescription, applicability: { roles: ['python-developer'], works: ['repair.debug'] },
+        version: options.version ?? '1.0.0', instruction: options.instruction ?? instruction,
+        description: projectDescription, applicability: { roles: ['python-developer'], works: ['repair.debug'] },
         conflicts: options.conflict ? [{ key: 'code.indent', value: 4 }] : [],
       })],
-    },
+    }),
   });
   return new RuleCatalogue(entries);
 }
@@ -102,7 +105,7 @@ async function fixture(options: FixtureOptions = {}) {
       };
     },
   };
-  const selection = await selector.retrieve({
+  const selection = await selector.retrieve({ strategy: 'embedding',
     requestKind: options.requestKind ?? 'business', context,
     required: options.requiredProject ? [{ ruleId: uuid(31), version: options.version ?? '1.0.0' }] : [],
     taskSummary: 'Repair the current operation.',
@@ -120,7 +123,7 @@ function review(selectedRuleIds = [uuid(21)]): RuleSelectionReviewReference {
   return {
     logicalRequestId: uuid(801), providerAttemptId: uuid(802),
     provider: 'offline-reviewer', model: 'deterministic-reviewer', selectedRuleIds,
-    protocolVersion: 'rule-selection-review/1', requestDigest: `sha256:${'1'.repeat(64)}`,
+    protocolVersion: 'rule-selection-review/2', requestDigest: `sha256:${'1'.repeat(64)}`,
   };
 }
 
@@ -143,7 +146,7 @@ async function expectInvalidAtBothFileBoundaries(snapshot: RuleRequestSnapshot):
     code: 'rule_snapshot_failed', reason: 'invalid', cause: expect.any(Error),
   });
   await fs.mkdir(requestDirectory(), { recursive: true });
-  await fs.writeFile(requestFile(snapshot.logicalRequestId), JSON.stringify(snapshot));
+  await writeRuleMaterialFile(requestFile(snapshot.logicalRequestId), contentDirectory(), snapshot);
   await expect(store().read(snapshot.logicalRequestId)).rejects.toMatchObject({
     code: 'rule_snapshot_failed', reason: 'invalid', cause: expect.any(Error),
   });
@@ -166,10 +169,10 @@ describe('Rule request capture and recovery through the real immutable file stor
       expect(lookup).not.toHaveBeenCalled();
       expect(prepare).not.toHaveBeenCalled();
       expect(recovered?.rules.find((entry) => entry.ruleId === uuid(31))).toMatchObject({
-        ruleVersion: '1.0.0', ruleListVersion: '1.0.0', instruction, slot: 0x1001,
+        ruleVersion: '1.0.0', ruleListVersion: '1.0.0', instruction, slot: 0x00080001,
       });
       expect(recovered?.sources.find((entry) => entry.ruleId === uuid(31))).toEqual({
-        ruleId: uuid(31), category: 'business',
+        ruleId: uuid(31),
         source: { owner: { kind: 'project', projectId: uuid(900) }, location: path.join(root, 'project/业务 rules.yaml') },
         ruleApplicability: { roles: ['python-developer'], works: ['repair.debug'] },
         listApplicability: { projectIds: [uuid(900)], languages: ['python'] },
@@ -184,8 +187,8 @@ describe('Rule request capture and recovery through the real immutable file stor
       expect(Object.isFrozen(recovered!.consideredRules[0]!.rule)).toBe(true);
       expect(await fs.readFile(requestFile(), 'utf8')).toBe(before);
       const content = new RuleDecorator().decorate({ requestKind, rules: recovered!.rules });
-      const payload = JSON.parse(content.slice(content.indexOf('\n\n') + 2)) as { rules: Array<{ ruleId: string; instruction: string }> };
-      expect(payload.rules.find((entry) => entry.ruleId === uuid(31))?.instruction).toBe(instruction);
+      // The recovered Rule renders from the pinned material, whatever the catalogue now says.
+      for (const line of instruction.split('\n')) expect(content).toContain(line);
       expect(content).not.toContain(root);
       expect(content).not.toContain(projectDescription);
     },
@@ -264,7 +267,7 @@ describe('Rule request capture and recovery through the real immutable file stor
     for (const snapshot of published) expect(snapshot).toEqual(published[0]);
     expect(await store().read(logicalRequestId)).toEqual(published[0]);
     expect(await fs.readdir(requestDirectory())).toEqual([path.basename(requestFile())]);
-    expect(JSON.parse(await fs.readFile(requestFile(), 'utf8'))).toEqual(published[0]);
+    expect(JSON.parse(await fs.readFile(requestFile(), 'utf8'))).toEqual(storedRuleMaterial(published[0]));
   });
 
   it('accepts one version and reports the losing identity when two different materials race for one request', async () => {
@@ -293,7 +296,7 @@ describe('Rule request capture and recovery through the real immutable file stor
     expect(await store().read(logicalRequestId)).toEqual(winner);
     await expect(store().create(loser)).rejects.toMatchObject({ code: 'rule_snapshot_failed', reason: 'identity_conflict' });
     expect(await store().create(winner)).toEqual(winner);
-    expect(JSON.parse(await fs.readFile(requestFile(), 'utf8'))).toEqual(winner);
+    expect(JSON.parse(await fs.readFile(requestFile(), 'utf8'))).toEqual(storedRuleMaterial(winner));
     expect(await fs.readdir(requestDirectory())).toEqual([path.basename(requestFile())]);
   });
 
@@ -303,13 +306,13 @@ describe('Rule request capture and recovery through the real immutable file stor
     expect(snapshot.requiredRuleIds).toEqual([uuid(11), uuid(31)]);
     expect(snapshot.rules.map((entry) => entry.ruleId)).toEqual([uuid(11), uuid(21)]);
     expect(snapshot.consideredRules.find((entry) => entry.rule.id === uuid(31))).toMatchObject({
-      rule: { id: uuid(31), version: '1.0.0', instruction, conflicts: [{ key: 'code.indent', value: 4 }] },
-      ruleListId: uuid(30), ruleListVersion: '1.0.0', slot: 0x1001,
+      rule: { id: uuid(31), version: '1.0.0', instruction: { en: instruction, zh: instruction }, conflicts: [{ key: 'code.indent', value: 4 }] },
+      ruleListId: uuid(30), ruleListVersion: '1.0.0', slot: 0x00080001,
     });
     expect(snapshot.overrides).toEqual([{
       key: 'code.indent',
-      winner: { ruleId: uuid(21), ruleListId: uuid(20), slot: 0x0300, value: 2 },
-      overridden: { ruleId: uuid(31), ruleListId: uuid(30), slot: 0x1001, value: 4 },
+      winner: { ruleId: uuid(21), ruleListId: uuid(20), slot: 0x00020000, value: 2 },
+      overridden: { ruleId: uuid(31), ruleListId: uuid(30), slot: 0x00080001, value: 4 },
     }]);
     expect(await store().read(logicalRequestId)).toEqual(snapshot);
   });
@@ -318,8 +321,8 @@ describe('Rule request capture and recovery through the real immutable file stor
     { name: 'missing override', change: (snapshot) => { snapshot.overrides = []; } },
     { name: 'unknown winner', change: (snapshot) => { snapshot.overrides[0]!.winner.ruleId = uuid(999); } },
     { name: 'wrong winner List', change: (snapshot) => { snapshot.overrides[0]!.winner.ruleListId = uuid(30); } },
-    { name: 'wrong winner slot', change: (snapshot) => { snapshot.overrides[0]!.winner.slot = parseRuleSlot(0x0301); } },
-    { name: 'winner without higher priority', change: (snapshot) => { snapshot.overrides[0]!.overridden.slot = parseRuleSlot(0x0300); } },
+    { name: 'wrong winner slot', change: (snapshot) => { snapshot.overrides[0]!.winner.slot = parseRuleSlot(0x00020001); } },
+    { name: 'winner without higher priority', change: (snapshot) => { snapshot.overrides[0]!.overridden.slot = parseRuleSlot(0x00020000); } },
     { name: 'invented conflict key', change: (snapshot) => { snapshot.overrides[0]!.key = 'undeclared.key'; } },
     { name: 'changed losing claim', change: (snapshot) => { snapshot.overrides[0]!.overridden.value = 8; } },
     { name: 'missing losing declaration', change: (snapshot) => {
@@ -377,7 +380,7 @@ describe('Rule request capture and recovery through the real immutable file stor
     { name: 'two Lists at one slot', change: (snapshot) => {
       const project = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(31))!;
       project.source.owner = { kind: 'compiler' };
-      project.slot = parseRuleSlot(0x0300);
+      project.slot = parseRuleSlot(0x00020000);
     } },
     { name: 'one List with mixed versions', change: (snapshot) => {
       const compiler = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(21))!;
@@ -385,6 +388,29 @@ describe('Rule request capture and recovery through the real immutable file stor
       Object.assign(project, { ...compiler, rule: project.rule, ruleListVersion: '2.0.0' });
     } },
   ];
+  const renderedMaterial: Array<{ name: string; change: (snapshot: RuleRequestSnapshot) => void }> = [
+    { name: 'a rendered Rule name', change: (snapshot) => { snapshot.rules[0]!.ruleName = 'forged-name'; } },
+    { name: 'a rendered list title', change: (snapshot) => { snapshot.rules[0]!.ruleListTitle = 'Forged title'; } },
+    { name: 'a rendered Rule number', change: (snapshot) => { snapshot.rules[0]!.position = 4; } },
+  ];
+  it.each(renderedMaterial)('rejects $name that differs from the pinned material (revision 6.3)', async ({ change }) => {
+    const selected = await fixture();
+    const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
+    await expectInvalidAtBothFileBoundaries(changedSnapshot(snapshot, change));
+  });
+
+  inconsistentConsideredLists.push(
+    { name: 'one List with two titles', change: (snapshot) => {
+      const compiler = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(21))!;
+      const project = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(31))!;
+      Object.assign(project, { ...compiler, rule: project.rule, rulePosition: 1, ruleListTitle: { en: 'Other title', zh: '其他标题' } });
+    } },
+    { name: 'two Rules at one position in one List', change: (snapshot) => {
+      const compiler = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(21))!;
+      const project = snapshot.consideredRules.find((entry) => entry.rule.id === uuid(31))!;
+      Object.assign(project, { ...compiler, rule: project.rule });
+    } },
+  );
   it.each(inconsistentConsideredLists)('rejects $name even when neither optional Rule was selected', async ({ change }) => {
     const selected = await fixture({ lowScore: true });
     const snapshot = await selected.selector.captureSnapshot({ ...selected.request, review: review([]), store: store() });
@@ -432,7 +458,16 @@ describe('Rule request capture and recovery through the real immutable file stor
       draft.rules.find((entry) => entry.ruleId === uuid(31))!.instruction = instruction.trim();
     }, false);
     expect(altered.digest).toBe(snapshot.digest);
-    await expectInvalidAtBothFileBoundaries(altered);
+    await expect(store().create(altered)).rejects.toMatchObject({ code: 'rule_snapshot_failed', reason: 'invalid' });
+    // On disk the rendered text is not stored at all: it is rebuilt from the verified body (7a), so
+    // a file that carries its own instruction text is refused rather than trusted.
+    const stored = JSON.parse(await fs.readFile(requestFile(), 'utf8')) as { rules: Record<string, unknown>[] };
+    expect(stored.rules.every((entry) => !('instruction' in entry))).toBe(true);
+    stored.rules[0]!.instruction = instruction.trim();
+    await fs.writeFile(requestFile(), JSON.stringify(stored));
+    await expect(store().read(snapshot.logicalRequestId)).rejects.toMatchObject({
+      code: 'rule_snapshot_failed', reason: 'invalid', cause: { code: 'rule_content_failed', reason: 'invalid' },
+    });
   });
 
   it('rejects provenance that contradicts the retained considered Rule even with a new digest', async () => {
@@ -443,14 +478,16 @@ describe('Rule request capture and recovery through the real immutable file stor
     }));
   });
 
-  it('rejects a language, role or work Rule recorded as an optional selection, even with a new digest', async () => {
+  it.each([
+    ['language', 0x00001001], ['role', 0x00010005], ['work', 0x00011103],
+  ] as const)('rejects a %s Rule recorded as an optional selection, even with a new digest', async (_segment, slot) => {
     const selected = await fixture();
     const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
     expect(snapshot.requiredRuleIds.map((id) => id.toLowerCase())).not.toContain(uuid(21));
-    // Only Runtime's binding computation may bring a bound-segment list into a request (D-14).
+    // Only Runtime's binding computation may bring a bound-segment list into a request, and only as required (D-14).
     await expectInvalidAtBothFileBoundaries(changedSnapshot(snapshot, (draft) => {
       for (const entry of [...draft.consideredRules, ...draft.rules]) {
-        if ((entry as { ruleId?: string }).ruleId === uuid(21) || ('rule' in entry && entry.rule.id === uuid(21))) entry.slot = 0x0253 as never;
+        if ((entry as { ruleId?: string }).ruleId === uuid(21) || ('rule' in entry && entry.rule.id === uuid(21))) entry.slot = slot as never;
       }
     }));
   });
@@ -458,7 +495,7 @@ describe('Rule request capture and recovery through the real immutable file stor
   it('rejects a valid snapshot stored under another logical request identity', async () => {
     const selected = await fixture();
     const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
-    await fs.writeFile(requestFile(uuid(899)), JSON.stringify(snapshot));
+    await writeRuleMaterialFile(requestFile(uuid(899)), contentDirectory(), snapshot);
     await expect(store().read(uuid(899))).rejects.toMatchObject({ code: 'rule_snapshot_failed', reason: 'invalid' });
     expect(await store().read(logicalRequestId)).toEqual(snapshot);
   });
@@ -525,5 +562,62 @@ describe('Rule request capture and recovery through the real immutable file stor
       code: 'rule_snapshot_failed', reason: 'invalid', cause: expect.any(Error),
     });
     await expect(fs.stat(requestDirectory())).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('Rule bodies stored once by content (revision 7a)', () => {
+  const contentFiles = async () => (await fs.readdir(contentDirectory())).sort();
+
+  it('keeps references in the request file and shares bodies between requests that pin the same Rules', async () => {
+    const first = await fixture();
+    const snapshot = await first.selector.captureSnapshot({ ...first.request, store: store() });
+    const stored = JSON.parse(await fs.readFile(requestFile(), 'utf8')) as { consideredRules: Record<string, unknown>[] };
+    expect(stored.consideredRules.every((entry) => typeof entry.ruleRef === 'string' && !('rule' in entry))).toBe(true);
+    const bodies = await contentFiles();
+    expect(bodies).toHaveLength(snapshot.consideredRules.length);
+    expect(JSON.stringify(stored)).not.toContain(snapshot.consideredRules[0]!.rule.instruction.en);
+
+    const again = await fixture();
+    await again.selector.captureSnapshot({ ...again.request, logicalRequestId: uuid(898), store: store() });
+    expect(await contentFiles()).toEqual(bodies);
+    expect(await store().read(uuid(898))).toBeDefined();
+  });
+
+  it('reports a missing body as a read failure and a changed body as invalid', async () => {
+    const selected = await fixture();
+    const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
+    const [body] = await contentFiles();
+    const bodyPath = path.join(contentDirectory(), body!);
+    const original = await fs.readFile(bodyPath, 'utf8');
+    await fs.writeFile(bodyPath, original.replace(/"version":"[^"]+"/u, '"version":"9.9.9"'));
+    await expect(store().read(snapshot.logicalRequestId)).rejects.toMatchObject({
+      code: 'rule_snapshot_failed', reason: 'invalid', cause: { code: 'rule_content_failed', reason: 'invalid' },
+    });
+    await fs.unlink(bodyPath);
+    await expect(store().read(snapshot.logicalRequestId)).rejects.toMatchObject({
+      code: 'rule_snapshot_failed', reason: 'read_failed', cause: { code: 'rule_content_failed', reason: 'missing' },
+    });
+  });
+
+  it('refuses a request file that carries a Rule body inline instead of its reference', async () => {
+    const selected = await fixture();
+    const snapshot = await selected.selector.captureSnapshot({ ...selected.request, store: store() });
+    await fs.writeFile(requestFile(), JSON.stringify(snapshot));
+    await expect(store().read(snapshot.logicalRequestId)).rejects.toMatchObject({
+      code: 'rule_snapshot_failed', reason: 'invalid', cause: { code: 'rule_content_failed', reason: 'invalid' },
+    });
+  });
+
+  it('stores drafts the same way, beside the snapshots', async () => {
+    const { FileRuleRequestStateStore } = await import('../../src/infrastructure/rules/file_rule_request_state_store.js');
+    const stateRoot = path.dirname(requestDirectory());
+    const state = new FileRuleRequestStateStore(stateRoot);
+    const selected = await fixture();
+    const { createRuleSelectionDraft } = await import('../../src/application/rules/rule_request_snapshot.js');
+    const draft = createRuleSelectionDraft({ ...selected.selection, logicalRequestId, requestKind: 'business', createdAt });
+    await state.createDraft(draft);
+    const stored = JSON.parse(await fs.readFile(path.join(stateRoot, 'drafts', `${logicalRequestId}.json`), 'utf8')) as { consideredRules: Record<string, unknown>[] };
+    expect(stored.consideredRules.every((entry) => 'ruleRef' in entry && !('rule' in entry))).toBe(true);
+    expect(await state.readDraft(logicalRequestId)).toEqual(draft);
   });
 });

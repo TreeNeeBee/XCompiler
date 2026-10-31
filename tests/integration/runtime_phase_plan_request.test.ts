@@ -167,7 +167,7 @@ async function fixture(url: string, options: { fallback?: string; plugins?: Plug
 
 function requestMaterial(input: PlannerInput = plannerInput) {
   const payload: PhasePlanPayload = validatePhasePlanPayload({ schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
-    locale: 'en', parseContext: { language: 'python', rawRequirement: input.rawRequirement,
+    locale: 'en', outputLocale: 'en', parseContext: { language: 'python', rawRequirement: input.rawRequirement,
       userAddenda: (input.userAddenda ?? '').trim(), baselineSummary: input.baselineContext ?? '', intent: input.intent ?? 'greenfield' },
     clarifications: input.clarifications, semanticAttempt: 1, repairFeedback: '',
   });
@@ -195,7 +195,7 @@ async function stateBytes(container: ProjectContainer): Promise<Record<string, s
   return result;
 }
 
-describe('P02 PhasePlan through the Runtime retained request port', () => {
+describe('PhasePlan through the Runtime retained request port', () => {
   it('uses Planner, required genesis declarations and the original i18n messages while retaining audit-only parsing context', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
@@ -222,11 +222,11 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
     expect(server.calls[0]!.messages[1]!.content).toBe(expected.messages[0]!.content);
     expect(server.calls[0]!.messages[2]!.content).not.toContain('"semanticAttempt"');
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
-    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'planner', work: PLANNING_REQUEST_CONTEXTS['phase-plan'], language: 'python' } });
+    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'planner', work: PLANNING_REQUEST_CONTEXTS['phase-plan'], language: 'python', intent: 'greenfield' } });
     expect(snapshot!.context).not.toHaveProperty('projectId');
-    // Runtime binds genesis and the planner's identity; a Python project has no language list.
-    expect(snapshot!.requiredRuleIds).toHaveLength(4);
-    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0202]);
+    // Genesis, the base segment and the planner's identity; phase planning binds no language list.
+    expect(snapshot!.requiredRuleIds).toHaveLength(12);
+    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 0x00010002]);
     expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software planner');
     const metadata = JSON.parse(await fs.readFile(path.join(current.ledger, 'requests', `${original.logicalRequestId}.json`), 'utf8')) as BusinessRequestInputRecord;
     expect(metadata.inputDigest).toBe(businessRequestInputDigest(original));
@@ -282,7 +282,7 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
   });
 
   it.each(['prose', 'multiple', 'duplicate', 'truncated-object', 'producer-length', 'missing-producer'] as const)(
-    'rejects %s before any business validation or adoption and grants no C1 allowance', async (kind) => {
+    'rejects %s before any business validation or adoption and grants no protocol-correction allowance', async (kind) => {
       const text = accepted();
       const output = kind === 'prose' ? `Explanation:\n${text}` : kind === 'multiple' ? `${text}\n${text}`
         : kind === 'duplicate' ? text.replace('"projectType":"application"', '"projectType":"application","projectType":"application"')
@@ -437,7 +437,7 @@ describe('P02 PhasePlan through the Runtime retained request port', () => {
     expect(current.decay).not.toHaveBeenCalled();
   });
 
-  it.each(['owner', 'template', 'protocol', 'missing-context'] as const)('does not consume an otherwise retained generic reply with wrong P02 %s', async (field) => {
+  it.each(['owner', 'template', 'protocol', 'missing-context'] as const)('does not consume an otherwise retained generic reply with wrong phase-plan %s', async (field) => {
     const server = await endpoint();
     const current = await fixture(server.url);
     const logicalRequestId = randomUUID();

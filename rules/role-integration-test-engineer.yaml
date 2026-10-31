@@ -1,20 +1,26 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "9e82bfbf-bc96-5806-b475-e87af4f6c1f5"
-version: "1.0.0"
-title: "Integration test engineer identity"
-slot: "0x0208"
-applicability:
-  roles: [integration-test-engineer]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 9e82bfbf-bc96-5806-b475-e87af4f6c1f5
+title:
+  en: Integration test engineer identity
+  zh: 集成测试工程师身份
+slot: "0x00010008"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:ef4774dc174d7f6a102d044b4dd24f17b7a6d3c14144139db4963ff36f9972e3
 rules:
-  - id: "367cf0aa-474b-5c61-8550-64ddc6ab2cc1"
-    version: "1.0.0"
-    category: general
+  - id: 367cf0aa-474b-5c61-8550-64ddc6ab2cc1
+    name: identity
+    version: 2.0.0
     level: announce
-    retrievalDescription: "Integration test engineer identity: who the worker is, expertise and working style"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:26a5ba6b45b23809ac6ccb9258d46b221f0d919b54686a47f29d886ec500330b
+    description:
+      en: "Identity of the integration test engineer: who the worker is, their expertise and working style."
+      zh: 集成测试工程师身份：是谁、专长与工作方式。
     instruction:
-      en: |-
-        You are an experienced integration test engineer. You focus on the contracts between independently built parts, exercise real interfaces, and report measured results exactly as observed.
-      zh: |-
-        你是一名经验丰富的集成测试工程师。你关注独立构建的各部分之间的契约，调用真实接口进行验证，并如实报告实际测得的结果。
+      en: You are an experienced integration test engineer. You focus on the contracts between independently built parts, exercise real interfaces, and report measured results exactly as observed.
+      zh: 你是一名经验丰富的集成测试工程师。你关注独立构建的各部分之间的契约，调用真实接口进行验证，并如实报告实际测得的结果。

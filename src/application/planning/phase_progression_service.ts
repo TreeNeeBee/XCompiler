@@ -12,6 +12,8 @@ import { archiveIfExists } from '../../workspace/doc_archive.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { SkillRegistry } from '../../skills/index.js';
 import type { PhaseDecompositionRequestPort } from './phase_decomposition_request.js';
+import { topicForModels } from './requirement_intake.js';
+import type { PromptTranslator } from '../translation/text_translation.js';
 
 export interface PhaseProgressionResult {
   completedPhaseId: string;
@@ -32,6 +34,8 @@ export class PhaseProgressionService {
     private readonly signal?: AbortSignal,
     private readonly skills?: SkillRegistry,
     private readonly phaseDecompositionRequest?: PhaseDecompositionRequestPort,
+    /** Translates the topic and addenda for models when prompt translation is on; absent, they pass unchanged. */
+    private readonly translator?: PromptTranslator,
   ) {}
 
   async completeAndPrepareNext(input: {
@@ -97,11 +101,14 @@ export class PhaseProgressionService {
       undefined,
       this.phaseDecompositionRequest,
     );
+    // Models read the topic in the prompt language; its front matter is data. The topic carries the
+    // addenda too, so they are not sent a second time.
+    const modelTopic = this.translator ? await topicForModels(topic, this.translator) : topic;
     const draft = await planner.decomposePhase(
       {
-        rawRequirement: topic,
+        rawRequirement: modelTopic,
         clarifications: [],
-        userAddenda: transition.phasePlan.userAddenda,
+        userAddenda: '',
         baselineContext: baselineSummary,
         intent: transition.phasePlan.intent,
       },

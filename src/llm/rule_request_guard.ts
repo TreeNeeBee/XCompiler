@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ChatMessage, ChatOptions } from './types.js';
-import { estimateTextTokens, resolveSkillOperationWindow } from './window.js';
+import { estimateMessageTokens, resolveSkillOperationWindow } from './window.js';
 import { ProviderCapacityShortfall } from './errors.js';
 
 const Text = z.string().refine((value) => value.trim().length > 0);
@@ -64,9 +64,8 @@ export function validateRuleProviderRequest(
   },
 ) {
   const actual = validateRuleProviderRequestIdentity(request, input);
-  const promptChars = actual.messages.reduce((sum, message) => sum + message.content.length, 0);
-  const promptTokens = estimateTextTokens(promptChars);
-  const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptChars });
+  const promptTokens = estimateMessageTokens(actual.messages);
+  const { safetyTokens } = resolveSkillOperationWindow({ contextWindowTokens: actual.contextWindowTokens, promptTokens });
   if (promptTokens + safetyTokens + actual.maxTokens > actual.contextWindowTokens) {
     // Typed so Router can try a wider provider of the same pool; required content is never trimmed.
     throw new ProviderCapacityShortfall({

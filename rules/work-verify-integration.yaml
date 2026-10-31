@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "6b3a2cd8-23f1-5f79-a581-e6ae43bbef1c"
-version: "1.0.0"
-title: "Integration verification"
-slot: "0x0255"
-applicability:
-  works: [verify.integration, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 6b3a2cd8-23f1-5f79-a581-e6ae43bbef1c
+title:
+  en: Integration verification
+  zh: 集成验证
+slot: "0x00011105"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:697e4f7199f372b6d675f493580aa05df8d1cb9b1a9aa9cbd6b8ea24433ef881
 rules:
-  - id: "1ea2d78d-9071-5edf-8328-be8139ebe76f"
-    version: "1.0.0"
-    category: framework
+  - id: 1ea2d78d-9071-5edf-8328-be8139ebe76f
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Integration verification: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:61221637b6af5385361381a8c70bfb1d4eb894159e84f707a413914e43ffdeb8
+    description:
+      en: "Integration verification deliverable: evidence that built parts satisfy their integration contracts."
+      zh: 集成验证的交付：证明各部分满足集成契约的证据。
     instruction:
-      en: |-
-        You verify that independently built parts satisfy their integration contracts.
-      zh: |-
-        你负责验证独立构建的各部分满足它们之间的集成契约。
-  - id: "fb6c3fe7-6c2f-5179-b3b8-1b1e4cc80737"
-    version: "1.0.0"
-    category: framework
+      en: You verify that independently built parts satisfy their integration contracts.
+      zh: 你负责验证独立构建的各部分满足它们之间的集成契约。
+  - id: fb6c3fe7-6c2f-5179-b3b8-1b1e4cc80737
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Integration verification: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:2219a0b60beed5fa5b094bfdafe32a8633a09f3f7c0b450bea16c51d4c554a79
+    description:
+      en: "Integration verification method: inspect the paired tests, add risk supplements, freeze and exercise real interfaces."
+      zh: 集成验证的方法：检查配对测试、补充风险用例、冻结并调用真实接口。
     instruction:
-      en: |-
-        Inspect paired tests, add isolated risk supplements, freeze the suite, and exercise real interfaces.
-      zh: |-
-        检查配对测试，补充隔离的风险测试，冻结测试集，并调用真实接口。
-  - id: "2b49c4d1-b472-5248-921e-64a8f5ae2187"
-    version: "1.0.0"
-    category: framework
+      en: Inspect paired tests, add isolated risk supplements, freeze the suite, and exercise real interfaces.
+      zh: 检查配对测试，补充隔离的风险测试，冻结测试集，并调用真实接口。
+  - id: 2b49c4d1-b472-5248-921e-64a8f5ae2187
+    name: no-implementation-change
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Integration verification: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:3fcb4cfbfa4e66faa97c28a8f58f5cee8b5442d0757612faf2fb498e507ab2cc
+    description:
+      en: Integration verification does not modify the implementation under verification.
+      zh: 集成验证不修改被验证的实现。
     instruction:
-      en: |-
-        Do not modify the implementation under verification.
-      zh: |-
-        不要修改被验证的实现。
+      en: Do not modify the implementation under verification.
+      zh: 不要修改被验证的实现。

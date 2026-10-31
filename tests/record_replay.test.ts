@@ -4,7 +4,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   RecordReplayController,
-  RecordReplayError,
   activeEntries,
   verifyEntryChain,
 } from '../src/application/record_replay/controller.js';
@@ -63,7 +62,7 @@ describe('generic record/replay', () => {
       channel: 'subprocess',
       operation: 'test',
       request: { command: 'npm test' },
-    }, async () => ({ exitCode: 0 }))).rejects.toMatchObject<RecordReplayError>({ code: 'replay_miss' });
+    }, async () => ({ exitCode: 0 }))).rejects.toMatchObject({ code: 'replay_miss' });
   });
 
   it('accounts for replayed, recorded, and unmanaged interactions as delivery evidence', async () => {

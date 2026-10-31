@@ -8,8 +8,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Planner } from '../../src/agents/planner.js';
-import { hasExternalApiOrUrlRequirement, validateClarifyJson } from '../../src/agents/planning/clarification.js';
-import { isProjectShapeAmbiguous } from '../../src/agents/planning/phase_strategy.js';
+import { hasExternalApiOrUrlRequirement, validateClarificationTurn, type ClarificationTranscriptEntry } from '../../src/agents/planning/clarification.js';
 import { PlannerContractViolation } from '../../src/agents/planning/validation_retry.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
@@ -24,8 +23,7 @@ import {
 import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import * as installationRoots from '../../src/config/installation_root.js';
-import { analyzeArchitectureDemand } from '../../src/domain/planning/architecture_policy.js';
-import { type PlanIntent } from '../../src/domain/planning/execution_plan.js';
+import { type PlanIntent, type ProjectType } from '../../src/domain/planning/execution_plan.js';
 import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import * as i18n from '../../src/i18n/index.js';
 import { BusinessRequestAttemptAuditAdapter } from '../../src/infrastructure/llm/business_request_attempt_audit.js';
@@ -74,20 +72,33 @@ function deferred() {
 }
 
 const requirement = 'Build a small Python command that prints one greeting.';
-type ClarifyOptions = { intent?: PlanIntent; hasBaseline?: boolean; languageAmbiguous?: boolean };
-function questionSet() {
-  return [
-    { id: 'q1', category: 'functionality', question: 'Which operations must the command support end to end?', why: 'scope', options: [{ label: 'A', answer: 'read only' }, { label: 'B', answer: 'read and write' }] },
-    { id: 'q2', category: 'functionality', question: 'Should this ship as a client library, a runnable application, or a mixed deliverable?', why: 'shape', options: [{ label: 'A', answer: 'library' }, { label: 'B', answer: 'application' }] },
-    { id: 'q3', category: 'functionality', question: 'Which programming language should implement it: Python or TypeScript on Node.js?', why: 'stack', options: [{ label: 'A', answer: 'Python' }, { label: 'B', answer: 'TypeScript' }] },
-    { id: 'q4', category: 'data', question: 'What shape does the input data arrive in?', why: 'parsing', options: [{ label: 'A', answer: 'JSON' }, { label: 'B', answer: 'CSV' }] },
-    { id: 'q5', category: 'acceptance', question: 'What observable result counts as a successful run?', why: 'acceptance', options: [{ label: 'A', answer: 'exit code 0' }, { label: 'B', answer: 'a written report' }] },
-    { id: 'q6', category: 'boundary', question: 'Do you have an API key or token for the external endpoint, or should it default to a free public open api with no authentication?', why: 'credentials', options: [{ label: 'A', answer: 'I have a key' }, { label: 'B', answer: 'use open no-key APIs' }] },
-    { id: 'q7', category: 'quality', question: 'What level of automated test coverage is expected?', why: 'quality bar', options: [{ label: 'A', answer: 'unit only' }, { label: 'B', answer: 'unit and integration' }] },
-    { id: 'q8', category: 'extensibility', question: 'Which parts must stay open for later extension?', why: 'growth', options: [{ label: 'A', answer: 'the data sources' }, { label: 'B', answer: 'the output formats' }] },
-  ];
+type ClarifyOptions = { intent?: PlanIntent; hasBaseline?: boolean; projectType?: ProjectType; transcript?: ClarificationTranscriptEntry[] };
+/** The fixed language and deliverable answers every dynamic turn starts from. */
+const earlierAnswers: ClarificationTranscriptEntry[] = [
+  { id: 'Q1', category: 'boundary', question: 'Which development language should this project use?', answer: 'A. Python (recommended)' },
+  { id: 'Q2', category: 'boundary', question: 'What should the deliverable be?', answer: 'A. A runnable program' },
+];
+interface TurnReply {
+  status: string; summary?: string; coverage: Record<string, string>;
+  feasibility: { verdict: string; blockers: { kind: string; detail: string }[] };
+  question: { category: string; question: string; why: string; options: { label: string; answer: string }[] };
 }
-const accepted = () => JSON.stringify(questionSet());
+function turnReply(): TurnReply {
+  return {
+    status: 'ask',
+    coverage: { functionality: 'open', data: 'open', acceptance: 'open', boundary: 'resolved', quality: 'open', extensibility: 'open' },
+    feasibility: { verdict: 'feasible', blockers: [] },
+    question: { category: 'functionality', question: 'Which operations must the command support end to end?', why: 'scope',
+      options: [{ label: 'A', answer: 'read only' }, { label: 'B', answer: 'read and write' }] },
+  };
+}
+const accepted = () => JSON.stringify(turnReply());
+function turnInput(rawRequirement = requirement, opts: ClarifyOptions = {}) {
+  const transcript = opts.transcript ?? earlierAnswers;
+  return { rawRequirement, intent: opts.intent, hasBaseline: opts.hasBaseline, projectType: opts.projectType ?? 'application' as const,
+    sandbox: { mode: 'subprocess' as const, network: 'download-only' as const },
+    transcript, questionId: `Q${transcript.length + 1}`, budgetUsedPercent: 10 };
+}
 type WireReply = { output: string; finishReason?: string; reportedModel?: boolean; model?: string };
 type WireRequest = { model: string; stream?: boolean; messages: ChatMessage[] };
 async function endpoint(reply: (call: number) => WireReply = () => ({ output: accepted() })) {
@@ -160,31 +171,27 @@ async function fixture(url: string, options: { fallback?: string; plugins?: Plug
   const auditPath = container.state.abs('audit', 'audit.jsonl');
   const ledger = container.state.abs('llm', 'business-inputs');
   return { config, container, recordReplay, router, audit, port, planner, boost, decay, scores, ledger, auditPath,
-    clarify: (text = requirement, opts: ClarifyOptions = {}) => planner.clarify(text, opts),
+    clarify: (text = requirement, opts: ClarifyOptions = {}) => planner.nextClarification(turnInput(text, opts)),
     events: async () => (await fs.readFile(auditPath, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as AuditEvent),
     resume: (logicalRequestId: string) => resumeRuntimeClarificationRequest({ container: new ProjectContainer(container.root), audit, logicalRequestId }),
   };
 }
 
 function requestMaterial(rawRequirement = requirement, opts: ClarifyOptions = {}) {
-  const intent = opts.intent ?? 'greenfield';
-  const complex = analyzeArchitectureDemand({ requirementDigest: rawRequirement, intent }, 'python').nonTrivial;
+  const turn = turnInput(rawRequirement, opts);
   const payload: ClarificationPayload = validateClarificationPayload({ schemaVersion: 1, kind: 'planning-clarification',
-    templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale: 'en', parseContext: { language: 'python', rawRequirement, intent,
-      hasBaseline: !!opts.hasBaseline, languageAmbiguous: !!opts.languageAmbiguous, complex,
-      projectShapeAmbiguous: isProjectShapeAmbiguous(rawRequirement), externalApiRequired: hasExternalApiOrUrlRequirement(rawRequirement) },
+    templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale: 'en', outputLocale: 'en', parseContext: { language: 'python', rawRequirement,
+      intent: turn.intent ?? 'greenfield', hasBaseline: !!turn.hasBaseline, projectType: turn.projectType, sandbox: turn.sandbox,
+      externalApiRequired: hasExternalApiOrUrlRequirement(rawRequirement),
+      questionId: turn.questionId, budgetUsedPercent: turn.budgetUsedPercent, finalAssessment: null, transcript: turn.transcript },
   });
   const prompts = i18n.tFor('en').prompts;
   const messages = buildClarificationRequestMessages({ systemPrompt: prompts.plannerClarifySystem,
-    userPrompt: prompts.plannerClarify(rawRequirement, { intent, hasBaseline: payload.parseContext.hasBaseline,
-      complex, projectShapeAmbiguous: payload.parseContext.projectShapeAmbiguous, languageAmbiguous: payload.parseContext.languageAmbiguous }),
-  });
+    userPrompt: prompts.plannerClarifyTurn(payload.parseContext) });
   return { payload, messages };
 }
 function validateOriginal(text: string, payload: ClarificationPayload) {
-  const context = payload.parseContext;
-  return validateClarifyJson(text, context.complex, { projectShapeAmbiguous: context.projectShapeAmbiguous,
-    externalApiRequired: context.externalApiRequired, languageAmbiguous: context.languageAmbiguous });
+  return validateClarificationTurn(text, { questionId: payload.parseContext.questionId, asked: payload.parseContext.transcript });
 }
 function inputEvents(events: AuditEvent[]): BusinessRequestInput[] {
   return events.filter(event => event.messageId === 'llm.business_request_input').map(event => event.data!.input as BusinessRequestInput);
@@ -202,18 +209,18 @@ async function stateBytes(container: ProjectContainer): Promise<Record<string, s
   return result;
 }
 
-describe('P01 clarification through the Runtime retained request port', () => {
+describe('clarification through the Runtime retained request port', () => {
   it('retains PM parsing context while sending the original i18n messages and mandatory genesis only', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
-    const result = await current.clarify(requirement, { intent: 'feature', hasBaseline: true, languageAmbiguous: true });
-    expect(result).toHaveLength(8);
+    const result = await current.clarify(requirement, { intent: 'feature', hasBaseline: true });
+    expect(result).toMatchObject({ status: 'ask', question: { id: 'Q3', category: 'functionality' } });
     expect(server.calls).toHaveLength(1);
     expect(server.calls[0]!.model).toBe('pm-model');
     const inputs = inputEvents(await current.events());
     expect(inputs).toHaveLength(1);
     const original = inputs[0]!;
-    const expected = requestMaterial(requirement, { intent: 'feature', hasBaseline: true, languageAmbiguous: true });
+    const expected = requestMaterial(requirement, { intent: 'feature', hasBaseline: true });
     expect(original.messages).toEqual(expected.messages);
     expect(original.auditContext).toEqual(expected.payload);
     expect(original.owner).toMatchObject({ kind: 'planning-operation', operation: 'clarification', operationId: expect.any(String),
@@ -230,11 +237,13 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(server.calls[0]!.messages[2]!.content.trimStart().startsWith('{')).toBe(false);
     expect(server.calls[0]!.messages[2]!.content).not.toContain('"parseContext"');
     const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
-    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'project-manager', work: PLANNING_REQUEST_CONTEXTS.clarification, language: 'python' } });
+    // The intake's project mode is a request fact Rule applicability reads (revision 11.4).
+    expect(snapshot).toMatchObject({ requestKind: 'business', context: { role: 'project-manager', work: PLANNING_REQUEST_CONTEXTS.clarification, language: 'python', intent: 'feature' } });
     expect(snapshot!.context).not.toHaveProperty('projectId');
-    // Runtime binds genesis and the clarifying role's identity; a Python project has no language list.
-    expect(snapshot!.requiredRuleIds).toHaveLength(4);
-    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0201]);
+    // Genesis, the base segment (level definitions, output language) and the clarifying role's identity;
+    // clarification binds no language list.
+    expect(snapshot!.requiredRuleIds).toHaveLength(12);
+    expect(snapshot!.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 0x00010001]);
     expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software project manager');
     const metadata = JSON.parse(await fs.readFile(path.join(current.ledger, 'requests', `${original.logicalRequestId}.json`), 'utf8')) as BusinessRequestInputRecord;
     expect(metadata.inputDigest).toBe(businessRequestInputDigest(original));
@@ -248,21 +257,28 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(current.decay).not.toHaveBeenCalled();
   });
 
-  it.each(['array', 'questions', 'items'] as const)('retains the existing %s root contract through the actual PM call', async (shape) => {
-    const questions = questionSet();
-    const output = JSON.stringify(shape === 'array' ? questions : { [shape]: questions });
-    const server = await endpoint(() => ({ output }));
+  it('retains the one-turn object contract through the actual PM call and recovers the same turn', async () => {
+    const server = await endpoint();
     const current = await fixture(server.url);
-    await expect(current.clarify()).resolves.toHaveLength(8);
+    const turn = await current.clarify();
+    expect(turn).toMatchObject({ status: 'ask', question: { id: 'Q3' } });
     const original = inputEvents(await current.events())[0]!;
-    await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: output, questions: validateOriginal(output, requestMaterial().payload) });
+    await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: accepted(), turn });
     expect(server.calls).toHaveLength(1);
   });
 
+  it('carries the external-access hint as an original intake fact', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    await current.clarify('Build a Python command that calls an external API.');
+    expect(inputEvents(await current.events())[0]!.auditContext).toMatchObject({ parseContext: { externalApiRequired: true } });
+    expect(server.calls[0]!.messages[2]!.content).toContain('keep data open until the user has said');
+  });
+
   it('corrects unescaped inner quotes once, validates the correction and restores it exactly (D-3)', async () => {
-    const questions = questionSet();
-    questions[0]!.why = 'Keep the "legacy" import path.';
-    const strict = JSON.stringify(questions);
+    const reply = turnReply();
+    reply.question.why = 'Keep the "legacy" import path.';
+    const strict = JSON.stringify(reply);
     const output = strict.replace('\\"legacy\\"', '"legacy"');
     // The original's actual producing model answers its one correction.
     const server = await endpoint(call => (call === 1 ? { output } : { output: strict, model: 'pm-model-actual' }));
@@ -282,33 +298,33 @@ describe('P01 clarification through the Runtime retained request port', () => {
   });
 
   it.each(['json-fence', 'trailing-comma', 'raw-string-control'] as const)('proves %s values before business validation and exact recovery', async (transform) => {
-    const questions = questionSet();
-    if (transform === 'raw-string-control') questions[0]!.why = 'Original scope.\r\nLiteral # context.';
-    const strict = JSON.stringify(questions);
+    const reply = turnReply();
+    if (transform === 'raw-string-control') reply.question.why = 'Original scope.\r\nLiteral # context.';
+    const strict = JSON.stringify(reply);
     const output = transform === 'json-fence' ? `\`\`\`json\n${strict}\n\`\`\``
-      : transform === 'trailing-comma' ? `${strict.slice(0, -1)},]` : strict.replace('\\r\\n', '\r\n');
+      : transform === 'trailing-comma' ? `${strict.slice(0, -1)},}` : strict.replace('\\r\\n', '\r\n');
     const server = await endpoint(() => ({ output }));
     const current = await fixture(server.url);
     const material = requestMaterial();
     const business = vi.fn((text: string) => { validateOriginal(text, material.payload); });
     const result = await current.port.send({ operationId: randomUUID(), ...material, validate: business });
-    expect(JSON.parse(result.text)).toEqual(questions);
+    expect(JSON.parse(result.text)).toEqual(reply);
     expect(result.text).not.toBe(output);
     expect(business).toHaveBeenCalledExactlyOnceWith(result.text);
     const events = await current.events();
     const original = inputEvents(events)[0]!;
-    await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: result.text, questions: validateOriginal(result.text, material.payload) });
+    await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', text: result.text, turn: validateOriginal(result.text, material.payload) });
     expect(events.find(event => event.messageId === 'llm.provider_response')!.data!.output).toBe(output);
     expect(events.find(event => event.messageId === 'llm.business_protocol_result')!.data).toMatchObject({ record: { outcome: 'normalized' } });
     expect(server.calls).toHaveLength(1);
   });
 
-  it.each(['prose', 'multiple', 'duplicate', 'truncated-array', 'producer-length', 'missing-producer'] as const)(
+  it.each(['prose', 'multiple', 'duplicate', 'truncated', 'producer-length', 'missing-producer'] as const)(
     'rejects %s before business validation or adoption, without a correction allowance', async (kind) => {
       const text = accepted();
       const output = kind === 'prose' ? `Explanation:\n${text}` : kind === 'multiple' ? `${text}\n${text}`
         : kind === 'duplicate' ? text.replace('"category":"functionality"', '"category":"functionality","category":"functionality"')
-          : kind === 'truncated-array' ? text.slice(0, -1) : text;
+          : kind === 'truncated' ? text.slice(0, -1) : text;
       const server = await endpoint(() => ({ output, finishReason: kind === 'producer-length' ? 'length' : 'stop', reportedModel: kind !== 'missing-producer' }));
       const current = await fixture(server.url);
       const business = vi.fn();
@@ -332,10 +348,13 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const primary = await endpoint(() => ({ output: '{}' }));
     const fallback = await endpoint();
     const current = await fixture(primary.url, { fallback: fallback.url });
-    await expect(current.clarify()).resolves.toHaveLength(8);
+    await expect(current.clarify()).resolves.toMatchObject({ status: 'ask', question: { id: 'Q3' } });
     expect(primary.calls).toHaveLength(2);
     expect(fallback.calls).toHaveLength(1);
-    expect(primary.calls[1]!.messages.at(-1)!.content).toContain('no questions');
+    // The retry carries the validator's own reason for the refused `{}`, whatever its wording.
+    const reason = (() => { try { validateOriginal('{}', requestMaterial().payload); } catch (error) { return (error as Error).message; } return ''; })();
+    expect(reason).not.toBe('');
+    expect(primary.calls[1]!.messages.at(-1)!.content).toContain(reason);
     expect(fallback.calls[0]!.messages).toEqual(primary.calls[0]!.messages);
     const events = await current.events();
     const inputs = inputEvents(events);
@@ -367,39 +386,33 @@ describe('P01 clarification through the Runtime retained request port', () => {
     expect(current.decay).toHaveBeenCalledTimes(2);
   });
 
-  it.each(['complex', 'projectShapeAmbiguous', 'externalApiRequired', 'languageAmbiguous'] as const)(
-    'enforces original %s intake constraints through the actual PM call', async (flag) => {
-      const questions = questionSet();
-      const text = flag === 'complex' ? 'Build a complex Python command.'
-        : flag === 'projectShapeAmbiguous' ? 'Build an API.'
-          : flag === 'externalApiRequired' ? 'Build a Python command that calls an external API.' : requirement;
-      const opts = { languageAmbiguous: flag === 'languageAmbiguous' };
-      if (flag === 'complex') questions.shift();
-      else if (flag === 'projectShapeAmbiguous') questions[1] = { ...questions[1]!,
-        question: 'How should existing output files be handled?', options: [{ label: 'A', answer: 'replace existing' }, { label: 'B', answer: 'choose another name' }] };
-      else if (flag === 'externalApiRequired') questions[5] = { ...questions[5]!,
-        question: 'Which invalid inputs must be refused?', options: [{ label: 'A', answer: 'missing fields' }, { label: 'B', answer: 'empty documents' }] };
-      else questions[2] = { ...questions[2]!, question: 'How should repeated commands be handled?',
-        options: [{ label: 'A', answer: 'run each time' }, { label: 'B', answer: 'reuse earlier output' }] };
-      const server = await endpoint(() => ({ output: JSON.stringify(questions) }));
-      const current = await fixture(server.url);
-      await expect(current.clarify(text, opts)).rejects.toMatchObject({ failure: { code: 'all_providers_failed', details: { contentRejectedOnly: true } } });
-      expect(server.calls).toHaveLength(2);
-      const events = await current.events();
-      expect(inputEvents(events)).toHaveLength(1);
-      expect(inputEvents(events)[0]!.auditContext).toMatchObject({ parseContext: { [flag]: true } });
-      const refusals = events.filter(event => event.messageId === 'llm.provider_validation_failed');
-      expect(refusals).toHaveLength(2);
-      expect(refusals.every(event => event.data?.validationKind === 'business')).toBe(true);
-      expect(events.some(event => event.messageId === 'llm.business_response_retained')).toBe(false);
-    },
-  );
+  it.each([
+    ['repeats an earlier question', (reply: TurnReply) => { reply.question.question = 'What should the deliverable be?'; }],
+    ['asks about a resolved dimension', (reply: TurnReply) => { reply.question.category = 'boundary'; }],
+    ['declares clear while dimensions are open', (reply: TurnReply) => { reply.status = 'clear'; reply.summary = 'Done.'; }],
+    ['keeps asking after judging the requirement infeasible', (reply: TurnReply) => {
+      reply.feasibility = { verdict: 'infeasible', blockers: [{ kind: 'platform', detail: 'A native iOS app.' }] };
+    }],
+  ] as const)('refuses a turn that %s through the actual PM call, as business feedback', async (_name, change) => {
+    const reply = turnReply();
+    change(reply);
+    const server = await endpoint(() => ({ output: JSON.stringify(reply) }));
+    const current = await fixture(server.url);
+    await expect(current.clarify()).rejects.toMatchObject({ failure: { code: 'all_providers_failed', details: { contentRejectedOnly: true } } });
+    expect(server.calls).toHaveLength(2);
+    const events = await current.events();
+    expect(inputEvents(events)).toHaveLength(1);
+    const refusals = events.filter(event => event.messageId === 'llm.provider_validation_failed');
+    expect(refusals).toHaveLength(2);
+    expect(refusals.every(event => event.data?.validationKind === 'business')).toBe(true);
+    expect(events.some(event => event.messageId === 'llm.business_response_retained')).toBe(false);
+  });
 
   it('recovers original context and questions without current Rules, i18n, topic, HTTP or state writes', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
     await current.container.canonical().workspace.writeFile('docs/topic.md', requirement);
-    const questions = await current.clarify(requirement, { languageAmbiguous: true });
+    const turn = await current.clarify(requirement);
     const original = inputEvents(await current.events())[0]!;
     await current.scores.flush();
     await current.container.canonical().workspace.writeFile('docs/topic.md', 'A different current TypeScript topic.');
@@ -409,7 +422,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     vi.spyOn(i18n, 'tFor').mockImplementation(() => { throw new Error('Recovery cannot render any locale'); });
     const before = await stateBytes(current.container);
     await expect(current.resume(original.logicalRequestId)).resolves.toMatchObject({ status: 'recovered', protocolStatus: 'processed',
-      logicalRequestId: original.logicalRequestId, owner: original.owner, text: accepted(), questions });
+      logicalRequestId: original.logicalRequestId, owner: original.owner, text: accepted(), turn });
     expect(await stateBytes(current.container)).toEqual(before);
     expect(server.calls).toHaveLength(1);
     await expect(fs.stat(current.container.phasePlanPath())).rejects.toMatchObject({ code: 'ENOENT' });
@@ -423,7 +436,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const captured = events.find(event => event.messageId === 'llm.business_request_input')!;
     const original = captured.data!.input as BusinessRequestInput;
     const context = original.auditContext as ClarificationPayload;
-    captured.data!.input = { ...original, auditContext: { ...context, parseContext: { ...context.parseContext, languageAmbiguous: !context.parseContext.languageAmbiguous } } };
+    captured.data!.input = { ...original, auditContext: { ...context, parseContext: { ...context.parseContext, projectType: 'library' } } };
     await fs.writeFile(current.auditPath, `${events.map(event => JSON.stringify(event)).join('\n')}\n`);
     const before = await fs.readFile(current.auditPath, 'utf8');
     await expect(current.resume(original.logicalRequestId)).rejects.toMatchObject({ code: 'business_request_input_failed' });
@@ -494,7 +507,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
   it('refuses exact recovery when protected audit persistence redacts the original context', async () => {
     const server = await endpoint();
     const current = await fixture(server.url, { redacted: true });
-    await expect(current.clarify(`${requirement} Preserve Bearer synthetic-test-token.`)).resolves.toHaveLength(8);
+    await expect(current.clarify(`${requirement} Preserve Bearer synthetic-test-token.`)).resolves.toMatchObject({ status: 'ask', question: { id: 'Q3' } });
     const original = inputEvents(await current.events())[0]!;
     const before = await fs.readFile(current.auditPath, 'utf8');
     await expect(current.resume(original.logicalRequestId)).rejects.toMatchObject({ code: 'business_request_input_failed' });
@@ -521,7 +534,7 @@ describe('P01 clarification through the Runtime retained request port', () => {
     const hooks = plugin({ before(event) { event.options = { ...event.options, validateResponse: substitute, scoreSuccess: false }; } });
     const server = await endpoint(call => ({ output: call === 1 ? `${accepted()}\nextra text` : accepted() }));
     const current = await fixture(server.url, { plugins: hooks });
-    await expect(current.clarify()).resolves.toHaveLength(8);
+    await expect(current.clarify()).resolves.toMatchObject({ status: 'ask', question: { id: 'Q3' } });
     expect(server.calls).toHaveLength(2);
     expect(substitute).not.toHaveBeenCalled();
     expect(current.boost).toHaveBeenCalledExactlyOnceWith('pm', 'success in role project-manager');

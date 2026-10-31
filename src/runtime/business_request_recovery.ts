@@ -8,7 +8,7 @@ import { FileBusinessRequestAttemptStore } from '../infrastructure/llm/file_busi
 import { createRuntimeBusinessRequestInputs } from './business_request_inputs.js';
 import { resumeRuntimeBusinessRequestAttempt, sendRuntimeBusinessRequest } from './business_request_attempts.js';
 
-/** Internal V1 evidence composition. Recovery has no Router and can never dispatch a model. */
+/** Internal composition of retained-request evidence. Recovery has no Router and can never dispatch a model. */
 export function createRuntimeBusinessRequestRecovery(container: ProjectContainer, audit: AuditLogger): BusinessRequestRecovery {
   // Reuse the owning container check and Rule snapshot/review verification.
   const inputs = createRuntimeBusinessRequestInputs(container, audit);

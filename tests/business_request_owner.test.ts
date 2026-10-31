@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ruleList } from './support/rule_fixtures.js';
 import {
   BusinessRequestOwnerSchema, PlanningOperationOwnerSchema, ScenarioJudgementOwnerSchema,
   PLANNING_REQUEST_CONTEXTS, assertBusinessRequestSnapshotOwner, businessRequestInputDigest,
@@ -38,11 +39,11 @@ const planningOwner = (operation: PlanningOperationOwner['operation']) => Planni
 function snapshot(context: RuleContext, requestKind: 'business' | 'rule-selection' = 'business') {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: '/installed/rules/base.yaml' },
-    definition: { schemaVersion: '1', id: '00000000-0000-4000-8000-000000000001', version: '1',
+    definition: ruleList({ id: '00000000-0000-4000-8000-000000000001', version: '1',
       title: 'Base declarations', slot: 0, rules: [{
-        id: '00000000-0000-4000-8000-000000000002', version: '1', category: 'general', level: 'announce',
-        instruction: 'Preserve current evidence.', retrievalDescription: 'Current evidence declaration.',
-      }] },
+        id: '00000000-0000-4000-8000-000000000002', version: '1', level: 'announce',
+        instruction: 'Preserve current evidence.', description: 'Current evidence declaration.',
+      }] }),
   }]));
   const prepared = selector.prepare({ requestKind, context, required: [] });
   return finalizeRuleSelectionDraft(createRuleSelectionDraft({

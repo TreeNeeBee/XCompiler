@@ -1,3 +1,4 @@
+import { setPromptTranslation } from '../../src/i18n/index.js';
 import { promises as fs } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -127,7 +128,9 @@ describe('Runtime initializes the configured knowledge store', () => {
         const executed = await environment.executor.run({ step: attempt.executionStep, role: actualRole, work,
           tools: environment.tools, ctx: environment.context, skillHints: environment.hints, baselineTestExecution: 'defer',
           baselineTestExecutionReason: mode === 'debug' ? 'pre-code-correction' : 'initial-pre-code',
+          project: { intent: attempt.plan.intent, projectType: attempt.plan.projectType },
           ...(mode === 'debug' ? { debugContext: { bugTicketId: ticket.id, reason: 'The owned requirement artifacts are missing before CODE.',
+            failureCategory: 'missing_output' as const,
             failureLog: 'Owned artifacts have not been written.', repairRequired: true } } : {}) });
         expect(executed.success, JSON.stringify(executed)).toBe(true);
         throw stop;
@@ -156,7 +159,20 @@ describe('Runtime initializes the configured knowledge store', () => {
         expect.objectContaining({ data: expect.objectContaining({ provider: 'assigned', role: actualRole }) }),
       ]));
       expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(true);
-      expect(calls[0]!.messages[0]!.content).toContain('rules');
+      // The Rule block leads the request, starting from the base segment's level definitions.
+      expect(calls[0]!.messages[0]!.content).toContain('[0x00000001] ');
+      // The pinned selection read the request facts from the retained payload (revision 11.4).
+      const [snapshotFile] = await fs.readdir(container.state.abs('rules', 'requests', 'snapshots'));
+      const pinned = JSON.parse(await container.state.readFile(`rules/requests/snapshots/${snapshotFile}`)) as { context: Record<string, unknown> };
+      expect(pinned.context).toMatchObject({
+        intent: attempt.plan.intent, projectType: attempt.plan.projectType,
+        // Declared outputs and the grants Runtime adds: the fixture directory reaches the context only
+        // through the executor's allowed writes, never through the Step's outputs.
+        writablePaths: expect.arrayContaining([...attempt.executionStep.outputs, 'tests/fixtures/']),
+        tools: expect.arrayContaining([expect.any(String)]),
+        ...(mode === 'debug' ? { failureCategory: 'missing_output' } : {}),
+      });
+      if (mode !== 'debug') expect(pinned.context).not.toHaveProperty('failureCategory');
     } finally {
       vi.restoreAllMocks();
       server.closeAllConnections();
@@ -248,7 +264,7 @@ describe('Runtime initializes the configured knowledge store', () => {
 });
 
 describe('Runtime preserves the Phase checkpoint across orchestration outcomes', () => {
-  it.each(['role-default', 'actor-override-with-disabled-default'] as const)(
+  it.each(['role-default', 'actor-override-with-disabled-default', 'prompt-translation'] as const)(
     'retains the next Phase decomposition under the canonical Project at the actual run boundary (%s)', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-next-phase-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
@@ -263,8 +279,11 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
         const parsed = body ? JSON.parse(body) as { model: string; messages: Array<{ role: string; content: string }> } : undefined;
         if (!parsed?.messages) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
         calls.push(parsed);
+        // With prompt translation on, the topic reaches the planner through a translation request first.
+        const content = isTranslation(parsed) ? JSON.stringify({ translations: (JSON.parse(parsed.messages.at(-1)!.content) as { texts: string[] })
+          .texts.map((text) => `⟦en⟧${text}`) }) : reply;
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: { content: reply }, finish_reason: null }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`);
         response.write(`data: ${JSON.stringify({ model: parsed.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
         response.end('data: [DONE]\n\n');
       });
@@ -305,6 +324,11 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
       const report = vi.spyOn(projectReports, 'generateProjectDevelopmentReport').mockRejectedValue(stop);
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
       const configPath = await writeConfig(root, url);
+      if (mode === 'prompt-translation') {
+        const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
+        configuration.prompt_translate = 'on';
+        await fs.writeFile(configPath, YAML.stringify(configuration));
+      }
       if (plannerActor) {
         const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
         configuration.llm.providers.assignedPlanner = { ...configuration.llm.providers.local, model: 'registered-planner-model' };
@@ -320,11 +344,14 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
       expect(run).toHaveBeenCalledTimes(1);
       expect(report).toHaveBeenCalledTimes(1);
       expect(unexpectedExecution).not.toHaveBeenCalled();
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.model).toBe(plannerActor ? 'registered-planner-model' : 'initialization-only');
+      const planning = calls.filter((call) => !isTranslation(call));
+      expect(planning).toHaveLength(1);
+      expect(calls.length - planning.length).toBe(mode === 'prompt-translation' ? 1 : 0);
+      expect(planning[0]!.model).toBe(plannerActor ? 'registered-planner-model' : 'initialization-only');
       const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(Boolean)
         .map(line => JSON.parse(line) as { messageId?: string; data?: { input?: BusinessRequestInput } });
-      const original = events.find(event => event.messageId === 'llm.business_request_input')!.data!.input!;
+      const original = events.find(event => event.messageId === 'llm.business_request_input'
+        && event.data!.input!.auditContext?.kind === 'planning-phase-decomposition')!.data!.input!;
       expect(original.owner).toMatchObject({ kind: 'project-planning-operation', operation: 'phase-decomposition',
         projectId: graph.project.id, actorId: plannerActor?.id ?? expect.any(String), role: 'planner',
         roleVersion: plannerActor?.roleVersion ?? roleProfile('planner').version, work: 'plan.decompose',
@@ -332,13 +359,20 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
         allowedProviders: [plannerActor ? 'assignedPlanner' : 'local'] });
       expect(original.owner).not.toHaveProperty('phaseId');
       expect(original.auditContext).toMatchObject({ kind: 'planning-phase-decomposition', phaseId: 'P2', parseContext: { language: 'python', intent: 'feature' } });
-      expect(original.messages).toEqual(calls[0]!.messages.slice(1));
+      expect(original.messages).toEqual(planning[0]!.messages.slice(1));
+      if (mode === 'prompt-translation') {
+        // The planner reads English: its template and Rules, and the topic as translated for it.
+        expect(original.auditContext).toMatchObject({ locale: 'en', outputLocale: 'zh',
+          parseContext: { rawRequirement: expect.stringMatching(/^⟦en⟧/u) } });
+        expect(planning[0]!.messages[0]!.content).toContain('deliverables (documents, reports and commit messages) in Simplified Chinese');
+      }
       expect(events.filter(event => event.messageId === 'llm.phase_decomposition_judgement')).toHaveLength(1);
       expect(events.filter(event => event.messageId === 'execute.phase_prepared')).toHaveLength(1);
       const restored = await store.loadPlanTarget(phasePlanPath);
       expect(restored.plan.phaseId).toBe('P2');
       expect(restored.plan.steps.every(step => step.iterationId === 'P2')).toBe(true);
     } finally {
+      setPromptTranslation(false);
       vi.restoreAllMocks();
       envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
       server.closeAllConnections();
@@ -429,6 +463,68 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
     }
   });
 });
+
+describe('a Runtime permission the run cannot proceed without', () => {
+  it('reports a denial as a decision with its way forward, not as an unhandled error with a stack', async () => {
+    // A denied Runtime permission surfaced as "Unhandled error: permission denied for ..."
+    // followed by a stack trace — a defect's presentation for what was the user's own choice.
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-denied-')));
+    const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const previous = envKeys.map((key) => process.env[key]);
+    try {
+      process.env.XC_PATH = path.join(root, 'installation');
+      process.env.XCOMPILER_PATH = process.env.XC_PATH;
+      process.env.GIT_CONFIG_GLOBAL = path.join(root, 'empty-git-config');
+      process.env.GIT_CONFIG_NOSYSTEM = '1';
+      await fs.writeFile(process.env.GIT_CONFIG_GLOBAL, '');
+      const container = new ProjectContainer(path.join(root, 'project'));
+      await container.canonical().workspace.ensure('.');
+      const draft = runtimePlan();
+      const repository = new DomainObjectRepository(container.state);
+      await repository.load();
+      await new ProjectGraphPersistenceService(repository).persistGraph(materializeProjectGraph({
+        draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-denied',
+      }));
+      const planPath = container.control.abs('plan.P1.json');
+      await new FilePlanStore().savePlan(planPath, draft);
+      const unexpectedExecution = vi.fn(async (): Promise<never> => {
+        throw new Error('A denied run must not execute project work.');
+      });
+      vi.mocked(createSandbox).mockReturnValue({
+        kind: 'subprocess', build: vi.fn(async () => ({ rebuilt: false, reason: 'Installation is outside this test.' })),
+        exec: unexpectedExecution,
+        runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution,
+      });
+      const logs: Array<{ level: string; message: string }> = [];
+      const result = await runExecute({
+        workspace: container.root, planPath, configPath: await writeConfig(root),
+        debugWikiPath: path.join(root, 'debug-wiki'), recordReplayMode: 'off',
+        io: {
+          ...silentRuntimeIO,
+          permissionPolicy: 'deny',
+          emit: (event) => { if (event.type === 'log') logs.push({ level: event.level, message: event.message }); },
+        },
+      });
+
+      expect(result).toMatchObject({ status: 'error', exitCode: 5 });
+      const errors = logs.filter((log) => log.level === 'error').map((log) => log.message).join('\n');
+      // Which non-skippable permission is asked first is not this test's concern; naming it is.
+      expect(errors).toMatch(/Runtime permission policy denied (?:git_operation|install_dependency)/u);
+      expect(errors).toContain('--permission-mode auto');
+      expect(errors).not.toMatch(/Unhandled error|未处理错误/u);
+      expect(logs.some((log) => log.level === 'dim' && /\n\s+at /u.test(log.message))).toBe(false);
+      expect(unexpectedExecution).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function isTranslation(call: { messages: Array<{ content: string }> }): boolean {
+  return call.messages.some((message) => message.content.includes('You translate text exchanged between a user and the models'));
+}
 
 async function writeConfig(root: string, baseUrl = 'http://127.0.0.1:1/v1'): Promise<string> {
   const config = YAML.parse(await fs.readFile(path.resolve('config.example.yaml'), 'utf8')) as {

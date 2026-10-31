@@ -25,9 +25,9 @@ import {
 import { validateRuleProviderRequest, validateRuleProviderRequestIdentity } from './rule_request_guard.js';
 import type { ChatMessage, ChatOptions, LLMClient } from './types.js';
 
-export const RULE_BUSINESS_PROMPT_VERSION = 'rule-business-request/1' as const;
+export const RULE_BUSINESS_PROMPT_VERSION = 'rule-business-request/2' as const;
 
-/** Protocol/business validation and retry ownership stay with the caller and the C1 boundary. */
+/** Protocol/business validation and retry ownership stay with the caller and the protocol-correction boundary. */
 export type RuleBusinessChatOptions = Pick<ChatOptions,
   'temperature' | 'maxTokens' | 'requestTimeoutMs' | 'responseFormat' | 'onToken'
   | 'streamStopWhen' | 'onProvider' | 'onProviderStart' | 'onStall'>;
@@ -101,7 +101,7 @@ export class LLMRuleBusinessRequest {
     return this.sendRetainedInput(input);
   }
 
-  /** Caller-owned candidate validation; ordinary Router feedback/scoring, never C1 dispatch. */
+  /** Caller-owned candidate validation; ordinary Router feedback/scoring, never a protocol-correction dispatch. */
   async sendValidatedInput(input: RetainedSend & {
     validateResponse: NonNullable<ChatOptions['validateResponse']>;
   }): Promise<RuleBusinessResponse> {
@@ -160,7 +160,7 @@ export class LLMRuleBusinessRequest {
       const frameworkMessages = Messages.parse(input.messages);
       messages = Object.freeze([
         Object.freeze({ role: 'system' as const,
-          content: this.decorator.decorate({ requestKind: 'business', rules: snapshot.rules }) }),
+          content: this.decorator.decorate({ requestKind: 'business', rules: snapshot.rules, locale: snapshot.context.locale }) }),
         ...frameworkMessages.map((message) => Object.freeze(message)),
       ]);
     } catch (cause) {
@@ -281,7 +281,7 @@ export class LLMRuleBusinessRequest {
         provider: response.provider, model: response.model,
       });
     }
-    // Missing transport metadata stays unavailable; only C1 may decide calibration eligibility.
+    // Missing transport metadata stays unavailable; only protocol correction may decide calibration eligibility.
     return freeze({ output, response, binding: sent.binding,
       ...(sent.retainedAttempt ? { retainedAttempt: sent.retainedAttempt } : {}),
     });

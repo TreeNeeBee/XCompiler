@@ -41,7 +41,7 @@ XCompiler 核心版本和 Plugin API 版本独立演进：核心使用 package S
 |---|---|
 | `compile.start` | 配置、审计和插件初始化完成后 |
 | `compile.afterClarify` | 澄清问答及用户补充收集后 |
-| `compile.beforeDecompose` | Planner 生成计划之前 |
+| `compile.beforeDecompose` | Planner 生成计划之前。`input.rawRequirement` 是 topic.md 全文，澄清问答和补充需求已在其中，`input.clarifications` 为空，`input.userAddenda` 为空字符串；需要逐条读取问答或补充需求的插件请用 `compile.afterClarify`。`prompt_translate: on` 且 `locale` 不是 `en` 时，`input.rawRequirement` 的正文是送给模型的英文 topic，front matter 原样保留；`compile.afterClarify` 收到的仍是用户语言的原文，在其中改写问答记录时，该节会在送给模型前重新翻译 |
 | `compile.afterPlan` | 计划校准后、Schema/Lint 之前 |
 | `compile.finish` | 计划和文档持久化后 |
 | `llm.before/after/error` | 每次完整 LLM 调用外围 |

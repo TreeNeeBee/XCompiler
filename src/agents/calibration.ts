@@ -1,3 +1,5 @@
+import type { Locale } from '../i18n/index.js';
+import { calibrationText } from './calibration_text.js';
 import {
   PHASES,
   REQUIRED_V_MODEL_PHASES,
@@ -85,7 +87,9 @@ export const HALLUCINATED_PACKAGE_MAP: Record<string, string> = {
 };
 
 /** 强制保证存在的依赖（按出现顺序追加，不会覆盖已有版本约束）。 */
-const REQUIRED_PACKAGES = ['pytest'];
+// The runtime's own test gates run pytest and, at UNIT_TEST, measure coverage through pytest-cov
+// (the counterpart of TypeScript's @vitest/coverage-v8): every Python project carries both.
+const REQUIRED_PACKAGES = ['pytest', 'pytest-cov'];
 
 /**
  * 清洗 Plan 顶层 Python `dependencies`：
@@ -755,7 +759,7 @@ function inferPhase(rawPhase: unknown, role: string, outputs: string[]): string 
  *  - tools / inputs / outputs / dependsOn 缺失 → 默认空数组
  *  - maxAttempts 非正整数 -> 重置为 3
  */
-export function calibrateStepShape(steps: Step[]): Step[] {
+export function calibrateStepShape(steps: Step[], locale: Locale = 'en'): Step[] {
   return steps.map((raw) => {
     const s = raw as unknown as Record<string, unknown>;
     const outputs = Array.isArray(s.outputs) ? (s.outputs as string[]) : [];
@@ -776,16 +780,13 @@ export function calibrateStepShape(steps: Step[]): Step[] {
     // acceptance 兜底
     let acceptance = typeof s.acceptance === 'string' ? s.acceptance.trim() : '';
     if (!acceptance) {
-      acceptance = `${title} 完成，所有声明的 outputs 文件存在且内容非空。`;
+      acceptance = calibrationText(locale).defaultAcceptance(title);
     }
 
     // systemPrompt 兜底（schema 仅要求 min(1)，但 xcompiler_run 期望真实有效的提示词）
     let systemPrompt = typeof s.systemPrompt === 'string' ? s.systemPrompt.trim() : '';
     if (systemPrompt.length < 20) {
-      systemPrompt =
-        `${phase} 阶段任务：${title}。${description}` +
-        `\n范围：仅完成本 Step 声明的 outputs。` +
-        `\n验收：${acceptance}`;
+      systemPrompt = calibrationText(locale).defaultSystemPrompt(phase, title, description, acceptance);
     }
 
     return {
@@ -1019,8 +1020,8 @@ function flattenSubTaskTexts(tasks: StepSubtask[]): string[] {
  * 在自己的隔离目录按风险补充测试、冻结并执行完整集合。若缺少 UNIT_TEST 宏 Step，
  * 则补充一个遵循相同门禁的验证 Step；基线测试文件仍由 CODE 阶段拥有。
  */
-export function calibratePlanCoverage(steps: Step[], language: Language = 'python'): Step[] {
-  const withPairedTestAssets = ensurePairedTestAssets(steps, language);
+export function calibratePlanCoverage(steps: Step[], language: Language = 'python', locale: Locale = 'en'): Step[] {
+  const withPairedTestAssets = ensurePairedTestAssets(steps, language, locale);
   const stepById = new Map(withPairedTestAssets.map((s) => [s.id, s] as const));
   const codeExtensions = getLanguageProfile(language).codeExtensions;
   const isInitOnly = (s: Step): boolean => {
@@ -1095,28 +1096,23 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
       return testOutput;
     });
 
-    const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join('、');
+    const text = calibrationText(locale);
+    const targetTitles = uncovered.map((c) => `${c.id} (${c.title})`).join(text.listSeparator);
+    const covered = uncovered.map((c) => c.id).join(' / ');
+    const runner = tsMode ? 'npm test / Vitest' : 'pytest';
     syntheticSteps.push({
       id: newId,
       iterationId,
       phase: 'UNIT_TEST',
-      title: `自动补齐单元测试：覆盖 ${uncovered.map((c) => c.id).join(' / ')}`,
-      description:
-        `Planner 未为 ${targetTitles} 显式生成 UNIT_TEST Step，由 calibration 自动追加。` +
-        `Tester 独立检查 CODE 基线，按风险补充、冻结并执行完整测试集合。`,
-      systemPrompt:
-        `本 Step 是 calibration 自动追加的 UNIT_TEST 验证兜底，覆盖以下 CODE Step：${targetTitles}。\n` +
-        `范围：读取并审查 ${testOutputs.join(', ')}；只允许在 ${supplementalRoot} 新增风险补充测试，` +
-        `冻结“基线 + 补充”集合后运行测试，并写 ${unitTestDoc ?? 'UNIT_TEST report'}；` +
-        `禁止修改配对基线测试与 src/**。\n` +
-        `验收：测试完整性检查通过，冻结集合在 ${tsMode ? 'npm test / Vitest' : 'pytest'} 下全部通过。`,
+      title: text.syntheticUnitTest.title(covered),
+      description: text.syntheticUnitTest.description(targetTitles),
+      systemPrompt: text.syntheticUnitTest.systemPrompt({ targetTitles, testOutputs: testOutputs.join(', '),
+        supplementalRoot, report: unitTestDoc ?? 'UNIT_TEST report', runner }),
       tools: ['skill:test-execution', 'skill:record-replay-fixtures'],
       inputs: dedup(uncovered.flatMap((c) => c.outputs)),
       outputs: unitTestDoc ? [unitTestDoc] : [],
       dependsOn: uncovered.map((c) => c.id),
-      acceptance: tsMode
-        ? `Vitest 基线与风险补充测试完整、冻结且全部通过，验证报告覆盖 ${uncovered.map((c) => c.id).join(' / ')}。`
-        : `pytest 基线与风险补充测试完整、冻结且全部通过，验证报告覆盖 ${uncovered.map((c) => c.id).join(' / ')}。`,
+      acceptance: text.syntheticUnitTest.acceptance(tsMode ? 'Vitest' : 'pytest', covered),
       maxAttempts: 3,
     });
   }
@@ -1135,10 +1131,10 @@ export function calibratePlanCoverage(steps: Step[], language: Language = 'pytho
     };
   });
 
-  return ensurePairedTestAssets([...rewired, ...syntheticSteps], language);
+  return ensurePairedTestAssets([...rewired, ...syntheticSteps], language, locale);
 }
 
-function ensurePairedTestAssets(steps: Step[], language: Language): Step[] {
+function ensurePairedTestAssets(steps: Step[], language: Language, locale: Locale): Step[] {
   const out = steps.map((step) => ({
     ...step,
     inputs: dedup(step.inputs.filter((path) => !isRuntimeOwnedVerificationTestPath(path))),
@@ -1196,19 +1192,11 @@ function ensurePairedTestAssets(steps: Step[], language: Language): Step[] {
       const sourceMarker = 'V-model paired test authoring contract';
       for (const sourceStep of sourceSteps) {
         if (!sourceStep.systemPrompt.includes(sourceMarker)) {
-          sourceStep.systemPrompt +=
-            `\n\n${sourceMarker}（强制）：本 ${sourcePhase} 阶段必须依据当前阶段契约创建并维护` +
-            `配对 ${testPhase} 的可执行测试，测试路径为 ${testAssets.join(', ')}；` +
-            `测试应在后续 ${testPhase} 阶段运行，不得把编写工作推迟到验证阶段。` +
-            `测试必须导入或执行 Plan 声明的真实产品模块与公开接口；禁止在测试文件内复制业务类型、` +
-            `类、算法、渲染器、解析器或调度逻辑来构造不依赖产品代码的自测通过。` +
-            `这些测试可以引用将在 CODE 阶段实现、当前尚不存在的 sourcePaths；` +
-            `REQUIREMENT_ANALYSIS/HIGH_LEVEL_DESIGN/DETAILED_DESIGN 禁止为此提前创建 src/** stub、占位实现或产品代码。` +
-            (sourcePhase === 'DETAILED_DESIGN'
-              ? `每个集成测试必须实际引用至少两个参与集成的已声明产品源码（Plan 仅声明一个源码时除外）。`
-              : '');
-          sourceStep.acceptance +=
-            ` 配对 ${testPhase} 测试用例存在、内容非空，并与本阶段的测试计划和验收契约一致。`;
+          // The marker stays English in every language: it is how a re-calibration finds its own block.
+          const contract = calibrationText(locale).pairedAuthoring;
+          sourceStep.systemPrompt += `\n\n${sourceMarker}${contract.prompt({ sourcePhase, testPhase,
+            testAssets: testAssets.join(', '), integration: sourcePhase === 'DETAILED_DESIGN' })}`;
+          sourceStep.acceptance += contract.acceptance(testPhase);
         }
         sourceStep.tools = ensureEssentialToolRefs(sourceStep);
       }
@@ -1218,18 +1206,10 @@ function ensurePairedTestAssets(steps: Step[], language: Language): Step[] {
         testStep.inputs = dedup([...testStep.inputs, ...testAssets]);
         const supplementalRoot = verificationSupplementRoot(testStep);
         if (!testStep.systemPrompt.includes(validationMarker)) {
-          testStep.systemPrompt +=
-            `\n\n${validationMarker}（强制）：本 ${testPhase} 阶段先检查 ${testAssets.join(', ')} ` +
-            `与配对测试计划的完整性和一致性，执行风险分析；只允许在 ${supplementalRoot} ` +
-            `新增本阶段拥有的聚焦补充测试，禁止修改配对基线测试和 src/**。` +
-            `补充完成后冻结“基线 + 补充”测试集，再使用 ${testCommand} 完整执行。` +
-            `涉及外部数据时使用 Record/Replay 保持可复现；真实用户场景由 Phase 交付门禁统一执行。` +
-            `每个独立问题写入 qualityAssessment.findings，并提供同一问题重现时稳定复用的机器 code；基线测试缺陷使用 test-defect + paired-source，` +
-            `补充测试缺陷使用 test-defect + current-step，` +
-            `已接受契约仍有效但实现错误时使用 product-defect，已接受能力或契约必须调整时使用 change-request；` +
-            `状态码、超时、异常和空结果只作为证据，不能直接决定二者。测试不完整使用 test-incomplete，依赖问题使用 dependency。`;
-          testStep.acceptance +=
-            ` 基线与风险补充测试已冻结并由 ${testCommand} 执行成功；本阶段未改写基线测试或产品代码。`;
+          const contract = calibrationText(locale).independentAcceptance;
+          testStep.systemPrompt += `\n\n${validationMarker}${contract.prompt({ testPhase,
+            testAssets: testAssets.join(', '), supplementalRoot, testCommand })}`;
+          testStep.acceptance += contract.acceptance(testCommand);
         }
         testStep.tools = ensureEssentialToolRefs(testStep);
       }

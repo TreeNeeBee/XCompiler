@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { getXCompilerPath, loadConfig, loadConfigWithPath } from '../src/config/config.js';
+import { XCOMPILER_VERSION } from '../src/version.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../src/llm/window.js';
 
 function allPools(provider: string): Record<string, string[]> {
@@ -56,6 +57,12 @@ describe('config locale', () => {
     expect(config.locale).toBe('zh');
   });
 
+  it('leaves prompt translation off unless it is turned on, and accepts only off or on', async () => {
+    expect((await loadConfigWithPath(await writeConfig(baseConfig({})))).config.prompt_translate).toBe('off');
+    expect((await loadConfigWithPath(await writeConfig(baseConfig({ prompt_translate: 'on' })))).config.prompt_translate).toBe('on');
+    await expect(loadConfigWithPath(await writeConfig(baseConfig({ prompt_translate: 'auto' })))).rejects.toThrow(/prompt_translate/);
+  });
+
   it('rejects the removed ui_language alias', async () => {
     const cfgPath = await writeConfig(baseConfig({ ui_language: 'zh' }));
     await expect(loadConfigWithPath(cfgPath)).rejects.toThrow(/ui_language/);
@@ -71,6 +78,8 @@ describe('config locale', () => {
     expect(failure).toContain('agent.max_debug_retries');
     expect(failure).toContain('config.example.yaml');
     expect(failure).not.toContain('unrecognized_keys');
+    // It names the version the user is running, not the one the message was first written for.
+    expect(failure).toContain(`not valid for XCompiler ${XCOMPILER_VERSION}:`);
   });
 
   it('rejects sandbox modes that have no runtime implementation', async () => {
@@ -418,7 +427,17 @@ describe('Rule retrieval configuration', () => {
     ['empty retrieval', { rules: { retrieval: {} } }],
   ])('loads the approved retrieval defaults through loadConfig for %s', async (_name, extra) => {
     const config = await loadConfig(await writeConfig(baseConfig(extra)));
-    expect(config.rules).toEqual({ retrieval: { threshold: 0.8, maxCandidates: 20 } });
+    expect(config.rules).toEqual({ selection: { strategy: 'bound-only' }, retrieval: { threshold: 0.8, maxCandidates: 20 } });
+  });
+
+  it('accepts bound-only and refuses the strategies this release cannot run (revision 11.2)', async () => {
+    const config = await loadConfig(await writeConfig(baseConfig({ rules: { selection: { strategy: 'bound-only' } } })));
+    expect(config.rules.selection).toEqual({ strategy: 'bound-only' });
+    for (const strategy of ['inline', 'embedding', 'review']) {
+      await expect(loadConfig(await writeConfig(baseConfig({ rules: { selection: { strategy } } }))))
+        .rejects.toThrow(/not available in this release; use bound-only/u);
+    }
+    await expect(loadConfig(await writeConfig(baseConfig({ rules: { selection: { strategy: 'vector' } } })))).rejects.toThrow();
   });
 
   it.each([
@@ -447,6 +466,7 @@ describe('Rule retrieval configuration', () => {
     });
     const { config } = await loadConfigWithPath(await writeConfig(cfg));
     expect(config.rules).toEqual({
+      selection: { strategy: 'bound-only' },
       embedding: {
         provider: 'ollama', api_key: '', base_url: 'http://127.0.0.1:11434',
         model: 'nomic-embed-text', space_version: 'nomic-embed-text/1', dimensions: 768,
@@ -463,6 +483,7 @@ describe('Rule retrieval configuration', () => {
     };
     const config = await loadConfig(await writeConfig(baseConfig({ rules: { embedding } })));
     expect(config.rules).toEqual({
+      selection: { strategy: 'bound-only' },
       embedding: { ...embedding, api_key: '', request_timeout_ms: 120_000 },
       retrieval: { threshold: 0.8, maxCandidates: 20 },
     });

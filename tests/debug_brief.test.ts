@@ -248,6 +248,18 @@ describe('debug brief extraction', () => {
       .toBe('missing_output');
   });
 
+  // A recorded failure always carries its typed failure, so this is the path retries and Debug Wiki
+  // retrieval take: owed outputs must still name the category, as they do without one.
+  it.each([
+    ['the Executor\'s own failure', { kind: 'execution', category: 'internal', code: 'unclassified_execution_failure', retryable: true, switchProvider: false }],
+    ['a failed test command wrapping it', { kind: 'execution', category: 'test', code: 'test_command_failed', retryable: true, switchProvider: false }],
+  ] as const)('names an output repair from owed outputs beside a typed failure: %s', (_name, typedFailure) => {
+    expect(buildDebugBrief({ reason: 'stopped', failureLog: 'stopped', phase: 'CODE', typedFailure, missingOutputs: ['src/a.py'] }).category)
+      .toBe('missing_output');
+    expect(buildDebugBrief({ reason: 'stopped', failureLog: 'stopped', phase: 'CODE', typedFailure }).category)
+      .not.toBe('missing_output');
+  });
+
   it('drops a process-noise reason from compact evidence only when the failure owes outputs or names a root signal', () => {
     const reason = 'repeated read-only/probe actions without progress for 3 rounds';
     const failureLog = 'outputs still missing: docs/05-unit-test.md\nwrite_file FAIL target denied';

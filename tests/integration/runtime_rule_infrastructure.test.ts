@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ruleList } from '../support/rule_fixtures.js';
 import { RuleCatalogue } from '../../src/domain/rules/catalogue.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { createRuleSelectionDraft, finalizeRuleSelectionDraft } from '../../src/application/rules/rule_request_snapshot.js';
@@ -14,7 +15,7 @@ import { FileRecordReplayStore } from '../../src/infrastructure/record_replay/fi
 
 let root: string;
 const id = (value: number) => `00000000-0000-4000-8000-${value.toString(16).padStart(12, '0')}`;
-const config = { retrieval: { threshold: 0.8, maxCandidates: 20 } };
+const config = { selection: { strategy: 'bound-only' as const }, retrieval: { threshold: 0.8, maxCandidates: 20 } };
 const recordReplay = () => new RecordReplayController({ mode: 'off', store: new FileRecordReplayStore(path.join(root, 'recordings')) });
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-rule-roots-')); });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
@@ -22,10 +23,10 @@ afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 function draft() {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: path.join(root, 'base.yaml') },
-    definition: { schemaVersion: '1', id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
-      id: id(2), version: '1', category: 'general', level: 'announce', instruction: 'Base declaration.',
-      retrievalDescription: 'Base declaration',
-    }] },
+    definition: ruleList({ id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
+      id: id(2), version: '1', level: 'announce', instruction: 'Base declaration.',
+      description: 'Base declaration',
+    }] }),
   }]));
   const prepared = selector.prepare({ requestKind: 'business', context: { role: 'python-developer' }, required: [] });
   return createRuleSelectionDraft({
@@ -39,7 +40,8 @@ describe('Runtime Rule state directory confinement', () => {
     const container = new ProjectContainer(path.join(root, 'project'));
     expect(() => createRuntimeRuleInfrastructure(config, '' as unknown as ProjectContainer, recordReplay())).toThrow();
     expect(() => createRuntimeRuleInfrastructure(config, container.canonical().workspace.root as unknown as ProjectContainer, recordReplay())).toThrow();
-    container.state.root = container.canonical().workspace.root;
+    // A state root redirected after construction: the type forbids it, which is what the check defends.
+    (container.state as { root: string }).root = container.canonical().workspace.root;
     expect(() => createRuntimeRuleInfrastructure(config, container, recordReplay())).toThrow();
   });
 
@@ -61,7 +63,7 @@ describe('Runtime Rule state directory confinement', () => {
     await fs.symlink(target, link, 'dir');
     const identity = { provider: 'test', model: 'encoder', spaceVersion: '1', dimensions: 2 };
     const index = {
-      schemaVersion: 1 as const, id: ruleVectorIndexId(identity, []), inputVersion: 'rule-retrieval/1' as const,
+      schemaVersion: 1 as const, id: ruleVectorIndexId(identity, []), inputVersion: 'rule-retrieval/2' as const,
       identity, documents: [], vectors: [], vectorDigest: ruleEvidenceDigest([]),
     };
     await expect(store.read(index.id)).rejects.toMatchObject({ code: 'rule_index_storage_failed', operation: 'read' });
@@ -80,7 +82,7 @@ describe('Runtime Rule state directory confinement', () => {
         claimId: id(900), reviewRequestId: id(901), createdAt: pinned.createdAt };
       const result = { schemaVersion: 1 as const, logicalRequestId: id(800), draftDigest: pinned.digest,
         claimId: claim.claimId, reviewRequestId: claim.reviewRequestId, providerAttemptId: id(902),
-        provider: 'fixture', model: 'fixture', protocolVersion: 'rule-selection-review/1', requestDigest: `sha256:${'1'.repeat(64)}`,
+        provider: 'fixture', model: 'fixture', protocolVersion: 'rule-selection-review/2', requestDigest: `sha256:${'1'.repeat(64)}`,
         selectedRuleIds: [], completedAt: pinned.createdAt };
       const operations = segment.endsWith('/drafts') ? [() => store.readDraft(id(800)), () => store.createDraft(pinned)]
         : segment.endsWith('/review-claims') ? [() => store.readReviewClaim(id(800)), () => store.claimReview(claim)]

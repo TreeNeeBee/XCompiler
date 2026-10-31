@@ -8,6 +8,8 @@ const CONTEXT_SAFETY_RATIO = 0.05;
 export interface OperationWindowInput {
   contextWindowTokens?: number | null;
   promptChars?: number;
+  /** Tokens measured from the prompt text (`estimateMessageTokens`); preferred over a bare character count. */
+  promptTokens?: number;
 }
 
 export interface SkillOperationWindow {
@@ -40,6 +42,27 @@ export function estimateTextTokens(chars: number): number {
 }
 
 /**
+ * Scripts a tokenizer spends about one token per character on. Counting them at three characters
+ * per token, as Latin text is, underestimates a Chinese prompt two to three times.
+ */
+const DENSE_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
+/** Estimated tokens of `text`: one per Han, kana or Hangul character, one per three other characters. */
+export function estimatePromptTokens(text: string): number {
+  let dense = 0;
+  let denseUnits = 0;
+  for (const match of text.matchAll(DENSE_SCRIPT)) {
+    dense += 1;
+    denseUnits += match[0].length;
+  }
+  return dense + estimateTextTokens(text.length - denseUnits);
+}
+
+export function estimateMessageTokens(messages: readonly { readonly content: string }[]): number {
+  return messages.reduce((sum, message) => sum + estimatePromptTokens(message.content), 0);
+}
+
+/**
  * Resolve all model-facing operation budgets from one context window.
  *
  * `context_window` is an input+output capacity. The prompt and a safety margin
@@ -49,7 +72,7 @@ export function estimateTextTokens(chars: number): number {
  */
 export function resolveSkillOperationWindow(input: OperationWindowInput = {}): SkillOperationWindow {
   const contextWindowTokens = normalizeContextWindowTokens(input.contextWindowTokens);
-  const promptTokens = estimateTextTokens(input.promptChars ?? 0);
+  const promptTokens = input.promptTokens ?? estimateTextTokens(input.promptChars ?? 0);
   const safetyTokens = Math.max(1024, Math.ceil(contextWindowTokens * CONTEXT_SAFETY_RATIO));
   const availableTokens = Math.max(512, contextWindowTokens - promptTokens - safetyTokens);
   const responseTokenBudget = Math.max(

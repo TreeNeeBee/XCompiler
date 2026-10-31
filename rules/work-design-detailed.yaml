@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "f3ebdb95-5f73-5808-857f-bccecf9fe82f"
-version: "1.0.0"
-title: "Detailed design"
-slot: "0x0252"
-applicability:
-  works: [design.detailed, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: f3ebdb95-5f73-5808-857f-bccecf9fe82f
+title:
+  en: Detailed design
+  zh: 详细设计
+slot: "0x00011102"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:ebae47a7b12e1eeaa0e10c6941a16ea8842b6cc6379b305edca1098ecf82aa68
 rules:
-  - id: "17622020-846d-5fb4-8baf-df20e4d78039"
-    version: "1.0.0"
-    category: framework
+  - id: 17622020-846d-5fb4-8baf-df20e4d78039
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Detailed design: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:adc236d650c718c450b8769d7b4586d4f17b57fd0e42f4a165170527e6593f8c
+    description:
+      en: "Detailed design deliverable: the system and module design with its paired tests."
+      zh: 详细设计的交付：系统与模块设计及配对测试。
     instruction:
-      en: |-
-        You design the system and its modules, and the tests paired with each design level.
-      zh: |-
-        你负责设计系统及其模块，以及与每个设计层级配对的测试。
-  - id: "0fe57d8c-85b7-5ffa-bbd9-ec5888120395"
-    version: "1.0.0"
-    category: framework
+      en: You design the system and its modules, and the tests paired with each design level.
+      zh: 你负责设计系统及其模块，以及与每个设计层级配对的测试。
+  - id: 0fe57d8c-85b7-5ffa-bbd9-ec5888120395
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Detailed design: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:c753ca62ee05ff53390637a3c10721696abd666e8cdc48186939ae269a563527
+    description:
+      en: "Detailed design method: define interfaces, dependencies and downstream contracts."
+      zh: 详细设计的方法：定义接口、依赖和下游契约。
     instruction:
-      en: |-
-        Define interfaces, dependencies, and the contracts downstream work must satisfy.
-      zh: |-
-        定义接口、依赖，以及下游工作必须满足的契约。
-  - id: "865271cb-75fb-55b7-a9cb-905822d8878a"
-    version: "1.0.0"
-    category: framework
+      en: Define interfaces, dependencies, and the contracts downstream work must satisfy.
+      zh: 定义接口、依赖，以及下游工作必须满足的契约。
+  - id: 865271cb-75fb-55b7-a9cb-905822d8878a
+    name: no-weakened-contracts
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Detailed design: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:47b9d60cc2697f8a72af0c1fd33f44fc2ef218c7d626e6243816b9708d0eb6e5
+    description:
+      en: Detailed design does not weaken a contract for implementation convenience.
+      zh: 详细设计不为方便实现而削弱契约。
     instruction:
-      en: |-
-        Do not weaken a contract to make an implementation easier.
-      zh: |-
-        不要为了让实现更容易而削弱契约。
+      en: Do not weaken a contract to make an implementation easier.
+      zh: 不要为了让实现更容易而削弱契约。

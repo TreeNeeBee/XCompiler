@@ -5,7 +5,9 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
+import { simpleGit } from 'simple-git';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { objectsOf } from '../support/domain_objects.js';
 import { reviseActor } from '../../src/domain/project_management/index.js';
 import { buildPlan } from '../../src/agents/planner.js';
 import type { AuditEvent } from '../../src/audit/audit.js';
@@ -82,6 +84,9 @@ afterEach(async () => {
   });
   await fs.rm(root, { recursive: true, force: true });
 });
+
+/** The run hands the judge the frozen requirement, so every usable reply says whether it conflicts with the plan. */
+const NO_CONFLICT = { conflicts: false } as const;
 
 async function endpoint(output: string, finishReason = 'stop', status = 200) {
   const calls: Array<{ url: string; input: { messages: Array<{ role: string; content: string }> } }> = [];
@@ -176,7 +181,7 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     { ticketType: 'bug', target: 'code', category: 'product-defect' },
     { ticketType: 'change-request', target: 'high-level-design', category: 'change-request' },
   ] as const)('delivers the $ticketType finding from the real scenario response to the PM gate boundary', async ({ ticketType, target, category }) => {
-    const server = await endpoint(JSON.stringify({ ok: false, reason: 'Current evidence contradicts the accepted utility contract.', ticketType, target }));
+    const server = await endpoint(JSON.stringify({ ok: false, reason: 'Current evidence contradicts the accepted utility contract.', ticketType, target, planConflict: NO_CONFLICT }));
     const current = await fixture(server.url);
     expect(await current.run()).toMatchObject({ status: 'failed', exitCode: 4 });
     expect(controlled.gates).toHaveLength(1);
@@ -184,6 +189,10 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
       code: ticketType === 'bug' ? 'scenario_expectation_failed:primary-flow'
         : 'scenario_expectation_failed:primary-flow:change-request:high-level-design' }] });
     expect(controlled.gates[0]!.findings).toHaveLength(1);
+    // A design Step is offered every output it declared: its specification and the paired tests that
+    // assert it move together. CODE keeps its source root.
+    expect(controlled.gates[0]!.findings![0]!.affectedArtifacts).toEqual(target === 'code'
+      ? ['src/'] : ['docs/02-high-level-design.md', 'docs/tests/module-test-plan.md', 'tests/test_module_p1.py']);
     expect(current.sandbox.exec).toHaveBeenCalledWith('python', ['src/main.py'], { timeoutMs: 120000 });
     expect(server.calls.map(call => call.url)).toEqual(['/v1/chat/completions']);
     expect(server.probes).toContain('/v1/models');
@@ -195,8 +204,46 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     expect(events.some(event => event.messageId === 'domain.phase_delivery_gate_unjudged')).toBe(false);
   });
 
+  it('shows the judge a produced file that is not text as unreadable, never as its bytes', async () => {
+    // A live gate handed the judge an xlsx as decoded zip bytes; with nothing it could read, the judge
+    // declared the workbook correct.
+    const server = await endpoint(JSON.stringify({ ok: false, reason: 'The workbook cannot be checked.', ticketType: 'bug', target: 'code', planConflict: NO_CONFLICT }));
+    const current = await fixture(server.url);
+    const workspace = current.container.canonical().workspace;
+    vi.mocked(current.sandbox.exec).mockImplementation(async () => {
+      await workspace.ensure('out');
+      await fs.writeFile(workspace.abs('out/report.xlsx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0xff, 0xfe, 0x00, 0x01]));
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+    });
+    await current.run();
+    const judged = JSON.stringify(server.calls[0]!.input.messages);
+    expect(judged).toContain('out/report.xlsx');
+    expect(judged).toContain('binary content, 12 bytes');
+    expect(judged).not.toContain('PK\\u0003\\u0004');
+    // Evidence taken, the output leaves the canonical working copy for the gate's temp directory,
+    // and the report — the gate run's deliverable — is what gets committed.
+    expect(await workspace.exists('out/report.xlsx')).toBe(false);
+    const gates = await fs.readdir(workspace.abs('.xc-tmp/gates'));
+    expect(gates).toHaveLength(1);
+    const [run] = await fs.readdir(workspace.abs(`.xc-tmp/gates/${gates[0]}`));
+    expect(await workspace.exists(`.xc-tmp/gates/${gates[0]}/${run}/out/report.xlsx`)).toBe(true);
+    const committed = await simpleGit(workspace.root).raw(['show', '--name-only', '--format=%s', 'HEAD']);
+    expect(committed).toMatch(/delivery gate report[\s\S]*docs\/delivery\/.+-delivery-gate\.md/u);
+    expect(await simpleGit(workspace.root).raw(['status', '--porcelain'])).toBe('');
+  });
+
+  it('stops the gate without a Ticket when the pinned rubric lets the judge say nothing was verifiable', async () => {
+    const server = await endpoint(JSON.stringify({ ok: false, unverifiable: true, reason: 'Nothing readable shows the utility result.', planConflict: NO_CONFLICT }));
+    const current = await fixture(server.url);
+    expect(await current.run()).toMatchObject({ status: 'failed' });
+    // The released rubric the judge was given is the one that asks for this answer.
+    expect(server.calls[0]!.input.messages[0]!.content).toContain('unverifiable=true');
+    expect(controlled.gates[0]).toMatchObject({ ok: false, findings: [] });
+    expect(controlled.gates[0]!.failureLog).toContain('inspect');
+  });
+
   it('accepts the current scenario only after its complete response passed protocol and business checks', async () => {
-    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract."}');
+    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract.","planConflict":{"conflicts":false}}');
     const current = await fixture(server.url);
     await current.run();
     expect(controlled.gates).toHaveLength(1);
@@ -209,8 +256,8 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
   });
 
   it('uses the registered PM override at the actual Run gate and creates no unused planner', async () => {
-    const fallback = await endpoint('{"ok":true,"reason":"Global model output"}');
-    const assigned = await endpoint('{"ok":true,"reason":"Assigned model output"}');
+    const fallback = await endpoint('{"ok":true,"reason":"Global model output","planConflict":{"conflicts":false}}');
+    const assigned = await endpoint('{"ok":true,"reason":"Assigned model output","planConflict":{"conflicts":false}}');
     const current = await fixture(fallback.url, assigned.url);
     await current.run();
     expect(assigned.calls).toHaveLength(1);
@@ -222,12 +269,12 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     });
     const repository = new DomainObjectRepository(current.container.state);
     await repository.load();
-    const actors = await repository.list({ objectType: 'actor-registration' });
+    const actors = objectsOf(await repository.list({ objectType: 'actor-registration' }), 'actor-registration');
     expect(actors.filter(actor => actor.roleId === 'planner')).toEqual([]);
   });
 
   it('keeps an unavailable PM override independent of a healthy global fallback', async () => {
-    const fallback = await endpoint('{"ok":true,"reason":"Global model output"}');
+    const fallback = await endpoint('{"ok":true,"reason":"Global model output","planConflict":{"conflicts":false}}');
     const assigned = await endpoint('{"error":{"message":"Controlled unavailable assigned model"}}', 'stop', 503);
     const current = await fixture(fallback.url, assigned.url);
     await current.run();
@@ -239,7 +286,7 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
   it('judges the scene against contract revisions this Phase has already accepted', async () => {
     const accepted = [{ source: fixtureAcceptedContractSource(), summary: 'Use the archive API', after: ['The utility reads the archive API.'] }];
     vi.mocked(acceptedContractChanges).mockResolvedValueOnce(accepted);
-    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract."}');
+    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract.","planConflict":{"conflicts":false}}');
     const current = await fixture(server.url);
     await current.run();
     const payload = JSON.parse(server.calls[0]!.input.messages.at(-1)!.content) as Record<string, unknown>;
@@ -248,10 +295,46 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
       { projectId: expect.any(String), phaseId: expect.any(String) });
   });
 
+  // A live gate sent CODE the same no-op repair six times: the code followed the requirement the
+  // Phase had frozen, and only the judge, shown the plan alone, could see it differed from the plan.
+  it('shows the judge the planned scope and the requirement the Phase froze from it', async () => {
+    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract.","planConflict":{"conflicts":false}}');
+    const current = await fixture(server.url);
+    await current.run();
+    const payload = JSON.parse(server.calls[0]!.input.messages.at(-1)!.content) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      templateVersion: 'scenario-outcome/5',
+      plannedScope: ['Core utility'],
+      frozenRequirements: { path: 'docs/01-requirement-analysis.md', text: 'Accepted utility deliverable.\n' },
+    });
+    // The released rubric is the one that reads them.
+    expect(server.calls[0]!.input.messages[0]!.content).toContain('frozenRequirements');
+  });
+
+  it('routes a frozen requirement that conflicts with the plan to requirement analysis, ahead of the judge\'s other answer', async () => {
+    const server = await endpoint(JSON.stringify({ ok: false, unverifiable: true, reason: 'The duplicate rows cannot be read.',
+      planConflict: { conflicts: true, point: 'The plan fixes 16 columns; the frozen requirement fixes 17, adding a message id.' } }));
+    const current = await fixture(server.url);
+    await current.run();
+    expect(controlled.gates[0]).toMatchObject({ ok: false, findings: [{
+      category: 'change-request', target: 'requirement-analysis', code: 'scenario_plan_conflict:primary-flow',
+      summary: expect.stringContaining('The plan fixes 16 columns; the frozen requirement fixes 17'),
+    }] });
+  });
+
+  it('keeps the Phase unjudged when the judge, given the frozen requirement, does not say whether it conflicts', async () => {
+    const server = await endpoint('{"ok":true,"reason":"The observed utility result meets the accepted contract."}');
+    const current = await fixture(server.url);
+    const result = await current.run();
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(controlled.gates[0]).toMatchObject({ ok: false, reason: expect.stringContaining('planConflict') });
+    expect(controlled.gates[0]).not.toHaveProperty('findings');
+  });
+
   it.each([
     { name: 'old first-brace salvage', output: 'Model explanation: {"ok":true,"reason":"This object alone is insufficient"}' },
     { name: 'incomplete transport', output: '{"ok":true,"reason":"Complete-looking text"}', finishReason: 'length' },
-    { name: 'missing failure routing', output: '{"ok":false,"reason":"No typed owner"}' },
+    { name: 'missing failure routing', output: '{"ok":false,"reason":"No typed owner","planConflict":{"conflicts":false}}' },
   ])('keeps the Phase unjudged for $name and supplies no actionable finding', async ({ output, finishReason }) => {
     const server = await endpoint(output, finishReason);
     const current = await fixture(server.url);

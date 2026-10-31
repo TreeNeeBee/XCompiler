@@ -1,0 +1,117 @@
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 0d820943-bbef-4e75-bd59-d23f3c68d1fc
+title:
+  en: Python runtime and test contract
+  zh: Python 运行时与测试契约
+slot: "0x00001002"
+version: 1.0.0
+ctime: 2026-10-20T00:00:00Z
+mtime: 2026-10-20T00:00:00Z
+digest: sha256:8ee0a073cd8734410daa94fed5da992f4d177bdecbb000c9a7a5bf8f92a90b8c
+rules:
+  - id: d9cf570f-30ee-482b-8f10-6c5377629197
+    name: sibling-imports
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:33006da62c606c10d022dec733a7c80c19a8d1057dd0ff0dbc46c37d51a3166d
+    description:
+      en: "Applies when writing Python modules: sibling-name imports and a main.py runnable from the project root."
+      zh: 编写 Python 模块时适用：同级名称导入，以及可从项目根运行的 main.py。
+    instruction:
+      en: Modules under src/ import each other by sibling name (`from <module> import ...`); never write `from src.<module> import ...`. When src/main.py must run from the project root, it first inserts its own directory into sys.path (`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`), so both `python src/main.py` and `python -m src.main` work.
+      zh: src/ 下的模块互相导入时使用同级名称（`from <module> import ...`），严禁写成 `from src.<module> import ...`。src/main.py 需要从项目根运行时，先把自身目录插入 sys.path（`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`），使 `python src/main.py` 与 `python -m src.main` 都能运行。
+    applicability:
+      paths:
+        - "**/*.py"
+  - id: 52f81441-a8b5-4bb4-982b-f178a6533811
+    name: test-imports
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:2adf2076ead0ea5d628f890bdd3a74f428c699cd55e2524b9f0c5bb2f50419d6
+    description:
+      en: "Applies when writing Python tests: imports, conftest.py path injection and pytest."
+      zh: 编写 Python 测试时适用：导入方式、conftest.py 路径注入与 pytest。
+    instruction:
+      en: Tests import their targets by sibling name too, and run under pytest as well as with `python tests/test_<name>.py`. XCompiler generates tests/conftest.py to put the project root and src/ on sys.path, so test files never add their own `sys.path.insert(...)`; a conftest.py you create or edit keeps that injection.
+      zh: 测试同样以同级名称导入被测模块，既能用 pytest 运行，也能用 `python tests/test_<name>.py` 运行。XCompiler 会生成 tests/conftest.py，把项目根与 src/ 注入 sys.path，因此测试文件不得自行添加 `sys.path.insert(...)`；自行创建或编辑 conftest.py 时必须保留这段注入。
+    applicability:
+      paths:
+        - tests/**
+        - "**/test_*.py"
+        - "**/*_test.py"
+  - id: 73654eab-f5eb-4dfc-aea9-40f24fbd20f2
+    name: self-contained-tests
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:8dccbea8c44d30385df97ec8ef819c36332abcc0fbc9afcec798119aca190a37
+    description:
+      en: "Applies when a Python test needs file input: where the sample comes from."
+      zh: Python 测试需要文件输入时适用：样例的来源顺序。
+    instruction:
+      en: "Tests never open a sample file that does not exist on disk. When a target needs file input, choose in this order: (a) reuse a real sample from the user or the workspace, copied or referenced under tests/fixtures/<name>; (b) for a third-party or standard format with no local sample, http_fetch a small reference sample from official documentation, the upstream repository or a public standard, save it under tests/fixtures/<name> and record its source; (c) only for simple text formats such as CSV, JSON or INI, and only when you can run_tests immediately, build a minimal sample in pytest's tmp_path. With no network, no user sample and no confirmable format standard, report a blocker asking for a sample."
+      zh: 测试严禁打开磁盘上不存在的样例文件。被测函数需要文件输入时按以下顺序选择：(a) 复用用户或工作区提供的真实样例，复制或引用到 tests/fixtures/<name>；(b) 第三方或标准格式且本地无样例时，用 http_fetch 从官方文档、上游仓库或公开标准获取小型参考样例，保存到 tests/fixtures/<name> 并记录来源；(c) 仅限 CSV、JSON、INI 等简单文本格式，且能立即 run_tests 时，才在 pytest 的 tmp_path 中构造最小样例。网络不可用、无用户样例且无法确认格式标准时，报告 blocker 请求用户提供样例。
+    applicability:
+      paths:
+        - tests/**
+        - "**/test_*.py"
+        - "**/*_test.py"
+  - id: 0faea48a-e6cd-4072-98a5-ccc1fbcbe421
+    name: fixture-iteration
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:cb4b00077793fe46d4b222ddb4f0176dcdb0da209eb45cd2230a4adf49cc6d24
+    description:
+      en: Applies when a Python test's fixture fails to parse.
+      zh: Python 测试的 fixture 解析失败时适用。
+    instruction:
+      en: 'When a test runs but the target raises a parse error such as "Invalid syntax", "Parse error" or "Malformed", the fixture is malformed, not the implementation: read_file it, identify the format from its extension, parser or error, prefer a user, workspace or authoritative http_fetch sample, rewrite the whole fixture and run_tests. After repeated failures on a complex format, stop inventing it from memory and ask for a sample. Never edit the implementation or the assertion, and never mock the parser, to get past a parse error.'
+      zh: 测试已能运行但被测函数报 "Invalid syntax"、"Parse error"、"Malformed" 等解析错误时，是 fixture 本身格式不合法，而不是被测代码的缺陷：先 read_file 查看，按扩展名、解析库或报错确认格式，优先使用用户、工作区或 http_fetch 获取的权威样例，整文件重写后 run_tests。复杂格式连续失败后停止凭记忆生成，改为请求样例。严禁为绕过解析错误而修改被测代码、断言或 mock 掉解析逻辑。
+    applicability:
+      paths:
+        - tests/**
+        - "**/test_*.py"
+        - "**/*_test.py"
+  - id: 4ea0c98d-d487-443b-96c0-882eb0dfb175
+    name: frozen-clock
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:cd508047cb67c37c52ef38645ff4b380555af9ab28bb044877b5dcde81145009
+    description:
+      en: Applies when writing time-dependent Python tests.
+      zh: 编写与时间相关的 Python 测试时适用。
+    instruction:
+      en: Time-dependent tests freeze the clock (for example by patching datetime with unittest.mock or injecting a clock) or derive the expected value from the current clock; never call `datetime.now()` or `date.today()` while hard-coding a calendar year.
+      zh: 时间相关测试必须冻结时钟（例如用 unittest.mock patch datetime，或注入时钟）或根据当前时钟推导期望值；禁止在调用 `datetime.now()` 或 `date.today()` 的同时硬编码某个年份。
+    applicability:
+      paths:
+        - tests/**
+        - "**/test_*.py"
+        - "**/*_test.py"
+  - id: f40d7528-632f-49e8-b868-5e44d013e65f
+    name: dependencies
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-20T00:00:00Z
+    mtime: 2026-10-20T00:00:00Z
+    digest: sha256:75a63d30f053f885ddfaedf96c6b41f6cc0e74acacf97ae324889b7e0e511ce0
+    description:
+      en: "Applies when adding Python packages: add_dependency maintains requirements.txt."
+      zh: 添加 Python 依赖时适用：由 add_dependency 维护 requirements.txt。
+    instruction:
+      en: Declare third-party packages with add_dependency, which keeps requirements.txt deduplicated and sorted; never write requirements.txt by hand. Tests run under pytest, so pytest is a declared dependency.
+      zh: 第三方包通过 add_dependency 声明，它会维护去重排序后的 requirements.txt；不得手写 requirements.txt。测试使用 pytest，因此 pytest 必须是已声明的依赖。
+    applicability:
+      tools:
+        - add_dependency

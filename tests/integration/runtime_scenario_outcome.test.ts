@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseObjectId } from '../../src/domain/identity/object_id.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
 import {
@@ -31,7 +32,7 @@ let root: string;
 const servers: Server[] = [];
 const projectId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa2';
 const phaseId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa3';
-const actorId = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa4';
+const actorId = parseObjectId('aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaa4');
 const reason = 'The accepted external capability must change to produce the required result.';
 const verdictText = JSON.stringify({ ok: false, reason, ticketType: 'change-request', target: 'high-level-design' });
 const scenario: DeliveryGateScenario = { name: 'current-flow', description: 'Exercise the current scenario.',
@@ -124,9 +125,9 @@ describe('Runtime scenario outcome through retained current Rule and response ev
       .read(logicalRequestId);
     expect(snapshot).toMatchObject({ requestKind: 'business', context: { projectId, role: 'project-manager',
       work: 'judge.scenario' }, requiredRuleIds: expect.arrayContaining([SCENARIO_OUTCOME_RULE.ruleId]) });
-    // Genesis, the PM identity and the judgement rubric bound through its work.
-    expect(snapshot?.requiredRuleIds).toHaveLength(5);
-    expect(snapshot?.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 0x0201, 0x02a0]);
+    // Genesis, the base segment, the PM identity and the judgement rubric bound through its work.
+    expect(snapshot?.requiredRuleIds).toHaveLength(13);
+    expect(snapshot?.rules.map(rule => rule.slot)).toEqual([0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 0x00010001, 0x00011300]);
     expect(snapshot?.rules.filter(rule => rule.ruleId === SCENARIO_OUTCOME_RULE.ruleId)).toHaveLength(1);
     expect(snapshot?.rules.filter(rule => rule.slot === 0)).toHaveLength(3);
     const outbound = server.calls[0]!.input.messages;
@@ -248,6 +249,18 @@ describe('Runtime scenario outcome through retained current Rule and response ev
     expect(role).not.toHaveBeenCalled();
     expect(server.calls).toHaveLength(1);
     expect(await current.events()).toEqual(events);
+  });
+
+  it('restores a plan conflict as a plan conflict when the judgement had the frozen requirement', async () => {
+    const server = await endpoint('{"ok":true,"reason":"met","planConflict":{"conflicts":true,"point":"plan: 16 columns; frozen: 17"}}');
+    const current = await fixture(server.url);
+    const verdict = await judgeRuntimeScenarioOutcome({ ...current.input,
+      frozenRequirements: { path: 'docs/01-requirement-analysis.md', text: 'The sheet has 17 columns.' } });
+    expect(verdict).toMatchObject({ ok: false, planConflict: true, target: 'requirement-analysis' });
+    const input = (await current.events()).find(event => event.messageId === 'llm.business_request_input')!.data!.input as BusinessRequestInput;
+    const restored = await resumeRuntimeScenarioOutcome({ container: new ProjectContainer(current.container.root),
+      audit: current.audit, logicalRequestId: input.logicalRequestId });
+    expect(restored).toMatchObject({ status: 'recovered', verdict });
   });
 
   it('corrects unescaped inner quotes once and judges the correction by the same routing checks (D-3)', async () => {

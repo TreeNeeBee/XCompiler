@@ -33,7 +33,7 @@ function correctionState(container: ProjectContainer) {
   };
 }
 
-/** Internal C1 composition; the caller's existing Router owns configuration, audit and replay. */
+/** Internal protocol-correction composition; the caller's existing Router owns configuration, audit and replay. */
 export function createRuntimeProtocolCorrection(
   container: ProjectContainer, router: Pick<LLMRouter, 'forProtocolCorrection'>,
 ): LLMProtocolCorrection {

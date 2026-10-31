@@ -10,6 +10,7 @@ import {
 } from '../src/application/execution/entry_gate.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { Workspace } from '../src/workspace/workspace.js';
+import { setLocale, setPromptTranslation, tFor } from '../src/i18n/index.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Sandbox, ExecResult, ExecExtra } from '../src/sandbox/types.js';
 
@@ -93,6 +94,25 @@ describe('autoFixSrcImports', () => {
 });
 
 describe('probeEntrypoint', () => {
+  it.each(['python', 'typescript'] as const)(
+    'reports a missing %s entrypoint in the language models read, since they repair from it', async (language) => {
+      const { ws } = await tmpWs();
+      const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }));
+      const engine = (locale: 'en' | 'zh') => language === 'python'
+        ? tFor(locale).engine.missingPythonEntrypoint : tFor(locale).engine.missingTypeScriptEntrypoint;
+      setLocale('zh');
+      try {
+        setPromptTranslation(true);
+        expect((await getLanguageProfile(language).probeEntry(ws, sb)).stderrTail).toBe(engine('en'));
+        setPromptTranslation(false);
+        expect((await getLanguageProfile(language).probeEntry(ws, sb)).stderrTail).toBe(engine('zh'));
+      } finally {
+        setPromptTranslation(false);
+        setLocale('en');
+      }
+    },
+  );
+
   it('fails when no Python entrypoint exists', async () => {
     const { ws } = await tmpWs();
     const sb = new FakeSandbox(() => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 0 }));

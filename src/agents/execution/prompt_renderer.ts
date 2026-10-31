@@ -1,14 +1,14 @@
 import type { Step } from '../../domain/planning/execution_plan.js';
 import { resolveQualityGate } from '../../domain/quality/stage_quality.js';
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../../domain/tickets/ticket.js';
-import { getLocale, tFor, type Locale } from '../../i18n/index.js';
+import { getPromptLocale, tFor, type Locale } from '../../i18n/index.js';
 import type { ExecutionPromptContext } from '../../application/execution/execution_turn_request.js';
 
 export function renderExecutionUserPrompt(
   input: ExecutionPromptContext,
   toolDocs: string,
   initialMissingOutputs: string[] = [],
-  locale: Locale = getLocale(),
+  locale: Locale = getPromptLocale(),
 ): string {
   const work = input.work;
   const compactContext = !!input.debugContext;
@@ -207,7 +207,9 @@ export function renderExecutionUserPrompt(
           'Validate all declared stage deliverables, upstream alignment, solution evidence, and paired baseline test assets.',
           input.baselineTestExecutionReason === 'pre-code-correction'
             ? 'This correction still occurs before S4 has established product code: update and statically validate the exact baseline tests, but defer their executable run.'
-            : 'This is the initial pre-CODE pass: author and statically validate the baseline tests, but do not execute them because product code does not exist yet.',
+            : input.baselineTestExecutionReason === 'contract-change'
+              ? 'This hop carries a contract change ahead of S4: move the exact baseline tests to the new contract with the specification and statically validate them, but defer their executable run. They are expected to fail against the current product until S4 applies the change later in this chain, where the paired verification Step runs them; do not keep an assertion of the old contract to stay green.'
+              : 'This is the initial pre-CODE pass: author and statically validate the baseline tests, but do not execute them because product code does not exist yet.',
           'Keep planned product imports, calls, and behavioral assertions executable in the test source. Do not comment them out, replace them with expect(true)/assert True, or duplicate the planned product behavior inside the test. Missing product files are an expected pre-CODE condition; an inert test is not.',
           'Only executable baseline execution is deferred; no deliverable, plan, contract, or test-asset check is skipped.',
           'Do not report unavailable paired-test metrics as measured values. If completion=1 and the only remaining condition is product code owned by S4, put it only in blockedBy with gaps=[]; duplicating it in gaps is a contradictory quality report and Runtime will reject it before PM intake.',

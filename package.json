@@ -70,7 +70,7 @@
     "dev": "tsx src/cli/xcompiler.ts",
     "dev:build": "tsx src/cli/xcompiler_build.ts",
     "dev:run": "tsx src/cli/xcompiler_run.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tests",
     "test": "vitest run",
     "test:core": "vitest run --project core",
     "test:integration": "vitest run --project integration",

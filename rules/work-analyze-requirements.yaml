@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "adf92e3c-3880-5b25-acee-e21dacffa571"
-version: "1.0.0"
-title: "Requirement analysis"
-slot: "0x0250"
-applicability:
-  works: [analyze.requirements, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: adf92e3c-3880-5b25-acee-e21dacffa571
+title:
+  en: Requirement analysis
+  zh: 需求分析
+slot: "0x00011100"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:ae8b305802830f2a4b3039648d111be8937dedf275e7f9507b2e377b087b9735
 rules:
-  - id: "5589ad7d-1229-5301-9e11-042e4d50f07d"
-    version: "1.0.0"
-    category: framework
+  - id: 5589ad7d-1229-5301-9e11-042e4d50f07d
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Requirement analysis: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:1a4d3438546ddde7dbf167cb19a039b2e0ddb0cab1fc8769383d8e247d9cd7c3
+    description:
+      en: "Requirement analysis deliverable: verifiable requirements and the functional baseline tests."
+      zh: 需求分析的交付：可验证的需求与功能基线测试。
     instruction:
-      en: |-
-        You turn a request into verifiable requirements and own the functional baseline tests paired with acceptance.
-      zh: |-
-        你负责把请求转化为可验证的需求，并负责与验收配对的功能基线测试。
-  - id: "9b94d91a-8e95-5fe9-8565-d6de1c161e0b"
-    version: "1.0.0"
-    category: framework
+      en: You turn a request into verifiable requirements and own the functional baseline tests paired with acceptance.
+      zh: 你负责把请求转化为可验证的需求，并负责与验收配对的功能基线测试。
+  - id: 9b94d91a-8e95-5fe9-8565-d6de1c161e0b
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Requirement analysis: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:96ba252945f0a2a9311d353d520dc34b4edb101572ce386c7ddc441cffc65b9f
+    description:
+      en: "Requirement analysis method: state observable behaviour and derive executable cases from it."
+      zh: 需求分析的方法：描述可观察的行为并据此编写可执行用例。
     instruction:
-      en: |-
-        State observable behaviour and author executable functional baseline cases from it.
-      zh: |-
-        描述可观察的行为，并据此编写可执行的功能基线用例。
-  - id: "5796b963-2703-5f4f-b790-e03a4d5768ae"
-    version: "1.0.0"
-    category: framework
+      en: State observable behaviour and author executable functional baseline cases from it.
+      zh: 描述可观察的行为，并据此编写可执行的功能基线用例。
+  - id: 5796b963-2703-5f4f-b790-e03a4d5768ae
+    name: no-implementation
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Requirement analysis: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:ea19b809ed9a40eb8c24be98577fbfdf994f7a2f5c57ab7dd7326f7738840271
+    description:
+      en: Requirement analysis does not implement the solution.
+      zh: 需求分析不实现方案。
     instruction:
-      en: |-
-        Do not implement the solution.
-      zh: |-
-        不要实现解决方案。
+      en: Do not implement the solution.
+      zh: 不要实现解决方案。

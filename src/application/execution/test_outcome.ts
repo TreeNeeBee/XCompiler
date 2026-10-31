@@ -1,6 +1,7 @@
 import type { ToolCallRecord } from '../../agents/executor.js';
 import type { StepType } from '../../domain/steps/step.js';
-import { isTestRunnerInvocation } from '../../tools/sandbox.js';
+import { isPytestInvocation, isTestRunnerInvocation } from '../../tools/sandbox.js';
+import { isTestRunWithoutVerdict } from '../../tools/types.js';
 
 export type TestOutcomeStatus =
   | 'passed'
@@ -47,7 +48,8 @@ export function collectTestOutcomes(
     return {
       status: call.executionStatus === 'permission-blocked' ? 'denied'
         : call.executionStatus === 'tool-not-allowed' ? 'skipped'
-        : timedOut ? 'timed_out' : call.ok ? 'passed' : 'failed',
+        : timedOut ? 'timed_out' : call.ok ? 'passed'
+        : isTestRunWithoutVerdict(call.code) ? 'incomplete' : 'failed',
       stepType,
       tool: call.tool === 'run_program' ? 'run_program' : 'run_tests',
       callId: call.callId,
@@ -66,13 +68,39 @@ export function collectTestOutcomes(
   });
 }
 
-/** A passing subset is not evidence that another verification contract was repaired. */
+/**
+ * A passing subset is not evidence that another verification contract was repaired.
+ *
+ * A gated run_tests is identified by the tests Runtime ran for it, and a passing one settles every
+ * earlier gated run of tests it covers in the same directory: the runner options a caller added
+ * never chose the tests, so they do not make a second verification contract.
+ */
 export function unresolvedTestFailures(calls: readonly ToolCallRecord[]): ToolCallRecord[] {
   const latest = new Map<string, ToolCallRecord>();
+  const ran = new Map<string, { cwd: string; selectors: string[] }>();
   for (const call of calls) {
     if (!isTestCall(call) || call.executionStatus === 'permission-blocked' ||
       call.executionStatus === 'tool-not-allowed') continue;
     const data = isRecord(call.data) ? call.data : {};
+    const gated = call.tool === 'run_tests' && Array.isArray(data.selectors)
+      ? [...new Set(data.selectors.filter((value): value is string => typeof value === 'string'))].sort()
+      : undefined;
+    if (gated) {
+      const cwd = typeof call.args?.cwd === 'string' && call.args.cwd.trim() ? call.args.cwd : '.';
+      const key = JSON.stringify([call.tool, cwd, 'ran', gated]);
+      if (call.ok) {
+        for (const [earlier, scope] of ran) {
+          if (scope.cwd === cwd && scope.selectors.every((selector) => gated.includes(selector))) {
+            latest.delete(earlier);
+            ran.delete(earlier);
+          }
+        }
+      }
+      latest.delete(key);
+      latest.set(key, call);
+      ran.set(key, { cwd, selectors: gated });
+      continue;
+    }
     const args = Array.isArray(data.effectiveArgs)
       ? data.effectiveArgs.filter((value): value is string => typeof value === 'string')
       : toolArgList(call);
@@ -80,12 +108,39 @@ export function unresolvedTestFailures(calls: readonly ToolCallRecord[]): ToolCa
       ? call.args.cwd
       : '.';
     // Tool identity is deliberate: run_tests supplies a Runtime-owned runner whereas run_program
-    // supplies its executable in argv. No inferred equivalence may erase either verdict.
-    const key = JSON.stringify([call.tool, cwd, args]);
+    // supplies its executable in argv. No inferred equivalence may erase either verdict. Within
+    // one tool, a pytest run differing only in how it reports is the same run of the same tests.
+    const key = JSON.stringify([call.tool, cwd, ranPytest(call, data) ? withoutPytestReportOptions(args) : args]);
     latest.delete(key);
     latest.set(key, call);
   }
-  return [...latest.values()].filter((call) => !call.ok);
+  // A run the tool reports as reaching no verdict (rejected, refused, or nothing collected) is no
+  // evidence about the product either way.
+  return [...latest.values()].filter((call) => !call.ok && !isTestRunWithoutVerdict(call.code));
+}
+
+/** run_tests records its runner; run_program carries the runner in its argv. */
+function ranPytest(call: ToolCallRecord, data: Record<string, unknown>): boolean {
+  return call.tool === 'run_tests' ? data.runner === 'pytest' : isPytestInvocation(toolArgList(call));
+}
+
+/** pytest options that change only what a run prints, never which tests it runs or their verdict. */
+const PYTEST_REPORT_OPTIONS = /^(?:-q+|-v+|--quiet|--verbose|--no-header|--no-summary|-s|--capture=.+|--tb=.+|-r[a-zA-Z]*|--color=.+|--durations=\d+|--disable-warnings|--cov|--cov=.+|--cov-report=.+|--cov-branch|-pno:cacheprovider)$/u;
+// `--cov` is left out: its optional value cannot be told apart from a test path, so it is only
+// dropped when written as one argument.
+const PYTEST_REPORT_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set(['--tb', '--color', '--capture', '--durations', '--cov-report']);
+
+function withoutPytestReportOptions(args: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const value = args[index + 1];
+    if (arg === '-p' && value === 'no:cacheprovider') { index += 1; continue; }
+    if (PYTEST_REPORT_OPTIONS_WITH_VALUE.has(arg) && value !== undefined && !value.startsWith('-')) { index += 1; continue; }
+    if (PYTEST_REPORT_OPTIONS.test(arg)) continue;
+    kept.push(arg);
+  }
+  return kept;
 }
 
 function isTestCall(call: ToolCallRecord): boolean {

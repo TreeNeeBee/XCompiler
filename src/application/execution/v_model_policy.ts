@@ -37,9 +37,12 @@ export function hasExecutableTestDeclaration(
   if (language === 'typescript') {
     return /\b(?:describe|it|test)\s*(?:\.\w+)?\s*\(/u.test(content);
   }
+  // Python identifiers are Unicode (PEP 3131) and pytest collects `test_参数解析` like any other
+  // name. An ASCII-only pattern rejected a live project's five module baselines, every one of them
+  // collectable, and sent their paired source to repair tests that were not broken.
   return (
-    /(?:^|\n)\s*(?:async\s+)?def\s+test_[A-Za-z0-9_]*\s*\(/u.test(content) ||
-    /(?:^|\n)\s*class\s+Test[A-Za-z0-9_]*/u.test(content)
+    /(?:^|\n)\s*(?:async\s+)?def\s+test_[\p{L}\p{M}\p{N}\p{Pc}]*\s*\(/u.test(content) ||
+    /(?:^|\n)\s*class\s+Test[\p{L}\p{M}\p{N}\p{Pc}]*/u.test(content)
   );
 }
 

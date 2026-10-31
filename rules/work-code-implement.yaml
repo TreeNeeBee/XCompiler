@@ -1,50 +1,65 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "5203461d-9946-55a6-aed5-8e4793f3d59c"
-version: "1.0.0"
-title: "Implementation"
-slot: "0x0253"
-applicability:
-  works: [code.implement, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 5203461d-9946-55a6-aed5-8e4793f3d59c
+title:
+  en: Implementation
+  zh: 实现
+slot: "0x00011103"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:96f8d403af43040e4acf5128c4293b27b8b81c79b2dc37fcde137f7846d01f81
 rules:
-  - id: "bde655b1-df78-5e82-8fbb-2603eb9232ea"
-    version: "1.0.0"
-    category: framework
+  - id: bde655b1-df78-5e82-8fbb-2603eb9232ea
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Implementation: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:3bf42b1bc633dc2cc69dd62dc344616aabf3eda605c7d2c0270aa7cce6d0226a
+    description:
+      en: "Implementation deliverable: code that realises the design, and repairs of defects found against it."
+      zh: 实现的交付：实现设计的代码，以及针对设计的缺陷修复。
     instruction:
-      en: |-
-        You implement the design and repair defects found against it.
-      zh: |-
-        你负责实现设计，并修复对照设计发现的缺陷。
-  - id: "f399120c-276f-5b8e-a6c6-6e7fdcbd7cbd"
-    version: "1.0.0"
-    category: framework
+      en: You implement the design and repair defects found against it.
+      zh: 你负责实现设计，并修复对照设计发现的缺陷。
+  - id: f399120c-276f-5b8e-a6c6-6e7fdcbd7cbd
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Implementation: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:f42c08cdc8646f78d091fa370b1846f3931e9c154fa92a3cdbbf76d172d14bfa
+    description:
+      en: "Implementation method: code and unit tests that satisfy the accepted design and acceptance criteria."
+      zh: 实现的方法：编写满足已接受设计与验收标准的代码和单元测试。
     instruction:
-      en: |-
-        Write code and unit tests that satisfy the accepted design and acceptance criteria.
-      zh: |-
-        编写满足已接受设计和验收标准的代码与单元测试。
-  - id: "1a501c5a-9e17-5c7c-a111-3636fb290663"
-    version: "1.0.0"
-    category: framework
+      en: Write code and unit tests that satisfy the accepted design and acceptance criteria.
+      zh: 编写满足已接受设计和验收标准的代码与单元测试。
+  - id: 1a501c5a-9e17-5c7c-a111-3636fb290663
+    name: no-test-tampering
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Implementation: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:7fb567233385275bf956895bacb37d7c67101f11a95437a59bfa9074bc0d1101
+    description:
+      en: Implementation does not change accepted tests to make itself pass.
+      zh: 实现不为通过而修改已接受的测试。
     instruction:
-      en: |-
-        Do not change accepted tests to make an implementation pass.
-      zh: |-
-        不要为了让实现通过而修改已接受的测试。
-  - id: "8946bc00-e57a-5b24-8fed-d6816875943b"
-    version: "1.0.0"
-    category: framework
+      en: Do not change accepted tests to make an implementation pass.
+      zh: 不要为了让实现通过而修改已接受的测试。
+  - id: 8946bc00-e57a-5b24-8fed-d6816875943b
+    name: ticket-scope
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Implementation: forbidden shortcut 2"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:b8c169a47fc6e56d2cb51a889c98458b8f32379e18cce7d98d272c5fd68cb1cd
+    description:
+      en: Implementation does not expand beyond the assigned Ticket.
+      zh: 实现不超出所分配 Ticket 的范围。
     instruction:
-      en: |-
-        Do not expand scope beyond the assigned Ticket.
-      zh: |-
-        不要超出所分配 Ticket 的范围。
+      en: Do not expand scope beyond the assigned Ticket.
+      zh: 不要超出所分配 Ticket 的范围。

@@ -6,9 +6,13 @@ import 'dotenv/config';
 import { xcEnv } from './env.js';
 import { RuleEmbeddingBaseUrlSchema, RuleIdentityStringSchema } from './rule_embedding.js';
 import { DEFAULT_MODEL_POOLS } from '../domain/workflow/role.js';
-import { RuleRetrievalProfileSchema } from '../domain/rules/selection.js';
+import {
+  CONFIGURABLE_RULE_SELECTION_STRATEGIES, RULE_SELECTION_STRATEGIES, RuleRetrievalProfileSchema,
+  type RunnableRuleSelectionStrategy,
+} from '../domain/rules/selection.js';
 import { DEFAULT_CONTEXT_WINDOW_TOKENS } from '../llm/window.js';
 import { DEFAULT_PROVIDER_RETRY } from '../llm/retry.js';
+import { XCOMPILER_VERSION } from '../version.js';
 
 const ProviderStringScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
 const OptionalProviderStringSchema = ProviderStringScalarSchema.nullish().transform((v) =>
@@ -132,7 +136,9 @@ const ProviderSchema = z.object({
 });
 
 const LocaleSchema = z.enum(['en', 'zh']);
-const SandboxModeSchema = z.enum(['subprocess', 'docker']);
+export const SANDBOX_MODES = ['subprocess', 'docker'] as const;
+export const SANDBOX_NETWORK_POLICIES = ['off', 'download-only', 'full'] as const;
+const SandboxModeSchema = z.enum(SANDBOX_MODES);
 
 const SandboxLimitsSchema = z
   .object({
@@ -146,7 +152,7 @@ const SandboxLimitsSchema = z
      *  - `full`           — outbound + every port in `expose_ports` is published
      *                       to `127.0.0.1` so host-side tests can reach the app.
      */
-    network: z.enum(['off', 'download-only', 'full']).default('download-only'),
+    network: z.enum(SANDBOX_NETWORK_POLICIES).default('download-only'),
     /** Container ports to publish to 127.0.0.1 when `network=full`. */
     expose_ports: z.array(z.number().int().min(1).max(65535)).default([]),
   })
@@ -318,7 +324,21 @@ const RuleRetrievalConfigSchema = z.object({
   maxCandidates: max_candidates,
 }));
 
+/**
+ * The default relevance-selection strategy (revision 11.2). Code may narrow it per work; this
+ * release runs only `bound-only`, so the other strategy names are refused rather than ignored.
+ */
+const RuleSelectionConfigSchema = z.object({
+  strategy: z.enum(RULE_SELECTION_STRATEGIES)
+    .refine((strategy) => (CONFIGURABLE_RULE_SELECTION_STRATEGIES as readonly string[]).includes(strategy), {
+      message: `Rule selection strategy is not available in this release; use ${CONFIGURABLE_RULE_SELECTION_STRATEGIES.join(' or ')}`,
+    })
+    .transform((strategy) => strategy as RunnableRuleSelectionStrategy)
+    .default('bound-only'),
+}).strict();
+
 const RulesSchema = z.object({
+  selection: RuleSelectionConfigSchema.prefault({}),
   /** Required only when a new selection has applicable optional Rules to encode. */
   embedding: RuleEmbeddingSchema.optional(),
   /** Initial Q4 profile, normalized to the Application selector's camel-case fields. */
@@ -352,14 +372,38 @@ const PermissionsSchema = z.object({
   timeout_ms: z.number().int().nonnegative().default(0),
 }).strict().default({ mode: 'request', timeout_ms: 0 });
 
+/**
+ * Build intake. Clarification asks one question at a time until the model judges the requirement
+ * clear, or until a final assessment, which the context budget or a run of unproductive answers
+ * triggers.
+ */
+const PlanningSchema = z.object({
+  clarification: z.object({
+    /**
+     * Share of the context the clarification prompt may fill before the final assessment. The
+     * window is the smaller of the clarifying and planning models', less the safety margin and
+     * reply room; the rest is left for the final assessment and planning's own prompt.
+     */
+    context_ratio: z.number().min(0.2).max(0.9).default(0.7),
+    /** Answered questions in a row that change no dimension's coverage before the final assessment. */
+    stall_turns: z.number().int().min(2).max(20).default(4),
+  }).strict().prefault({}),
+}).strict().prefault({});
+
 const ConfigSchema = z.object({
-  /** CLI / prompt locale. Accepts 'en' (default) or 'zh'. */
+  /** The user's language: CLI output, interactive prompts and every text shown to the user. */
   locale: LocaleSchema.default('en'),
+  /**
+   * `on`: models read English prompts and Rules, and text crossing between the user and a model is
+   * translated (locale <-> English) when the locale is not English. `off`: models read the locale.
+   */
+  prompt_translate: z.enum(['off', 'on']).default('off'),
   llm: LlmSchema,
   rules: RulesSchema,
   agent: AgentSchema,
   record_replay: RecordReplaySchema,
   permissions: PermissionsSchema,
+  planning: PlanningSchema,
 }).strict();
 
 export type XCompilerConfig = z.infer<typeof ConfigSchema>;
@@ -492,7 +536,7 @@ export async function loadConfigWithPath(explicitPath?: string): Promise<LoadedC
  * out the ones 0.3 removed on purpose, and points at the template to rebuild from.
  */
 function describeConfigFailure(configPath: string, error: z.ZodError): string {
-  const lines = [`Config file is not valid for XCompiler 0.3: ${configPath}`, ''];
+  const lines = [`Config file is not valid for XCompiler ${XCOMPILER_VERSION}: ${configPath}`, ''];
   let hasUnknownKeys = false;
   for (const issue of error.issues) {
     const at = issue.path.length > 0 ? issue.path.join('.') : '(root)';

@@ -9,6 +9,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
     version: PLAN_VERSION,
     language: 'python',
     intent: 'greenfield',
+    phaseId: 'P1',
     projectType: 'application',
     requirementDigest: 'todo CLI app',
     complexityAssessment: {
@@ -246,10 +247,9 @@ describe('lintPlan', () => {
   });
 
   it('requires planning complexity and implementation phase metadata', () => {
-    const plan = makePlan();
-    delete plan.complexityAssessment;
-    delete plan.implementationPhases;
-    const errs = lintPlan(plan).filter((i) => i.level === 'error');
+    // Required metadata absent, as in a draft that never went through the schema: lint must say so.
+    const { complexityAssessment: _complexity, implementationPhases: _phases, ...plan } = makePlan();
+    const errs = lintPlan(plan as Plan).filter((i) => i.level === 'error');
     expect(errs.some((e) => e.message.includes('complexityAssessment'))).toBe(true);
     expect(errs.some((e) => e.message.includes('implementationPhases'))).toBe(true);
   });

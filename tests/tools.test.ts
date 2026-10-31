@@ -1,3 +1,4 @@
+import { getPromptLocale, tFor } from '../src/i18n/index.js';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -206,14 +207,15 @@ describe('write_file tool', () => {
     ctx.writeChunkBytes = 16;
     const tooLarge = await writeFileTool.run({ path: 'src/big.py', content: 'x'.repeat(17) }, ctx);
     expect(tooLarge.ok).toBe(false);
-    expect(tooLarge.error).toContain('chunk limit 16B');
+    // The refusal names the measured size against the limit, in the prompt language the model reads.
+    expect(tooLarge.error).toBe(tFor(getPromptLocale()).tools.writeFile.chunkTooLarge(17, 16));
 
     const ok = await writeFileTool.run({ path: 'src/big.py', content: 'x'.repeat(16) }, ctx);
     expect(ok.ok).toBe(true);
 
     const appendTooLarge = await appendFileTool.run({ path: 'src/big.py', content: 'y'.repeat(17) }, ctx);
     expect(appendTooLarge.ok).toBe(false);
-    expect(appendTooLarge.error).toContain('chunk limit 16B');
+    expect(appendTooLarge.error).toBe(tFor(getPromptLocale()).tools.appendFile.chunkTooLarge(17, 16));
   });
 
   it('rejects malformed write args with a clear tool error instead of throwing', async () => {
@@ -678,6 +680,31 @@ describe('runTestsTool / runPythonTool summary', () => {
     expect(r.summary).toBe('npm test exit=0 args=tests/unit/parser.test.ts');
   });
 
+  // A live Step's failing run carried `-p no:cacheprovider` and the gate's passing rerun did not; the
+  // run is identified by the tests Runtime chose, so the caller's options cannot split it in two.
+  it('records the tests a gated run ran, apart from the runner options its caller added', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    await ws.writeFile('tests/test_parser.py', 'def test_parser():\n    pass\n');
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests() { return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }; },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S005',
+      language: 'python',
+      testGateArgs: ['tests/test_parser.py', '--cov=src', '--cov-branch', '--cov-report=json:coverage/coverage.json'],
+    };
+    const gated = await runTestsTool.run({ args: ['-q', '-p', 'no:cacheprovider'] }, fakeCtx);
+    expect(gated.data).toMatchObject({ selectors: ['tests/test_parser.py'] });
+    expect(gated.data?.effectiveArgs).toContain('no:cacheprovider');
+    // Without a gate the caller chose the tests, and nothing is claimed about them.
+    const free = await runTestsTool.run({ args: ['tests/test_parser.py'] }, { ...fakeCtx, testGateArgs: undefined });
+    expect(free.data).not.toHaveProperty('selectors');
+  });
+
   it('freezes verification supplements into the Runtime-owned test gate', async () => {
     await ws.writeFile(
       'tests/verification/p1/unit-test/s005/network-risk.test.ts',
@@ -831,7 +858,7 @@ describe('runTestsTool / runPythonTool summary', () => {
     const fakeCtx: ToolContext = {
       ws,
       sandbox: {
-        async runTests(_args, extra) {
+        async runTests(_args: readonly string[], extra?: { cwd?: string }) {
           seenCwd = extra?.cwd ?? '';
           return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
         },
@@ -851,6 +878,106 @@ describe('runTestsTool / runPythonTool summary', () => {
     const denied = await runTestsTool.run({ cwd: outsideDir }, fakeCtx);
     expect(denied.ok).toBe(false);
     expect(denied.error).toContain('outside the project directory');
+  });
+});
+
+describe('pytest coverage measured by the unit-test gate', () => {
+  // A live Python UNIT_TEST Step was required to reach line and branch coverage targets with no
+  // coverage tool in its environment. Each model-invented measurement (`--cov`, `python -m
+  // coverage`) failed and was counted as a failing suite. Runtime now asks pytest-cov for a JSON
+  // report and records what it says, so the number comes from the run rather than from the model.
+  const gateArgs = ['tests/unit/parser.test.ts', '--cov=src', '--cov-branch', '--cov-report=json:coverage/coverage.json'];
+  const totals = { num_statements: 200, covered_lines: 183, num_branches: 40, covered_branches: 29 };
+
+  function pythonCtx(run: (args: string[]) => Promise<{ exitCode: number; report?: unknown }>): ToolContext {
+    return {
+      ws,
+      sandbox: {
+        async runTests(args: string[] = []) {
+          const { exitCode, report } = await run(args);
+          if (report !== undefined) {
+            await ws.ensure('coverage');
+            await ws.writeFile('coverage/coverage.json', JSON.stringify(report));
+          }
+          return { exitCode, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S005',
+      language: 'python',
+      testGateArgs: gateArgs,
+    };
+  }
+
+  it('records the line and branch coverage the passing run reported', async () => {
+    const r = await runTestsTool.run({}, pythonCtx(async () => ({ exitCode: 0, report: { totals } })));
+    expect(r.ok).toBe(true);
+    expect((r.data as { coverage?: unknown }).coverage).toEqual({ lines: 91.5, branches: 72.5 });
+    expect(r.summary).toContain('coverage lines=91.5% branches=72.5%');
+  });
+
+  it('counts a measured project with no branches as fully branch-covered', async () => {
+    const r = await runTestsTool.run({}, pythonCtx(async () => ({
+      exitCode: 0,
+      report: { totals: { num_statements: 10, covered_lines: 10, num_branches: 0, covered_branches: 0 } },
+    })));
+    expect((r.data as { coverage?: unknown }).coverage).toEqual({ lines: 100, branches: 100 });
+  });
+
+  it('does not credit a report an earlier run left behind', async () => {
+    await ws.ensure('coverage');
+    await ws.writeFile('coverage/coverage.json', JSON.stringify({ totals }));
+    const r = await runTestsTool.run({}, pythonCtx(async () => ({ exitCode: 0 })));
+    expect(r.ok).toBe(true);
+    expect((r.data as { coverage?: unknown }).coverage).toBeUndefined();
+    expect(r.summary).not.toContain('coverage lines=');
+  });
+
+  it('records no coverage for a failing run', async () => {
+    const r = await runTestsTool.run({}, pythonCtx(async () => ({ exitCode: 1, report: { totals } })));
+    expect(r.ok).toBe(false);
+    expect((r.data as { coverage?: unknown }).coverage).toBeUndefined();
+  });
+
+  it('keeps an output option together with its value', async () => {
+    // A live MODULE_TEST call passed `-p no:cacheprovider`; only option tokens survived, pytest got a
+    // bare `-p`, and the run ended on a usage error without running a test.
+    let seenArgs: string[] = [];
+    await runTestsTool.run(
+      { args: ['-v', '--no-header', '-p', 'no:cacheprovider', '--tb', 'short'] },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual([...gateArgs, '-v', '--no-header', '-p', 'no:cacheprovider', '--tb', 'short']);
+  });
+
+  it('refuses options that would narrow or skip the gate, and says so', async () => {
+    let seenArgs: string[] = [];
+    const result = await runTestsTool.run(
+      { args: ['-k', 'parser', '--collect-only', '-x', '-q'] },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual([...gateArgs, '-q']);
+    expect(result.summary).toContain('Runtime decides which tests this gate runs: -k parser, --collect-only, -x');
+  });
+
+  it('never takes a selector after an option that has no value', async () => {
+    let seenArgs: string[] = [];
+    await runTestsTool.run(
+      { args: ['-v', 'tests/other/test_x.py'] },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual([...gateArgs, '-v']);
+  });
+
+  it('keeps the gate coverage options when the model asks pytest-cov for its own', async () => {
+    let seenArgs: string[] = [];
+    await runTestsTool.run(
+      { args: ['--cov=app', '--cov-report=term', '-q'] },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual([...gateArgs, '-q']);
   });
 });
 

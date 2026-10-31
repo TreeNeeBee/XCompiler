@@ -18,7 +18,7 @@ export class RuntimeBusinessRequestInputConfigurationError extends Error {
   }
 }
 
-/** Internal V1 input composition. No Router, selector or Domain transition is invoked here. */
+/** Internal composition of retained business inputs. No Router, selector or Domain transition is invoked here. */
 export function createRuntimeBusinessRequestInputs(
   container: ProjectContainer, audit: Pick<AuditLogger, 'event'>,
 ): BusinessRequestInputs {

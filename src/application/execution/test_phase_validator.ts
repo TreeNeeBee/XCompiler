@@ -29,6 +29,11 @@ export interface PairedTestAssetInspection {
   testPlanPath?: string;
   missing: string[];
   invalid: string[];
+  /**
+   * This Step's own supplements that are not executable tests. They never fail the entry inspection:
+   * only this Step may repair them, and it can only do so once it runs.
+   */
+  invalidSupplements: string[];
   /** Structured baseline evidence retained for deterministic Runtime KPI measurement. */
   sourceContracts: PairedSourceTestInspection[];
   failureLog: string;
@@ -87,13 +92,7 @@ export class TestPhaseValidator {
         invalid.push(`${file}: no executable test case declaration found`);
       }
     }
-    for (const file of supplementalTestArgs) {
-      const content = await this.workspace.readFile(file).catch(() => '');
-      if (!content.trim()) invalid.push(`${file}: empty supplemental test`);
-      else if (!hasExecutableTestDeclaration(content, plan.language)) {
-        invalid.push(`${file}: no executable supplemental test case declaration found`);
-      }
-    }
+    const invalidSupplements = await this.invalidSupplementsOf(plan, supplementalTestArgs);
     const sourcePhase = V_MODEL_TEST_TO_SOURCE_PHASE[
       step.phase as keyof typeof V_MODEL_TEST_TO_SOURCE_PHASE
     ];
@@ -113,6 +112,7 @@ export class TestPhaseValidator {
       testPlanPath,
       missing,
       invalid,
+      invalidSupplements,
       sourceContracts,
       failureLog: ok ? '' : [
         `${step.id} ${step.phase} delivery-gate entry inspection failed.`,
@@ -134,6 +134,30 @@ export class TestPhaseValidator {
     };
   }
 
+  /**
+   * This Step's supplements that are not executable tests.
+   *
+   * Checked apart from the baseline because the owners differ. Failing the entry inspection on them
+   * handed a defect only this Step could repair to its paired source, which may not write there,
+   * while this Step never got a turn: a live UNIT_TEST Step whose earlier attempt had left two probe
+   * scripts in its supplement root failed three attempts in a second without a model call.
+   */
+  async invalidSupplements(plan: Plan, step: Step): Promise<string[]> {
+    return this.invalidSupplementsOf(plan, await this.supplementalTestArgs(plan, step));
+  }
+
+  private async invalidSupplementsOf(plan: Plan, supplements: readonly string[]): Promise<string[]> {
+    const invalid: string[] = [];
+    for (const file of supplements) {
+      const content = await this.workspace.readFile(file).catch(() => '');
+      if (!content.trim()) invalid.push(`${file}: empty supplemental test`);
+      else if (!hasExecutableTestDeclaration(content, plan.language)) {
+        invalid.push(`${file}: no executable supplemental test case declaration found`);
+      }
+    }
+    return invalid;
+  }
+
   private async supplementalTestArgs(plan: Plan, step: Step): Promise<string[]> {
     const root = this.supplementalRoot(step);
     const files: string[] = [];
@@ -144,6 +168,26 @@ export class TestPhaseValidator {
       .filter((file) => plan.language === 'typescript' ? /\.(?:test|spec)\.tsx?$/u.test(file) : true)
       .sort();
   }
+}
+
+/**
+ * What this Step has to do about supplements that are not tests. There is no tool that deletes a
+ * file, and an emptied one is still invalid, so the action named is the one the Step can take.
+ */
+export function renderInvalidSupplementRepair(
+  supplementRoot: string,
+  invalidSupplements: readonly string[],
+  language: Plan['language'],
+): string {
+  return [
+    `These files under this Step's verification supplement root (${supplementRoot}) are not executable tests:`,
+    ...invalidSupplements.map((detail) => `- ${detail}`),
+    'Every file there runs as part of this Step\'s suite and counts as one of its supplements. Replace each ' +
+      'file\'s content with an executable test case for this Step\'s verification scope (' +
+      (language === 'typescript' ? 'an it() or test() call' : 'a test_* function') + ').',
+    'Probes, measurement scripts and helper code do not belong there; Runtime measures coverage itself. ' +
+      'This Step cannot deliver while any of these remain.',
+  ].join('\n');
 }
 
 async function walk(abs: string, rel: string, out: string[]): Promise<void> {

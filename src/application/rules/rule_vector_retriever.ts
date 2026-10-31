@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { canonicalRuleJson as canonicalJson, ruleEvidenceDigest as digest } from './rule_evidence_encoding.js';
-import type { RuleLookup } from '../../domain/rules/catalogue.js';
+import { promptRuleText, type RuleLookup, type RuleTextContext } from '../../domain/rules/catalogue.js';
 import { compareRuleIds, RuleContextSchema, type RuleContext } from '../../domain/rules/selection.js';
 import {
   RULE_VECTOR_INPUT_VERSION,
@@ -72,7 +72,7 @@ export class RuleVectorRetriever {
     if (!query.success) throw new RuleVectorError('invalid_input', {}, { cause: query.error });
     if (!input.rules.length) throw new RuleVectorError('invalid_input', { reason: 'empty-optional-set-does-not-require-embedding' });
     input.signal?.throwIfAborted();
-    const documents = vectorDocuments(input.rules);
+    const documents = vectorDocuments(input.rules, input.context);
     const identity = this.identity;
     const id = ruleVectorIndexId(identity, documents);
     let raw: unknown;
@@ -80,7 +80,7 @@ export class RuleVectorRetriever {
     catch (cause) { throw new RuleVectorError('index_read_failed', { id }, { cause }); }
     let disposition: RuleVectorRetrieval['indexDisposition'] = 'reused';
     if (raw === undefined) {
-      const vectors = await this.encode(documents.map((document) => document.retrievalDescription), input.signal);
+      const vectors = await this.encode(documents.map((document) => document.description), input.signal);
       const candidate = validateIndex({ schemaVersion: 1, id, inputVersion: RULE_VECTOR_INPUT_VERSION, identity, documents, vectors,
         vectorDigest: digest(vectors) }, id);
       input.signal?.throwIfAborted();
@@ -89,7 +89,10 @@ export class RuleVectorRetriever {
       disposition = 'built';
     }
     const index = validateIndex(raw, id);
-    const queryText = canonicalJson({ inputVersion: RULE_VECTOR_INPUT_VERSION, ...query.data });
+    // Only the task and error are encoded: context such as a project UUID carries no meaning to match.
+    const queryText = canonicalJson({
+      inputVersion: RULE_VECTOR_INPUT_VERSION, taskSummary: query.data.taskSummary, errorSummary: query.data.errorSummary,
+    });
     const queryVectors = await this.encode([queryText], input.signal);
     return { index, indexDisposition: disposition, queryText, queryVector: queryVectors[0]! };
   }
@@ -124,10 +127,10 @@ export function validateRuleEmbeddingResponse(raw: unknown, identity: RuleEmbedd
   return parsed.data;
 }
 
-export function vectorDocuments(entries: readonly RuleLookup[]): RuleVectorDocument[] {
+export function vectorDocuments(entries: readonly RuleLookup[], context: RuleTextContext = {}): RuleVectorDocument[] {
   const documents = [...entries].sort((left, right) => compareRuleIds(left.rule.id, right.rule.id)).map(({ rule, list }) => ({
     ruleId: rule.id, ruleVersion: rule.version, ruleListId: list.definition.id,
-    ruleListVersion: list.definition.version, retrievalDescription: rule.retrievalDescription,
+    ruleListVersion: list.definition.version, description: promptRuleText(rule.description, context),
     contentDigest: digest({ rule, list: {
       id: list.definition.id, version: list.definition.version, slot: list.definition.slot,
       applicability: list.definition.applicability, references: list.definition.references, owner: list.source.owner,

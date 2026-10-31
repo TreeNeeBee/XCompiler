@@ -21,6 +21,8 @@ const RUNTIME_EXCLUDE_PATTERNS = [
   // XCompiler's own working state inside the project.
   '.xcw/',
   '.sandbox/',
+  // What gates and product runs leave behind, set aside for the user (see runtime_temp.ts).
+  '.xc-tmp/',
   // What the product writes when it runs. `output/` is the conventional directory a generated CLI
   // is told to write to, and a log is never a deliverable.
   'output/',
@@ -45,6 +47,7 @@ const RUNTIME_EXCLUDE_PATTERNS = [
 
 /** The project-visible ignore file, so the deliverable carries the same rules the runtime enforces. */
 const PROJECT_GITIGNORE = '.gitignore';
+const RUNTIME_IGNORE_HEADER = '# Build output and runtime artifacts';
 
 /**
  * GitService 基于 simple-git 提供 XCompiler 运行时所需的最小集：init / snapshot / revert / log。
@@ -114,7 +117,7 @@ export class GitService {
     const prefix = current === '' ? '' : current.endsWith('\n') ? '\n' : '\n\n';
     await fs.appendFile(
       file,
-      `${prefix}# Build output and runtime artifacts\n${missing.join('\n')}\n`,
+      `${prefix}${RUNTIME_IGNORE_HEADER}\n${missing.join('\n')}\n`,
       'utf8',
     );
   }
@@ -186,6 +189,31 @@ export class GitService {
  * Deriving it rather than restating it is the point: the two drifted before, so a directory could be
  * ignored for new files while an already-tracked copy stayed in the index and kept blocking merges.
  */
+/**
+ * Puts `.gitignore` back as committed when Runtime's own rules are all that changed in it.
+ *
+ * Runtime appends its rules on every start, and the canonical branch moves only by XCompiler merges:
+ * committing them there would move it under a merge already gated against the old head — a run
+ * stopped on exactly that, after the rules were committed to unblock it — and leaving them would
+ * fail the guard that refuses to merge over uncommitted work. They are Runtime's to put back; the
+ * merged branches carry them, and the next quiet-point commit records them. Anyone else's edit to
+ * the file is left alone and still stops the merge.
+ */
+export async function restoreRuntimeIgnoreRules(git: SimpleGit, root: string): Promise<boolean> {
+  const current = await fs.readFile(path.join(root, PROJECT_GITIGNORE), 'utf8').catch(() => undefined);
+  if (current === undefined) return false;
+  const committed = await git.raw(['show', `HEAD:${PROJECT_GITIGNORE}`]).catch(() => undefined);
+  if (committed === undefined || current === committed) return false;
+  const before = new Set(committed.split(/\r?\n/u));
+  const after = new Set(current.split(/\r?\n/u));
+  const ours = new Set<string>([...RUNTIME_EXCLUDE_PATTERNS, RUNTIME_IGNORE_HEADER, '']);
+  const onlyOurs = [...before].every((line) => after.has(line)) &&
+    [...after].every((line) => before.has(line) || ours.has(line));
+  if (!onlyOurs) return false;
+  await git.raw(['checkout', 'HEAD', '--', PROJECT_GITIGNORE]);
+  return true;
+}
+
 export function isRuntimeArtifactPath(file: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   if (!normalized) return false;

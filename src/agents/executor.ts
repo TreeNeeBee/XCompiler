@@ -8,8 +8,11 @@ import { promises as fs } from 'node:fs';
 import {
   V_MODEL_DEVELOPMENT_PHASES,
   V_MODEL_TEST_PHASES,
+  type PlanIntent,
+  type ProjectType,
   type Step,
 } from '../domain/planning/execution_plan.js';
+import type { DebugFailureCategory } from '../domain/quality/failure_category.js';
 import {
   normalizeQualityAssessment,
   qualityAssessmentShapeIssues,
@@ -23,11 +26,12 @@ import type {
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../domain/tickets/ticket.js';
 import { getLanguageProfile, type LanguageProfile } from '../application/execution/language_support.js';
 import { RECORDED_FIXTURE_DIR } from '../domain/quality/external_dependency.js';
-import { isUnownedStepFailure } from '../tools/types.js';
+import { isTestRunWithoutVerdict, isUnownedStepFailure } from '../tools/types.js';
 import type { ToolFailureCode } from '../tools/types.js';
 import type {
   Tool,
   ToolContext,
+  ToolPermissionRequest,
   ToolResult,
 } from '../tools/types.js';
 import { isContentRejectionExhausted, isLLMRequestError, ResponseValidationRejection } from '../llm/errors.js';
@@ -43,11 +47,12 @@ import {
   type AttemptFailure, type PriorAttemptFailure,
 } from '../application/execution/failure_classification.js';
 import type { AcceptedContractChange } from '../application/execution/accepted_contract_changes.js';
+import type { PlanContract } from '../application/execution/plan_contract.js';
 import type { RoleId } from '../domain/workflow/role.js';
 import { isDeclarativeOutputWork, stepWork, type WorkId } from '../domain/workflow/work.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { makeStreamReporter } from '../llm/stream.js';
-import { getLocale, t, tFor } from '../i18n/index.js';
+import { getLocale, getPromptLocale, t, tFor } from '../i18n/index.js';
 import {
   extractChangeRequestDisposition,
   extractBugResolutionPlan,
@@ -157,6 +162,7 @@ export interface ExecutorRunInput {
   baselineTestExecutionReason?:
     | 'initial-pre-code'
     | 'pre-code-correction'
+    | 'contract-change'
     | 'code-step'
     | 'post-code-correction'
     | 'verification-step';
@@ -174,9 +180,13 @@ export interface ExecutorRunInput {
   /** 来自 Skill 的提示词，拼接到 system prompt 后。 */
   skillHints?: string[];
   /** debug 模式下传入上一轮失败记录（错误文本 / 失败测试 / 上下文）。 */
+  /** The plan's mode and project type; Rule applicability reads them (revision 11.4). */
+  project?: { intent: PlanIntent; projectType: ProjectType };
   debugContext?: {
     bugTicketId?: string;
     reason: string;
+    /** The Debug brief's typed category, for Rule applicability. */
+    failureCategory?: DebugFailureCategory;
     /** Typed facts of this Ticket's previous failed attempt; recovery modes branch on these, not on text. */
     previousFailure?: PriorAttemptFailure;
     /** Declared outputs the failure being repaired still owed, as the recording Executor typed them. */
@@ -207,6 +217,8 @@ export interface ExecutorRunInput {
   layeredContext?: string;
   /** Plan 级别的全局 system prompt（xcompiler build 沉淀）。 */
   globalPrompt?: string;
+  /** What the user confirmed in the plan; the contract every Step's artifacts must agree with. */
+  planContract?: PlanContract;
   /** Contract revisions accepted in this Phase after `globalPrompt` was planned. */
   acceptedContractChanges?: readonly AcceptedContractChange[];
   /** 目标语言 profile（决定 executor system prompt 的语言专属覆盖块）。默认 python。 */
@@ -289,7 +301,7 @@ export class StepExecutor {
     const request = this.opts.request;
     if (!request) throw new ExecutionTurnRequestConfigurationError();
     this.opts.signal?.throwIfAborted();
-    const locale = getLocale();
+    const locale = getPromptLocale();
     const prompts = tFor(locale).prompts;
     const maxRounds = this.opts.maxRounds ?? 6;
     let roundLimit = maxRounds;
@@ -314,6 +326,7 @@ export class StepExecutor {
       inp.globalPrompt && inp.globalPrompt.trim()
         ? prompts.executorGlobalBlock(inp.globalPrompt.trim())
         : '';
+    const planContractBlock = inp.planContract ? prompts.executorPlanContractBlock(inp.planContract) : '';
     const contractChangeBlock = inp.acceptedContractChanges && inp.acceptedContractChanges.length > 0
       ? prompts.executorAcceptedContractChangesBlock(inp.acceptedContractChanges)
       : '';
@@ -332,6 +345,7 @@ export class StepExecutor {
           // message carries the framework protocol and this execution's When/Where/Why facts.
           prompts.executorSystem(profile) +
           globalBlock +
+          planContractBlock +
           contractChangeBlock +
           contextBlock +
           stepBlock +
@@ -361,7 +375,7 @@ export class StepExecutor {
     let lastActionsKey: string | null = null;
     /** 每个 (tool+args) 指纹被尝试过的累计次数；用于检测"换汤不换药"。 */
     const actionFingerprints = new Map<string, number>();
-    const unresolvedToolFailures = new Map<string, string>();
+    const unresolvedToolFailures = new Map<string, UnresolvedToolFailure>();
     const failedVerificationAttempts = new Map<string, number>();
     const failedExactVerificationAttempts = new Map<string, string>();
     const failedMutationAttempts = new Map<string, number>();
@@ -427,7 +441,7 @@ export class StepExecutor {
           `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
         return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
       }
-      messages.push({ role: 'user', content: t().prompts.executorFeedbackProtocolRejected(JSON.stringify(feedback)) });
+      messages.push({ role: 'user', content: tFor(getPromptLocale()).prompts.executorFeedbackProtocolRejected(JSON.stringify(feedback)) });
     };
 
     const stepLabel = inp.stepName?.trim() || inp.step.id;
@@ -478,9 +492,10 @@ export class StepExecutor {
           );
         const payload = validateExecutionTurnPayload({
           schemaVersion: 1, kind: 'step-execution-turn', templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
-          locale, parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
+          locale, outputLocale: getLocale(), parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
           promptContext: {
-            step: inp.step, work, ...(inp.role ? { role: inp.role } : {}), baselineTestExecution: inp.baselineTestExecution,
+            step: inp.step, work, ...(inp.role ? { role: inp.role } : {}), ...(inp.project ? { project: inp.project } : {}),
+            baselineTestExecution: inp.baselineTestExecution,
             baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: inp.contextSnippets,
             acceptedContractChanges: inp.acceptedContractChanges,
             ticket: inp.ticket, changeRequest: inp.changeRequest, enhancement: inp.enhancement, debugContext: inp.debugContext,
@@ -627,7 +642,7 @@ export class StepExecutor {
             messages.push({
               role: 'user',
               content: err instanceof ExecutionTurnProtocolError
-                ? t().prompts.executorFeedbackProtocolRejected(JSON.stringify(err.diagnostic))
+                ? tFor(getPromptLocale()).prompts.executorFeedbackProtocolRejected(JSON.stringify(err.diagnostic))
                 : `The previous provider output was rejected: ${truncate(errMsg, 1600)}\n` +
                 'Keep the concrete file/tool evidence already present in this conversation. ' +
                 'Do not reread those files. The next response must apply a focused patch/write, ' +
@@ -764,7 +779,7 @@ export class StepExecutor {
         }
         if (round < roundLimit) {
           messages.push({ role: 'assistant', content: compactTurnForHistory(turn, toolMap) });
-          messages.push({ role: 'user', content: t().prompts.executorFeedbackBugResolutionPlanMissing });
+          messages.push({ role: 'user', content: tFor(getPromptLocale()).prompts.executorFeedbackBugResolutionPlanMissing });
           continue;
         }
         const metrics = computeMetrics({
@@ -1028,7 +1043,8 @@ export class StepExecutor {
         const selectedTool = toolMap.get(a.tool);
         if (!selectedTool) {
           const r = { ok: false, error: `tool not allowed for this step: ${a.tool}` };
-          updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
+          updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules,
+            { executionStatus: 'tool-not-allowed' });
           calls.push({ tool: a.tool, args: a.args, ok: false, error: r.error,
             executionStatus: 'tool-not-allowed' });
           turnResults.push({ ...r, tool: a.tool });
@@ -1067,7 +1083,7 @@ export class StepExecutor {
             deniedCapabilities.add(capability);
             permissionAdaptationRound ??= round;
             // The permission wait and decision complete this round. Guarantee exactly one later
-            // model turn for C1 adaptation even when denial arrives at the nominal round limit.
+            // model turn for protocol-correction adaptation even when denial arrives at the nominal round limit.
             if (round >= roundLimit && roundLimit < hardRoundLimit) {
               roundLimit = Math.min(hardRoundLimit, roundLimit + 1);
             }
@@ -1080,7 +1096,8 @@ export class StepExecutor {
               permissionBlockedReason =
                 `permission_blocked: the one allowed adaptation still requires denied capability ${capability}`;
             }
-            updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
+            updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules,
+              { executionStatus: 'permission-blocked', permissionOperation: permission.operationType });
             await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, false, r.error), {
               messageId: 'audit.tool_result',
               stepId: inp.step.id,
@@ -1190,6 +1207,9 @@ export class StepExecutor {
           stepId: inp.step.id,
           tool: a.tool,
           ok: r.ok,
+          // The message shows the summary when there is one, which for a runner is its output tail;
+          // the tool's diagnosis and the code callers branch on would otherwise be in no record.
+          ...(r.ok ? {} : { ...(r.error ? { error: r.error } : {}), ...(r.code ? { code: r.code } : {}) }),
         });
         await inp.ctx.onToolEvent?.({
           callId,
@@ -1219,6 +1239,13 @@ export class StepExecutor {
           isFailedVerificationAction &&
           !r.ok &&
           r.code !== 'manifest_missing' &&
+          // A run that reached no verdict is the Step's invocation to correct, not a product defect.
+          !isTestRunWithoutVerdict(r.code) &&
+          // Nor is a failure confined to this Step's own supplements: only it can repair them, and
+          // stopping here first means it never does. A live INTEGRATION_TEST Step read its failing
+          // supplement and reran the suite in one turn, six attempts running, and was stopped each
+          // time before it could edit the expectation it had already diagnosed as wrong.
+          !failuresConfinedToOwnSupplements(r, inp.ctx.supplementalTestRoot) &&
           (V_MODEL_TEST_PHASES as readonly string[]).includes(inp.step.phase) &&
           !advisoryFailureTools.has(a.tool)
         ) {
@@ -1291,7 +1318,12 @@ export class StepExecutor {
       ) {
         missingOutputStallRounds++;
       }
-      if (turnResults.some((r) => r.tool === 'run_tests' && !r.ok) && !advisoryFailureTools.has('run_tests')) {
+      // The limit hands the paired source phase a repair; a run with no verdict gives it none to make.
+      if (
+        turnResults.some((r) => r.tool === 'run_tests' && !r.ok && !isTestRunWithoutVerdict(r.code) &&
+          !failuresConfinedToOwnSupplements(r, inp.ctx.supplementalTestRoot)) &&
+        !advisoryFailureTools.has('run_tests')
+      ) {
         failedTestRunRounds++;
       }
       if (repeatedMutationFailure) {
@@ -1803,7 +1835,7 @@ export class StepExecutor {
             ? `missing outputs: ${verify.missing.join(', ')}`
             : '',
           unresolvedToolFailures.size > 0
-            ? `unresolved tool failures: ${[...unresolvedToolFailures.values()].join('; ')}`
+            ? `unresolved tool failures: ${unresolvedFailureTexts(unresolvedToolFailures).join('; ')}`
             : '',
         ].filter(Boolean);
         const error =
@@ -1816,7 +1848,7 @@ export class StepExecutor {
           round,
           consecutiveNoProgressRounds,
           missingOutputs: verify.missing,
-          unresolvedToolFailures: [...unresolvedToolFailures.values()],
+          unresolvedToolFailures: unresolvedFailureTexts(unresolvedToolFailures),
         });
         return {
           success: false, rounds: round, toolCalls: calls, finalThought, bugResolutionPlan, error, metrics,
@@ -1897,7 +1929,7 @@ export class StepExecutor {
         content: renderExecutionFeedback(turnResults, verify, {
           declaredDone: turn.done === true,
           actionCount: actions.length,
-          unresolvedFailures: [...unresolvedToolFailures.values()],
+          unresolvedFailures: unresolvedFailureTexts(unresolvedToolFailures),
           readOnlyLoopWarning: consecutiveReadOnlyRounds >= 2
             ? {
                 rounds: consecutiveReadOnlyRounds,
@@ -1997,7 +2029,7 @@ export class StepExecutor {
       qualityAssessmentRound > lastToolActionRound,
       { baselineExecutionDeferred: inp.baselineTestExecution === 'defer' },
     );
-    const unresolvedFailureDetails = [...unresolvedToolFailures.values()];
+    const unresolvedFailureDetails = unresolvedFailureTexts(unresolvedToolFailures);
     // Only the three round-budget outcomes are agent stalls; the other endings keep their existing
     // (untyped) routing, which treats them as execution failures of the Step.
     let maxRoundsError: string | undefined;
@@ -2269,66 +2301,69 @@ function normalizeComparablePath(value: string): string {
   return value.replaceAll('\\', '/').replace(/^\.\//u, '');
 }
 
-function hasOnlyUntargetedToolContractFailures(unresolved: Map<string, string>): boolean {
+function hasOnlyUntargetedToolContractFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return true;
-  return [...unresolved.entries()].every(([key, detail]) =>
+  return [...unresolved.entries()].every(([key, { detail }]) =>
     key.startsWith('tool:') &&
     /invalid (?:write_file|append_file|replace_in_file|read_file) args: path must be a non-empty string/i.test(detail),
   );
 }
 
-function hasOnlyPermissionControlFailures(unresolved: Map<string, string>): boolean {
-  return unresolved.size > 0 && [...unresolved.values()].every((detail) =>
-    /permission (?:denied|timed_out|hard_denied) for /iu.test(detail),
+function hasOnlyPermissionControlFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
+  return unresolved.size > 0 && [...unresolved.values()].every((failure) =>
+    failure.executionStatus === 'permission-blocked',
   );
 }
 
-function hasOnlySupersededToolContractFailures(unresolved: Map<string, string>): boolean {
+function hasOnlySupersededToolContractFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return true;
-  return [...unresolved.values()].every((detail) =>
+  return [...unresolved.values()].every(({ tool, executionStatus, detail }) =>
     /invalid (?:write_file|append_file|replace_in_file|apply_patch|read_file) args/i.test(detail) ||
     /(?:read_file|write_file|append_file|replace_in_file|apply_patch) denied: path "\." is outside the project directory/i.test(detail) ||
     /(?:read_file|write_file|append_file|replace_in_file) failed:.*path must be a non-empty string/i.test(detail) ||
     /path must be a non-empty string/i.test(detail) ||
-    /tool not allowed for this step: add_dependency/i.test(detail),
+    (tool === 'add_dependency' && executionStatus === 'tool-not-allowed'),
   );
 }
 
-function hasOnlyUnauthorizedVerificationFailures(unresolved: Map<string, string>): boolean {
+function hasOnlyUnauthorizedVerificationFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return false;
-  return [...unresolved.entries()].every(([key, detail]) =>
-    (key.startsWith('verification:run_tests:') || key.startsWith('verification:run_program:')) &&
-    /tool not allowed for this step: (?:run_tests|run_program)/i.test(detail),
+  return [...unresolved.entries()].every(([key, failure]) => isUnauthorizedVerification(key, failure));
+}
+
+function hasOnlyExplicitNoopSupersededFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
+  if (unresolved.size === 0) return true;
+  return [...unresolved.entries()].every(([key, failure]) =>
+    isUnauthorizedVerification(key, failure) ||
+    (key.startsWith('path:') &&
+      failure.executionStatus === 'permission-blocked' &&
+      failure.permissionOperation === 'file_write'),
   );
 }
 
-function hasOnlyExplicitNoopSupersededFailures(unresolved: Map<string, string>): boolean {
-  if (unresolved.size === 0) return true;
-  return [...unresolved.entries()].every(([key, detail]) =>
-    ((key.startsWith('verification:run_tests:') || key.startsWith('verification:run_program:')) &&
-      /tool not allowed for this step: (?:run_tests|run_program)/iu.test(detail)) ||
-    (key.startsWith('path:') && /permission denied for file_write:/iu.test(detail)),
-  );
+/** A run_tests/run_program call Runtime refused because this Step's tool list does not grant it. */
+function isUnauthorizedVerification(key: string, failure: UnresolvedToolFailure): boolean {
+  return (key.startsWith('verification:run_tests:') || key.startsWith('verification:run_program:')) &&
+    failure.executionStatus === 'tool-not-allowed';
 }
 
 function canAcceptDeferredVerificationFailure(
   input: ExecutorRunInput,
-  unresolved: Map<string, string>,
+  unresolved: Map<string, UnresolvedToolFailure>,
   calls: ExecutorRunResult['toolCalls'],
   assessment: StageQualityAssessment | undefined,
 ): boolean {
   if (!input.debugContext?.deferredVerificationScope || unresolved.size === 0) return false;
   if (!assessment || assessment.blockedBy.length === 0) return false;
+  // A refused or unpermitted run_tests never reached the suite, so it is no failure to defer —
+  // whichever permission outcome refused it.
   const hasExecutedFailure = calls.some((call) =>
     call.tool === 'run_tests' &&
     !call.ok &&
-    !/permission denied/iu.test(call.error ?? call.summary ?? '')
+    call.executionStatus === undefined
   );
   if (!hasExecutedFailure) return false;
-  return [...unresolved.entries()].every(([key, detail]) =>
-    key.startsWith('verification:run_tests:') &&
-    /run_tests FAIL/iu.test(detail),
-  );
+  return [...unresolved.keys()].every((key) => key.startsWith('verification:run_tests:'));
 }
 
 function canAcceptDeferredNoopHandoff(
@@ -2418,7 +2453,10 @@ export function validationDefectFromTestFailure(
     : undefined;
   return [
     `${phase} executable test gate failed:`,
-    executedTests.length > 0 ? `Cases under test: ${executedTests.join(', ')}` : '',
+    // Runner options (the unit-test gate's coverage flags) are how the cases run, not cases.
+    executedTests.some((arg) => !arg.startsWith('-'))
+      ? `Cases under test: ${executedTests.filter((arg) => !arg.startsWith('-')).join(', ')}`
+      : '',
     prefix
       ? `Supplements under ${VERIFICATION_SUPPLEMENT_DIR}/ reach the product with exactly ` +
         `${prefix}src/… — use that prefix rather than counting the directories.`
@@ -2704,6 +2742,17 @@ function didPerformSuccessfulMutation(action: LLMAction, result: ToolResult): bo
     (Array.isArray(result.data.updated) && result.data.updated.length > 0);
 }
 
+/** Every failing case lies in this Step's own supplement root, so the repair is this Step's. */
+function failuresConfinedToOwnSupplements(result: ToolResult, supplementRoot: string | undefined): boolean {
+  if (!supplementRoot) return false;
+  const data = isPlainRecord(result.data) ? result.data : {};
+  const failed = Array.isArray(data.failedTests)
+    ? data.failedTests.filter((test): test is string => typeof test === 'string')
+    : [];
+  const root = normalizeRelPath(supplementRoot).replace(/\/?$/u, '/');
+  return failed.length > 0 && failed.every((test) => normalizeRelPath(test).startsWith(root));
+}
+
 /**
  * An allowlist denial is excluded: it aborts the attempt, and a Step that legitimately needs a path
  * it was not granted should surface as a scope problem rather than burn one of its few attempts.
@@ -2792,16 +2841,49 @@ function compactActionArgs(tool: string, args: unknown): Record<string, unknown>
   return compact;
 }
 
+/**
+ * A failure still held against the Step, keyed by what a later call must resolve.
+ *
+ * Completion decides on the structured fields. `detail` is what prompts and audit show; only the
+ * tool-contract checks still read it, because those Tools do not yet set a failure code.
+ */
+interface UnresolvedToolFailure {
+  tool: string;
+  /** Set when Runtime refused the call before the Tool ran. */
+  executionStatus?: ToolCallRecord['executionStatus'];
+  /** The capability a permission-blocked call asked for. */
+  permissionOperation?: ToolPermissionRequest['operationType'];
+  detail: string;
+}
+
+/** Why Runtime refused a call before running it, as the call site knows it. */
+type ToolCallRejection = Pick<UnresolvedToolFailure, 'executionStatus' | 'permissionOperation'>;
+
+function unresolvedFailureTexts(unresolved: Map<string, UnresolvedToolFailure>): string[] {
+  return [...unresolved.values()].map((failure) => failure.detail);
+}
+
 function updateUnresolvedToolFailures(
-  unresolved: Map<string, string>,
+  unresolved: Map<string, UnresolvedToolFailure>,
   action: LLMAction,
   result: ToolResult,
   advisoryFailureTools: Set<string>,
   advisoryFailureRules: AdvisoryFailureRule[] = [],
+  rejection?: ToolCallRejection,
 ): void {
-  const keys = actionResolutionKeys(action);
+  const ran = ranSelectorsKey(action, result);
+  const keys = ran ? [ran.key] : actionResolutionKeys(action);
   if (result.ok) {
     for (const key of keys) unresolved.delete(key);
+    // A passing gated run settles every earlier run of tests it covers, however that run was asked for.
+    if (ran) {
+      for (const key of [...unresolved.keys()]) {
+        const earlier = parseRanSelectorsKey(key);
+        if (earlier && earlier.cwd === ran.cwd && earlier.selectors.every((selector) => ran.selectors.includes(selector))) {
+          unresolved.delete(key);
+        }
+      }
+    }
     const capability = canonicalToolCapability(action.tool);
     if (capability) {
       const aliasPrefix = `alias-capability:${capability}:`;
@@ -2816,7 +2898,7 @@ function updateUnresolvedToolFailures(
   }
   if (advisoryFailureTools.has(action.tool)) return;
   if (matchesAdvisoryFailureRule(action, result, advisoryFailureRules)) return;
-  if (isIgnorableReadOnlyToolFailure(action, result)) return;
+  if (isIgnorableReadOnlyToolFailure(action, result, rejection)) return;
   // A missing manifest is another Step's declared output. Holding it against this Step blocks a
   // completion no role here can earn, which is how REQUIREMENT_ANALYSIS spent its debug rounds
   // repairing tests that were never collected.
@@ -2825,7 +2907,7 @@ function updateUnresolvedToolFailures(
     `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`,
     1500,
   );
-  for (const key of keys) unresolved.set(key, detail);
+  for (const key of keys) unresolved.set(key, { tool: action.tool, ...rejection, detail });
 }
 
 function matchesAdvisoryFailureRule(
@@ -2847,11 +2929,36 @@ function matchesAdvisoryFailureRule(
   });
 }
 
-function isIgnorableReadOnlyToolFailure(action: LLMAction, result: ToolResult): boolean {
+function isIgnorableReadOnlyToolFailure(
+  action: LLMAction,
+  result: ToolResult,
+  rejection: ToolCallRejection | undefined,
+): boolean {
   const readOnly = action.tool === 'read_file' || action.tool === 'list_dir' || action.tool === 'code_search';
   if (!readOnly) return false;
-  return result.error?.includes('tool not allowed for this step') === true ||
+  return rejection?.executionStatus === 'tool-not-allowed' ||
     /\bENOENT\b|no such file or directory/iu.test(result.error ?? '');
+}
+
+const RAN_SELECTORS_PREFIX = 'verification:run_tests:ran:';
+
+/** The identity of a gated test run: the tests Runtime ran for it, in the directory it ran them. */
+function ranSelectorsKey(
+  action: LLMAction,
+  result: ToolResult,
+): { key: string; cwd: string; selectors: string[] } | undefined {
+  if (action.tool !== 'run_tests' || !isPlainRecord(result.data) || !Array.isArray(result.data.selectors)) return undefined;
+  const selectors = [...new Set(result.data.selectors.filter((value): value is string => typeof value === 'string'))].sort();
+  const cwd = isPlainRecord(action.args) && typeof action.args.cwd === 'string' && action.args.cwd.trim()
+    ? action.args.cwd
+    : '.';
+  return { key: `${RAN_SELECTORS_PREFIX}${JSON.stringify([cwd, selectors])}`, cwd, selectors };
+}
+
+function parseRanSelectorsKey(key: string): { cwd: string; selectors: string[] } | undefined {
+  if (!key.startsWith(RAN_SELECTORS_PREFIX)) return undefined;
+  const [cwd, selectors] = JSON.parse(key.slice(RAN_SELECTORS_PREFIX.length)) as [string, string[]];
+  return { cwd, selectors };
 }
 
 function actionResolutionKeys(action: LLMAction): string[] {
@@ -2896,7 +3003,8 @@ function verificationActionKey(action: LLMAction): string {
 
 function verificationIdentityArgs(args: unknown): unknown {
   if (!isPlainRecord(args)) return args;
-  const { timeoutMs: _timeoutMs, ...identity } = args;
+  // How long to wait and which exit code the caller expects do not change which command ran.
+  const { timeoutMs: _timeoutMs, expectExitCode: _expectExitCode, ...identity } = args;
   return {
     ...identity,
     cwd: typeof identity.cwd === 'string' && identity.cwd.trim()

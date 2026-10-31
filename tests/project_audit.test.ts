@@ -5,7 +5,7 @@ import path from 'node:path';
 import { Workspace } from '../src/workspace/workspace.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { runIterationGate, runProjectAudit, shouldRunProjectAudit } from '../src/application/delivery/project_audit.js';
-import type { Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import type { ExecExtra, ExecResult, Sandbox } from '../src/sandbox/types.js';
 
 type SandboxHandler<TArgs extends unknown[]> = ExecResult | ((...args: TArgs) => ExecResult);
@@ -63,9 +63,10 @@ async function writeBaseDeliveryDocs(ws: Workspace): Promise<void> {
 
 function tsPlan(): Plan {
   return {
-    version: '1',
+    version: PLAN_VERSION,
     language: 'typescript',
     intent: 'feature',
+    phaseId: 'P1',
     projectType: 'application',
     requirementDigest: 'demo',
     globalPrompt: '',
@@ -73,22 +74,22 @@ function tsPlan(): Plan {
     userAddenda: '',
     dependencies: ['zod'],
     createdAt: new Date().toISOString(),
+    complexityAssessment: { level: 'simple', rationale: 'Audit fixture.', splitRecommended: false, userForcedPhaseSplit: false },
+    implementationPhases: [{
+      id: 'P1', title: 'Core', objective: 'Deliver the audited project.', status: 'current', scope: ['core'],
+      deliverables: ['src/main.ts'], dependsOn: [],
+      verificationGate: { summary: 'All gates pass.', checks: ['acceptance'], failurePolicy: 'Open a Bug.' },
+    }],
     steps: [],
   };
 }
 
 describe('project quality audit', () => {
+  // The decision reads only the run's scope and whether every stage completed; it takes no plan.
   it('skips final audit for partial executions', () => {
-    const plan = {
-      ...tsPlan(),
-      steps: [
-        { id: 'S001', phase: 'REQUIREMENT_ANALYSIS', title: 'a', description: 'a', systemPrompt: 'x'.repeat(30), tools: [], inputs: [], outputs: ['docs/01-requirement-analysis.md'], dependsOn: [], acceptance: 'ok', maxAttempts: 3 },
-        { id: 'S002', phase: 'FUNCTIONAL_TEST', title: 'b', description: 'b', systemPrompt: 'x'.repeat(30), tools: [], inputs: [], outputs: ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md'], dependsOn: ['S001'], acceptance: 'ok', maxAttempts: 3 },
-      ],
-    } as Plan;
     expect(shouldRunProjectAudit({ onlyPhase: 'CODE' }, false)).toBe(false);
+    expect(shouldRunProjectAudit({ onlyPhase: 'CODE' }, true)).toBe(false);
     expect(shouldRunProjectAudit({ onlyPhase: undefined }, false)).toBe(false);
-    plan.steps[1]!.status = 'DONE';
     expect(shouldRunProjectAudit({ onlyPhase: undefined }, true)).toBe(true);
   });
 

@@ -1,0 +1,31 @@
+# 审查与审计报告归档
+
+本目录集中存放开发周期中的变更审计日志、审查交接、审计报告和工作内容报告。
+它们记录某个时间点的范围、证据和结论。**不是当前设计文档**：报告与当前代码或合同不一致时，以代码和 `docs/features/<版本>/` 中的合同为准。
+
+相关位置：
+- 合同与设计：[`docs/features/0.4.0/`](../features/0.4.0/)，其中当前进度只看 [HANDOVER 状态表](../features/0.4.0/HANDOVER.md)。
+- 重大变更审计记录：[`docs/audit/`](../audit/)。该目录按 `.gitignore` 白名单提交，规则见其 README。
+
+## 0.4.0
+
+| 日期 | 文件 | 类型 | 作者 | 范围 |
+|---|---|---|---|---|
+| 2026-10-15 | [2026-10-15-executor-review-handover.md](2026-10-15-executor-review-handover.md) | 进度与审查交接 | Codex | `29d6cca..` Executor 请求留存阶段 |
+| 2026-10-16 | [2026-10-16-change-audit-log.md](2026-10-16-change-audit-log.md) | 变更审计日志（持续追加） | CC | 变更清单 D-1～D-41 的实施过程、证伪明细和遗留 |
+| 2026-10-16 | [2026-10-16-cc-change-review-handover.md](2026-10-16-cc-change-review-handover.md) | 审查交接 | CC | `e2d0330..efb64b0`（M-C～P1） |
+| 2026-10-17 | [2026-10-17-change-audit-report.md](2026-10-17-change-audit-report.md) | 变更审计报告 | CC | `e6876df..c49b11c`，以及未提交的 C、E 批 |
+| 2026-10-17 | [2026-10-17-codex-audit-report.md](2026-10-17-codex-audit-report.md) | 补充审计 | Codex | Rule 快照与版本升级（SNP-01、DOC-01） |
+| 2026-10-17 | [2026-10-17-work-report.md](2026-10-17-work-report.md) | 工作内容报告 | CC | `e6876df` 之后的工作、决策和下一步 |
+| 2026-10-20 | [2026-10-20-change-audit-report.md](2026-10-20-change-audit-report.md) | 变更审计报告 | CC | `c49b11c` 之上未提交的 RuleChain 修订（D-22～D-34） |
+| 2026-10-20 | [2026-10-20-work-report.md](2026-10-20-work-report.md) | 工作内容报告 | CC | RuleChain 修订（2026-10-18～20）的工作、决策和下一步 |
+| 2026-10-20 | [2026-10-20-codex-audit-report.md](2026-10-20-codex-audit-report.md) | 独立审计 | Codex | RuleChain 修订（RC-01～RC-07）；处理见变更审计日志对应一节 |
+| 2026-10-21 | [2026-10-21-change-audit-report.md](2026-10-21-change-audit-report.md) | 变更审计报告 | CC | 2026-10-20 报告之后的未提交改动：Codex 审计处理（D-35）、测试类型检查、需求接收重做（D-36～D-38） |
+| 2026-10-21 | [2026-10-21-work-report.md](2026-10-21-work-report.md) | 工作内容报告 | CC | 语言与提示翻译（D-40）及其自我审查后的修正与优化（D-41） |
+
+## 约定
+
+- 文件名以日期开头；新报告直接放在本目录，并在上表追加一行。
+- 不写入凭据、API key、令牌或生成工程的客户数据。
+- 链接使用仓库内相对路径，不使用本机绝对路径；临时目录中的证据不能作为长期依据，应转为仓库内的回归测试。
+- 审计日志是持续追加的记录；其余报告归档后不再改写结论，更正以新报告或日志新节的形式补充。

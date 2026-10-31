@@ -8,6 +8,7 @@ import {
   type RuntimeInteraction,
   type RuntimeProgress,
   type RuntimeRunCommandOptions,
+  InteractionDismissedError,
   type RuntimeSelectChoice,
   type ToolPermissionRequest,
 } from '../runtime.js';
@@ -360,11 +361,14 @@ export class AcpServer {
         const result = await this.requestInteraction(session, task, phase, 'editor', message, undefined, defaultValue);
         if (typeof result === 'string') return result;
         if (result === true) return defaultValue ?? '';
-        throw new Error('ACP client rejected the Build editor request.');
+        throw new InteractionDismissedError('editor');
       },
       select: async <T extends string>({ message, choices }: { message: string; choices: RuntimeSelectChoice<T>[] }) => {
         const result = await this.requestInteraction(session, task, phase, 'select', message, choices);
-        return String(result) as T;
+        // A rejected or closed request resolves to `false`, which is no choice at all.
+        const chosen = choices.find((choice) => choice.value === result);
+        if (!chosen) throw new InteractionDismissedError('select');
+        return chosen.value;
       },
       readMultiline: async ({ message }) => {
         if (phase === 'build' && task.userTask.trim()) return task.userTask;
@@ -577,8 +581,9 @@ function clarificationChoices(message: string): Array<{ name: string; value: str
   return choices.length >= 2 ? choices : undefined;
 }
 
-function interactionText(value: unknown, operation: string): string {
+function interactionText(value: unknown, operation: 'input' | 'multiline input'): string {
   if (typeof value === 'string') return value;
+  if (value === false) throw new InteractionDismissedError(operation === 'input' ? 'input' : 'multiline');
   throw new Error(
     `ACP ${operation} requires a text or listed-choice response; received ${typeof value}.`,
   );

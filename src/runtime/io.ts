@@ -133,6 +133,19 @@ export interface RuntimeSelectChoice<T extends string = string> {
   value: T;
 }
 
+/**
+ * The user closed a prompt without answering it (an ACP client rejecting the request, say). A
+ * select resolves only to one of its choices, so an adapter reports a dismissal with this rather
+ * than with a value; Build ends as cancelled.
+ */
+export class InteractionDismissedError extends Error {
+  readonly code = 'interaction_dismissed';
+  constructor(readonly kind: 'input' | 'select' | 'editor' | 'multiline', options?: ErrorOptions) {
+    super(`The ${kind} prompt was dismissed without an answer.`, options);
+    this.name = 'InteractionDismissedError';
+  }
+}
+
 export interface RuntimeInteraction {
   input(args: { message: string }): Promise<string>;
   confirm(args: { message: string; default?: boolean }): Promise<boolean>;

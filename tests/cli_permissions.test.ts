@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { emitRuntimeEvent } from '../src/runtime/io.js';
 import { createCliRuntimeIO, isCliCancellation } from '../src/cli/runtime_adapter.js';
 import {
   runtimePermissionAuthorizer,
@@ -45,13 +46,12 @@ describe('CLI permission adapters', () => {
     expect(interactive.requestPermission).toBeDefined();
   });
 
-  it('renders the discoverer-to-PM-to-handler Ticket route', () => {
+  it('renders the discoverer-to-PM-to-handler Ticket route', async () => {
     const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const interactive = createCliRuntimeIO();
 
-    interactive.emit?.({
-      id: 'route-event',
-      timestamp: new Date().toISOString(),
+    // Emitted as Runtime emits it: the helper stamps the envelope (id, version, time).
+    await emitRuntimeEvent(interactive, {
       type: 'workflow',
       event: 'ticket_routed',
       projectId: 'project',
@@ -65,7 +65,6 @@ describe('CLI permission adapters', () => {
       creatorRole: 'tester',
       assigneeActorId: 'requirements',
       assigneeRole: 'requirements-engineer',
-      assigneeAgent: 'Debugger',
       correlationId: 'correlation',
       message: 'tester created BUG-P1-009; PM routed it to requirements-engineer/Debugger',
     });

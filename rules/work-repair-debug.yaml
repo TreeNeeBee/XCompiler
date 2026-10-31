@@ -1,60 +1,78 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "85a71cae-36dc-55bd-bd71-c0e916026d7d"
-version: "1.0.0"
-title: "Repairing a Bug on a Step"
-slot: "0x0242"
-applicability:
-  works: [repair.debug]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 85a71cae-36dc-55bd-bd71-c0e916026d7d
+title:
+  en: Repairing a Bug on a Step
+  zh: 修复 Step 上的 Bug
+slot: "0x00011002"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:701d595cb41dc48a63c36b428fca27dc7ecb4fbcc22fc64b358de2fd60e7e288
 rules:
-  - id: "513f6ba5-cbf9-5fd7-b36e-6e9ff8b1eb61"
-    version: "1.0.0"
-    category: framework
+  - id: 513f6ba5-cbf9-5fd7-b36e-6e9ff8b1eb61
+    name: resolution-plan
+    version: 2.0.0
     level: mandatory
-    retrievalDescription: "Bug resolution plan before the first repair action"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:38aec203597c8ddc7df0a7c8cb5d4f128947d9695582bff746fc28aa824944b5
+    description:
+      en: "Applies when repairing a Bug: state the root cause, repair target and validation before acting."
+      zh: 修复 Bug 时适用：动手前写明根因、修复目标与验证方式。
     instruction:
-      en: |-
-        DEBUG mode: before the first repair or verification action, provide bugResolutionPlan with the root-cause hypothesis, repair target, and validation command. Reuse that plan through the attempt, make the smallest scoped repair, and verify it. Read-only inspection alone is not completion. Finishing without further actions still needs evidence: done=true with actions=[] is rejected unless you also return a complete qualityAssessment for this Step. When the repair already landed in an earlier round, report the existing artifact or command evidence there rather than rewriting outputs to manufacture something to show.
-      zh: |-
-        DEBUG 模式：首次执行修复或验证动作之前，必须输出 bugResolutionPlan，包含根因假设、修复目标和验证命令；同一次尝试持续复用该方案，执行最小范围修复并验证。仅只读检查不能算完成。收尾同样需要证据：done=true 且 actions=[] 时，必须同时返回本 Step 完整的 qualityAssessment，否则响应会被拒绝。若修复已在更早的轮次落地，直接引用当时的产物或命令证据，不要为了凑证据而重写产物。
-  - id: "375d01af-36f4-5685-9d3c-7d73ffcb1e8c"
-    version: "1.0.0"
-    category: framework
+      en: "DEBUG mode: before the first repair or verification action, provide bugResolutionPlan with the root-cause hypothesis, repair target, and validation command. Reuse that plan through the attempt, make the smallest scoped repair, and verify it. Read-only inspection alone is not completion. Finishing without further actions still needs evidence: done=true with actions=[] is rejected unless you also return a complete qualityAssessment for this Step. When the repair already landed in an earlier round, report the existing artifact or command evidence there rather than rewriting outputs to manufacture something to show."
+      zh: DEBUG 模式：首次执行修复或验证动作之前，必须输出 bugResolutionPlan，包含根因假设、修复目标和验证命令；同一次尝试持续复用该方案，执行最小范围修复并验证。仅只读检查不能算完成。收尾同样需要证据：done=true 且 actions=[] 时，必须同时返回本 Step 完整的 qualityAssessment，否则响应会被拒绝。若修复已在更早的轮次落地，直接引用当时的产物或命令证据，不要为了凑证据而重写产物。
+  - id: 375d01af-36f4-5685-9d3c-7d73ffcb1e8c
+    name: evidence-before-mutation
+    version: 2.0.0
     level: mandatory
-    retrievalDescription: "Evidence before mutation; focused deltas"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:70c2896cfaae74990fe1850660f7784374f2cbc654e03342dc8c69776a5815b8
+    description:
+      en: "Applies before editing during a repair: reconcile symbols and APIs against the current files."
+      zh: 修复中修改文件前适用：对照当前文件核实符号与 API。
     instruction:
-      en: |-
-        Evidence before mutation: reconcile every symbol, import, assertion, and call form against the supplied current-workspace snippets or an explicit read_file result. Never invent an export or API. Existing files are accepted baseline: use apply_patch/replace_in_file for a focused delta. write_file may rewrite an existing file only when Runtime explicitly lists that exact path as a direct failure-evidence rewrite target; otherwise it is only for a genuinely missing file. A permitted rewrite must preserve the artifact scope and must not replace a focused failing test with a broader suite.
-      zh: |-
-        修改前证据：每个符号、import、断言和调用形式必须与已提供的当前工作区 snippet 或明确的 read_file 结果核对；禁止虚构 export 或 API。已有文件属于已验收基线，应使用 apply_patch/replace_in_file 提交聚焦增量。只有 Runtime 将某一准确路径明确列为“故障证据 rewrite 目标”时，write_file 才能完整重写该已有文件；其它情况下 write_file 仅用于确实缺失的文件。获准的 rewrite 仍须保持原产物范围，禁止用更大的测试套件替换一个聚焦失败测试。
-  - id: "5e22317f-be26-5770-8e97-8cfb5ed1fa83"
-    version: "1.0.0"
-    category: framework
+      en: "Evidence before mutation: reconcile every symbol, import, assertion, and call form against the supplied current-workspace snippets or an explicit read_file result. Never invent an export or API. Existing files are accepted baseline: use apply_patch/replace_in_file for a focused delta. write_file may rewrite an existing file only when Runtime explicitly lists that exact path as a direct failure-evidence rewrite target; otherwise it is only for a genuinely missing file. A permitted rewrite must preserve the artifact scope and must not replace a focused failing test with a broader suite."
+      zh: 修改前证据：每个符号、import、断言和调用形式必须与已提供的当前工作区 snippet 或明确的 read_file 结果核对；禁止虚构 export 或 API。已有文件属于已验收基线，应使用 apply_patch/replace_in_file 提交聚焦增量。只有 Runtime 将某一准确路径明确列为“故障证据 rewrite 目标”时，write_file 才能完整重写该已有文件；其它情况下 write_file 仅用于确实缺失的文件。获准的 rewrite 仍须保持原产物范围，禁止用更大的测试套件替换一个聚焦失败测试。
+  - id: 5e22317f-be26-5770-8e97-8cfb5ed1fa83
+    name: contract-reconciliation
+    version: 2.0.0
     level: mandatory
-    retrievalDescription: "Reconcile accepted contracts instead of alternating rewrites"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:390ded5ce23dc2603ef3a30af812f84f5fbbbe3dbfe42208e979c34f56994d67
+    description:
+      en: "Applies when accepted artifacts disagree: reconcile them as one contract instead of alternating rewrites."
+      zh: 已接受的产物彼此不一致时适用：作为一个契约整体协调，不来回改写。
     instruction:
-      en: |-
-        Contract reconciliation: treat accepted upstream specifications, tests, real implementations, and consumers as one contract set. If multiple call forms are semantically compatible, preserve them with one coherent implementation using optional parameters, overloads, or adapters. If they are genuinely incompatible, report the contract defect and route it upstream; never alternate between mutually exclusive rewrites.
-      zh: |-
-        契约协调：将已验收的上游规范、测试、真实实现和调用方视为同一组契约。多种调用形式语义兼容时，应以可选参数、重载或适配器形成一个统一实现并全部保留；确实不可兼容时，报告契约缺陷并回退上游，禁止在互斥实现之间反复覆盖。
-  - id: "324c92bf-430d-542a-aa29-115aef555f52"
-    version: "1.0.0"
-    category: framework
+      en: "Contract reconciliation: treat accepted upstream specifications, tests, real implementations, and consumers as one contract set. If multiple call forms are semantically compatible, preserve them with one coherent implementation using optional parameters, overloads, or adapters. If they are genuinely incompatible, report the contract defect and route it upstream; never alternate between mutually exclusive rewrites."
+      zh: 契约协调：将已验收的上游规范、测试、真实实现和调用方视为同一组契约。多种调用形式语义兼容时，应以可选参数、重载或适配器形成一个统一实现并全部保留；确实不可兼容时，报告契约缺陷并回退上游，禁止在互斥实现之间反复覆盖。
+  - id: 324c92bf-430d-542a-aa29-115aef555f52
+    name: paired-gate-ownership
+    version: 2.0.0
     level: mandatory
-    retrievalDescription: "Only the inherited paired gate decides Bug completion"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:159ac264f647882bbfa5a989627dcff64fd8b1a589cedce5a646c29d7fe5a85f
+    description:
+      en: "Applies when an inherited paired gate exists: only its tests decide whether the Bug is complete."
+      zh: 存在继承的配对门禁时适用：只有它的测试决定 Bug 是否完成。
     instruction:
-      en: |-
-        Paired-gate ownership: when the Debug context declares an inherited paired verification gate, use only its exact tests as this Bug completion gate. Do not absorb compiler/test failures owned by later V-model Steps; those remain visible and must be routed through their own Tickets when their Step runs.
-      zh: |-
-        配对门禁归属：Debug 上下文声明继承的配对验证门禁时，当前 Bug 只能以其中的精确测试作为完成门禁；不得吸收后续 V 模型 Step 所属的编译或测试失败，这些错误必须保留，并在对应 Step 执行时通过独立 Ticket 路由。
-  - id: "58b9a345-c88d-5400-9394-593e8fcab07d"
-    version: "1.0.0"
-    category: framework
+      en: "Paired-gate ownership: when the Debug context declares an inherited paired verification gate, use only its exact tests as this Bug completion gate. Do not absorb compiler/test failures owned by later V-model Steps; those remain visible and must be routed through their own Tickets when their Step runs."
+      zh: 配对门禁归属：Debug 上下文声明继承的配对验证门禁时，当前 Bug 只能以其中的精确测试作为完成门禁；不得吸收后续 V 模型 Step 所属的编译或测试失败，这些错误必须保留，并在对应 Step 执行时通过独立 Ticket 路由。
+  - id: 58b9a345-c88d-5400-9394-593e8fcab07d
+    name: bug-evidence-source
+    version: 2.0.0
     level: required
-    retrievalDescription: "The Bug Ticket and failure evidence are the source of truth for a repair"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:5c9beff99dec7c160265f5fed899b01b26439ae3d226f6b1080ce53b9f508b24
+    description:
+      en: "Applies to every repair: the Bug Ticket and its failure evidence are the source of truth."
+      zh: 所有修复适用：以 Bug Ticket 和失败证据为准。
     instruction:
-      en: |-
-        Use the Bug Ticket and compact failure evidence as the source of truth. In a requirement/design rollback, update only the current contract, test plan, or diagnostic outputs when the concrete source file belongs to a later Step; that later V-model Step will implement it. If the previous attempt stalled on read-only probes, do not repeat discovery: perform the next justified mutation or verification action.
-      zh: |-
-        以 Bug Ticket 和压缩后的失败证据为事实来源。若回退到需求/设计阶段，而实际源码属于后续 Step，只更新当前契约、测试计划或诊断产物，由后续 V 模型 Step 实现。如果上一轮停滞在只读探测，不要重复定位；直接执行下一项有依据的修改或验证动作。
+      en: "Use the Bug Ticket and compact failure evidence as the source of truth. In a requirement/design rollback, update only the current contract, test plan, or diagnostic outputs when the concrete source file belongs to a later Step; that later V-model Step will implement it. If the previous attempt stalled on read-only probes, do not repeat discovery: perform the next justified mutation or verification action."
+      zh: 以 Bug Ticket 和压缩后的失败证据为事实来源。若回退到需求/设计阶段，而实际源码属于后续 Step，只更新当前契约、测试计划或诊断产物，由后续 V 模型 Step 实现。如果上一轮停滞在只读探测，不要重复定位；直接执行下一项有依据的修改或验证动作。

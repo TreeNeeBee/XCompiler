@@ -39,10 +39,25 @@ export const DeliveryGateScenarioSchema = z.object({
   operation: z.string().min(1),
   environment: z.enum(['controlled', 'record-replay', 'live']),
   expected: z.string().min(1),
+  /**
+   * Workspace files the scenario reads. Each is a declared output of a Step that runs before CODE or
+   * of the functional-test Step, so the gate can check they exist and say who owes a missing one.
+   */
+  inputs: z.array(z.string().min(1)).optional(),
   execution: z.object({
     command: z.string().min(1),
     args: z.array(z.string()).default([]),
+    /** The exit code the expectation requires, when it is not 0 (for example a partial-failure code). */
+    expectExitCode: z.number().int().min(0).max(255).optional(),
   }).strict().optional(),
+  /**
+   * Commands run after the scenario that print what the expectation checks, when the result itself
+   * cannot be read as text (a spreadsheet, an image, an archive). Their output is the judge's evidence.
+   */
+  inspect: z.array(z.object({
+    command: z.string().min(1),
+    args: z.array(z.string()).default([]),
+  }).strict()).optional(),
 }).strict();
 
 export type DeliveryGateScenario = z.infer<typeof DeliveryGateScenarioSchema>;
@@ -55,6 +70,14 @@ export const DeliveryGateSceneSchema = z.object({
   timedOut: z.boolean(),
   stdoutTail: z.string().optional(),
   stderrTail: z.string().optional(),
+  /** What each declared inspect command printed after the scenario ran. */
+  inspections: z.array(z.object({
+    command: z.string().min(1),
+    exitCode: z.number().int(),
+    timedOut: z.boolean(),
+    stdoutTail: z.string().optional(),
+    stderrTail: z.string().optional(),
+  }).strict()).optional(),
 }).strict();
 
 export type DeliveryGateScene = z.infer<typeof DeliveryGateSceneSchema>;
@@ -86,13 +109,38 @@ interface ScenarioOutcomeVerdictBase {
 }
 
 export type ScenarioOutcomeVerdict = ScenarioOutcomeVerdictBase & (
-  | { ok: true; ticketType?: never; target?: never }
+  | { ok: true; ticketType?: never; target?: never; unverifiable?: never; planConflict?: never }
   | {
       ok: false;
       /** Bug for an incorrect implementation; CR when an accepted capability/contract must change. */
       ticketType: ScenarioTicketType;
       /** V-model owner of the implementation repair or accepted contract change. */
       target: ScenarioRepairTarget;
+      unverifiable?: never;
+      planConflict?: never;
+    }
+  | {
+      ok: false;
+      /**
+       * The evidence cannot show part of the expectation. That is the scenario's declaration to fix —
+       * it gives the judge nothing to read — not a defect any Step could repair.
+       */
+      unverifiable: true;
+      ticketType?: never;
+      target?: never;
+      planConflict?: never;
+    }
+  | {
+      ok: false;
+      /**
+       * The Phase's frozen requirement fixes something differently from the confirmed plan. The plan
+       * outranks it, so requirement analysis brings it back before anything else is judged: whatever
+       * the run showed was built on the wrong contract. `reason` names the point, quoting both.
+       */
+      planConflict: true;
+      ticketType: 'change-request';
+      target: 'requirement-analysis';
+      unverifiable?: never;
     }
 );
 

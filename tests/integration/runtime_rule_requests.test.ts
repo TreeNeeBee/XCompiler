@@ -6,6 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { storedRuleMaterial } from '../support/rule_request_files.js';
+import { ruleList } from '../support/rule_fixtures.js';
+import { installedCompilerRules, TYPESCRIPT_CODE_FACTS } from '../support/compiler_rules.js';
+import { updateRule } from '../../src/application/rules/rule_overlay.js';
+import { FileRuleOverlayStore } from '../../src/infrastructure/rules/rule_overlay_store.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import { roleProfile, DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
@@ -46,6 +51,17 @@ afterEach(async () => {
 
 async function fixture(options: {
   optional?: boolean; endpoint?: string; threshold?: number; mode?: 'off' | 'record';
+  /** Without embedding the endpoint serves only the role's model. */
+  embedding?: boolean;
+  /** A second optional Rule in the open framework list. */
+  extraOptional?: boolean;
+  maxCandidates?: number;
+  /**
+   * The strategy the request runs. 0.4 configuration accepts only bound-only (revision 11.8); the
+   * fixture composes the others directly so their machinery stays covered. Defaults follow the
+   * services the fixture configures: embedding with an encoder, review with only a chat model.
+   */
+  strategy?: 'bound-only' | 'embedding' | 'review';
   audit?: boolean; contentMode?: 'full' | 'redacted'; assignedEndpoint?: string;
   /** The role and work lists Runtime binds to a Python CODE execution. */
   executionLists?: boolean;
@@ -64,35 +80,41 @@ async function fixture(options: {
     },
     agent: {},
     rules: {
-      ...(options.endpoint ? { embedding: {
+      ...(options.endpoint && options.embedding !== false ? { embedding: {
         provider: 'openai', base_url: options.endpoint, model: 'encoder', space_version: 'test-space/1',
         dimensions: 2, request_timeout_ms: 1000,
       } } : {}),
-      retrieval: { threshold: options.threshold ?? 0.8, max_candidates: 1 },
+      retrieval: { threshold: options.threshold ?? 0.8, max_candidates: options.maxCandidates ?? 1 },
     },
   }));
-  const { config } = await loadConfigWithPath(configPath);
+  const { config: loaded } = await loadConfigWithPath(configPath);
+  const strategy = options.strategy ?? (options.endpoint ? (options.embedding === false ? 'review' : 'embedding') : 'bound-only');
+  const config = { ...loaded, rules: { ...loaded.rules, selection: { strategy } } };
   const sourceRoot = path.join(root, 'installed-rules');
   await fs.mkdir(sourceRoot);
   const definitions = [
-    { schemaVersion: '1', id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
-      id: id(2), version: '1', category: 'general', level: 'announce',
-      instruction: 'BASE: obey the supplied response protocol.', retrievalDescription: 'Base declaration',
-    }] },
-    ...(options.optional ? [{ schemaVersion: '1', id: id(3), version: '1', title: 'Evidence', slot: '0x0300', rules: [{
-      id: id(4), version: '1', category: 'framework', level: 'advised',
-      instruction: 'RULE_BODY: keep operation evidence.', retrievalDescription: 'Operation evidence handling',
-    }] }] : []),
+    ruleList({ id: id(1), version: '1', title: 'Base', slot: 0, rules: [{
+      id: id(2), version: '1', level: 'announce',
+      instruction: 'BASE: obey the supplied response protocol.', description: 'Base declaration',
+    }] }),
+    ...(options.optional ? [ruleList({ id: id(3), version: '1', title: 'Evidence', slot: '0x00012000', rules: [{
+      id: id(4), version: '1', level: 'advised',
+      instruction: 'RULE_BODY: keep operation evidence.', description: 'Operation evidence handling',
+    }, ...(options.extraOptional ? [{
+      id: `ff${id(5).slice(2)}`, version: '1', level: 'advised' as const,
+      instruction: 'SECOND_BODY: name the evidence source.', description: 'Evidence source naming',
+    }] : [])] })] : []),
     ...(options.executionLists ? ([
-      ['0x0205', { roles: ['python-developer'] }, 'ROLE: an experienced Python developer.'],
-      ['0x0240', { works: ['code.implement'] }, 'COMMON: workspace-relative paths only.'],
-      ['0x0253', { works: ['code.implement'] }, 'WORK: implement the design.'],
-    ] as const).map(([slot, applicability, instruction], index) => ({
-      schemaVersion: '1', id: id(10 + index * 2), version: '1', title: `Bound ${slot}`, slot, applicability, rules: [{
-        id: id(11 + index * 2), version: '1', category: 'framework', level: 'required', instruction,
-        retrievalDescription: `Bound list ${slot}`,
+      // Bound lists take their scope from binding alone (O-4).
+      ['0x00010005', 'ROLE: an experienced Python developer.'],
+      ['0x00011000', 'COMMON: workspace-relative paths only.'],
+      ['0x00011103', 'WORK: implement the design.'],
+    ] as const).map(([slot, instruction], index) => (ruleList({
+      id: id(10 + index * 2), version: '1', title: `Bound ${slot}`, slot, rules: [{
+        id: id(11 + index * 2), version: '1', level: 'required', instruction,
+        description: `Bound list ${slot}`,
       }],
-    })) : []),
+    }))) : []),
   ];
   for (const [index, definition] of definitions.entries()) {
     await fs.writeFile(path.join(sourceRoot, `${index}.yaml`), `# AUTHOR_ONLY\n${YAML.stringify(definition)}`);
@@ -113,7 +135,8 @@ async function fixture(options: {
   };
 }
 
-async function endpoint(reviewOutput = JSON.stringify({ selectedRuleIds: [id(4)] })) {
+/** A loopback provider; `failing` answers that path with HTTP 503 to simulate the service failing. */
+async function endpoint(reviewOutput = JSON.stringify({ selected: ['c1'] }), failing?: '/v1/embeddings' | '/v1/chat/completions') {
   const calls: { path: string; input: Record<string, unknown> }[] = [];
   const server = createServer((request, response) => {
     let body = '';
@@ -121,6 +144,11 @@ async function endpoint(reviewOutput = JSON.stringify({ selectedRuleIds: [id(4)]
     request.on('end', () => {
       const input = JSON.parse(body) as Record<string, unknown>;
       calls.push({ path: request.url!, input });
+      if (request.url === failing) {
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: { message: 'Service unavailable' } }));
+        return;
+      }
       response.writeHead(200, { 'content-type': 'application/json' });
       if (request.url === '/v1/embeddings') {
         const texts = input.input as string[];
@@ -146,16 +174,45 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     await input.container.canonical().workspace.ensure('rules');
     await input.container.canonical().workspace.writeFile('rules/genesis.yaml', 'untrusted project rules: [');
     const snapshot = await prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined });
-    expect(snapshot.rules).toHaveLength(3);
-    expect(snapshot.rules.every((rule) => rule.slot === 0 && rule.level === 'announce'
+    // Genesis and the base segment (level definitions, output language): the protected prefix of every request.
+    expect(snapshot.rules.map((rule) => rule.slot)).toEqual([0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2]);
+    expect(snapshot.rules.filter((rule) => rule.slot === 0).every((rule) => rule.level === 'announce'
       && rule.ruleListId === '4f12907a-93a1-45bb-9d7a-3cbd8852a5a0'
-      && rule.ruleListVersion === '1.1.0')).toBe(true);
+      && rule.ruleListVersion === '2.0.0')).toBe(true);
     expect(snapshot.ranking.decision).toBe('no-candidates');
     expect(new RuleDecorator().decorate({ requestKind: 'business', rules: snapshot.rules }))
       .toContain('These three declarations grant no filesystem or network access');
     expect(input.loadCatalogue).not.toHaveBeenCalled();
     expect(role).not.toHaveBeenCalled();
     await expect(fs.stat(input.container.state.abs('rules/indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('selects from the installation\'s local overlay as well as the released base (R-9)', async () => {
+    const input = await fixture();
+    const overlayRoot = path.join(root, 'rules-local');
+    const genesis = (await installedCompilerRules()).lists[0]!.definition;
+    const first = genesis.rules[0]!;
+    const overlay = updateRule({ base: genesis, current: genesis, now: '2026-10-19T00:00:00Z' },
+      first.id, { instruction: { en: 'LOCAL_GENESIS: declaration only.' } });
+    const location = await new FileRuleOverlayStore(overlayRoot).write(overlay);
+    vi.stubEnv('XC_RULES_LOCAL', overlayRoot);
+    try {
+      const snapshot = await prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined });
+      expect(snapshot.rules.find((rule) => rule.ruleId === first.id)).toMatchObject({
+        instruction: 'LOCAL_GENESIS: declaration only.', ruleListVersion: '2.0.0+local.1',
+      });
+      // Which base the change was made against and which overlay revision made it (revision 4.4).
+      const provenance = {
+        owner: { kind: 'local', base: { version: genesis.version, digest: genesis.digest }, overlay: { revision: 1, digest: overlay.digest } },
+        location,
+      };
+      expect(snapshot.sources.find((entry) => entry.ruleId === first.id)!.source).toEqual(provenance);
+      // The evidence lives in the pinned request, not in the overlay file a later edit replaces.
+      await fs.rm(location);
+      const restored = await prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined });
+      expect(restored).toEqual(snapshot);
+      expect(restored.sources.find((entry) => entry.ruleId === first.id)!.source).toEqual(provenance);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('rejects altered installed sources for fresh requests but restores already pinned material', async () => {
@@ -169,8 +226,9 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     const altered = YAML.parse(original);
     altered.rules[0].instruction.en = 'Same-version replacement instruction';
     await fs.writeFile(target, YAML.stringify(altered));
+    // A hand edit no longer matches its recorded digest, so loading stops before the manifest check.
     await expect(prepareRuntimeRuleRequest({ ...input, loadCatalogue: undefined })).rejects.toMatchObject({
-      code: 'compiler_rule_source_failed', reason: 'manifest_mismatch',
+      code: 'compiler_rule_source_failed', reason: 'source_load_failed', cause: { reason: 'digest_mismatch' },
     });
     await expect(fs.stat(input.container.state.abs('rules/requests/drafts'))).rejects.toMatchObject({ code: 'ENOENT' });
     await fs.writeFile(target, original);
@@ -189,7 +247,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     const snapshot = await prepareRuntimeRuleRequest(input);
     expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
     expect(snapshot.ranking).toMatchObject({ decision: 'no-candidates', profile: { maxCandidates: 1 } });
-    expect(JSON.parse(await input.container.state.readFile(`rules/requests/snapshots/${id(800)}.json`))).toEqual(snapshot);
+    expect(JSON.parse(await input.container.state.readFile(`rules/requests/snapshots/${id(800)}.json`))).toEqual(storedRuleMaterial(snapshot));
     expect(role).not.toHaveBeenCalled();
     await expect(fs.stat(input.container.state.abs('rules/indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
 
@@ -200,12 +258,98 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(await input.container.canonical().workspace.exists('rules')).toBe(false);
   });
 
-  it('fails a fresh optional selection with no embedding config without publishing a draft', async () => {
-    const input = await fixture({ optional: true });
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({
-      code: 'runtime_rule_configuration_failed', reason: 'embedding_not_configured',
+  it('without embedding config, has the caller role choose optional Rules from their summaries by short key', async () => {
+    const server = await endpoint();
+    const input = await fixture({ optional: true, endpoint: server.url, embedding: false });
+    const snapshot = await prepareRuntimeRuleRequest(input);
+    expect(server.calls.map((call) => call.path)).toEqual(['/v1/chat/completions']);
+    expect(snapshot.ranking).toMatchObject({ strategy: 'review', decision: 'review-required', candidates: [{ ruleId: id(4), score: 0 }] });
+    expect(snapshot.retrieval).toBeUndefined();
+    expect(snapshot.query).toEqual({ taskSummary: input.taskSummary, errorSummary: input.errorSummary });
+    expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2), id(4)]);
+    const messages = JSON.stringify(server.calls[0]!.input.messages);
+    expect(messages).toContain('Operation evidence handling');
+    expect(messages).toContain('c1');
+    // The reviewer sees summaries and short keys: never Rule bodies or identities.
+    expect(messages).not.toContain('RULE_BODY');
+    expect(messages).not.toContain(id(4));
+  });
+
+  it('binds a TypeScript code Step to exactly its minimum Rule set, with no selection call, and the snapshot recovers', async () => {
+    const server = await endpoint();
+    const input = await fixture({ endpoint: server.url, embedding: false, maxCandidates: 20 });
+    const context = { role: 'typescript-developer', work: 'code.implement', language: 'typescript' } as const;
+    const request = {
+      ...input, context: { ...context, ...TYPESCRIPT_CODE_FACTS, tools: [...TYPESCRIPT_CODE_FACTS.tools], writablePaths: [...TYPESCRIPT_CODE_FACTS.writablePaths] },
+      loadCatalogue: vi.fn(installedCompilerRules), bind: { ...context, stepWork: 'code.implement' } as const,
+    };
+    const snapshot = await prepareRuntimeRuleRequest(request);
+    const key = (ruleId: string) => ruleId.slice(0, 8);
+    // In 0.4 the work decides the language Rules; nothing is left for a model to choose (revision 3.2).
+    expect(snapshot.ranking).toMatchObject({ decision: 'no-candidates', candidates: [] });
+    expect(snapshot.review).toBeUndefined();
+    expect(snapshot.rules.filter((rule) => rule.slot === 0x00001001).map((rule) => key(rule.ruleId)).sort())
+      .toEqual(['2b4e423a', '9275a14e', '9592c8fa', 'da7781e2', 'f0728478', 'f33c6a23']);
+    expect(server.calls).toEqual([]);
+
+    request.loadCatalogue.mockRejectedValue(new Error('Recovery must retain its original draft'));
+    expect(await prepareRuntimeRuleRequest({ ...request, config: { selection: input.config.selection, retrieval: input.config.retrieval } })).toEqual(snapshot);
+    expect(server.calls).toEqual([]);
+  });
+
+  it('reviews a bounded query: a whole requirement as the task is cut to the summary limit (revision 11.2)', async () => {
+    const server = await endpoint();
+    const input = await fixture({ optional: true, endpoint: server.url, embedding: false, maxCandidates: 20 });
+    const requirement = `REQUIREMENT_HEAD ${'detail '.repeat(1000)}REQUIREMENT_TAIL`;
+    const snapshot = await prepareRuntimeRuleRequest({ ...input, taskSummary: requirement });
+    expect(snapshot.query!.taskSummary.length).toBeLessThanOrEqual(2000);
+    expect(snapshot.query!.taskSummary.startsWith('REQUIREMENT_HEAD')).toBe(true);
+    const review = JSON.stringify(server.calls[0]!.input.messages);
+    expect(review).toContain('REQUIREMENT_HEAD');
+    expect(review).not.toContain('REQUIREMENT_TAIL');
+  });
+
+  // The limit counts characters (code points) wherever it is applied: a summary cut to the limit is
+  // stored, even when each character takes two UTF-16 units.
+  it('stores a summary cut to the limit in characters outside the Basic Multilingual Plane', async () => {
+    const server = await endpoint();
+    const input = await fixture({ optional: true, endpoint: server.url, embedding: false, maxCandidates: 20 });
+    const snapshot = await prepareRuntimeRuleRequest({ ...input, taskSummary: '😀'.repeat(2001), errorSummary: '𝒳'.repeat(2001) });
+    expect([...snapshot.query!.taskSummary]).toHaveLength(2000);
+    expect([...snapshot.query!.errorSummary!]).toHaveLength(2000);
+  });
+
+  describe('falls back to the required Rules when selection fails (revision 11.3)', () => {
+    it('when the embedding service fails, recording its typed cause', async () => {
+      const server = await endpoint(undefined, '/v1/embeddings');
+      const input = await fixture({ optional: true, endpoint: server.url });
+      const snapshot = await prepareRuntimeRuleRequest(input);
+      expect(snapshot.fallback).toMatchObject({ reason: 'retrieval_failed', cause: { code: 'rule_vector_failed', reason: 'embedding_failed' } });
+      expect(snapshot.ranking).toMatchObject({ strategy: 'bound-only', decision: 'no-candidates', candidates: [] });
+      expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
+      // The pinned fallback is what later rounds and recovery read; no second attempt is made.
+      const calls = server.calls.length;
+      expect(await prepareRuntimeRuleRequest({ ...input, config: { selection: input.config.selection, retrieval: input.config.retrieval } })).toEqual(snapshot);
+      expect(server.calls).toHaveLength(calls);
     });
-    await expect(fs.stat(input.container.state.abs('rules/requests/drafts'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+    it('when there are more candidates than one review may read', async () => {
+      const server = await endpoint();
+      const input = await fixture({ optional: true, extraOptional: true, endpoint: server.url, embedding: false, maxCandidates: 1 });
+      const snapshot = await prepareRuntimeRuleRequest(input);
+      expect(snapshot.fallback).toEqual({ reason: 'too_many_candidates', cause: { code: 'rule_selection_failed', reason: 'too_many_candidates' } });
+      expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
+      expect(server.calls).toEqual([]);
+    });
+
+    it('when the review provider fails', async () => {
+      const server = await endpoint(undefined, '/v1/chat/completions');
+      const input = await fixture({ optional: true, endpoint: server.url, embedding: false, maxCandidates: 20 });
+      const snapshot = await prepareRuntimeRuleRequest(input);
+      expect(snapshot.fallback).toMatchObject({ reason: 'review_failed', cause: { code: 'llm_request_failed' } });
+      expect(snapshot.review).toBeUndefined();
+      expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
+    });
   });
 
   it('uses the configured threshold, encodes each query and reuses the real versioned index', async () => {
@@ -221,13 +365,16 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(next.retrieval?.indexId).toBe(first.retrieval?.indexId);
     expect(server.calls.map((call) => call.path)).toEqual(Array(3).fill('/v1/embeddings'));
     expect(server.calls[0]!.input.input).toEqual(['Operation evidence handling']);
-    expect(JSON.parse((server.calls[1]!.input.input as string[])[0]!)).toMatchObject({ taskSummary: input.taskSummary, context: input.context });
+    // The query encodes the task and error only: no project context reaches the encoder (R-2).
+    expect(JSON.parse((server.calls[1]!.input.input as string[])[0]!)).toEqual({
+      inputVersion: 'rule-retrieval/2', taskSummary: input.taskSummary, errorSummary: input.errorSummary,
+    });
     expect(JSON.stringify(server.calls)).not.toMatch(/RULE_BODY|AUTHOR_ONLY/u);
     expect(await input.container.state.readFile(`rules/indexes/${files[0]}`)).toBe(bytes);
   });
 
   it.each([false, true])('uses the pinned caller role for one low-score review (empty result: %s)', async (empty) => {
-    const server = await endpoint(JSON.stringify({ selectedRuleIds: empty ? [] : [id(4)] }));
+    const server = await endpoint(JSON.stringify({ selected: empty ? [] : ['c1'] }));
     const input = await fixture({ optional: true, endpoint: server.url });
     const forRole = vi.spyOn(input.router, 'forPool');
     const snapshot = await prepareRuntimeRuleRequest(input);
@@ -236,7 +383,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings', '/v1/chat/completions']);
     const review = server.calls[2]!.input;
     expect(review.model).toBe('role-model');
-    expect(JSON.stringify(review.messages)).toContain('rule-selection-review/1');
+    expect(JSON.stringify(review.messages)).toContain('rule-selection-review/2');
     expect(JSON.stringify(review.messages)).toContain('BASE:');
     expect(JSON.stringify(review.messages)).not.toContain('RULE_BODY');
     const claim = JSON.parse(await input.container.state.readFile(`rules/requests/review-claims/${id(800)}.json`));
@@ -248,7 +395,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     });
 
     input.loadCatalogue.mockRejectedValue(new Error('Recovery must retain its original draft'));
-    const restored = await prepareRuntimeRuleRequest({ ...input, config: { retrieval: input.config.retrieval } });
+    const restored = await prepareRuntimeRuleRequest({ ...input, config: { selection: input.config.selection, retrieval: input.config.retrieval } });
     expect(restored).toEqual(snapshot);
     expect(server.calls).toHaveLength(3);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
@@ -268,7 +415,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     expect(assigned.calls).toHaveLength(1);
     expect(assigned.calls[0]!.path).toBe('/v1/chat/completions');
     expect(assigned.calls[0]!.input.model).toBe('assigned-review-model');
-    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/1');
+    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/2');
     expect(snapshot.review!.provider).toBe('assignedReview');
     const result = JSON.parse(await input.container.state.readFile(`rules/requests/review-results/${id(800)}.json`));
     expect(result).toMatchObject({ provider: 'assignedReview', model: 'openai:assigned-review-model' });
@@ -285,7 +432,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     await expect(port.send({ payload, messages, validate: () => { throw refusal; } })).rejects.toBe(refusal);
     expect(defaultService.calls.map(call => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
     expect(assigned.calls.map(call => call.path)).toEqual(['/v1/chat/completions', '/v1/chat/completions']);
-    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/1');
+    expect(JSON.stringify(assigned.calls[0]!.input.messages)).toContain('rule-selection-review/2');
     const events = (await input.container.state.readFile('audit/audit.jsonl')).trim().split('\n')
       .map(line => JSON.parse(line) as AuditEvent);
     const review = events.find(event => event.messageId === 'llm.provider_response'
@@ -302,7 +449,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     // A crash can leave a partial line. Selection, review and send append evidence but never read it back.
     await fs.appendFile(input.container.state.abs('audit/audit.jsonl'), '{"partial-line-from-a-crash":\n');
     const { port, payload, messages, scope } = reviewedExecutionTurn(input);
-    expect((await port.send({ payload, messages, validate: () => {} })).text).toBe(JSON.stringify({ selectedRuleIds: [id(4)] }));
+    expect((await port.send({ payload, messages, validate: () => {} })).text).toBe(JSON.stringify({ selected: ['c1'] }));
     expect(assigned.calls.map(call => call.path)).toEqual(['/v1/chat/completions', '/v1/chat/completions']);
     const snapshot = await new FileRuleRequestStateStore(input.container.state.abs('rules/requests')).read(scope.executionId);
     expect(snapshot?.review).toBeDefined();
@@ -311,15 +458,17 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     });
   });
 
-  it('keeps a failed review consumed after restart and performs no new retrieval', async () => {
-    const server = await endpoint('{"selectedRuleIds":["not-a-uuid"]}');
+  it('falls back to the required Rules when the review answer is unusable, and pins that outcome (revision 11.3)', async () => {
+    const server = await endpoint('{"selected":["c9"]}');
     const input = await fixture({ optional: true, endpoint: server.url });
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ reason: 'invalid_output' });
-    await expect(prepareRuntimeRuleRequest({ ...input, config: { retrieval: input.config.retrieval } }))
-      .rejects.toMatchObject({ code: 'rule_request_failed', reason: 'review_incomplete' });
+    const snapshot = await prepareRuntimeRuleRequest(input);
+    expect(snapshot.fallback).toEqual({ reason: 'review_failed', cause: { code: 'rule_selection_review_failed', reason: 'invalid_output' } });
+    expect(snapshot.review).toBeUndefined();
+    expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2)]);
+    // The consumed review is not retried: a restart returns the pinned fallback with no new calls.
+    expect(await prepareRuntimeRuleRequest({ ...input, config: { selection: input.config.selection, retrieval: input.config.retrieval } })).toEqual(snapshot);
     expect(server.calls).toHaveLength(3);
     expect(input.loadCatalogue).toHaveBeenCalledTimes(1);
-    await expect(fs.stat(input.container.state.abs(`rules/requests/snapshots/${id(800)}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('resumes a persisted draft with its original role and no fresh embedding or catalogue access', async () => {
@@ -335,7 +484,7 @@ describe('Runtime Rule preparation through configured adapters and persistent re
     const role = vi.spyOn(input.router, 'forPool');
     input.loadCatalogue.mockRejectedValue(new Error('A restored draft must not reselect rules'));
     const snapshot = await prepareRuntimeRuleRequest({
-      ...input, config: { retrieval: input.config.retrieval }, context: { role: 'test-engineer', language: 'python' },
+      ...input, config: { selection: input.config.selection, retrieval: input.config.retrieval }, context: { role: 'test-engineer', language: 'python' },
     });
     expect(snapshot.context.role).toBe('python-developer');
     expect(snapshot.rules.map((rule) => rule.ruleId)).toEqual([id(2), id(4)]);
@@ -473,7 +622,12 @@ describe('Runtime review evidence: live reuse trusts the state store, recovery c
     expect(await state.readReviewClaim(input.logicalRequestId)).toBeDefined();
     expect(await state.readReviewResult(input.logicalRequestId)).toBeUndefined();
     expect(await state.read(input.logicalRequestId)).toBeUndefined();
-    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({ reason: 'review_incomplete' });
+    // Missing audit is an integrity failure: it is recorded, so a retry reports it again with its
+    // typed cause instead of falling back, and the one allowed review is never dispatched twice.
+    await expect(prepareRuntimeRuleRequest(input)).rejects.toMatchObject({
+      code: 'rule_request_failed', reason: 'review_failed', details: { cause: { code: 'rule_request_binding_failed', reason: 'audit_unavailable' } },
+    });
+    expect(await state.read(input.logicalRequestId)).toBeUndefined();
     expect(server.calls.map((call) => call.path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
   });
 
@@ -500,11 +654,11 @@ describe('Runtime review evidence: live reuse trusts the state store, recovery c
     { name: 'model', change: (data) => { data.model = 'foreign-model'; } },
     { name: 'role', change: (data) => { data.role = 'test-engineer'; } },
     { name: 'nested attempt', change: (data) => { data.responseEvidence = { ...data.responseEvidence, providerAttemptId: id(999) }; } },
-    { name: 'nested output', change: (data) => { data.responseEvidence = { ...data.responseEvidence, output: '{"selectedRuleIds":[]}' }; } },
+    { name: 'nested output', change: (data) => { data.responseEvidence = { ...data.responseEvidence, output: '{"selected":[]}' }; } },
     { name: 'selected rules', change: (data) => {
       const capture = data.responseEvidence.capture;
       if (capture.status !== 'recorded') throw new Error('Expected fixture provider evidence');
-      data.output = '{"selectedRuleIds":[]}';
+      data.output = '{"selected":[]}';
       data.responseEvidence = { ...data.responseEvidence, output: data.output,
         capture: { status: 'recorded', response: { ...capture.response, output: data.output } } };
     } },
@@ -563,7 +717,9 @@ describe('Runtime review evidence: live reuse trusts the state store, recovery c
     const input = await fixture({ optional: true, endpoint: server.url });
     const retained = structuredClone(await prepareRuntimeRuleRequest(input));
     retained.rules.find((rule) => rule.ruleId === id(2))!.instruction = 'A different accepted base rule.';
-    retained.consideredRules.find((entry) => entry.rule.id === id(2))!.rule.instruction = 'A different accepted base rule.';
+    retained.consideredRules.find((entry) => entry.rule.id === id(2))!.rule.instruction = {
+      en: 'A different accepted base rule.', zh: 'A different accepted base rule.',
+    };
     const { digest: _digest, ...body } = retained;
     const forged = { ...body, digest: ruleEvidenceDigest(body) };
     const target = input.container.state.abs(`rules/requests/snapshots/${input.logicalRequestId}.json`);
@@ -583,7 +739,7 @@ describe('Runtime review evidence: live reuse trusts the state store, recovery c
     const snapshot = await prepareRuntimeRuleRequest(input);
     const saved = await ledger(input);
     expect(saved.bytes.includes('synthetic-fixture-value')).toBe(contentMode === 'full');
-    expect(snapshot.review).toMatchObject({ protocolVersion: 'rule-selection-review/1', requestDigest: expect.stringMatching(/^sha256:/u) });
+    expect(snapshot.review).toMatchObject({ protocolVersion: 'rule-selection-review/2', requestDigest: expect.stringMatching(/^sha256:/u) });
     vi.spyOn(RuleDecorator.prototype, 'decorate').mockImplementation(() => { throw new Error('Current template must not rebuild a retained request'); });
     input.loadCatalogue.mockRejectedValue(new Error('Current catalogue must not be loaded'));
     expect(await prepareRuntimeRuleRequest(input)).toEqual(snapshot);

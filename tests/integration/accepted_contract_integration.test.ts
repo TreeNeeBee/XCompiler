@@ -110,7 +110,7 @@ async function fixture(isolated = true) {
     git: gitRepository, targetBranch: 'master', mayMerge,
     runChecks: async (gateRoot) => {
       const content = await fs.readFile(path.join(gateRoot, 'docs', 'accepted-contract.md'), 'utf8');
-      return [{ name: 'accepted-contract', ok: gatePasses && content.includes('archive interface'),
+      return [{ name: 'accepted-contract', kind: 'execution' as const, ok: gatePasses && content.includes('archive interface'),
         summary: gatePasses ? 'The accepted contract is present.' : 'The integration contract failed.' }];
     },
     releaseChangeSet: async (id) => { await changes.release(id); },

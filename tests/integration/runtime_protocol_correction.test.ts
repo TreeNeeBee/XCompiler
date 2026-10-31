@@ -123,7 +123,7 @@ describe('Runtime protocol correction state ownership and recovery', () => {
       f.container.state.abs('rules'),
       f.container.canonical().localState.root,
       f.container.ticket('fixture-ticket', 'ticket').localState.root,
-      f.container.gate('fixture-merge', 'fixture-run').localState.root,
+      f.container.gate('fixture-merge', 'fixture-run', 'fixture-gate').localState.root,
       path.join(f.container.root, 'audit'),
     ]) await expect(fs.stat(unexpected)).rejects.toMatchObject({ code: 'ENOENT' });
   });

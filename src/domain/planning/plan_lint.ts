@@ -325,7 +325,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
         issues.push({
           level: 'error',
           stepId: phaseSteps[0]!.id,
-          message: `${iteration.id} ${phase} 阶段未产出规范验收文档：${expected}`,
+          message: `${iteration.id} ${phase} does not produce its standard acceptance document: ${expected}`,
         });
       }
     }
@@ -401,7 +401,7 @@ export function lintPlan(plan: Plan): LintIssue[] {
       issues.push({
         level: 'error',
         stepId: s.id,
-        message: `${DOC_NAMES.topic} 是 xcompiler build 专属产物，不得列为 Step 输出。`,
+        message: `${DOC_NAMES.topic} belongs to xcompiler build and must not be a Step output.`,
       });
     }
   }

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { toolText } from './tool_text.js';
 import { writeWorkspaceFile } from './workspace_write.js';
 import { promises as fs } from 'node:fs';
 import { deniedRuntimeOwnedWrite, deniedWrite, isAllowedWrite, type Tool } from './types.js';
@@ -16,9 +17,7 @@ export const replaceInFileTool: Tool<
   { occurrences: number }
 > = {
   name: 'replace_in_file',
-  description:
-    '把当前 Step writable allowlist 内目标文件的 find 字符串精确替换为 replace（默认要求出现 1 次）。' +
-    '必须提供 args.path（具体的 workspace 相对文件路径，取自 writable allowlist）、args.find、args.replace 三个字符串参数；缺少 path 会被拒绝。',
+  get description() { return toolText().replaceInFile.description; },
   argsSchema: { path: 'string', find: 'string', replace: 'string', expectedCount: 'number?' },
   async run(args, ctx) {
     if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
@@ -45,8 +44,7 @@ export const replaceInFileTool: Tool<
     if (args.find === args.replace) {
       return {
         ok: false,
-        error:
-          'no-op edit refused: find === replace（替换前后字符串完全相同）。请确认你真正要修改的差异；如只想读取文件请改用 read_file，如要整文件重写请用 write_file。',
+        error: toolText().replaceInFile.noOpRefused,
       };
     }
     if (args.replace.length === 0 && !args.find.includes('\n')) {
@@ -84,7 +82,7 @@ export const replaceInFileTool: Tool<
           .filter((x) => x.l.includes(probe))
           .slice(0, 3);
         if (matches.length > 0) {
-          hint.push('提示：以下是原文中似是你要改的区域（请以下面的字节为准重新起 find）：');
+          hint.push(toolText().replaceInFile.nearbyHint);
           for (const m of matches) {
             const start = Math.max(0, m.i - 1);
             const end = Math.min(lines.length, m.i + 2);
@@ -94,7 +92,7 @@ export const replaceInFileTool: Tool<
             hint.push('  ---');
           }
         } else {
-          hint.push('提示：未在原文中找到 find 的首行片段。考虑改用 read_file 读出原文，再用 apply_patch 精确修改；若要整文件重写，必须低于当前运行时 chunk limit。');
+          hint.push(toolText().replaceInFile.firstLineMissing);
         }
       }
       return { ok: false, error: hint.join('\n') };
@@ -125,8 +123,7 @@ export const codeSearchTool: Tool<
   { matches: Array<{ path: string; line: number; text: string }> }
 > = {
   name: 'code_search',
-  description:
-    '在 workspace 内按子串搜索代码（行级匹配）。args.root 可选；提供时必须是具体的 workspace 相对目录路径。',
+  get description() { return toolText().codeSearch.description; },
   argsSchema: { query: 'string', root: 'string?', maxResults: 'number?', ext: 'string[]?' },
   async run(args, ctx) {
     if (!args.query) return { ok: false, error: 'query empty' };
@@ -196,7 +193,7 @@ export const analyzeErrorTool: Tool<
   }
 > = {
   name: 'analyze_error',
-  description: '解析 Python 错误/测试输出，给出结构化摘要。',
+  get description() { return toolText().analyzeError.description; },
   argsSchema: { text: 'string' },
   async run(args) {
     const t = args.text ?? '';
@@ -213,7 +210,7 @@ export const analyzeErrorTool: Tool<
     if (mn) {
       out.kind = 'ModuleNotFoundError';
       out.missingModule = mn[1];
-      out.summary = `缺失模块 ${mn[1]}，需要 pip 安装并写回 requirements.txt`;
+      out.summary = toolText().analyzeError.missingModule(mn[1] ?? '');
     }
 
     const ie = /ImportError: ([^\n]+)/.exec(t);
@@ -235,7 +232,7 @@ export const analyzeErrorTool: Tool<
     out.failedTests = failed.filter((s): s is string => !!s);
     if (out.failedTests.length > 0 && out.kind === 'unknown') {
       out.kind = 'TestFailure';
-      out.summary = `${out.failedTests.length} 个测试失败`;
+      out.summary = toolText().analyzeError.failedTests(out.failedTests.length);
     }
 
     // 普通异常摘要（最后一行非空）

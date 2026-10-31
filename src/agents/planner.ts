@@ -14,10 +14,11 @@ import {
   type ProjectType,
 } from '../domain/planning/execution_plan.js';
 import { lintPlan } from '../domain/planning/plan_lint.js';
+import { estimateMessageTokens } from '../llm/window.js';
 import { getLanguageProfile } from '../application/execution/language_support.js';
 import {
   CLARIFICATION_TEMPLATE_VERSION, ClarificationRequestConfigurationError,
-  buildClarificationRequestMessages, validateClarificationPayload, type ClarificationRequestPort,
+  buildClarificationRequestMessages, validateClarificationPayload, type ClarificationRequestPort, type ClarificationSandbox,
 } from '../application/planning/clarification_request.js';
 import {
   PHASE_PLAN_TEMPLATE_VERSION,
@@ -52,7 +53,8 @@ import {
 } from './planning/validation_retry.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { makeStreamReporter } from '../llm/stream.js';
-import { getLocale, tFor } from '../i18n/index.js';
+import { getLocale, getPromptLocale, tFor, type Locale } from '../i18n/index.js';
+import { calibrationText } from './calibration_text.js';
 import {
   calibrateDocPaths,
   calibratePythonRequirements,
@@ -68,16 +70,17 @@ import {
 } from './calibration.js';
 import {
   hasExternalApiOrUrlRequirement,
-  validateClarifyJson,
+  validateClarificationTurn,
+  type ClarificationFinalReason,
+  type ClarificationTranscriptEntry,
+  type ClarificationTurn,
   type ClarificationCategory,
   type ClarifyOption,
-  type ClarifyQuestion,
 } from './planning/clarification.js';
 import {
   hasForcedPhaseSplit,
   inferComplexityAssessment,
   inferProjectType,
-  isProjectShapeAmbiguous,
   normalizeImplementationPhases,
   normalizeStepIterations,
   parseComplexityAssessment,
@@ -85,6 +88,7 @@ import {
   parseProjectType,
   validateImplementationPhaseDraft,
   validateCurrentPhaseDeliveryEntrypoints,
+  validateCurrentPhaseScenarioInputs,
   validateIterationVModelDraft,
 } from './planning/phase_strategy.js';
 import { buildDefaultSkills, renderSkillCatalog, type SkillRegistry } from '../skills/index.js';
@@ -93,6 +97,14 @@ export {
   CLARIFICATION_CATEGORIES,
   CLARIFICATION_OPTION_LABELS,
   type ClarificationCategory,
+  type ClarificationCoverage,
+  type ClarificationTranscriptEntry,
+  type ClarificationTurn,
+  type ClarificationFeasibility,
+  type ClarificationFeasibilityVerdict,
+  type ClarificationFinalReason,
+  type ClarificationOpenPoint,
+  type CapabilityBlocker,
   type ClarificationOptionLabel,
   type ClarifyOption,
   type ClarifyQuestion,
@@ -102,6 +114,17 @@ export {
 // can select the language before Planner runs. Each request pins its locale and original messages
 // before the first await; recovery uses the retained rendering.
 
+
+export interface ClarificationTurnInput {
+  rawRequirement: string; intent?: PlanIntent; hasBaseline?: boolean; projectType: ProjectType;
+  /** The sandbox this project's commands will run in: part of what XCompiler can deliver. */
+  sandbox: ClarificationSandbox;
+  transcript: readonly ClarificationTranscriptEntry[]; questionId: string;
+  /** How much of the clarification budget this turn's prompt uses, in percent. */
+  budgetUsedPercent: number;
+  /** Set when this turn must conclude rather than ask, and why. */
+  finalAssessment?: ClarificationFinalReason | null;
+}
 
 export interface PlannerInput {
   rawRequirement: string;
@@ -155,31 +178,19 @@ export class Planner {
     this.skills = skills ?? buildDefaultSkills();
   }
 
-  async clarify(
-    rawRequirement: string,
-    opts: { intent?: PlanIntent; hasBaseline?: boolean; languageAmbiguous?: boolean } = {},
-  ): Promise<ClarifyQuestion[]> {
+  /**
+   * One turn of the dynamic clarification: given the decided facts and every answer so far, the
+   * single next most decision-relevant question, the judgement that nothing is left open, or that
+   * XCompiler cannot deliver the requirement. A final assessment concludes instead of asking.
+   */
+  async nextClarification(input: ClarificationTurnInput): Promise<ClarificationTurn> {
     if (!this.clarificationRequest) throw new ClarificationRequestConfigurationError();
     this.signal?.throwIfAborted();
     const operationId = randomUUID();
-    const locale = getLocale();
-    const demand = analyzeArchitectureDemand(
-      { requirementDigest: rawRequirement, intent: opts.intent ?? 'greenfield' },
-      this.language,
-    );
-    const projectShapeAmbiguous = isProjectShapeAmbiguous(rawRequirement);
-    const externalApiRequired = hasExternalApiOrUrlRequirement(rawRequirement);
-    const payload = validateClarificationPayload({
-      schemaVersion: 1, kind: 'planning-clarification', templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale,
-      parseContext: { language: this.language, rawRequirement, intent: opts.intent ?? 'greenfield',
-        hasBaseline: !!opts.hasBaseline, complex: demand.nonTrivial, projectShapeAmbiguous,
-        externalApiRequired, languageAmbiguous: !!opts.languageAmbiguous },
-    });
+    const { payload, messages } = this.clarificationTurnRequest(input);
     const context = payload.parseContext;
-    const prompts = tFor(locale).prompts;
-    const messages = buildClarificationRequestMessages({
-      systemPrompt: prompts.plannerClarifySystem,
-      userPrompt: prompts.plannerClarify(context.rawRequirement, context),
+    const validate = (text: string) => validateClarificationTurn(text, {
+      questionId: context.questionId, asked: context.transcript, final: context.finalAssessment,
     });
     const rep = makeStreamReporter('Planner.clarify', this.clarificationRequest.name, { enabled: this.streamOutput });
     let provider: string | undefined;
@@ -197,7 +208,7 @@ export class Planner {
             rep.setModel(`${name}/${model}`);
           },
         },
-        validate: (text) => { validateClarifyJson(text, context.complex, context); },
+        validate: (candidate) => { validate(candidate); },
       });
       text = response.text;
       provider = response.provider;
@@ -207,20 +218,60 @@ export class Planner {
       rep.done('failed');
       throw err;
     }
-    await this.audit?.plannerThought('clarify', text, { rawRequirement, provider });
+    await this.audit?.plannerThought('clarify', text, { rawRequirement: input.rawRequirement, provider, questionId: context.questionId });
     this.signal?.throwIfAborted();
-    return validateClarifyJson(text, context.complex, context);
+    return validate(text);
+  }
+
+  /**
+   * Estimated tokens of the phase decomposition request, the largest planning request, apart from
+   * the topic and the PhasePlan it will carry. What clarification adds to the topic must fit beside it.
+   */
+  planningPromptOverheadTokens(input: { intent?: PlanIntent; baselineSummary?: string }): number {
+    const prompts = tFor(getPromptLocale()).prompts;
+    const intent = input.intent ?? 'greenfield';
+    const system = phaseDecompositionSystemPrompt(prompts, this.language, this.skills.list(), intent);
+    const user = prompts.plannerPhaseDecompose('', '', '', { intent, baseline: input.baselineSummary ?? '', phasePlan: '', phaseId: 'P1' });
+    return estimateMessageTokens([{ content: system }, { content: user }]);
+  }
+
+  /**
+   * Estimated tokens of the turn prompt `input` would send, before the Rule block the request adds.
+   * Intake compares it with the clarification budget to decide when the final assessment is due.
+   */
+  clarificationPromptTokens(input: ClarificationTurnInput): number {
+    return estimateMessageTokens(this.clarificationTurnRequest(input).messages);
+  }
+
+  private clarificationTurnRequest(input: ClarificationTurnInput) {
+    const locale = getPromptLocale();
+    const payload = validateClarificationPayload({
+      schemaVersion: 1, kind: 'planning-clarification', templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale, outputLocale: getLocale(),
+      parseContext: {
+        language: this.language, rawRequirement: input.rawRequirement, intent: input.intent ?? 'greenfield',
+        hasBaseline: !!input.hasBaseline, projectType: input.projectType, sandbox: input.sandbox,
+        externalApiRequired: hasExternalApiOrUrlRequirement(input.rawRequirement),
+        questionId: input.questionId, budgetUsedPercent: input.budgetUsedPercent, finalAssessment: input.finalAssessment ?? null,
+        transcript: input.transcript.map(({ id, category, question, answer }) => ({ id, category, question, answer })),
+      },
+    });
+    const prompts = tFor(locale).prompts;
+    const messages = buildClarificationRequestMessages({
+      systemPrompt: prompts.plannerClarifySystem,
+      userPrompt: prompts.plannerClarifyTurn(payload.parseContext),
+    });
+    return { payload, messages };
   }
 
   async decompose(input: PlannerInput): Promise<DraftPlan> {
     const retained = validatePhasePlanPayload({
       schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
-      locale: getLocale(), parseContext: {
+      locale: getPromptLocale(), outputLocale: getLocale(), parseContext: {
         language: this.language, rawRequirement: input.rawRequirement, userAddenda: (input.userAddenda ?? '').trim(),
         baselineSummary: input.baselineContext ?? '', intent: input.intent ?? 'greenfield',
       }, clarifications: input.clarifications, semanticAttempt: 1, repairFeedback: '',
     });
-    // Both requests use the same original intake, including answers captured before P02 awaits.
+    // Both requests use the same original intake, including answers captured before phase planning awaits.
     const capturedInput: PlannerInput = {
       rawRequirement: retained.parseContext.rawRequirement, clarifications: retained.clarifications,
       userAddenda: retained.parseContext.userAddenda, baselineContext: retained.parseContext.baselineSummary,
@@ -259,12 +310,12 @@ export class Planner {
     if (!this.phasePlanRequest) throw new PhasePlanRequestConfigurationError();
     this.signal?.throwIfAborted();
     const operationId = randomUUID();
-    const locale = getLocale();
+    const locale = getPromptLocale();
     const addenda = (input.userAddenda ?? '').trim();
     const intent = input.intent ?? 'greenfield';
     const payload = validatePhasePlanPayload({
       schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION,
-      locale, parseContext: {
+      locale, outputLocale: getLocale(), parseContext: {
         language: this.language, rawRequirement: input.rawRequirement, userAddenda: addenda,
         baselineSummary: input.baselineContext ?? '', intent,
       },
@@ -302,12 +353,12 @@ export class Planner {
     if (!this.phaseDecompositionRequest) throw new PhaseDecompositionRequestConfigurationError();
     this.signal?.throwIfAborted();
     const operationId = randomUUID();
-    const locale = getLocale();
+    const locale = getPromptLocale();
     const skills = this.skills.list();
     const intent = parseContext.intent;
     const payload = validatePhaseDecompositionPayload({
       schemaVersion: 1, kind: 'planning-phase-decomposition', templateVersion: PHASE_DECOMPOSITION_TEMPLATE_VERSION,
-      locale, parseContext: {
+      locale, outputLocale: getLocale(), parseContext: {
         language: parseContext.language, rawRequirement: parseContext.rawRequirement,
         userAddenda: parseContext.userAddenda, baselineSummary: parseContext.baselineSummary, intent,
       },
@@ -316,8 +367,7 @@ export class Planner {
     });
     const prompts = tFor(locale).prompts;
     const messages = buildPhaseDecompositionRequestMessages({
-      systemPrompt: prompts.plannerPhaseDecomposeSystem(getLanguageProfile(payload.parseContext.language)) +
-        `\n\n${renderSkillCatalog(skills)}` + (intent === 'self' ? `\n\n${prompts.plannerSelfMode}` : ''),
+      systemPrompt: phaseDecompositionSystemPrompt(prompts, payload.parseContext.language, skills, intent),
       userPrompt: prompts.plannerPhaseDecompose(payload.parseContext.rawRequirement,
         formatClarificationTranscript(payload.clarifications), payload.parseContext.userAddenda, {
         intent, baseline: payload.parseContext.baselineSummary,
@@ -436,6 +486,9 @@ function assertPlanRulesSatisfied(draft: DraftPlan, context: DraftParseContext):
     language: context.language,
     intent: context.intent,
     baselineSummary: context.baselineSummary,
+    // Only the lint result is used, and it does not depend on the text normalisation writes; a fixed
+    // locale keeps a reply parsed again on recovery independent of the current settings.
+    locale: 'en',
   })).filter((issue) => issue.level === 'error');
   if (issues.length === 0) return;
   throw new PlannerContractViolation(
@@ -445,23 +498,36 @@ function assertPlanRulesSatisfied(draft: DraftPlan, context: DraftParseContext):
   );
 }
 
+function phaseDecompositionSystemPrompt(
+  prompts: ReturnType<typeof tFor>['prompts'], language: Language, skills: ReturnType<SkillRegistry['list']>, intent: PlanIntent,
+): string {
+  return prompts.plannerPhaseDecomposeSystem(getLanguageProfile(language)) +
+    `\n\n${renderSkillCatalog(skills)}` + (intent === 'self' ? `\n\n${prompts.plannerSelfMode}` : '');
+}
+
 function formatClarificationTranscript(input: PlannerInput['clarifications']): string {
+  const labels = tFor(getPromptLocale()).prompts.clarificationTranscript;
   return input
     .map((c, i) => {
       const optionBlock = c.options && c.options.length > 0
-        ? `\n候选设定:\n${c.options.map((option) => `- ${option.label}. ${option.answer}`).join('\n')}`
+        ? `\n${labels.options}:\n${c.options.map((option) => `- ${option.label}. ${option.answer}`).join('\n')}`
         : '';
       return `Q${i + 1}${c.category ? ` [${c.category}]` : ''}: ${c.question}` +
-        `${c.why ? `\n澄清目的: ${c.why}` : ''}${optionBlock}\nA${i + 1}: ${c.answer}`;
+        `${c.why ? `\n${labels.why}: ${c.why}` : ''}${optionBlock}\nA${i + 1}: ${c.answer}`;
     })
     .join('\n\n');
 }
 
 export function buildPlan(
   draft: DraftPlan,
-  opts: { userAddenda?: string; language?: Language; intent?: PlanIntent; baselineSummary?: string } = {},
+  opts: {
+    userAddenda?: string; language?: Language; intent?: PlanIntent; baselineSummary?: string;
+    /** The language of the text normalisation writes into the plan; by default the current prompt locale. */
+    locale?: Locale;
+  } = {},
 ): Plan {
   const language = opts.language ?? 'python';
+  const locale = opts.locale ?? getPromptLocale();
   const projectType = draft.projectType ?? inferProjectType([
     draft.requirementDigest,
     draft.globalPrompt,
@@ -495,7 +561,7 @@ export function buildPlan(
   const iterated = normalizeStepIterations(draft.steps, implementationPhases);
   const shaped = calibrateLanguageStepOwnership(
     calibrateProducedInputGlobs(calibrateVModelDependencies(
-      calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated)), projectType),
+      calibrateDocPaths(calibrateStepShape(calibrateStepIds(iterated), locale), projectType),
     )),
     {
       language,
@@ -504,9 +570,9 @@ export function buildPlan(
     },
   );
   const mapped = calibrateArchitectureStepMappings(shaped, architectureModules);
-  const contracted = injectArchitectureContractPrompts(mapped, architectureModules);
+  const contracted = injectArchitectureContractPrompts(mapped, architectureModules, locale);
   // 兜底：若 LLM 漏写了 UNIT_TEST 阶段或部分 CODE 没人覆盖，由 calibrationPlanCoverage 自动追加。
-  const steps = calibratePlanCoverage(contracted, language).map(withDefaultQualityGate);
+  const steps = calibratePlanCoverage(contracted, language, locale).map(withDefaultQualityGate);
   // Python 依赖需要校准（剥离版本锁 / 重写幻觉 PyPI 包名）；其他语言仅做去重清洗。
   const dependencies =
     language === 'python'
@@ -534,6 +600,7 @@ export function buildPlan(
 function injectArchitectureContractPrompts(
   steps: Step[],
   modules: ArchitectureModule[],
+  locale: Locale,
 ): Step[] {
   if (modules.length === 0) return steps;
   const inventory = modules
@@ -542,21 +609,21 @@ function injectArchitectureContractPrompts(
     )
     .join('\n');
 
+  // Step prompts are read by the executing model, so their contract sentences follow the request's prompt language.
+  const contracts = calibrationText(locale).stepContracts;
   return steps.map((step) => {
     let contractBlock = '';
     if (step.phase === 'HIGH_LEVEL_DESIGN') {
-      contractBlock =
-        `\n\nHIGH_LEVEL_DESIGN 契约（强制）：docs/02-high-level-design.md 必须逐项写明本开发模块在整体系统中的定位、系统级对外接口、外部 API、第三方库选型、依赖确认，以及以下模块的职责、源码路径、测试路径和依赖；本阶段同时创建这些 testPaths 对应的可执行模块测试，不得推迟到 MODULE_TEST。每个模块测试必须导入或执行该模块声明的真实 sourcePaths 与公开接口，禁止在测试内复制一套业务实现来自测：\n${inventory}`;
+      contractBlock = `\n\n${contracts.highLevelDesign}\n${inventory}`;
     } else if (step.phase === 'DETAILED_DESIGN') {
-      contractBlock =
-        `\n\nDETAILED_DESIGN 契约（强制）：docs/03-detailed-design.md 必须定义模块内部具体功能实现、内部架构、数据结构/控制流，并为以下每个模块保留独立 CODE/INTEGRATION_TEST 任务及验收映射。每个集成测试必须导入或执行至少两个参与集成的真实 sourcePaths 与公开接口（Plan 仅声明一个源码时除外），禁止在测试内重写任一侧业务逻辑。测试可以引用将在 CODE 阶段实现、当前尚不存在的 sourcePaths；本阶段禁止创建 src/** stub、占位实现或产品代码：\n${inventory}`;
+      contractBlock = `\n\n${contracts.detailedDesign}\n${inventory}`;
     } else if (step.phase === 'CODE') {
       const owned = modules.filter((module) =>
         architectureImplementationPaths(module).every((path) => pathCoveredByOutputs(path, step.outputs)),
       );
       if (owned.length > 0) {
         contractBlock =
-          `\n\n本 CODE Step 仅实现架构模块：\n${owned.map((module) => `${module.id} ${module.name} — ${module.responsibility}; implementationPaths=${architectureImplementationPaths(module).join(', ')}`).join('\n')}`;
+          `\n\n${contracts.code}\n${owned.map((module) => `${module.id} ${module.name} — ${module.responsibility}; implementationPaths=${architectureImplementationPaths(module).join(', ')}`).join('\n')}`;
       }
     } else if (step.phase === 'MODULE_TEST') {
       const covered = modules.filter((module) =>
@@ -564,7 +631,7 @@ function injectArchitectureContractPrompts(
       );
       if (covered.length > 0) {
         contractBlock =
-          `\n\n本 MODULE_TEST Step 只检查并运行 HIGH_LEVEL_DESIGN 已创建的模块测试，不得改写测试或产品代码；验证架构模块：\n${covered.map((module) => `${module.id} ${module.name}; testPaths=${module.testPaths.join(', ')}`).join('\n')}`;
+          `\n\n${contracts.moduleTest}\n${covered.map((module) => `${module.id} ${module.name}; testPaths=${module.testPaths.join(', ')}`).join('\n')}`;
       }
     }
     return contractBlock ? { ...step, systemPrompt: `${step.systemPrompt}${contractBlock}` } : step;
@@ -722,6 +789,10 @@ function parsePhaseStepPlanJson(
   );
   if (deliveryEntrypointIssue) {
     throw new PlannerContractViolation(`Planner phase StepPlan delivery contract invalid: ${deliveryEntrypointIssue}`);
+  }
+  const scenarioInputIssue = validateCurrentPhaseScenarioInputs(currentPhase, parsed.steps);
+  if (scenarioInputIssue) {
+    throw new PlannerContractViolation(`Planner phase StepPlan delivery contract invalid: ${scenarioInputIssue}`);
   }
   return parsed;
 }

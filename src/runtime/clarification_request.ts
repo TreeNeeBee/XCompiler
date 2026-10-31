@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AuditLogger } from '../audit/audit.js';
-import { validateClarifyJson } from '../agents/planning/clarification.js';
+import { validateClarificationTurn } from '../agents/planning/clarification.js';
 import { PlannerContractViolation } from '../agents/planning/validation_retry.js';
 import {
   BusinessRequestInputError, PlanningOperationOwnerSchema, PLANNING_REQUEST_CONTEXTS,
@@ -38,7 +38,7 @@ export class ClarificationProtocolError extends Error {
   }
 }
 
-/** P01 keeps its original PM intake contract; parsing context is audit-owned. */
+/** The clarification request keeps its original PM intake contract; parsing context is audit-owned. */
 export function createRuntimeClarificationRequestPort(input: {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
   router: LLMRouter; audit: AuditLogger;
@@ -66,7 +66,8 @@ export function createRuntimeClarificationRequestPort(input: {
       const recovery = createRuntimeBusinessRequestRecovery(container, audit);
       await prepareRuntimeRuleRequest({ config, container, recordReplay, router, modelPool, logicalRequestId,
         context: { role: 'project-manager', language: payload.parseContext.language,
-          work: PLANNING_REQUEST_CONTEXTS.clarification, locale: payload.locale },
+          work: PLANNING_REQUEST_CONTEXTS.clarification, intent: payload.parseContext.intent, locale: payload.locale,
+          outputLanguage: payload.outputLocale ?? payload.locale },
         bind: { role: 'project-manager', language: payload.parseContext.language, work: PLANNING_REQUEST_CONTEXTS.clarification },
         taskSummary: payload.parseContext.rawRequirement, signal,
       });
@@ -112,7 +113,7 @@ export function createRuntimeClarificationRequestPort(input: {
   });
 }
 
-/** Read one adopted P01 reply against its original context; do not send or advance intake. */
+/** Read one adopted clarification reply against its original context; do not send or advance intake. */
 export async function resumeRuntimeClarificationRequest(input: {
   container: ProjectContainer; audit: AuditLogger; logicalRequestId: string; signal?: AbortSignal;
 }) {
@@ -126,10 +127,13 @@ export async function resumeRuntimeClarificationRequest(input: {
   validateClarificationRequestMessages(original.messages);
   const text = await recoverAdoptedProtocolText({ container, response: restored.source.response, signal,
     read: clarificationProtocolText, protocolError: ClarificationProtocolError });
-  const questions = validateClarifyJson(text, payload.parseContext.complex, payload.parseContext);
+  const turn = validateClarificationTurn(text, {
+    questionId: payload.parseContext.questionId, asked: payload.parseContext.transcript,
+    final: payload.parseContext.finalAssessment,
+  });
   signal?.throwIfAborted();
   return Object.freeze({ status: 'recovered' as const, protocolStatus: restored.status,
-    logicalRequestId: original.logicalRequestId, owner: original.owner, text, questions });
+    logicalRequestId: original.logicalRequestId, owner: original.owner, text, turn });
 }
 
 function assertClarificationInput(input: BusinessRequestInput): void {

@@ -8,13 +8,13 @@ import { LLMRequestError } from '../src/llm/errors.js';
 describe('retained execution request failure classification', () => {
   it('parks only the typed request-boundary failure without retry, provider switch or product blame', () => {
     const cause = new BusinessRequestInputError('identity_conflict', { logicalRequestId: 'original-request', field: 'input' });
-    const failure = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', role: 'Debugger', round: 3 }, { cause });
+    const failure = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', work: 'repair.debug', role: 'typescript-developer', round: 3 }, { cause });
     failure.message = 'Independent presentation text.';
     expect(failure.cause).toBe(cause);
     const result = classifyFailure(failure);
     expect(result).toMatchObject({ kind: 'infrastructure', category: 'internal', code: 'execution_turn_request_failed',
       message: 'Independent presentation text.', retryable: false, switchProvider: false,
-      details: { stepId: 'canonical-step', role: 'Debugger', round: 3,
+      details: { stepId: 'canonical-step', work: 'repair.debug', role: 'typescript-developer', round: 3,
         cause: { name: 'BusinessRequestInputError', reason: 'identity_conflict',
           code: 'business_request_input_failed', details: { logicalRequestId: 'original-request', field: 'input' } } } });
     expect(isEvidencePersistenceFailure(result)).toBe(false);
@@ -29,7 +29,7 @@ describe('retained execution request failure classification', () => {
     const source = new BusinessRequestInputError('write_failed', {
       logicalRequestId: 'original-request', target: '/state/request.json',
     }, { cause: new AggregateError([disk, new Error('Cleanup also failed.')], 'Publication failed.') });
-    const error = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', role: 'Coder', round: 1 }, { cause: source });
+    const error = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', work: 'code.implement', role: 'typescript-developer', round: 1 }, { cause: source });
     expect(error.cause).toBe(source);
     const retained = JSON.parse(JSON.stringify(classifyFailure(error)));
     expect(retained.details.cause).toMatchObject({ name: 'BusinessRequestInputError', reason: 'write_failed',
@@ -44,7 +44,7 @@ describe('retained execution request failure classification', () => {
 
   it('retains ordinary callback causes without interpreting their content as provider or product policy', () => {
     const cause = new Error('all LLM providers failed: generated text inside a callback exception');
-    const error = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', role: 'Tester', round: 2 }, { cause });
+    const error = new ExecutionTurnRequestFailure({ stepId: 'canonical-step', work: 'verify.unit', role: 'test-engineer', round: 2 }, { cause });
     expect(classifyFailure(error, { trustProviderText: true })).toMatchObject({ kind: 'infrastructure',
       category: 'internal', code: 'execution_turn_request_failed', retryable: false, switchProvider: false,
       details: { cause: { message: cause.message } } });

@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { withField } from '../support/domain_objects.js';
 import { simpleGit } from 'simple-git';
 import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
@@ -54,7 +55,7 @@ describe('ticket delivery loop', () => {
     const { repository, container, git, changeSets, gates, story } = world;
 
     // 1. A root Ticket gets its own branch and worktree.
-    const opened = await changeSets.ensureFor(story, world.coding);
+    const opened = withField(await changeSets.ensureFor(story, world.coding), 'changeSet');
     expect(opened.changeSet.sourceBranch).toBe(`xcompiler/ticket/${story.id}`);
 
     // 2. Work commits on that branch, never on the mainline.
@@ -92,7 +93,7 @@ describe('ticket delivery loop', () => {
       boundAt: new Date().toISOString(),
     });
     await repository.update(bug, bug.state);
-    const repairing = await changeSets.ensureFor(bug, world.coding);
+    const repairing = withField(await changeSets.ensureFor(bug, world.coding), 'changeSet');
     expect(repairing.changeSet.id).toBe(opened.changeSet.id);
     expect(repairing.root).toBe(failing.root);
     await expect(fs.stat(opened.root)).rejects.toThrow();
@@ -186,7 +187,7 @@ describe('ticket delivery loop', () => {
     const world = await fixture();
     const { repository, git, changeSets, gates, story } = world;
 
-    const opened = await changeSets.ensureFor(story, world.coding);
+    const opened = withField(withField(await changeSets.ensureFor(story, world.coding), 'changeSet'), 'workspace');
     const revision = await commit(opened.root, 'src/parser.ts', 'export const parse = () => ({ ok: true });\n');
     await changeSets.recordRevision(opened.changeSet.id, revision);
 
@@ -240,7 +241,7 @@ describe('ticket delivery loop', () => {
       runChecks: async () => PASSED_GATE,
     });
 
-    const original = await changeSets.ensureFor(story, world.coding);
+    const original = withField(await changeSets.ensureFor(story, world.coding), 'changeSet');
     const firstRevision = await commit(
       original.root,
       'src/parser.ts',
@@ -250,7 +251,7 @@ describe('ticket delivery loop', () => {
     expect((await integration.integrateTicket(story.projectId, story.id)).status).toBe('merged');
 
     const bug = await openBug(world);
-    const repair = await changeSets.ensureFor(bug, world.coding);
+    const repair = withField(await changeSets.ensureFor(bug, world.coding), 'changeSet');
     expect(repair.changeSet.generation).toBe(2);
     expect(repair.changeSet.id).not.toBe(original.changeSet.id);
     const repairRevision = await commit(

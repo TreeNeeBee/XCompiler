@@ -4,11 +4,14 @@ import path from 'node:path';
 import os from 'node:os';
 import { buildDebugBrief } from '../src/application/execution/debug_brief.js';
 import {
+  BUNDLED_DEBUG_WIKI_REL_PATH,
   DEFAULT_DEBUG_WIKI_REL_PATH,
   FileDebugWiki,
+  bundledDebugWikiPath,
   defaultDebugWikiPath,
   renderDebugWikiMatchesForPrompt,
 } from '../src/infrastructure/knowledge/file_debug_wiki.js';
+import { installedCompilerRulesRoot } from '../src/config/installation_root.js';
 
 async function tmpRoot(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-debug-wiki-'));
@@ -23,6 +26,28 @@ describe('FileDebugWiki', () => {
     try {
       expect(defaultDebugWikiPath()).toBe(path.resolve(__dirname, '..', DEFAULT_DEBUG_WIKI_REL_PATH));
     } finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  });
+
+  it('defaults beside a packaged executable, where its shipped wiki pages and Rules are, not at the snapshot root', () => {
+    const keys = ['XC_PATH', 'XCOMPILER_PATH'] as const;
+    const previous = keys.map((key) => process.env[key]);
+    const executable = process.execPath;
+    const installed = path.join(os.tmpdir(), 'xcompiler-install', 'xcompiler-macos-arm64');
+    for (const key of keys) delete process.env[key];
+    Object.defineProperty(process, 'pkg', { value: {}, configurable: true });
+    process.execPath = path.join(installed, 'xcompiler');
+    try {
+      expect(defaultDebugWikiPath()).toBe(path.join(installed, DEFAULT_DEBUG_WIKI_REL_PATH));
+      expect(bundledDebugWikiPath()).toBe(path.join(installed, BUNDLED_DEBUG_WIKI_REL_PATH));
+      expect(installedCompilerRulesRoot()).toBe(path.join(installed, 'rules'));
+    } finally {
+      process.execPath = executable;
+      delete (process as NodeJS.Process & { pkg?: unknown }).pkg;
       keys.forEach((key, index) => {
         if (previous[index] === undefined) delete process.env[key];
         else process.env[key] = previous[index];

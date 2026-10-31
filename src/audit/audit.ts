@@ -540,6 +540,14 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(normalized);
 }
 
+/**
+ * Masks credential-looking values (bearer tokens, `sk-` keys, `key=value` secrets) with the audit's
+ * own rules, for text kept outside the audit, such as clarification answers.
+ */
+export function redactCredentialText(value: string): string {
+  return redactText(value);
+}
+
 function redactText(value: string): string {
   return value
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, 'Bearer [REDACTED]')

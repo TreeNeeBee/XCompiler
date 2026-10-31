@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildScenarioOutcomeMessages,
   consumeScenarioOutcomeProtocol,
+  frozenRequirementsFor,
   judgeScenarioOutcome,
   readScenarioOutcomeMessages,
   SCENARIO_OUTCOME_PROTOCOL,
@@ -33,6 +34,21 @@ describe('scenario outcome judgement', () => {
     scenario, capturedAt: new Date().toISOString(), command: 'run', exitCode: 0,
     timedOut: false, stdoutTail: 'written to output/report.md',
   };
+
+  it('reads what the declared inspections printed, and keeps an unverifiable verdict apart', async () => {
+    // A binary result is shown to the judge only through what its inspections print; when nothing
+    // readable shows the expectation, the verdict says so rather than naming a Step to repair it.
+    const seen: string[] = [];
+    const verdict = await judgeScenarioOutcome({
+      send: sendAnswer(seen, '{"ok": false, "unverifiable": true, "reason": "the workbook rows cannot be read"}'),
+      before: [],
+      scenario,
+      scene: { ...scene, inspections: [{ command: 'python inspect.py', exitCode: 0, timedOut: false, stdoutTail: 'sheets: 信号, 错误' }] },
+    });
+    expect(seen.join('\n')).toContain('inspection python inspect.py (exit=0):\\nsheets: 信号, 错误');
+    expect(verdict).toMatchObject({ ok: false, unverifiable: true });
+    expect(verdict.ticketType).toBeUndefined();
+  });
 
   it('fails the scenario when the produced artifact contradicts the expectation', async () => {
     const seen: string[] = [];
@@ -246,6 +262,24 @@ describe('pinned scenario framework input', () => {
     expect(withoutChanges).not.toHaveProperty('acceptedContractChanges');
   });
 
+  it('carries the planned scope and the frozen requirement, and omits them when there are none', () => {
+    const frozen = frozenRequirementsFor('docs/01-requirement-analysis.md', '# Requirement\nThe sheet has 17 columns.\n');
+    const carried = readScenarioOutcomeMessages(buildScenarioOutcomeMessages({
+      ...input, plannedScope: ['The sheet has 16 columns.'], frozenRequirements: frozen,
+    }));
+    expect(carried).toMatchObject({
+      plannedScope: ['The sheet has 16 columns.'],
+      frozenRequirements: { path: 'docs/01-requirement-analysis.md', text: '# Requirement\nThe sheet has 17 columns.\n' },
+    });
+    const bare = readScenarioOutcomeMessages(buildScenarioOutcomeMessages({ ...input, plannedScope: [] }));
+    expect(bare).not.toHaveProperty('plannedScope');
+    expect(bare).not.toHaveProperty('frozenRequirements');
+    // A Phase whose requirement is not written yet, or is blank, gives the judge nothing to weigh.
+    expect(frozenRequirementsFor('docs/01-requirement-analysis.md', undefined)).toBeUndefined();
+    expect(frozenRequirementsFor('docs/01-requirement-analysis.md', '  \n')).toBeUndefined();
+    expect(frozenRequirementsFor('docs/01-requirement-analysis.md', 'x'.repeat(20_000))!.text).toContain('…(truncated)');
+  });
+
   it('rejects modified framework roles, templates, versions and payload shape distinctly', () => {
     const original = buildScenarioOutcomeMessages(input);
     const invalid = [
@@ -270,12 +304,52 @@ describe('pinned scenario framework input', () => {
     expect(verdict.evidence).toEqual(input.evidence);
   });
 
+  // A live judge given the frozen requirement and the plan, with a rubric saying the plan outranks it,
+  // read a 17-column header against the frozen document and called it correct; the plan fixed 16.
+  describe('when the judge was given the frozen requirement', () => {
+    const comparePlan = { comparePlan: true };
+    it('cannot skip saying whether that requirement conflicts with the plan', () => {
+      expect(() => consumeScenarioOutcomeProtocol(assessment('{"ok":true,"reason":"met"}'), input.evidence, undefined, comparePlan))
+        .toThrow(ScenarioOutcomeJudgementError);
+      expect(() => consumeScenarioOutcomeProtocol(
+        assessment('{"ok":true,"reason":"met","planConflict":{"conflicts":true,"point":" "}}'), input.evidence, undefined, comparePlan,
+      )).toThrow(ScenarioOutcomeJudgementError);
+    });
+
+    it('sends a conflict to requirement analysis whatever else it answered', () => {
+      for (const rest of ['"ok":true,"reason":"met"', '"ok":false,"unverifiable":true,"reason":"unreadable"',
+        '"ok":false,"reason":"wrong","ticketType":"bug","target":"code"']) {
+        const verdict = consumeScenarioOutcomeProtocol(assessment(
+          `{${rest},"planConflict":{"conflicts":true,"point":"plan: 16 columns; frozen: 17"}}`), input.evidence, undefined, comparePlan);
+        expect(verdict).toEqual({ ok: false, planConflict: true, ticketType: 'change-request', target: 'requirement-analysis',
+          reason: 'plan: 16 columns; frozen: 17', evidence: input.evidence });
+      }
+    });
+
+    it('judges the run as usual when there is no conflict', () => {
+      expect(consumeScenarioOutcomeProtocol(
+        assessment('{"ok":true,"reason":"met","planConflict":{"conflicts":false}}'), input.evidence, undefined, comparePlan,
+      )).toEqual({ ok: true, reason: 'met', evidence: [] });
+    });
+  });
+
+  it('neither asks for nor acts on a plan comparison when no frozen requirement was given', () => {
+    expect(consumeScenarioOutcomeProtocol(assessment('{"ok":true,"reason":"met"}'), input.evidence))
+      .toEqual({ ok: true, reason: 'met', evidence: [] });
+    expect(consumeScenarioOutcomeProtocol(
+      assessment('{"ok":true,"reason":"met","planConflict":{"conflicts":true,"point":"nothing to compare"}}'), input.evidence,
+    )).toEqual({ ok: true, reason: 'met', evidence: [] });
+  });
+
   it('rejects a normalization whose proof does not preserve the values', () => {
     const original = '{"ok":true,"reason":"met",}';
     const result = assessment(original);
     if (result.outcome !== 'normalized') throw new Error('fixture must require normalization');
     const proof = proveJsonProtocolCorrection(original, '{"ok":false,"reason":"changed"}', SCENARIO_OUTCOME_PROTOCOL);
-    expect(() => consumeScenarioOutcomeProtocol({ ...result, proof }, input.evidence))
+    expect(proof.status).not.toBe('preserved');
+    // Evidence read back from storage is not typed: the consumer must refuse a proof that changed values.
+    const tampered = { ...result, proof } as unknown as typeof result;
+    expect(() => consumeScenarioOutcomeProtocol(tampered, input.evidence))
       .toThrow(ScenarioOutcomeJudgementError);
   });
 });
@@ -301,10 +375,11 @@ function assessment(output: string, facts: Partial<ProviderResponseEvidence> = {
     } },
   };
   const inspection = assessJsonProtocolResponse(response, SCENARIO_OUTCOME_PROTOCOL);
-  if (inspection.status === 'assessed' && inspection.result.status === 'repairable') return {
-    outcome: 'normalized', inspection,
-    proof: proveJsonProtocolCorrection(output, inspection.result.normalized, SCENARIO_OUTCOME_PROTOCOL),
-  };
+  if (inspection.status === 'assessed' && inspection.result.status === 'repairable') {
+    const proof = proveJsonProtocolCorrection(output, inspection.result.normalized, SCENARIO_OUTCOME_PROTOCOL);
+    if (proof.status !== 'preserved') throw new Error('A repairable fixture must yield a value-preserving proof');
+    return { outcome: 'normalized', inspection, proof };
+  }
   return { outcome: inspection.status === 'ineligible' ? 'ineligible'
     : inspection.result.status === 'valid' ? 'valid' : 'unresolved', inspection };
 }

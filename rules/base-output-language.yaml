@@ -1,0 +1,26 @@
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: c4f3075e-6839-42e5-addc-485728d2c45f
+title:
+  en: Output language
+  zh: 产出语言
+slot: "0x00000002"
+version: 1.1.0
+ctime: 2026-10-19T00:00:00Z
+mtime: 2026-10-20T22:33:30.775Z
+digest: sha256:6d4320cbb6b00be814902051bd36abc5daa98310522d94efa6e92961eac823e1
+rules:
+  - id: 84577228-bae3-4003-bd21-ef8577997bd1
+    name: output-language
+    version: 1.1.0
+    level: required
+    ctime: 2026-10-19T00:00:00Z
+    mtime: 2026-10-20T22:33:30.775Z
+    digest: sha256:c008b1f4f6854aa62ee154b0ade20a73d31eb607963ae3960f3037c6ab8ab140
+    description:
+      en: "Applies to every natural-language output: deliverables are written in the user's language, text meant for models in the language of these instructions."
+      zh: 适用于所有自然语言产出：交付物使用用户的语言，写给模型的文字使用本说明所用的语言。
+    instruction:
+      en: Write the project's natural-language deliverables (documents, reports and commit messages) in {{outputLanguage}}, unless an accepted requirement specifies another language. Write plans, prompts, reasoning and any other text meant for models in the language of these instructions.
+      zh: 工程的自然语言交付物（文档、报告和提交信息）都使用{{outputLanguage}}，除非已接受的需求指定了其他语言。计划、提示词、推理说明等写给模型的文字，使用本说明所用的语言。

@@ -1143,6 +1143,21 @@ export class TicketWorkflow {
       const recurred = findings.some((finding) =>
         finding.code === bug.failure.code && finding.target === target);
       if (recurred) continue;
+      // The passing gate is this Bug's closing verdict, recorded as such like every other path that
+      // verifies a solution before closing it. A live repair chain was contradicted and interrupted,
+      // so nothing upstream had marked the solution verified; the gate then passed, and the closure
+      // threw and ended the run on the Phase's success.
+      if (bug.solution && bug.solution.status !== 'verified' && bugVerificationProven(bug)) {
+        await this.setSolution(bug.id, {
+          ...bug.solution,
+          status: 'verified',
+          verification: [...new Set([
+            ...bug.solution.verification,
+            `Phase delivery gate passed (assessment ${phaseGateAssessmentId}).`,
+          ])],
+          updatedAt: new Date().toISOString(),
+        });
+      }
       const result = await this.closeVerified(bug.id, { phaseGateAssessmentId });
       if (result.state === 'closed') closed.push(result.id);
     }
@@ -1174,6 +1189,19 @@ export class TicketWorkflow {
       ticket.failure.targetStepId === input.targetStep.id &&
       failureIdentityKey(ticket.failure.identity) === key);
     if (!waiting) return undefined;
+    // A repair that changed nothing, answered by the same failure, will be answered the same way
+    // every time: the role is handed the same inputs and reaches the same conclusion. A live Phase
+    // gate reopened one Bug six times this way, raising its attempt limit with each reopening, until
+    // the user stopped the run. Refused before anything is written, so the Bug stays as it was.
+    const lastRepair = await this.lastChangelistOn(waiting, input.targetStep.id);
+    if (lastRepair && lastRepair.entries.length === 0) {
+      throw new UnchangedRepairRecurrenceError({
+        ticketName: waiting.name,
+        targetStepName: input.targetStep.name,
+        failureCode: waiting.failure.code,
+        changelistName: lastRepair.name,
+      });
+    }
 
     const parent = input.parentChangeRequestId
       ? await this.requireTicket(input.parentChangeRequestId)
@@ -1212,6 +1240,15 @@ export class TicketWorkflow {
       ...prepared.objects,
     ]);
     return prepared.ticket as BugTicket;
+  }
+
+  /** The most recent changelist this Ticket recorded on a Step, which is its last repair there. */
+  private async lastChangelistOn(ticket: Ticket, stepId: ObjectId): Promise<Changelist | undefined> {
+    for (const id of [...ticket.changelistIds].reverse()) {
+      const object = await this.repository.read(id);
+      if (object.objectType === 'changelist' && object.stepId === stepId) return object;
+    }
+    return undefined;
   }
 
   async awaitVerification(
@@ -1757,6 +1794,31 @@ function canonicalJson(value: unknown): string {
     return `{${entries.join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+/**
+ * The same failure came back after a repair that changed no file.
+ *
+ * Typed so the orchestrator can stop on the code, not the wording: nothing in the run can change
+ * the outcome, and what can — the requirement, the plan or the code, by the user — is named in the
+ * stop message.
+ */
+export class UnchangedRepairRecurrenceError extends Error {
+  readonly code = 'repair_recurred_unchanged';
+
+  constructor(readonly detail: {
+    ticketName: string;
+    targetStepName: string;
+    failureCode: string;
+    changelistName: string;
+  }) {
+    super(`${detail.ticketName} recurred after its repair ${detail.changelistName} on ${detail.targetStepName} changed no file`);
+    this.name = 'UnchangedRepairRecurrenceError';
+  }
+}
+
+export function isUnchangedRepairRecurrence(error: unknown): error is UnchangedRepairRecurrenceError {
+  return error instanceof UnchangedRepairRecurrenceError;
 }
 
 export function verificationStepTypeForFailure(type: StepType): StepType {

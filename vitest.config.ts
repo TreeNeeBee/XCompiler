@@ -13,6 +13,9 @@ import { defineConfig } from 'vitest/config';
  *   npm run test:integration  loopback sockets and real subprocesses
  *   npm run test:e2e          spawns the real CLI/ACP process
  */
+// Tests never read the developer's own local Rule overlay; overlay tests pass explicit roots.
+const env = { XC_RULES_LOCAL: '/nonexistent/xcompiler-test-rules-local' };
+
 export default defineConfig({
   test: {
     reporters: 'default',
@@ -22,6 +25,7 @@ export default defineConfig({
           name: 'core',
           include: ['tests/*.test.ts'],
           environment: 'node',
+          env,
           globals: false,
           // The domain engine drives whole V-model runs in memory; the slowest case takes ~3s on a
           // developer machine and roughly three times that on a shared CI runner, which put it past
@@ -34,6 +38,7 @@ export default defineConfig({
           name: 'integration',
           include: ['tests/integration/**/*.test.ts'],
           environment: 'node',
+          env,
           globals: false,
           testTimeout: 20_000,
         },
@@ -43,6 +48,7 @@ export default defineConfig({
           name: 'e2e',
           include: ['tests/e2e/**/*.test.ts'],
           environment: 'node',
+          env,
           globals: false,
           testTimeout: 30_000,
         },

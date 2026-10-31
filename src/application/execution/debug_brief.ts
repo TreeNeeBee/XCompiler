@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import type { Phase } from '../../domain/planning/execution_plan.js';
+import type { DebugFailureCategory } from '../../domain/quality/failure_category.js';
 import { isLoopbackNetworkFailureLine } from './network_failure.js';
 
-export type DebugFailureCategory = 'test_failure' | 'syntax_error' | 'import_error' | 'dependency_error' |
-  'network_api_failure' | 'missing_output' | 'tool_loop' | 'permission_denied' | 'llm_provider' | 'exception' | 'unknown';
+export type { DebugFailureCategory };
 
 export interface DebugBrief {
   version: 2;
@@ -58,9 +58,12 @@ export function buildDebugBrief(input: DebugBriefInput): DebugBrief {
   const rootSignals = extractSignals(sections.root || raw, missingOutputs);
   const latestSignals = sections.latest ? extractSignals(sections.latest, missingOutputs) : undefined;
   const chosen = choosePrimarySignals(rootSignals, latestSignals);
-  const category = input.typedFailure
-    ? typedFailureCategory(input.typedFailure)
-    : chosen.category;
+  // Owed outputs are a typed fact (`details.missingOutputs`) and outrank the failure's code, as they
+  // do when the category is read from evidence: an output stall wrapped in a failed test command is
+  // still an output repair.
+  const category = missingOutputs
+    ? 'missing_output'
+    : input.typedFailure ? typedFailureCategory(input.typedFailure) : chosen.category;
   const primaryError = chosen.primaryError || reason || 'Unknown failure';
   const failedTests = dedup([...(rootSignals.failedTests ?? []), ...(latestSignals?.failedTests ?? [])]).slice(0, MAX_FAILED_TESTS);
   const files = dedup([...(rootSignals.files ?? []), ...(latestSignals?.files ?? [])]).slice(0, MAX_FILES);
@@ -446,7 +449,9 @@ function shouldSuppressReasonInEvidence(reason?: string, failureLog?: string, mi
  * A line consisting of nothing but the id is kept: that is how summary sections list failures.
  */
 const FAILURE_MARKER = /\b(?:FAILED|ERROR|FAIL)\b|[×✗]/u;
-const TEST_ID_ALONE = /^[^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)::[A-Za-z0-9_:[\].-]+$/u;
+// Test names are identifiers, and identifiers are Unicode: an ASCII class cut `test_参数` down to
+// `test_`, a selector that replays nothing.
+const TEST_ID_ALONE = /^[^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)::[\p{L}\p{M}\p{N}\p{Pc}:[\].-]+$/u;
 
 function namesFailingTest(line: string): boolean {
   return FAILURE_MARKER.test(line) || TEST_ID_ALONE.test(line.trim());
@@ -466,7 +471,7 @@ function extractFailedTests(text: string): string[] {
   // Bare ids only from lines that report a failure; see FAILURE_MARKER.
   for (const line of text.split(/\r?\n/u)) {
     if (!namesFailingTest(line)) continue;
-    for (const match of line.matchAll(/([^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)::[A-Za-z0-9_:[\].-]+)/gu)) {
+    for (const match of line.matchAll(/([^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)::[\p{L}\p{M}\p{N}\p{Pc}:[\].-]+)/gu)) {
       push(match[1]);
     }
   }

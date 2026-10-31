@@ -7,7 +7,8 @@ import {
 } from '../runtime.js';
 import { runLs, runShow } from './inspect.js';
 import { runDoctorCli } from './doctor.js';
-import { setLocale, t } from '../i18n/index.js';
+import { registerRuleCommand } from './rule.js';
+import { getLocale, setLocale, t } from '../i18n/index.js';
 import { xcEnv } from '../config/env.js';
 import { createCliRuntimeIO, isCliCancellation, runCliAbortable } from './runtime_adapter.js';
 import { runAcpStdioServer } from '../acp/index.js';
@@ -309,6 +310,8 @@ program
     }
     applyExecuteExitCode(result.execution);
   });
+
+registerRuleCommand(program, () => getLocale());
 
 program
   .command('acp')

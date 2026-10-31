@@ -44,10 +44,13 @@ msg() {
 }
 
 # Compiler rules are required release sources, never optional attachments. This list must equal
-# COMPILER_RULE_MANIFEST (src/infrastructure/rules/compiler_rule_catalogue.ts); a test guards it.
+# COMPILER_RULE_MANIFEST (generated in src/infrastructure/rules/compiler_rule_manifest.ts); a test guards it.
 REQUIRED_RULE_SOURCES=(
   rules/genesis.yaml
+  rules/base-level-definitions.yaml
+  rules/base-output-language.yaml
   rules/language-typescript.yaml
+  rules/language-python.yaml
   rules/role-project-manager.yaml
   rules/role-planner.yaml
   rules/role-requirements-analyst.yaml
@@ -255,6 +258,28 @@ echo
 msg package.cross_compile
 
 mkdir -p "$OUT_ROOT"
+# dist/pkg only ever holds one version under one SHA256SUMS: artifacts of another version, archives
+# whose directory is gone and staging left by an interrupted run are removed before building.
+# Targets of this version packed by an earlier run stay, so targets can be packed one at a time.
+for stale_dir in "$OUT_ROOT"/xcompiler-*/; do
+  [[ -d "$stale_dir" ]] || continue
+  stale_name="$(basename "$stale_dir")"
+  stale_version="$(cat "$stale_dir/VERSION" 2>/dev/null || true)"
+  if [[ "$stale_name" == *.staging || "$stale_version" != "$VERSION" ]]; then
+    msg package.stale_removed "$stale_name" "${stale_version:-?}"
+    rm -rf "$stale_dir" "$OUT_ROOT/$stale_name.tar.gz" "$OUT_ROOT/$stale_name.zip"
+  fi
+done
+for stale_archive in "$OUT_ROOT"/xcompiler-*.tar.gz "$OUT_ROOT"/xcompiler-*.zip; do
+  [[ -f "$stale_archive" ]] || continue
+  stale_name="$(basename "$stale_archive")"
+  stale_name="${stale_name%.tar.gz}"
+  stale_name="${stale_name%.zip}"
+  if [[ ! -d "$OUT_ROOT/$stale_name" ]]; then
+    msg package.stale_removed "$(basename "$stale_archive")" "?"
+    rm -f "$stale_archive"
+  fi
+done
 # 共享附件
 ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example rules debug-wiki skills)
 DOC_ASSETS=(docs/agent_skills.md)
@@ -355,14 +380,12 @@ done
 
 
 # ---------------- 4. 校验和 ----------------
+# Every archive in dist/pkg is this version (see step 2), so SHA256SUMS covers all of them, including
+# targets packed by an earlier run, rather than only the targets of this run.
 msg package.checksum
 archives=()
-for t in $TARGETS; do
-  if [[ "$t" == win-* ]]; then
-    [[ -f "xcompiler-${t}.zip" ]] && archives+=("xcompiler-${t}.zip")
-  else
-    [[ -f "xcompiler-${t}.tar.gz" ]] && archives+=("xcompiler-${t}.tar.gz")
-  fi
+for archive in xcompiler-*.tar.gz xcompiler-*.zip; do
+  [[ -f "$archive" ]] && archives+=("$archive")
 done
 
 if [[ ${#archives[@]} -eq 0 ]]; then

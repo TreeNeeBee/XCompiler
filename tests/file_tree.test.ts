@@ -153,7 +153,6 @@ describe('FileTreeService', () => {
     objects = new Map();
     const tree = FileTreeService.create({
       projectId: '019fd0e5-5210-7e03-9b5e-4876a0541efd' as never,
-      workspaceRoot: root,
     });
     objects.set(tree.id, tree);
     service = new FileTreeService(repository as never, root, tree.id);

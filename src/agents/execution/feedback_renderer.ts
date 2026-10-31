@@ -8,7 +8,7 @@ import {
   resolveQualityGate,
   type StageQualityAssessment,
 } from '../../domain/quality/stage_quality.js';
-import { t } from '../../i18n/index.js';
+import { getPromptLocale, tFor } from '../../i18n/index.js';
 import type { ToolResult } from '../../tools/types.js';
 
 export interface TurnFeedbackContext {
@@ -57,7 +57,8 @@ export function renderExecutionFeedback(
     readChunkBytes?: number;
   } = {},
 ): string {
-  const messages = t().prompts;
+  // Feedback is read by the model, so it follows the prompt language, not the user's locale.
+  const messages = tFor(getPromptLocale()).prompts;
   const lines: string[] = [messages.executorFeedbackHeader];
   const failureDetails = [
     ...results.filter((result) => !result.ok).map((result) => result.error ?? result.summary ?? ''),

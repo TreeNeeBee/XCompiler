@@ -1,13 +1,13 @@
-import { defineConfig } from 'tsup';
+import { defineConfig, type Options } from 'tsup';
 
 const shared = {
-  format: ['esm'] as const,
+  format: ['esm'],
   target: 'node24',
   splitting: false,
   sourcemap: true,
   clean: true,
   dts: true,
-};
+} satisfies Options;
 
 export default defineConfig([
   {

@@ -99,7 +99,7 @@ function harness(options: {
     } as never,
     gates: {
       open: async () => {
-        const current = stored.get(changeSetId) ?? changeSet;
+        const current: Record<string, unknown> = stored.get(changeSetId) ?? changeSet;
         if (!current.mergeRequestId) {
           put({ ...current, revision: Number(current.revision ?? 0) + 1, mergeRequestId });
         }

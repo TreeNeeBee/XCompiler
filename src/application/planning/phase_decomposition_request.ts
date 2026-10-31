@@ -29,6 +29,8 @@ const SkillNamesSchema = z.array(z.string().refine((value) => value.trim().lengt
 export const PhaseDecompositionPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('planning-phase-decomposition'),
   templateVersion: z.literal(PHASE_DECOMPOSITION_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  /** The user's language, which deliverables are written in; absent, the prompt locale. */
+  outputLocale: z.enum(['en', 'zh']).optional(),
   parseContext: PhasePlanPayloadSchema.shape.parseContext,
   clarifications: PhasePlanPayloadSchema.shape.clarifications,
   phasePlan: DraftPhasePlanSchema,

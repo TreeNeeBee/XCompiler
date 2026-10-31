@@ -1,4 +1,8 @@
-locale: zh  # CLI / prompt 语言：en 或 zh
+locale: zh  # 用户语言（en 或 zh）：CLI、交互提示、报告，以及写进工程的文档、报告和提交信息
+# 可选，默认 off。on 时模型读英文、用户仍读 locale：提示模板、Rule、工具描述等预设文字直接换成英文，
+# 用户写的需求、回答和 topic 正文由模型译成英文，模型的提问与结论译回 locale 后再显示。
+# 翻译结果缓存在工程状态目录；翻译失败时保留原文并告警。locale 为 en 时不起作用。
+# prompt_translate: on
 
 # 当前 Runtime task 对外部系统资源的授权策略。工程内部文件、测试和 sandbox 程序执行
 # 由 Step/Tool/Gate 自身约束，不逐次弹窗；工程目录外文件访问始终硬拒绝。
@@ -15,10 +19,16 @@ record_replay:
   channels: [http, llm]
   redacted_fields: []
 
-# 0.4 Rule retrieval configuration. Build/run caller migration is still in progress; configuration
-# alone does not activate Rule injection. Fresh optional retrieval requires an explicit embedding
-# service; recovery and required-only selection need none. This endpoint has no chat fallback.
+# Rule retrieval configuration. In 0.4 every request carries only the Rules code requires, so no
+# selection call is made and no embedding service is needed. Once open segments (framework, Debug,
+# business Rules) have content, optional Rules are ranked by this embedding service when it is
+# configured; without it, the request's own role chooses them from their summaries. Recovery never
+# needs it. This endpoint has no chat fallback.
 # rules:
+#   selection:
+#     # How a request chooses optional Rules: bound-only | inline | embedding | review. Code narrows it
+#     # per work (a scenario judgement always runs bound-only). This release accepts only bound-only.
+#     strategy: bound-only
 #   embedding:
 #     provider: openai  # openai (OpenAI-compatible /embeddings) or ollama (/api/embed)
 #     api_key: ${RULE_EMBEDDING_API_KEY}
@@ -103,6 +113,7 @@ llm:
     design:     [openrouter_free]
     coding:     [openrouter_free]
     testing:    [openrouter_free]
+    # translation: [openrouter_free]  # 可选：prompt_translate 的翻译池；未配置时使用 management
 
   # 动态评分快照由 XCompiler 自动维护，落盘到同目录的 llm_scores.yaml，请勿手工编辑。
   # 用户手动指定 provider 分数时，请在 config.yaml 同目录创建 llm_scores_user.yaml；
@@ -193,3 +204,17 @@ agent:
           wall_seconds: 60
           network: download-only
           # expose_ports: [3000]
+
+# Build intake. The development language and deliverable form are asked first, unless the requirement
+# or the existing project already settles them; then clarification asks one question at a time until
+# the model judges the requirement clear. Each question resends everything confirmed so far, so the
+# clarification is bounded by context: once the clarifying prompt fills context_ratio of the clarifying
+# model's window, or the topic planning will read (with planning's own prompt and the PhasePlan it
+# carries) fills context_ratio of the planning model's window, or stall_turns answers in a row settle
+# no dimension beyond the most settled so far (and leave the feasibility verdict as it was), the model makes a final assessment and you choose what to do. Windows are measured
+# after their safety margin and reply room.
+# Points still open are listed under Open points in docs/topic.md.
+# planning:
+#   clarification:
+#     context_ratio: 0.7   # 0.2-0.9; the rest is room for the final assessment and planning's own prompt
+#     stall_turns: 4      # 2-20

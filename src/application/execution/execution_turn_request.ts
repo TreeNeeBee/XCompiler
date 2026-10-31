@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { AcceptedContractChangeSchema } from './accepted_contract_changes.js';
 import { PriorAttemptFailureSchema } from './execution_stall.js';
 import { ObjectIdSchema } from '../../domain/identity/object_id.js';
-import { LANGUAGES, StepSchema } from '../../domain/planning/execution_plan.js';
+import { LANGUAGES, PLAN_INTENTS, PROJECT_TYPES, StepSchema } from '../../domain/planning/execution_plan.js';
+import { DEBUG_FAILURE_CATEGORIES } from '../../domain/quality/failure_category.js';
 import {
   ChangeRequestTicketSchema, EnhancementTicketSchema, TicketSchema,
 } from '../../domain/tickets/ticket.js';
@@ -46,6 +47,8 @@ export type ExecutionRequestScope = z.infer<typeof ExecutionRequestScopeSchema>;
 
 const DebugContextSchema = z.object({
   bugTicketId: z.string().optional(), reason: z.string(), failureLog: z.string(),
+  /** The Debug brief's typed category; Rule applicability reads it, never the rendered brief. */
+  failureCategory: z.enum(DEBUG_FAILURE_CATEGORIES).optional(),
   debugBrief: z.string().optional(), suggestions: z.string().optional(), repairRequired: z.boolean().optional(),
   verificationScope: z.object({
     stepId: z.string(), phase: StepSchema.shape.phase, testArgs: z.array(z.string()),
@@ -62,9 +65,11 @@ export const ExecutionPromptStepSchema = StepSchema.extend({ id: z.union([Object
 /** Original framework inputs support only the existing deterministic per-provider window rendering. */
 export const ExecutionPromptContextSchema = z.object({
   step: ExecutionPromptStepSchema, work: WorkIdSchema, role: RoleIdSchema.optional(),
+  /** The plan's mode and project type, for Rule applicability (revision 11.4); not rendered. */
+  project: z.object({ intent: z.enum(PLAN_INTENTS), projectType: z.enum(PROJECT_TYPES) }).strict().optional(),
   baselineTestExecution: z.enum(['execute', 'defer']).optional(),
   baselineTestExecutionReason: z.enum([
-    'initial-pre-code', 'pre-code-correction', 'code-step', 'post-code-correction', 'verification-step',
+    'initial-pre-code', 'pre-code-correction', 'contract-change', 'code-step', 'post-code-correction', 'verification-step',
   ]).optional(),
   acceptedContractChanges: z.array(AcceptedContractChangeSchema).readonly().optional(),
   contextSnippets: z.array(z.object({ path: z.string(), content: z.string() }).strict()).optional(),
@@ -82,6 +87,8 @@ export type ExecutionPromptContext = z.infer<typeof ExecutionPromptContextSchema
 export const ExecutionTurnPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('step-execution-turn'),
   templateVersion: z.literal(EXECUTION_TURN_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  /** The user's language, which deliverables are written in; absent, the prompt locale. */
+  outputLocale: z.enum(['en', 'zh']).optional(),
   parseContext: z.object({ language: z.enum(LANGUAGES) }).strict(), round: PositiveInteger,
   promptContext: ExecutionPromptContextSchema, initialMissingOutputs: z.array(z.string()),
   tools: z.array(z.object({ name: Text, description: z.string(), argsSchema: z.record(z.string(), z.json()) }).strict())

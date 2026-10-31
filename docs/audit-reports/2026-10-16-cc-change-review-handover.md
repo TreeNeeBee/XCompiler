@@ -1,9 +1,9 @@
 # 0.4.0 M-C～P1 变更审查交接（CC → 审查方）
 
 日期：2026-10-16。审查范围：`e2d0330..efb64b0`（单个提交 `efb64b0`，125 个文件）。
-依据：[审查变更清单](2026-10-15-review-change-list.md)（D-1～D-21，M-C/M-D/M-E/G1/P1）。
+依据：[审查变更清单](../features/0.4.0/2026-10-15-review-change-list.md)（D-1～D-21，M-C/M-D/M-E/G1/P1）。
 逐步过程、证伪明细和中间结论在 [变更审计日志](2026-10-16-change-audit-log.md) 的
-"M-C"、"M-D"、"M-E"、"G1"、"P1" 各节；当前进度只看 [HANDOVER 状态表](HANDOVER.md#当前状态唯一进度表)。
+"M-C"、"M-D"、"M-E"、"G1"、"P1" 各节；当前进度只看 [HANDOVER 状态表](../features/0.4.0/HANDOVER.md#当前状态唯一进度表)。
 
 本文件是给审查方的入口：先说明范围和偏差，再列出建议优先核对的地方。所有结论都经过本地门禁，
 但**没有任何一项经过真实模型运行**（D-20 未做），这是本次交付最大的未验证面。
@@ -12,12 +12,12 @@
 
 | 里程碑 | 内容 | 主要位置 |
 |---|---|---|
-| M-C1 | provider 窗口放不下时跳过，不扣分；整池放不下时抛类型化错误 | [router.ts](../../../src/llm/router.ts)、[errors.ts](../../../src/llm/errors.ts)、[rule_request_guard.ts](../../../src/llm/rule_request_guard.ts) |
-| M-C2 | **D-21**：正常业务路径只写审计、不回读；只有重启恢复读审计 | [business_request_input.ts](../../../src/application/execution/business_request_input.ts)、[business_request_recovery.ts](../../../src/application/execution/business_request_recovery.ts)、[rule_request_coordinator.ts](../../../src/application/rules/rule_request_coordinator.ts)、[protocol_correction_state.ts](../../../src/llm/protocol_correction_state.ts) |
-| M-C3 | 每次 Step 执行只选一次 Rule，各轮复用快照 | [execution_turn_request.ts（Runtime）](../../../src/runtime/execution_turn_request.ts) |
-| M-D | Rule 中英变体、21 个新 RuleList、Runtime 绑定计算、提示原文迁移与删除 | [rules/](../../../rules)、[rule_binding.ts](../../../src/application/rules/rule_binding.ts)、[catalogue.ts](../../../src/domain/rules/catalogue.ts)、[slots.ts](../../../src/domain/rules/slots.ts)、[compiler_rule_catalogue.ts](../../../src/infrastructure/rules/compiler_rule_catalogue.ts) |
-| M-E | `escape-insertion` 准入与证明、账本额度耗尽、五个调用方的校准接线与恢复 | [protocol_json.ts](../../../src/llm/protocol_json.ts)、[protocol_correction.ts（Runtime）](../../../src/runtime/protocol_correction.ts)、五个 Runtime 端口 |
-| P1 | 10 项发布资源失败、版本 0.4.0 / Plugin API 4、依赖升级、升级说明 | [script_i18n.mjs](../../../scripts/script_i18n.mjs)、[package.sh](../../../scripts/package.sh)、[versioning.md](../../../docs/versioning.md)、package.json |
+| M-C1 | provider 窗口放不下时跳过，不扣分；整池放不下时抛类型化错误 | [router.ts](../../src/llm/router.ts)、[errors.ts](../../src/llm/errors.ts)、[rule_request_guard.ts](../../src/llm/rule_request_guard.ts) |
+| M-C2 | **D-21**：正常业务路径只写审计、不回读；只有重启恢复读审计 | [business_request_input.ts](../../src/application/execution/business_request_input.ts)、[business_request_recovery.ts](../../src/application/execution/business_request_recovery.ts)、[rule_request_coordinator.ts](../../src/application/rules/rule_request_coordinator.ts)、[protocol_correction_state.ts](../../src/llm/protocol_correction_state.ts) |
+| M-C3 | 每次 Step 执行只选一次 Rule，各轮复用快照 | [execution_turn_request.ts（Runtime）](../../src/runtime/execution_turn_request.ts) |
+| M-D | Rule 中英变体、21 个新 RuleList、Runtime 绑定计算、提示原文迁移与删除 | [rules/](../../rules)、[rule_binding.ts](../../src/application/rules/rule_binding.ts)、[catalogue.ts](../../src/domain/rules/catalogue.ts)、[slots.ts](../../src/domain/rules/slots.ts)、[compiler_rule_catalogue.ts](../../src/infrastructure/rules/compiler_rule_catalogue.ts) |
+| M-E | `escape-insertion` 准入与证明、账本额度耗尽、五个调用方的校准接线与恢复 | [protocol_json.ts](../../src/llm/protocol_json.ts)、[protocol_correction.ts（Runtime）](../../src/runtime/protocol_correction.ts)、五个 Runtime 端口 |
+| P1 | 10 项发布资源失败、版本 0.4.0 / Plugin API 4、依赖升级、升级说明 | [script_i18n.mjs](../../scripts/script_i18n.mjs)、[package.sh](../../scripts/package.sh)、[versioning.md](../versioning.md)、package.json |
 
 不在范围内：D-20 真实项目验证、原生 pkg 二进制、业务 Rule 与多执行者（0.5）、生产流程接入重启恢复入口。
 
@@ -38,9 +38,9 @@
 2. **工作列表的 `works`**：写明该列表允许在哪些请求工作下被绑定。Step 工作列表同时接受 `repair.debug` 和 `change.apply`，
    因为修 Bug 和改 CR 时也要带上基础工作文本。
 3. **`design.baseline-deferred` 的条件**沿用原代码 `isDeclarativeOutputPhase && !debug && defer`：包括需求分析 Step，CR 模式下也绑定。
-   清单 1.4 写的是"设计 Step"。该判断收为 [work.ts](../../../src/domain/workflow/work.ts) 的 `isDeclarativeOutputWork`，Executor 与绑定计算共用。
+   清单 1.4 写的是"设计 Step"。该判断收为 [work.ts](../../src/domain/workflow/work.ts) 的 `isDeclarativeOutputWork`，Executor 与绑定计算共用。
 4. **locale**：locale 放进 Rule 上下文（不是适用性维度），在选择时按它取文本，并固定在快照里；Decorator 不变。
-   J06 模板只有英文，固定按 `en` 渲染。
+   J06（场景结果判定） 模板只有英文，固定按 `en` 渲染。
 5. **协议必须声明 `escape-insertion`** 才能准入。这沿用"协议声明允许的变换"合同；五个生产协议因此从版本 1 升到 2。
 6. **外层包装不准入**：用扫描器的结构事实 `withinRoot`（失败位置是否在已打开的根容器内）实现，没有按诊断文本判断。
 7. **校准发送失败**（`LLMRequestError`、容量不足）时记 `llm.protocol_correction_unavailable`，回到原协议拒绝路径；
@@ -68,8 +68,8 @@
 2. **M-D 的模型可见内容。**
    - 迁移文本是否逐字一致：`execution.common` 与各模式片段由脚本从原 `prompt_policy.ts` 抽取 en/zh；Step 工作文本来自原 `work_guidance.ts`（只有英文）。
    - 新写的中文是否准确：工作说明、TS 合同的英文版、命名规则的中文版、genesis 和 J06 的中文版、8 个角色身份。
-   - 绑定组合是否正确：[rule_binding.ts](../../../src/application/rules/rule_binding.ts) 的槽位表要与 [rules/](../../../rules) 中 YAML 的 slot/applicability 一致（[rule_binding.test.ts](../../../tests/rule_binding.test.ts) 有一致性检查）。
-   - P01 澄清的身份由"需求分析师"变成项目经理（清单 1.4 规定 `plan.clarify` 由 project-manager 负责），提问质量可能受影响。
+   - 绑定组合是否正确：[rule_binding.ts](../../src/application/rules/rule_binding.ts) 的槽位表要与 [rules/](../../rules) 中 YAML 的 slot/applicability 一致（[rule_binding.test.ts](../../tests/rule_binding.test.ts) 有一致性检查）。
+   - P01（需求澄清） 澄清的身份由"需求分析师"变成项目经理（清单 1.4 规定 `plan.clarify` 由 project-manager 负责），提问质量可能受影响。
    - Executor 系统消息不再含身份、角色块和执行策略。生产中 Executor 必经 Runtime 端口，Rule 块由端口前置；用测试夹具直接运行的 Executor 则不含这些内容。
 3. **M-E 证明与接线。**
    - `alignEscapeInsertion` 的正确性：按原文逐字符推进，保留所有可达的候选位置，以处理连续反斜杠的多种对齐。
@@ -110,7 +110,7 @@
 - ~~`AuditLogger` 半行~~、~~`providerValidationRepairPrompt` 按错误文本分支~~：已于 2026-10-17 修复（见审计日志末节）。
 - ~~`isOutputCompletionFailure` 等"产出缺失"的文本判断~~：已于 2026-10-17 改为读取 `details.missingOutputs`（见审计日志"产出缺失改为类型化"）。
 - `assertBusinessRequestAttemptRecord` 对"记录与请求不一致"仍报 `audit_mismatch`，属于历史命名。
-- ~~`LanguageProfile.executorPromptOverride`~~ 已删除；单轮 `plannerSystem` 未使用，但有测试断言其内容；已只读核对，有 4 项指导只存在于其中（见审计日志"单轮 plannerSystem 核对"），待决定迁入或删除。
+- ~~`LanguageProfile.executorPromptOverride`~~ 已删除；~~单轮 `plannerSystem`~~ 已删除，其中 3 项生产缺失的指导已迁入两级规划提示和高层设计工作 Rule（见审计日志"单轮 plannerSystem 删除与迁入"）。
 - 默认 `redacted` 审计下，含凭据的请求重启后无法精确恢复（原有行为，现在只影响恢复）。
 - 0.4 的 Debug 段（`0x0300-0x0FFF`）为空；HANDOVER 提到的"审阅后的 Debug Rule"不在清单的 P1 范围内。
 

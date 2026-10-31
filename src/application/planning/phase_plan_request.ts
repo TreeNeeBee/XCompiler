@@ -32,6 +32,8 @@ const ClarificationSchema = z.object({
 export const PhasePlanPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('planning-phase-plan'),
   templateVersion: z.literal(PHASE_PLAN_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  /** The user's language, which deliverables are written in; absent, the prompt locale. */
+  outputLocale: z.enum(['en', 'zh']).optional(),
   parseContext: ParseContextSchema, clarifications: z.array(ClarificationSchema),
   semanticAttempt: z.number().int().min(1), repairFeedback: z.string(),
 }).strict();

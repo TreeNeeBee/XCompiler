@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ObjectId } from '../src/domain/identity/object_id.js';
 import {
   directCorrectionOrigin,
   resolveCorrectionChainOrigin,
@@ -12,7 +13,7 @@ describe('correction provenance', () => {
   it('uses the deepest failure in a folded CR when deciding whether baseline code exists', () => {
     const plan = fixturePlan();
     const requirement = plan.steps[0]!;
-    const request = {
+    const request = partialTicket({
       id: 'folded-cr',
       objectType: 'ticket',
       type: 'change-request',
@@ -22,7 +23,7 @@ describe('correction provenance', () => {
         { failedStepId: 'requirement-id', failedStepType: 'REQUIREMENT_ANALYSIS' },
         { failedStepId: 'unit-id', failedStepType: 'UNIT_TEST' },
       ],
-    } as Ticket;
+    });
 
     const origin = directCorrectionOrigin(plan, request);
 
@@ -37,7 +38,7 @@ describe('correction provenance', () => {
   it('keeps a post-CODE origin through a nested CR and upstream Enhancement', async () => {
     const plan = fixturePlan();
     const requirement = plan.steps[0]!;
-    const sourceBug = {
+    const sourceBug = partialTicket({
       id: 'source-bug',
       objectType: 'ticket',
       type: 'bug',
@@ -45,16 +46,16 @@ describe('correction provenance', () => {
         failedStepId: 'unit-id',
         failedStepType: 'UNIT_TEST',
       },
-    } as Ticket;
-    const parentCr = {
+    });
+    const parentCr = partialTicket({
       id: 'parent-cr',
       objectType: 'ticket',
       type: 'change-request',
       triggerStepId: 'requirement-id',
       sourceTicketIds: ['source-bug'],
       originFailures: [],
-    } as Ticket;
-    const enhancement = {
+    });
+    const enhancement = partialTicket({
       id: 'enhancement-id',
       objectType: 'ticket',
       type: 'enhancement',
@@ -62,13 +63,13 @@ describe('correction provenance', () => {
       targetStepId: 'requirement-id',
       verificationStepId: 'functional-id',
       parentTicketId: 'parent-cr',
-    } as Ticket;
+    });
     const objects = new Map<string, Ticket>([
       [sourceBug.id, sourceBug],
       [parentCr.id, parentCr],
     ]);
     const repository = {
-      read: async (id: string) => {
+      read: async (id: ObjectId) => {
         const object = objects.get(id);
         if (!object) throw new Error(`missing ${id}`);
         return object;
@@ -97,4 +98,9 @@ function fixturePlan(): Plan {
       { id: 'functional-id', phase: 'FUNCTIONAL_TEST' },
     ] as Step[],
   } as Plan;
+}
+
+/** A Ticket holding only the fields the origin resolver reads; the rest does not bear on it. */
+function partialTicket(fields: Record<string, unknown>): Ticket {
+  return fields as unknown as Ticket;
 }

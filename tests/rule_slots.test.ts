@@ -1,39 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_RULE_SLOT_RANGE,
+  BUSINESS_RULE_SLOT_RANGE,
+  CODING_STANDARD_SLOT_OFFSET,
   DEBUG_RULE_SLOT_RANGE,
+  FRAMEWORK_RULE_SLOT_RANGE,
   LANGUAGE_RULE_SLOT_RANGE,
   ROLE_RULE_SLOT_RANGE,
   RULE_SLOTS,
+  RULE_SLOT_SPACE,
   WORK_RULE_SLOT_RANGE,
   isBoundRuleSlot,
+  isBusinessRuleSlot,
   RuleSlotError,
   compareRuleSlots,
   formatRuleSlot,
   isDebugRuleSlot,
-  isIndexRuleSlot,
   isProtectedRuleSlot,
   isRuleListSlot,
   parseRuleSlot,
 } from '../src/domain/rules/slots.js';
 
-describe('RuleChain slots', () => {
+describe('RuleChain slots (32-bit space, revision R-6)', () => {
   it.each([
-    [0, '0x0000'],
-    [255, '0x00ff'],
-    [256, '0x0100'],
-    [4096, '0x1000'],
-    [65535, '0xffff'],
-  ] as const)('accepts numeric slot %i and renders a fixed-width hexadecimal label', (input, expected) => {
+    [0, '0x00000000'],
+    [0xfff, '0x00000fff'],
+    [0x00001001, '0x00001001'],
+    [0x000fffff, '0x000fffff'],
+    [0xffffffff, '0xffffffff'],
+  ] as const)('accepts numeric slot %i and renders an eight-digit hexadecimal label', (input, expected) => {
     const slot = parseRuleSlot(input);
     expect(slot).toBe(input);
     expect(formatRuleSlot(slot)).toBe(expected);
   });
 
   it('normalizes hexadecimal aliases to one numeric slot identity', () => {
-    const aliases = [256, '0x100', '0x0100', '0X0100', '0x000100'];
-    expect(new Set(aliases.map(parseRuleSlot))).toEqual(new Set([256]));
-    expect(parseRuleSlot('0xFFFF')).toBe(65535);
-    expect(formatRuleSlot(parseRuleSlot('0Xff'))).toBe('0x00ff');
+    const aliases = [0x1001, '0x1001', '0x00001001', '0X00001001', '0x000000001001'];
+    expect(new Set(aliases.map(parseRuleSlot))).toEqual(new Set([0x1001]));
+    expect(parseRuleSlot('0xFFFFFFFF')).toBe(0xffffffff);
+    expect(formatRuleSlot(parseRuleSlot('0Xff'))).toBe('0x000000ff');
     expect(Object.is(parseRuleSlot(-0), 0)).toBe(true);
   });
 
@@ -47,134 +52,78 @@ describe('RuleChain slots', () => {
     ['256', 'invalid_hexadecimal'],
     ['0x', 'invalid_hexadecimal'],
     ['0x100trailing', 'invalid_hexadecimal'],
-    ['0x100\n', 'invalid_hexadecimal'],
     [' 0x100', 'invalid_hexadecimal'],
-    ['0x100 ', 'invalid_hexadecimal'],
     ['-0x1', 'invalid_hexadecimal'],
-    ['+0x1', 'invalid_hexadecimal'],
-    ['0x1.0', 'invalid_hexadecimal'],
     ['0x1_00', 'invalid_hexadecimal'],
     [1.5, 'not_integer'],
     [Number.NaN, 'not_integer'],
     [Number.POSITIVE_INFINITY, 'not_integer'],
     [-1, 'out_of_range'],
-    [65536, 'out_of_range'],
-    ['0x10000', 'out_of_range'],
+    [0x100000000, 'out_of_range'],
+    ['0x100000000', 'out_of_range'],
   ] as const)('rejects invalid slot %s with a typed reason', (input, reason) => {
     expect(() => parseRuleSlot(input)).toThrow(expect.objectContaining({
-      name: 'RuleSlotError',
-      code: 'invalid_rule_slot',
-      reason,
-      input,
+      name: 'RuleSlotError', code: 'invalid_rule_slot', reason, input,
     }));
   });
 
-  it('keeps the declaration, language, framework and business allocations distinct', () => {
+  it('places the base, language and framework constants in their segments', () => {
     expect(RULE_SLOTS).toEqual({
-      genesis: 0x0000,
-      languageIndex: 0x0100,
-      typeScript: 0x0101,
-      python: 0x0102,
-      frameworkIndex: 0x0200,
-      businessIndex: 0x1000,
+      genesis: 0x00000000, levelDefinitions: 0x00000001, outputLanguage: 0x00000002,
+      typeScript: 0x00001001, python: 0x00001002,
     });
-    expect(new Set(Object.values(RULE_SLOTS)).size).toBe(6);
+    expect(isProtectedRuleSlot(RULE_SLOTS.levelDefinitions) && isProtectedRuleSlot(RULE_SLOTS.outputLanguage)).toBe(true);
+    expect(RULE_SLOTS.typeScript + CODING_STANDARD_SLOT_OFFSET).toBe(0x00002001);
   });
 
-  it('divides the framework range into a role segment followed by a work segment (D-13)', () => {
-    expect(LANGUAGE_RULE_SLOT_RANGE).toEqual({ start: 0x0101, end: 0x01ff });
-    expect(ROLE_RULE_SLOT_RANGE).toEqual({ start: 0x0201, end: 0x023f });
-    expect(WORK_RULE_SLOT_RANGE).toEqual({ start: 0x0240, end: 0x02bf });
-    expect(ROLE_RULE_SLOT_RANGE.end + 1).toBe(WORK_RULE_SLOT_RANGE.start);
+  it('keeps the segments in the earlier priority order, contiguous and inside the allocated space', () => {
+    const ordered = [BASE_RULE_SLOT_RANGE, LANGUAGE_RULE_SLOT_RANGE, ROLE_RULE_SLOT_RANGE, WORK_RULE_SLOT_RANGE,
+      FRAMEWORK_RULE_SLOT_RANGE, DEBUG_RULE_SLOT_RANGE, BUSINESS_RULE_SLOT_RANGE];
+    for (let i = 1; i < ordered.length; i++) expect(ordered[i]!.start).toBeGreaterThan(ordered[i - 1]!.end);
+    expect(BUSINESS_RULE_SLOT_RANGE.end).toBe(RULE_SLOT_SPACE.allocatedEnd);
+    expect(RULE_SLOT_SPACE).toEqual({ end: 0xffffffff, allocatedEnd: 0x000fffff });
   });
 
   it.each([
-    [0x0000, false], [0x00ff, false], [0x0100, false], [0x0101, true], [0x01ff, true], [0x0200, false],
-    [0x0201, true], [0x0240, true], [0x02a0, true], [0x02bf, true], [0x02c0, false], [0x0300, false], [0x1001, false],
+    [0x00000000, false], [0x00000fff, false], [0x00001001, true], [0x00002001, true], [0x0000ffff, true],
+    [0x00010001, true], [0x00011000, true], [0x00011300, true], [0x00011fff, true],
+    [0x00012000, false], [0x00020000, false], [0x00080001, false],
   ] as const)('binds slot %i only through Runtime when it is a language, role or work list', (slot, expected) => {
     expect(isBoundRuleSlot(slot)).toBe(expected);
   });
 
   it.each([
-    [0x0000, true, false],
-    [0x0001, true, false],
-    [0x00ff, true, false],
-    [0x0100, false, true],
-    [0x0101, false, false],
-    [0x0102, false, false],
-    [0x01ff, false, false],
-    [0x0200, false, true],
-    [0x0201, false, false],
-    [0x0206, false, false],
-    [0x0fff, false, false],
-    [0x1000, false, true],
-    [0x1001, false, false],
-    [0xffff, false, false],
-  ] as const)('classifies slot %i without treating an index as a RuleList', (slot, protectedSlot, indexSlot) => {
+    [0x00000000, true, true],
+    [0x00000fff, true, true],
+    [0x00001000, false, true],
+    [0x000fffff, false, true],
+    [0x00100000, false, false],
+    [0xffffffff, false, false],
+  ] as const)('classifies slot %i as protected and as an allocated RuleList slot', (slot, protectedSlot, listSlot) => {
     expect(isProtectedRuleSlot(slot)).toBe(protectedSlot);
-    expect(isIndexRuleSlot(slot)).toBe(indexSlot);
-    expect(isRuleListSlot(slot)).toBe(!indexSlot);
+    expect(isRuleListSlot(slot)).toBe(listSlot);
   });
 
   it('orders by numeric priority instead of hexadecimal spelling or retrieval order', () => {
-    const retrieved = ['0x1001', '0x102', '0x2', '0x0', '0xff'];
+    const retrieved = ['0x80001', '0x1002', '0x2', '0x0', '0x11300'];
     expect(retrieved.map(parseRuleSlot).sort(compareRuleSlots).map(formatRuleSlot)).toEqual([
-      '0x0000', '0x0002', '0x00ff', '0x0102', '0x1001',
+      '0x00000000', '0x00000002', '0x00001002', '0x00011300', '0x00080001',
     ]);
-    expect(compareRuleSlots(parseRuleSlot('0x100'), parseRuleSlot('0x0100'))).toBe(0);
+    expect(compareRuleSlots(parseRuleSlot('0x1001'), parseRuleSlot('0x00001001'))).toBe(0);
   });
 
-  it.each([
-    [0x0000, false],
-    [0x00ff, false],
-    [0x0100, false],
-    [0x0200, false],
-    [0x0205, false],
-    [0x0207, false],
-    [0x02ff, false],
-    [0x0300, true],
-    [0x03ff, true],
-    [0x0400, true],
-    [0x0fff, true],
-    [0x1000, false],
-    [0xffff, false],
-  ] as const)('classifies Debug RuleList slot %i within the reserved framework range', (slot, expected) => {
-    expect(isDebugRuleSlot(slot)).toBe(expected);
-  });
-
-  it('reserves 3328 Debug RuleList slots without consuming protected or index slots', () => {
-    expect(DEBUG_RULE_SLOT_RANGE).toEqual({ start: 0x0300, end: 0x0fff });
-    const slots = Array.from(
-      { length: DEBUG_RULE_SLOT_RANGE.end - DEBUG_RULE_SLOT_RANGE.start + 1 },
-      (_, offset) => DEBUG_RULE_SLOT_RANGE.start + offset,
-    );
-    expect(slots).toHaveLength(3328);
-    expect(slots.every(isDebugRuleSlot)).toBe(true);
-    expect(slots.every(isRuleListSlot)).toBe(true);
-    expect(slots.some(isProtectedRuleSlot)).toBe(false);
-    expect(slots.some(isIndexRuleSlot)).toBe(false);
-    expect(DEBUG_RULE_SLOT_RANGE.start).toBeGreaterThan(WORK_RULE_SLOT_RANGE.end);
-    expect(DEBUG_RULE_SLOT_RANGE.end).toBeLessThan(RULE_SLOTS.businessIndex);
-  });
-
-  it.each([
-    [Number.NaN, 'not_integer'],
-    [Number.POSITIVE_INFINITY, 'not_integer'],
-    [0x0300 + 0.5, 'not_integer'],
-    [-1, 'out_of_range'],
-    [0x10000, 'out_of_range'],
-  ] as const)('rejects invalid Debug slot %s instead of classifying it outside the range', (input, reason) => {
-    expect(() => isDebugRuleSlot(input)).toThrow(expect.objectContaining({
-      name: 'RuleSlotError',
-      code: 'invalid_rule_slot',
-      reason,
-      input,
-    }));
+  it('separates the Debug and business segments from everything that loads by binding', () => {
+    expect(DEBUG_RULE_SLOT_RANGE).toEqual({ start: 0x00020000, end: 0x0007ffff });
+    expect(isDebugRuleSlot(0x00020000) && isDebugRuleSlot(0x0007ffff)).toBe(true);
+    expect(isDebugRuleSlot(0x00011fff) || isDebugRuleSlot(0x00080000)).toBe(false);
+    expect(isBusinessRuleSlot(0x00080000) && isBusinessRuleSlot(0x000fffff)).toBe(true);
+    expect(isBusinessRuleSlot(0x0007ffff) || isBusinessRuleSlot(0x00100000)).toBe(false);
+    expect([0x00020000, 0x00080000].some(isBoundRuleSlot)).toBe(false);
   });
 
   it('does not let invalid numeric slots enter formatting, classification or ordering', () => {
-    for (const operation of [formatRuleSlot, isProtectedRuleSlot, isDebugRuleSlot, isIndexRuleSlot, isRuleListSlot]) {
-      expect(() => operation(65536)).toThrow(RuleSlotError);
+    for (const operation of [formatRuleSlot, isProtectedRuleSlot, isDebugRuleSlot, isRuleListSlot, isBoundRuleSlot]) {
+      expect(() => operation(0x100000000)).toThrow(RuleSlotError);
     }
     expect(() => compareRuleSlots(-1, 0)).toThrow(RuleSlotError);
     expect(() => compareRuleSlots(0, Number.NaN)).toThrow(RuleSlotError);

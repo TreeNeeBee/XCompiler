@@ -7,8 +7,11 @@ import { RuleDecorator } from '../../src/application/rules/rule_decorator.js';
 import { RuleSelector } from '../../src/application/rules/rule_selector.js';
 import { RuleVectorRetriever } from '../../src/application/rules/rule_vector_retriever.js';
 import { SCENARIO_OUTCOME_RULE } from '../../src/application/execution/scenario_outcome_judge.js';
-import { RuleListDefinitionSchema, ruleInstructionText, type RuleListDefinition } from '../../src/domain/rules/catalogue.js';
-import { parseRuleSlot } from '../../src/domain/rules/slots.js';
+import { promptRuleText, RuleListDefinitionSchema, ruleText, type RuleListDefinition } from '../../src/domain/rules/catalogue.js';
+import { requiredRuleBindings } from '../../src/application/rules/rule_binding.js';
+import { stampRuleList } from '../../src/infrastructure/rules/rule_source_format.js';
+import { formatRuleSlot, isProtectedRuleSlot, parseRuleSlot } from '../../src/domain/rules/slots.js';
+import { tFor } from '../../src/i18n/index.js';
 import {
   COMPILER_RULE_MANIFEST,
   loadCompilerRuleCatalogue,
@@ -47,6 +50,24 @@ function definition(source: typeof releasedSources[number] = 'genesis.yaml'): Ru
   return RuleListDefinitionSchema.parse(YAML.parse(source === 'genesis.yaml' ? genesisSource : scenarioSource));
 }
 
+/** A list's group header as a request receives it. */
+function header(definition: RuleListDefinition): string {
+  return `[${formatRuleSlot(definition.slot)}] ${ruleText(definition.title, 'en')} (v${definition.version})`;
+}
+/** One Rule as rendered: numbered by authored position, with its level meaning; continuation lines indented. */
+function expectRendered(prompt: string, rule: RuleListDefinition['rules'][number], position: number): void {
+  // An English request with no separate output language writes in English, so variables fill in that way.
+  const [first, ...rest] = promptRuleText(rule.instruction, { locale: 'en' }).split('\n');
+  expect(prompt).toContain([`${position + 1}. [${tFor('en').ruleBlock.levels[rule.level]}] ${rule.name}: ${first}`, ...rest.map((line) => `    ${line}`)].join('\n'));
+}
+
+/** A base slot no released list occupies. */
+const UNUSED_SLOT = 0x00000fff;
+/** Genesis and the base segment: the Rules every business and Rule-selection request carries. */
+function protectedRuleIds(catalogue: Awaited<ReturnType<typeof loadCompilerRuleCatalogue>>): string[] {
+  return catalogue.lists.filter((list) => isProtectedRuleSlot(list.definition.slot)).flatMap((list) => list.definition.rules.map((rule) => rule.id));
+}
+
 describe('installed compiler Rule catalogue', () => {
   it.each(['business', 'rule-selection'] as const)(
     'loads the released genesis declarations into %s prompts without retrieval',
@@ -58,7 +79,6 @@ describe('installed compiler Rule catalogue', () => {
       expect(genesis.definition.slot).toBe(0);
       expect(genesis.definition.rules).toHaveLength(3);
       expect(genesis.definition.rules.map((rule) => rule.level)).toEqual(['announce', 'announce', 'announce']);
-      expect(genesis.definition.rules.every((rule) => rule.category === 'general')).toBe(true);
       for (const rule of genesis.definition.rules) expect(catalogue.findRule(rule.id)?.rule).toBe(rule);
 
       const embed = vi.fn(async () => { throw new Error('Genesis must not request embedding'); });
@@ -68,10 +88,10 @@ describe('installed compiler Rule catalogue', () => {
         identity: { provider: 'fixture', model: 'unused', spaceVersion: '1', dimensions: 2 }, embed,
       }, { read, create });
       const selector = new RuleSelector(catalogue);
-      const selection = await selector.retrieve({
+      const selection = await selector.retrieve({ strategy: 'embedding',
         requestKind, context: {}, required: [], taskSummary: 'Prepare a compiler request', retriever,
       });
-      expect(selection.prepared.required).toHaveLength(3);
+      expect(selection.prepared.required.map((entry) => entry.rule.id)).toEqual(protectedRuleIds(catalogue));
       expect(selection.prepared.optional).toEqual([]);
       // Language, role and work lists (the rubric among them) are bound by Runtime, never offered.
       expect(selection.prepared.excluded).toEqual([]);
@@ -83,25 +103,20 @@ describe('installed compiler Rule catalogue', () => {
 
       const result = selector.finish(selection);
       const prompt = new RuleDecorator().decorate({ requestKind, rules: result.promptRules });
-      const payload = JSON.parse(prompt.slice(prompt.indexOf('{'))) as {
-        rules: { ruleId: string; slot: string; level: string; instruction: string }[];
-      };
-      expect(payload.rules).toHaveLength(3);
-      for (const entry of payload.rules) {
-        expect(entry.slot).toBe('0x0000');
-        expect(entry.level).toBe('announce');
-        expect(entry.instruction).toBe(ruleInstructionText(catalogue.findRule(entry.ruleId)!.rule.instruction, 'en'));
-        expect(Object.keys(entry).sort()).toEqual([
-          'instruction', 'level', 'ruleId', 'ruleListId', 'ruleListVersion', 'ruleVersion', 'slot',
-        ]);
+      const protectedLists = catalogue.lists.filter((list) => isProtectedRuleSlot(list.definition.slot));
+      // Genesis, then the base segment (level definitions, output language), each under one header.
+      expect(prompt.split('\n').filter((line) => line.startsWith('['))).toEqual(protectedLists.map(({ definition }) => header(definition)));
+      for (const { definition } of protectedLists) {
+        definition.rules.forEach((rule, position) => expectRendered(prompt, rule, position));
+        for (const rule of definition.rules) expect(prompt).not.toContain(rule.description.en);
       }
       expect(prompt).toContain('do not justify resisting user cancellation');
       expect(prompt).toContain('cannot turn a failed gate into success');
       expect(prompt).not.toContain('Compiler-maintained declarations');
       expect(prompt).not.toContain('Author comments never enter prompts');
       expect(prompt).not.toContain(rulesRoot);
-      expect(prompt).not.toContain('retrievalDescription');
-      for (const rule of genesis.definition.rules) expect(prompt).not.toContain(rule.retrievalDescription);
+      for (const { definition } of protectedLists) expect(prompt).not.toContain(definition.id);
+      for (const rule of genesis.definition.rules) expect(prompt).not.toContain(rule.description.en);
     },
   );
 
@@ -109,26 +124,24 @@ describe('installed compiler Rule catalogue', () => {
     const catalogue = await loadCompilerRuleCatalogue(rulesRoot);
     const rubric = catalogue.findRule(SCENARIO_OUTCOME_RULE.ruleId)!;
     expect(rubric.rule.version).toBe(SCENARIO_OUTCOME_RULE.version);
-    expect(rubric.rule.category).toBe('scenario');
     expect(rubric.rule.level).toBe('required');
-    expect(rubric.list.definition.slot).toBe(0x02A0);
-    expect(rubric.list.definition.applicability).toEqual({
-      works: ['judge.scenario'],
-    });
-    expect(ruleInstructionText(rubric.rule.instruction, 'en')).toContain('If evidence is insufficient to prove a contract change, choose bug/code.');
-    expect(ruleInstructionText(rubric.rule.instruction, 'zh')).toContain('如果证据不足以证明需要契约变更，选择 bug/code。');
+    expect(rubric.list.definition.slot).toBe(0x00011300);
+    // Its scope comes from binding alone (O-4).
+    expect(rubric.list.definition.applicability).toEqual({});
+    expect(ruleText(rubric.rule.instruction, 'en')).toContain('If evidence is insufficient to prove a contract change, choose bug/code.');
+    expect(ruleText(rubric.rule.instruction, 'zh')).toContain('如果证据不足以证明需要契约变更，选择 bug/code。');
     const embed = vi.fn(async () => { throw new Error('Required scenario rubric must not request embedding'); });
     const read = vi.fn(async () => { throw new Error('Required scenario rubric must not read an index'); });
     const create = vi.fn(async () => { throw new Error('Required scenario rubric must not create an index'); });
     const selector = new RuleSelector(catalogue);
-    const selection = await selector.retrieve({
+    const selection = await selector.retrieve({ strategy: 'embedding',
       requestKind: 'business', context: { role: 'project-manager', work: 'judge.scenario' as const },
       required: [SCENARIO_OUTCOME_RULE], taskSummary: 'Judge current scenario evidence',
       retriever: new RuleVectorRetriever({
         identity: { provider: 'fixture', model: 'unused', spaceVersion: '1', dimensions: 2 }, embed,
       }, { read, create }),
     });
-    expect(selection.prepared.required).toHaveLength(4);
+    expect(selection.prepared.required).toHaveLength(protectedRuleIds(catalogue).length + 1);
     expect(selection.prepared.optional).toEqual([]);
     expect(selection.prepared.excluded).toEqual([]);
     expect(selection.ranked.decision).toBe('no-candidates');
@@ -138,32 +151,29 @@ describe('installed compiler Rule catalogue', () => {
     expect(create).not.toHaveBeenCalled();
     const result = selector.finish(selection);
     const prompt = new RuleDecorator().decorate({ requestKind: 'business', rules: result.promptRules });
-    const payload = JSON.parse(prompt.slice(prompt.indexOf('{'))) as {
-      rules: { ruleId: string; slot: string; instruction: string }[];
-    };
-    expect(payload.rules).toHaveLength(4);
-    const selected = payload.rules.filter((entry) => entry.ruleId === SCENARIO_OUTCOME_RULE.ruleId);
-    expect(selected).toHaveLength(1);
-    expect(selected[0]).toMatchObject({
-      ruleId: SCENARIO_OUTCOME_RULE.ruleId, slot: '0x02a0', instruction: ruleInstructionText(rubric.rule.instruction, 'en'),
-    });
-    expect(payload.rules.map((entry) => entry.slot)).toEqual(['0x0000', '0x0000', '0x0000', '0x02a0']);
+    const rubricList = catalogue.lists.find((list) => list.definition.slot === 0x00011300)!.definition;
+    expect(prompt.split('\n').filter((line) => line.startsWith('['))).toEqual([
+      ...catalogue.lists.filter((list) => isProtectedRuleSlot(list.definition.slot)).map(({ definition }) => header(definition)),
+      header(rubricList),
+    ]);
+    expect(prompt.split('\n').filter((line) => line.includes(`] ${rubric.rule.name}: `))).toHaveLength(1);
+    expectRendered(prompt, rubric.rule, rubricList.rules.findIndex((rule) => rule.id === rubric.rule.id));
     expect(prompt).not.toContain('Compiler-maintained scenario rubric');
-    expect(prompt).not.toContain(rubric.rule.retrievalDescription);
+    expect(prompt).not.toContain(rubric.rule.description.en);
     expect(prompt).not.toContain(rulesRoot);
   });
 
   it.each([
-    { role: 'project-manager' as const },
-    { role: 'python-developer' as const, work: 'code.implement' as const },
-    { role: 'project-manager' as const, work: 'code.implement' as const },
-  ])('keeps the rubric out of unrelated selection for $role / $work', async (context) => {
-    const selector = new RuleSelector(await loadCompilerRuleCatalogue(rulesRoot));
-    const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
-    expect(prepared.required).toHaveLength(3);
+    { role: 'project-manager' as const, work: 'plan.clarify' as const },
+    { role: 'python-developer' as const, work: 'code.implement' as const, stepWork: 'code.implement' as const },
+    { role: 'project-manager' as const, work: 'plan.phase' as const },
+  ])('keeps the rubric out of unrelated work: binding never requires it for $role / $work', async (request) => {
+    const catalogue = await loadCompilerRuleCatalogue(rulesRoot);
+    expect(requiredRuleBindings(catalogue, request).map((binding) => binding.ruleId)).not.toContain(SCENARIO_OUTCOME_RULE.ruleId);
+    const selector = new RuleSelector(catalogue);
+    const prepared = selector.prepare({ requestKind: 'business', context: { role: request.role, work: request.work }, required: [] });
+    expect(prepared.required.map((entry) => entry.rule.id)).toEqual(protectedRuleIds(catalogue));
     expect(prepared.optional).toEqual([]);
-    expect(() => selector.prepare({ requestKind: 'business', context, required: [SCENARIO_OUTCOME_RULE] }))
-      .toThrow(expect.objectContaining({ code: 'rule_selection_failed', reason: 'required_inapplicable' }));
   });
 
   it('binds the judgement rubric to its work independently of the speaking role, and only when bound', async () => {
@@ -203,47 +213,64 @@ describe('installed compiler Rule catalogue', () => {
     ]));
   });
 
-  const changes: { name: string; change: (list: RuleListDefinition) => void }[] = [
-    { name: 'list identity', change: (list) => { list.id = '484bf2fc-6bd0-4d17-87df-05e31909980e'; } },
-    { name: 'list version', change: (list) => { list.version = '9.0.0'; } },
-    { name: 'list slot', change: (list) => { list.slot = parseRuleSlot(1); } },
+  /** Re-stamps digests the way `xcompiler rule` would, so only the compiled manifest can object. */
+  const restamped = (list: RuleListDefinition) => stampRuleList({ ...list, rules: list.rules.map(({ digest: _digest, ...rule }) => rule) });
+  const changes: { name: string; reason: 'manifest_mismatch' | 'version_not_bumped'; change: (list: RuleListDefinition) => void }[] = [
+    { name: 'list identity', reason: 'manifest_mismatch', change: (list) => { list.id = '484bf2fc-6bd0-4d17-87df-05e31909980e'; } },
+    { name: 'list version', reason: 'manifest_mismatch', change: (list) => { list.version = '9.0.0'; } },
+    { name: 'list slot', reason: 'manifest_mismatch', change: (list) => { list.slot = parseRuleSlot(UNUSED_SLOT); } },
     // The digest covers every locale variant (D-18): changing only the zh text is a change.
-    { name: 'same-version instruction', change: (list) => {
-      const instruction = list.rules[0]!.instruction;
-      if (typeof instruction === 'string') throw new Error('Compiler Rules carry locale variants');
-      list.rules[0]!.instruction = { ...instruction, zh: `${instruction.zh}\n已更改的声明。` };
+    { name: 'same-version instruction', reason: 'version_not_bumped', change: (list) => {
+      list.rules[0]!.instruction = { ...list.rules[0]!.instruction, zh: `${list.rules[0]!.instruction.zh}\n已更改的声明。` };
     } },
-    { name: 'Rule identity', change: (list) => { list.rules[0]!.id = '3603a4d7-af71-4ed3-b0d6-ac791c01d87f'; } },
-    { name: 'Rule version', change: (list) => { list.rules[0]!.version = '9.0.0'; } },
-    { name: 'retrieval description', change: (list) => { list.rules[0]!.retrievalDescription += ' Changed.'; } },
-    { name: 'applicability', change: (list) => { list.rules[0]!.applicability = { roles: ['python-developer'] }; } },
+    { name: 'Rule identity', reason: 'version_not_bumped', change: (list) => { list.rules[0]!.id = '3603a4d7-af71-4ed3-b0d6-ac791c01d87f'; } },
+    { name: 'Rule version', reason: 'version_not_bumped', change: (list) => { list.rules[0]!.version = '9.0.0'; } },
+    { name: 'description', reason: 'version_not_bumped', change: (list) => { list.rules[0]!.description = { ...list.rules[0]!.description, en: 'Changed.' }; } },
+    { name: 'applicability', reason: 'version_not_bumped', change: (list) => { list.rules[0]!.applicability = { roles: ['python-developer'] }; } },
   ];
-  it.each(releasedSources.flatMap((source) => changes.map((change) => ({ source, ...change }))))(
-    'rejects an installed $source $name change outside the release manifest', async ({ source, change }) => {
+  // Protected Rules cannot declare applicability at all (revision 11.4); the schema test covers that.
+  it.each(releasedSources.flatMap((source) => changes
+    .filter((change) => !(source === 'genesis.yaml' && change.name === 'applicability'))
+    .map((change) => ({ source, ...change }))))(
+    'rejects an installed $source $name change that the release manifest does not record', async ({ source, name, change, reason }) => {
       const changed = definition(source);
       change(changed);
       const target = path.join(rulesRoot, source);
       const expected = COMPILER_RULE_MANIFEST.find((entry) => entry.relativePath === source)!;
-      await fs.writeFile(target, YAML.stringify(changed));
+      await fs.writeFile(target, YAML.stringify(restamped(changed)));
       await expect(loadCompilerRuleCatalogue(rulesRoot)).rejects.toMatchObject({
-        code: 'compiler_rule_source_failed', reason: 'manifest_mismatch',
+        code: 'compiler_rule_source_failed', reason,
         details: {
           root: rulesRoot,
           source: { owner: { kind: 'compiler' }, location: await fs.realpath(target) },
           expected,
-          actual: { definitionDigest: expect.not.stringMatching(new RegExp(`^${expected.definitionDigest}$`, 'u')) },
+          // The field that differs: the list's identity, version or slot, or its content digest.
+          actual: name === 'list identity' ? { listId: changed.id }
+            : name === 'list version' ? { listVersion: '9.0.0', digest: expected.digest }
+              : name === 'list slot' ? { slot: UNUSED_SLOT }
+                : { digest: expect.not.stringMatching(new RegExp(`^${expected.digest}$`, 'u')) },
         },
       });
     },
   );
 
-  it('rejects a compiler Rule that offers one text instead of an en and a zh variant', async () => {
-    const changed = definition('genesis.yaml');
+  it.each(releasedSources)('rejects %s edited without recomputing its digests, before the manifest is consulted', async (source) => {
+    const changed = definition(source);
+    changed.rules[0]!.instruction = { ...changed.rules[0]!.instruction, en: 'Edited by hand.' };
+    await fs.writeFile(path.join(rulesRoot, source), YAML.stringify(changed));
+    await expect(loadCompilerRuleCatalogue(rulesRoot)).rejects.toMatchObject({
+      code: 'compiler_rule_source_failed', reason: 'source_load_failed',
+      cause: { code: 'invalid_rule_catalogue', reason: 'digest_mismatch', details: { ruleId: changed.rules[0]!.id } },
+    });
+  });
+
+  it('rejects a compiler Rule that offers one text instead of a variant for every locale', async () => {
+    const changed = definition('genesis.yaml') as unknown as { rules: { instruction: unknown }[] };
     changed.rules[0]!.instruction = 'Declaration only: one text for every locale.';
     await fs.writeFile(genesisPath, YAML.stringify(changed));
     await expect(loadCompilerRuleCatalogue(rulesRoot)).rejects.toMatchObject({
-      code: 'compiler_rule_source_failed', reason: 'locale_variant_missing',
-      details: { ruleId: changed.rules[0]!.id },
+      code: 'compiler_rule_source_failed', reason: 'source_load_failed',
+      cause: { code: 'invalid_rule_catalogue', reason: 'invalid_definition' },
     });
   });
 

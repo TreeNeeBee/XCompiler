@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ruleList } from './support/rule_fixtures.js';
 import {
   PHASE_DECOMPOSITION_PROTOCOL, PHASE_DECOMPOSITION_TEMPLATE_VERSION,
   PhaseDecompositionRequestConfigurationError, PhaseDecompositionRequestInputError,
@@ -74,9 +75,9 @@ function snapshot(context: RuleContext = {
 }) {
   const selector = new RuleSelector(new RuleCatalogue([{
     source: { owner: { kind: 'compiler' }, location: 'rules/base.yaml' },
-    definition: { schemaVersion: '1', id: id(10), version: '1', title: 'Base declaration', slot: 0,
-      rules: [{ id: id(11), version: '1', category: 'general', level: 'announce',
-        instruction: 'Keep the response protocol.', retrievalDescription: 'Base declaration' }] },
+    definition: ruleList({ id: id(10), version: '1', title: 'Base declaration', slot: 0,
+      rules: [{ id: id(11), version: '1', level: 'announce',
+        instruction: 'Keep the response protocol.', description: 'Base declaration' }] }),
   }]));
   const prepared = selector.prepare({ requestKind: 'business', context, required: [] });
   const ranked = selector.rank({ prepared, query: [], vectors: [] });
@@ -209,7 +210,7 @@ describe('Phase decomposition retained materials', () => {
 });
 
 describe('Phase decomposition ownership and audit binding', () => {
-  it.each([false, true])('binds the original P03 context and Skill names to the input digest, postGraph=%s', postGraph => {
+  it.each([false, true])('binds the original phase-decomposition context and Skill names to the input digest, postGraph=%s', postGraph => {
     const original = input(postGraph);
     const retained = validateBusinessRequestInput(original);
     const record = createBusinessRequestInputRecord(retained);
@@ -230,7 +231,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     ]) expect(businessRequestInputDigest({ ...original, auditContext: changed })).not.toBe(record.inputDigest);
   });
 
-  it.each([false, true])('rejects mismatched P03 operation/template/protocol, postGraph=%s', postGraph => {
+  it.each([false, true])('rejects mismatched phase-decomposition operation/template/protocol, postGraph=%s', postGraph => {
     const original = input(postGraph);
     for (const change of [
       { owner: { ...original.owner, operation: 'phase-plan' } },
@@ -282,7 +283,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     const context: RuleContext = { role: 'planner', language: 'python', work: 'plan.decompose',
       ...(postGraph ? { projectId: projectId(20) } : {}) };
     for (const change of [
-      { language: 'typescript' as const }, { role: 'project-manager' as const }, { work: 'plan.phase' },
+      { language: 'typescript' as const }, { role: 'project-manager' as const }, { work: 'plan.phase' as const },
     ]) {
       const write = vi.fn();
       const create = vi.fn();
@@ -301,7 +302,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     }
   });
 
-  it.each([false, true])('captures the matching frozen P03 ownership and writes its original audit input, postGraph=%s', async postGraph => {
+  it.each([false, true])('captures the matching frozen phase-decomposition ownership and writes its original audit input, postGraph=%s', async postGraph => {
     const source = input(postGraph);
     const pinned = snapshot({ role: 'planner', language: 'python', work: 'plan.decompose',
       ...(postGraph ? { projectId: projectId(20) } : {}) });
@@ -323,13 +324,13 @@ describe('Phase decomposition ownership and audit binding', () => {
     expect(recover).not.toHaveBeenCalled();
   });
 
-  it('does not permit the project-scoped owner to borrow P01 or P02 audit material', () => {
+  it('does not permit the project-scoped owner to borrow clarification or phase-plan audit material', () => {
     const source = input(true);
     const clarify: ClarificationPayload = {
       schemaVersion: 1, kind: 'planning-clarification', templateVersion: CLARIFICATION_TEMPLATE_VERSION, locale: 'en',
       parseContext: { language: 'python', rawRequirement: 'Original requirement.', intent: 'greenfield',
-        hasBaseline: false, languageAmbiguous: false, complex: false, projectShapeAmbiguous: false,
-        externalApiRequired: false },
+        hasBaseline: false, projectType: 'application', externalApiRequired: false,
+        sandbox: { mode: 'subprocess', network: 'download-only' }, questionId: 'Q3', budgetUsedPercent: 10, finalAssessment: null, transcript: [] },
     };
     const phasePlan: PhasePlanPayload = {
       schemaVersion: 1, kind: 'planning-phase-plan', templateVersion: PHASE_PLAN_TEMPLATE_VERSION, locale: 'en',
@@ -341,7 +342,7 @@ describe('Phase decomposition ownership and audit binding', () => {
     ]) expect(() => validateBusinessRequestInput({ ...source, ...changed })).toThrow(BusinessRequestInputError);
   });
 
-  it('hashes context-free and P02 inputs with their pinned role and pool ownership', () => {
+  it('hashes context-free and phase-plan inputs with their pinned role and pool ownership', () => {
     const source = input();
     const { auditContext: _context, ...contextFree } = source;
     const retained = validateBusinessRequestInput(contextFree);

@@ -147,7 +147,7 @@ function validateRecord<T extends { logicalRequestId: string; digest: string }>(
   return Object.freeze(parsed.data);
 }
 
-/** Deterministic protocol handling only; no model send, C1 allowance or business verdict. */
+/** Deterministic protocol handling only; no model send, protocol-correction allowance or business verdict. */
 export function assessBusinessResponseProtocol(source: BusinessResponseSource) {
   const current = validateBusinessResponseSource(source);
   const inspection = assessJsonProtocolResponse(current.response, current.input.outputProtocol);

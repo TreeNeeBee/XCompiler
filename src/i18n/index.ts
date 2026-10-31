@@ -33,6 +33,29 @@ export function t(): Messages {
   return TABLES[current];
 }
 
+let promptTranslation = false;
+
+/**
+ * Whether prompts reach models in English and cross the locale boundary by translation
+ * (`prompt_translate: on`). Off, models read the same locale the user does.
+ */
+export function setPromptTranslation(on: boolean): void {
+  promptTranslation = on;
+}
+
+/**
+ * The language of everything a model reads: prompt templates and Rule text. The locale itself
+ * stays the language of the CLI, interactive prompts and every text shown to the user.
+ */
+export function getPromptLocale(): Locale {
+  return promptTranslation ? 'en' : current;
+}
+
+/** Whether text must be translated between the user's locale and the models' English. */
+export function isPromptTranslationActive(): boolean {
+  return promptTranslation && current !== 'en';
+}
+
 /** Explicit lookup against an arbitrary locale (does not change current). */
 export function tFor(loc: Locale): Messages {
   return TABLES[loc];

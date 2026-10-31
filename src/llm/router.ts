@@ -8,7 +8,7 @@ import { OllamaClient } from './ollama.js';
 import { OpenAIClient } from './openai.js';
 import type { ScoreStore } from './scores.js';
 import { ModelPoolBindingSchema, type ChatMessage, type ChatOptions, type LLMClient, type ModelPoolBinding } from './types.js';
-import { t } from '../i18n/index.js';
+import { getPromptLocale, t, tFor } from '../i18n/index.js';
 import type { PluginHost } from '../plugins/host.js';
 import {
   isOllamaProvider,
@@ -19,6 +19,7 @@ import {
   type LLMProbeResult,
 } from './health.js';
 import {
+  estimateMessageTokens,
   normalizeContextWindowTokens,
   resolveSkillOperationWindow,
 } from './window.js';
@@ -210,7 +211,7 @@ export class LLMRouter {
       : observable;
   }
 
-  /** Internal C1 transport. The owning coordinator must persist its allowance before calling it. */
+  /** Internal protocol-correction transport. The owning coordinator must persist its allowance before calling it. */
   forProtocolCorrection(original: RoutedResponseEvidence): LLMClient {
     const parsed = RoutedResponseEvidenceSchema.safeParse(original);
     if (!parsed.success) throw new LLMRequestError('Protocol correction requires valid original response evidence', {
@@ -508,7 +509,7 @@ class FallbackClient implements LLMClient {
         }
         const operationWindow = projectedWindow ?? resolveSkillOperationWindow({
           contextWindowTokens: c.contextWindowTokens,
-          promptChars: projectedMessages.reduce((sum, message) => sum + message.content.length, 0),
+          promptTokens: estimateMessageTokens(projectedMessages),
         });
         if (providerAttempt === 1) {
           await auditEvent(
@@ -813,7 +814,8 @@ class FallbackClient implements LLMClient {
                 ...messages,
                 {
                   role: 'user',
-                  content: t().llm.providerValidationRepairPrompt(validationError, rejectedOutput,
+                  // Sent to the model, so in the language models read rather than the user's.
+                  content: tFor(getPromptLocale()).llm.providerValidationRepairPrompt(validationError, rejectedOutput,
                     vErr instanceof ResponseValidationRejection ? vErr.repairHint : undefined),
                 },
               ];

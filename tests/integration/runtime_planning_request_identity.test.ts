@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkId } from '../../src/domain/workflow/work.js';
 import { AuditLogger, protectAuditContent, type AuditEvent } from '../../src/audit/audit.js';
 import {
   PLANNING_REQUEST_CONTEXTS, createBusinessRequestInputRecord, validateBusinessRequestInput,
@@ -77,7 +78,7 @@ async function endpoint(output = '{"retained":"original operation",}') {
 }
 
 async function persistSnapshot(container: ProjectContainer, logicalRequestId: string,
-  context: { role: 'planner' | 'project-manager'; work: string; projectId?: string }) {
+  context: { role: 'planner' | 'project-manager'; work: WorkId; projectId?: string }) {
   const catalogue = await loadCompilerRuleCatalogue(installationRoots.installedCompilerRulesRoot());
   const selector = new RuleSelector(catalogue);
   const prepared = selector.prepare({ requestKind: 'business', context,
@@ -90,7 +91,7 @@ async function persistSnapshot(container: ProjectContainer, logicalRequestId: st
 }
 
 async function fixture(url: string, operation: Operation = 'phase-plan', options: {
-  context?: { role?: 'planner' | 'project-manager'; work?: string; projectId?: string };
+  context?: { role?: 'planner' | 'project-manager'; work?: WorkId; projectId?: string };
   redacted?: boolean;
 } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));

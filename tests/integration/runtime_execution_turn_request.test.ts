@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseObjectId } from '../../src/domain/identity/object_id.js';
 import { StepExecutor, validateExecutionTurnResponse } from '../../src/agents/executor.js';
 import { renderExecutionUserPrompt } from '../../src/agents/execution/prompt_renderer.js';
 import { describeToolForStep } from '../../src/agents/execution/tool_action_normalizer.js';
@@ -40,9 +41,9 @@ let root: string;
 const servers: Server[] = [];
 const stores: ScoreStore[] = [];
 const scope: ExecutionRequestScope = {
-  projectId: '01952f27-7900-7000-8000-000000000001', phaseId: '01952f27-7900-7000-8000-000000000002',
-  stepId: '01952f27-7900-7000-8000-000000000003', ticketId: '01952f27-7900-7000-8000-000000000004',
-  actorId: '01952f27-7900-7000-8000-000000000005', assignmentId: '01952f27-7900-7000-8000-000000000006',
+  projectId: parseObjectId('01952f27-7900-7000-8000-000000000001'), phaseId: parseObjectId('01952f27-7900-7000-8000-000000000002'),
+  stepId: parseObjectId('01952f27-7900-7000-8000-000000000003'), ticketId: parseObjectId('01952f27-7900-7000-8000-000000000004'),
+  actorId: parseObjectId('01952f27-7900-7000-8000-000000000005'), assignmentId: parseObjectId('01952f27-7900-7000-8000-000000000006'),
   executionId: 'a3dbd0c9-2df4-4b89-80eb-b526a2715fe7', role: 'python-developer',
   work: 'code.implement', roleVersion: roleProfile('python-developer').version,
   modelPool: 'coding', inheritFallbacks: false, allowedProviders: ['primary'],
@@ -219,6 +220,34 @@ describe('Runtime retained Executor requests', () => {
       scope: { ...scope, executionId: randomUUID() } });
     await expect(other.send(request())).rejects.toThrow(/must not select Rules again/u);
     sources.mockRestore();
+    expect(server.calls).toHaveLength(2);
+  });
+
+  // Codex audit SNP-01: lost selection state must not let a later round select current Rules.
+  it('stops an execution whose pinned selection was lost, and still lets a new execution select', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    await current.port.send(request());
+    const first = retainedInput(await current.events());
+    const selection = (section: string) => current.container.state.abs('rules', 'requests', section, `${scope.executionId}.json`);
+    await fs.rm(selection('snapshots'));
+    await fs.rm(selection('drafts'));
+
+    await expect(current.port.send(request({ round: 2 }))).rejects.toMatchObject({
+      name: 'RuleRequestError', reason: 'selection_lost', details: { pinnedDigest: first.snapshotDigest },
+    });
+    expect(server.calls).toHaveLength(1);
+    // Nothing was captured for the refused round, and no replacement selection exists under the execution.
+    expect((await current.events()).filter(event => event.messageId === 'llm.business_request_input')).toHaveLength(1);
+    await expect(fs.access(selection('snapshots'))).rejects.toThrow();
+    await expect(fs.access(selection('drafts'))).rejects.toThrow();
+    await expect(resumeRuntimeExecutionTurnRequest({ container: current.container, audit: current.audit,
+      logicalRequestId: first.logicalRequestId })).rejects.toMatchObject({ reason: 'snapshot_missing' });
+
+    const other = createRuntimeExecutionTurnRequestPort({ config: current.config.rules, container: current.container,
+      recordReplay: current.recordReplay, router: current.router, audit: current.audit,
+      scope: { ...scope, executionId: randomUUID() } });
+    await other.send(request());
     expect(server.calls).toHaveLength(2);
   });
 
@@ -662,6 +691,30 @@ describe('Runtime retained Executor requests', () => {
       .toEqual(windows.map(window => window.responseTokenBudget));
     expect(current.boost).not.toHaveBeenCalled();
     expect(current.decay).toHaveBeenCalledTimes(1);
+  });
+
+  it('projects the window from Chinese history at about a token a character', async () => {
+    const promptTokensWith = async (evidence: string) => {
+      const server = await endpoint();
+      const current = await fixture(server.url, { primaryWindow: 131072 });
+      const windows: SkillOperationWindow[] = [];
+      const original = request();
+      await current.port.send({ ...original, messages: [...original.messages,
+        { role: 'assistant', content: '{"thoughts":"original history","actions":[],"done":false}' }, { role: 'user', content: evidence }],
+      onWindow: window => { windows.push(window); } });
+      return windows[0]!.promptTokens;
+    };
+    const chinese = '保留中文工具证据'.repeat(500);
+    const latin = 'x'.repeat(chinese.length);
+    // The same 4,000 characters: about 4,000 tokens in Chinese, about 1,334 in Latin script.
+    expect(await promptTokensWith(chinese) - await promptTokensWith(latin)).toBe(chinese.length - Math.ceil(latin.length / 3));
+  });
+
+  it('tells the Executor to write deliverables in the user\'s language recorded with the request', async () => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    await current.port.send(request({ locale: 'en', outputLocale: 'zh' }));
+    expect(server.calls[0]!.messages[0]!.content).toContain('deliverables (documents, reports and commit messages) in Simplified Chinese');
   });
 
   it('fails final provider capacity explicitly instead of dropping required execution history', async () => {

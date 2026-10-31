@@ -9,6 +9,7 @@ import {
   resolveSkillOperationWindow,
 } from '../llm/window.js';
 import { suspiciousTextTruncationError } from './content_guard.js';
+import { toolText } from './tool_text.js';
 
 interface ReadFileData {
   content: string;
@@ -24,8 +25,7 @@ export const readFileTool: Tool<
   ReadFileData
 > = {
   name: 'read_file',
-  description:
-    '分块读取 workspace 内的文本文件。必须提供非空 args.path；args.offset 是可选字节偏移，使用上次结果的 nextOffset 可继续读取后续内容。',
+  get description() { return toolText().readFile.description; },
   argsSchema: { path: 'string', offset: 'number?', maxBytes: 'number?' },
   async run(args, ctx) {
     if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
@@ -134,11 +134,7 @@ interface WriteFileData {
 
 export const writeFileTool: Tool<{ path: string; content: string }, WriteFileData> = {
   name: 'write_file',
-  description:
-    '在当前 Step writable allowlist 内创建或覆盖文件。必须提供非空 args.path 和字符串 args.content；path 使用具体的 workspace 相对路径。' +
-    '单次 content 受运行时 chunk limit 限制；大文件按模块/函数/类边界用 write_file 首段 + append_file 续写。' +
-    '覆盖已有文件时必须提供完整内容；异常缩短会被拒绝，此时应优先用 replace_in_file/apply_patch 精确修改。' +
-    '注意：runtime 管理的依赖清单请用 add_dependency 维护。',
+  get description() { return toolText().writeFile.description; },
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     const argError = validateTextFileArgs('write_file', args);
@@ -162,10 +158,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
     if (size > limit) {
       return {
         ok: false,
-        error:
-          `write_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B。请将大文件拆分写入：` +
-          `第 1 个 action 用 write_file 写头部（≤${limit}B，覆盖现有文件），` +
-          `后续 action 用 append_file 按模块/函数/类边界逐段追加（每段 ≤${limit}B）。同一轮可放多个 actions。`,
+        error: toolText().writeFile.chunkTooLarge(size, limit),
       };
     }
     try {
@@ -239,9 +232,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
  */
 export const appendFileTool: Tool<{ path: string; content: string }, { bytes: number; total: number }> = {
   name: 'append_file',
-  description:
-    '把一段内容追加到当前 Step writable allowlist 内文件末尾。必须提供非空 args.path 和字符串 args.content；path 使用具体的 workspace 相对路径。' +
-    '单次 content 受运行时 chunk limit 限制，用于配合 write_file 分块写出大文件。',
+  get description() { return toolText().appendFile.description; },
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     const argError = validateTextFileArgs('append_file', args);
@@ -266,7 +257,7 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
     if (size > limit) {
       return {
         ok: false,
-        error: `append_file 单次内容 ${size}B 超过本 Step chunk limit ${limit}B；请按模块/函数/类边界进一步拆分。`,
+        error: toolText().appendFile.chunkTooLarge(size, limit),
       };
     }
     try {
@@ -308,7 +299,7 @@ function validateTextFileArgs(tool: string, args: unknown): string | undefined {
 
 export const listDirTool: Tool<{ path?: string }, { entries: string[] }> = {
   name: 'list_dir',
-  description: '列出指定目录下的条目（仅文件名）。args.path 可选；提供时必须是具体的 workspace 相对目录路径。',
+  get description() { return toolText().listDir.description; },
   argsSchema: { path: 'string?' },
   async run(args, ctx) {
     try {

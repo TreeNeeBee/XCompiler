@@ -2,11 +2,12 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { stageAssessment } from './support/quality.js';
 import {
   inspectPairedSourceTests,
   mergePairedSourceTestQuality,
 } from '../src/application/execution/paired_test_contract.js';
-import type { Language, Plan, Step } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Language, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
 import { Workspace } from '../src/workspace/workspace.js';
 
 describe('paired source test product-reference contract', () => {
@@ -360,14 +361,14 @@ describe('paired source test product-reference contract', () => {
 
   it('routes one actionable finding without duplicating it as KPI and remediation gaps', () => {
     const merged = mergePairedSourceTestQuality(
-      {
+      stageAssessment({
         completion: 1,
         upstreamAlignment: 1,
         metrics: {},
         tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
         evidence: [],
         gaps: [],
-      },
+      }),
       {
         ok: false,
         testPaths: ['tests/integration/pipeline.test.ts'],
@@ -499,7 +500,6 @@ function contractPlan(
     title: 'Define renderer contract',
     description: 'Define and test the renderer contract.',
     systemPrompt: 'Create the paired test for the declared renderer product module.',
-    role: phase === 'REQUIREMENT_ANALYSIS' ? 'Planner' : 'Architect',
     tools: ['write_file'],
     inputs: [],
     outputs: [testPath],
@@ -508,9 +508,10 @@ function contractPlan(
     maxAttempts: 3,
   };
   return {
-    version: '1',
+    version: PLAN_VERSION,
     language,
     intent: 'greenfield',
+    phaseId: 'P1',
     projectType: 'application',
     createdAt: new Date().toISOString(),
     requirementDigest: 'renderer',

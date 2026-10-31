@@ -1,18 +1,63 @@
 import { z } from 'zod';
-import { LANGUAGES } from '../planning/execution_plan.js';
+import { LANGUAGES, PLAN_INTENTS, PROJECT_TYPES } from '../planning/execution_plan.js';
+import { DEBUG_FAILURE_CATEGORIES } from '../quality/failure_category.js';
 import { RoleIdSchema } from '../workflow/role.js';
 import { WorkIdSchema } from '../workflow/work.js';
 import { RuleLocaleSchema, type RuleApplicability, type RuleLookup } from './catalogue.js';
+import { rulePathMayMatchWritable } from './path_pattern.js';
 
+/** What one request is, as applicability reads it. A dimension a request cannot state is left out. */
 export const RuleContextSchema = z.object({
   projectId: z.uuid().optional(),
   language: z.enum(LANGUAGES).optional(),
   role: RoleIdSchema.optional(),
   work: WorkIdSchema.optional(),
+  intent: z.enum(PLAN_INTENTS).optional(),
+  projectType: z.enum(PROJECT_TYPES).optional(),
+  /** The tools this request may call. */
+  tools: z.array(z.string().min(1)).optional(),
+  /**
+   * The workspace paths this request may write: the Step's declared outputs and the directories
+   * Runtime grants it (written with a trailing `/`), such as a verification Step's supplement root.
+   */
+  writablePaths: z.array(z.string().min(1)).optional(),
+  failureCategory: z.enum(DEBUG_FAILURE_CATEGORIES).optional(),
   /** The prompt locale the request renders Rules in; not an applicability dimension. */
   locale: RuleLocaleSchema.optional(),
+  /** The user's language, which `{{outputLanguage}}` names; not an applicability dimension. */
+  outputLanguage: RuleLocaleSchema.optional(),
 }).strict();
 export type RuleContext = z.infer<typeof RuleContextSchema>;
+
+/**
+ * How relevance selection runs for one request (revision 11.2). `bound-only` carries only the
+ * required Rules; `inline` hands the applicable optional Rules to the business request itself;
+ * `embedding` ranks them by vectors with low scores reviewed; `review` has the role choose from
+ * their summaries.
+ */
+export const RULE_SELECTION_STRATEGIES = ['bound-only', 'inline', 'embedding', 'review'] as const;
+export type RuleSelectionStrategy = (typeof RULE_SELECTION_STRATEGIES)[number];
+/** The strategies this release can run; the others are accepted names only. */
+export const RUNNABLE_RULE_SELECTION_STRATEGIES = ['bound-only', 'embedding', 'review'] as const satisfies readonly RuleSelectionStrategy[];
+export type RunnableRuleSelectionStrategy = (typeof RUNNABLE_RULE_SELECTION_STRATEGIES)[number];
+/** The strategies configuration may choose in this release (revision 11.8). */
+export const CONFIGURABLE_RULE_SELECTION_STRATEGIES = ['bound-only'] as const satisfies readonly RunnableRuleSelectionStrategy[];
+
+/**
+ * The longest summary selection reads (revision 11.2). Planning passes the whole requirement as its
+ * task; selection needs its gist, and an embedding service or a review prompt must not receive an
+ * unbounded document.
+ */
+export const RULE_QUERY_SUMMARY_LIMIT = 2000;
+
+/** Whether a summary fits the limit, counted in characters (code points), as it is cut. */
+export function withinRuleQuerySummaryLimit(text: string): boolean {
+  return [...text].length <= RULE_QUERY_SUMMARY_LIMIT;
+}
+
+/** Why a request fell back to its required Rules (revision 11.3). */
+export const RULE_SELECTION_FALLBACK_REASONS = ['retrieval_failed', 'too_many_candidates', 'review_failed'] as const;
+export type RuleSelectionFallbackReason = (typeof RULE_SELECTION_FALLBACK_REASONS)[number];
 
 export const RuleRetrievalProfileSchema = z.object({
   threshold: z.number().finite().min(0).max(1).default(0.8),
@@ -20,7 +65,7 @@ export const RuleRetrievalProfileSchema = z.object({
 }).strict();
 export type RuleRetrievalProfile = z.infer<typeof RuleRetrievalProfileSchema>;
 
-export type RuleApplicabilityDimension = Exclude<keyof RuleContext, 'locale'>;
+export type RuleApplicabilityDimension = Exclude<keyof RuleContext, 'locale' | 'outputLanguage'>;
 
 export interface RuleApplicabilityIssue {
   readonly source: 'owner' | 'list' | 'rule';
@@ -37,25 +82,42 @@ export type RuleSelectionEntry = {
   };
 };
 
+type Scope = Required<RuleApplicability>;
+
+/**
+ * The applicability dimensions (revision 11.4): each scope field a Rule declares, the request
+ * context field it reads, and how the two match. Adding a dimension means a schema field, a context
+ * field and an entry in both tables; the mapped types reject a missing one.
+ */
+export const RULE_APPLICABILITY_DIMENSIONS = Object.freeze({
+  projectIds: 'projectId', languages: 'language', roles: 'role', works: 'work', intents: 'intent',
+  projectTypes: 'projectType', tools: 'tools', paths: 'writablePaths', failureCategories: 'failureCategory',
+} as const satisfies { readonly [K in keyof Scope]: RuleApplicabilityDimension });
+
+type ContextOf<K extends keyof Scope> = NonNullable<RuleContext[(typeof RULE_APPLICABILITY_DIMENSIONS)[K]]>;
+const anyOf = <T>(allowed: readonly T[], actual: T) => allowed.includes(actual);
+
+const MATCHERS: { readonly [K in keyof Scope]: (allowed: Scope[K], actual: ContextOf<K>) => boolean } = {
+  projectIds: (allowed, actual) => allowed.some((id) => id.toLowerCase() === actual.toLowerCase()),
+  languages: anyOf, roles: anyOf, works: anyOf, intents: anyOf, projectTypes: anyOf, failureCategories: anyOf,
+  tools: (allowed, actual) => allowed.some((tool) => actual.includes(tool)),
+  paths: (allowed, actual) => actual.some((path) => allowed.some((pattern) => rulePathMayMatchWritable(pattern, path))),
+};
+
 /** Owner, list and Rule restrictions all apply; absence of a restriction is an open dimension. */
 export function ruleApplicability(entry: RuleSelectionEntry, context: RuleContext): readonly RuleApplicabilityIssue[] {
   const issues: RuleApplicabilityIssue[] = [];
-  const check = (source: RuleApplicabilityIssue['source'], dimension: RuleApplicabilityDimension, allowed: readonly string[] | undefined) => {
+  const check = <K extends keyof Scope>(source: RuleApplicabilityIssue['source'], key: K, allowed: Scope[K] | undefined) => {
     if (!allowed) return;
-    const actual = context[dimension];
+    const dimension = RULE_APPLICABILITY_DIMENSIONS[key];
+    const actual = context[dimension] as ContextOf<K> | undefined;
     if (actual === undefined) issues.push({ source, dimension, reason: 'missing-context' });
-    else if (!allowed.some((value) => dimension === 'projectId'
-      ? value.toLowerCase() === actual.toLowerCase() : value === actual)) {
-      issues.push({ source, dimension, reason: 'outside-scope' });
-    }
+    else if (!MATCHERS[key](allowed, actual)) issues.push({ source, dimension, reason: 'outside-scope' });
   };
   const owner = entry.list.source.owner;
-  if (owner.kind === 'project') check('owner', 'projectId', [owner.projectId]);
+  if (owner.kind === 'project') check('owner', 'projectIds', [owner.projectId]);
   const checkScope = (source: 'list' | 'rule', scope: RuleApplicability) => {
-    check(source, 'projectId', scope.projectIds);
-    check(source, 'language', scope.languages);
-    check(source, 'role', scope.roles);
-    check(source, 'work', scope.works);
+    for (const key of Object.keys(RULE_APPLICABILITY_DIMENSIONS) as (keyof Scope)[]) check(source, key, scope[key]);
   };
   checkScope('list', entry.list.definition.applicability);
   checkScope('rule', entry.rule.applicability);

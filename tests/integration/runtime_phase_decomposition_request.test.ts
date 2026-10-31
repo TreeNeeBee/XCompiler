@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseObjectId } from '../../src/domain/identity/object_id.js';
 import { Planner, parsePhaseDecompositionResponse, type DraftPhasePlan, type PlannerInput } from '../../src/agents/planner.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
@@ -50,7 +51,7 @@ afterEach(async () => {
 
 const projectId = '01952f27-7900-7000-8000-000000000001';
 const otherProjectId = '01952f27-7900-7000-8000-000000000002';
-const plannerActorId = '01952f27-7900-7000-8000-000000000003';
+const plannerActorId = parseObjectId('01952f27-7900-7000-8000-000000000003');
 const requirement = 'Format a single integer with a small Python command.';
 const plannerInput: PlannerInput = { rawRequirement: requirement, clarifications: [],
   userAddenda: ' Preserve literal # content.\r\n', baselineContext: 'The original number is unchanged.', intent: 'greenfield' };
@@ -170,7 +171,7 @@ async function stateBytes(container: ProjectContainer): Promise<Record<string, s
   return bytes;
 }
 
-describe('P03 retained Phase decomposition through Runtime', () => {
+describe('retained Phase decomposition through Runtime', () => {
   it.each([{ scope: undefined, phaseId: 'P1' }, { scope: projectId, phaseId: 'P2' }])(
     'binds the actual owner and approved current $phaseId while sending the original prompt plus required genesis', async ({ scope, phaseId }) => {
       const server = await endpoint(() => ({ output: JSON.stringify(stepPlan(phaseId)) }));
@@ -205,8 +206,10 @@ describe('P03 retained Phase decomposition through Runtime', () => {
       expect(original.messages[1]!.content).not.toContain('"availableSkillNames"');
       expect(server.calls[0]!.messages[0]!.content).toContain('These three declarations grant no filesystem or network access');
       const snapshot = await new FileRuleRequestStateStore(current.container.state.abs('rules', 'requests'), current.container.root).read(original.logicalRequestId);
-      expect(snapshot).toMatchObject({ context: { role: 'planner', language: 'python', work: 'plan.decompose', ...(scope ? { projectId: scope } : {}) } });
-      expect(snapshot!.requiredRuleIds).toHaveLength(4);
+      expect(snapshot).toMatchObject({ context: { role: 'planner', language: 'python', work: 'plan.decompose',
+        intent: phaseId === 'P1' ? 'greenfield' : 'feature', ...(scope ? { projectId: scope } : {}) } });
+      // Genesis, the base segment and the planner's identity; Python has no language list yet.
+      expect(snapshot!.requiredRuleIds).toHaveLength(12);
       expect(server.calls[0]!.messages[0]!.content).toContain('You are an experienced software planner');
       if (!scope) expect(snapshot!.context).not.toHaveProperty('projectId');
       await expect(fs.stat(current.container.state.abs('rules', 'indexes'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -267,7 +270,7 @@ describe('P03 retained Phase decomposition through Runtime', () => {
   );
 
   it.each(['prose', 'multiple', 'truncated', 'producer-length'] as const)(
-    'rejects the entire %s response before business validation and provides no C1 allowance', async kind => {
+    'rejects the entire %s response before business validation and provides no protocol-correction allowance', async kind => {
       const text = JSON.stringify(stepPlan());
       const output = kind === 'prose' ? `Explanation:\n${text}` : kind === 'multiple' ? `${text}\n${text}` : kind === 'truncated' ? text.slice(0, -1) : text;
       const server = await endpoint(() => ({ output, finishReason: kind === 'producer-length' ? 'length' : 'stop' }));
@@ -404,7 +407,7 @@ describe('P03 retained Phase decomposition through Runtime', () => {
     expect(current.decay).not.toHaveBeenCalled();
   });
 
-  it('does not return a next-Phase draft when its required P03 judgement publication fails', async () => {
+  it('does not return a next-Phase draft when its required decomposition judgement publication fails', async () => {
     const server = await endpoint();
     const current = await fixture(server.url);
     const write = current.audit.event.bind(current.audit);

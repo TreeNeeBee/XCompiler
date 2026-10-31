@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "727e302f-32c8-5413-9b45-94993894a0f9"
-version: "1.0.0"
-title: "Unit verification"
-slot: "0x0254"
-applicability:
-  works: [verify.unit, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 727e302f-32c8-5413-9b45-94993894a0f9
+title:
+  en: Unit verification
+  zh: 单元验证
+slot: "0x00011104"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:dba1109a27d1488909c430a53ac7e1254702119794060e9091b9db39afcd7134
 rules:
-  - id: "0b63d236-37b1-5df4-a644-eed4b66a547f"
-    version: "1.0.0"
-    category: framework
+  - id: 0b63d236-37b1-5df4-a644-eed4b66a547f
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Unit verification: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:25bf89b34b1855f1cdae2663069488fcffc8ad5e22290a04c18fa8af16cfeb1e
+    description:
+      en: "Unit verification deliverable: evidence that the delivered work meets its acceptance criteria."
+      zh: 单元验证的交付：证明交付物满足验收标准的证据。
     instruction:
-      en: |-
-        You verify delivered work against its acceptance criteria and report evidence.
-      zh: |-
-        你负责对照验收标准验证已交付的工作，并报告证据。
-  - id: "dca329b3-3f73-5846-afbe-c4f9af5da0a7"
-    version: "1.0.0"
-    category: framework
+      en: You verify delivered work against its acceptance criteria and report evidence.
+      zh: 你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: dca329b3-3f73-5846-afbe-c4f9af5da0a7
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Unit verification: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:11fbab7be073730c9e57295899ac336c80717c965591115d866201a08eba92ed
+    description:
+      en: "Unit verification method: inspect the paired tests, add risk supplements, freeze and record results."
+      zh: 单元验证的方法：检查配对测试、补充风险用例、冻结并记录结果。
     instruction:
-      en: |-
-        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
-      zh: |-
-        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
-  - id: "2af9c62e-6ba2-5ad2-b163-a092373ee28a"
-    version: "1.0.0"
-    category: framework
+      en: Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: 检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: 2af9c62e-6ba2-5ad2-b163-a092373ee28a
+    name: no-source-rewrite
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Unit verification: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:26d3a1a0fd497b2a86cf9ad07a79c4cbc8cfc9e64a3c3a622955ab4abdd1a45f
+    description:
+      en: Unit verification does not rewrite source to make a test pass.
+      zh: 单元验证不为通过测试而改写源码。
     instruction:
-      en: |-
-        Do not rewrite source to make a test pass.
-      zh: |-
-        不要为了让测试通过而改写源码。
+      en: Do not rewrite source to make a test pass.
+      zh: 不要为了让测试通过而改写源码。

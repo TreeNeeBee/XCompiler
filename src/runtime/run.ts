@@ -1,3 +1,4 @@
+import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { FilePlanStore } from '../infrastructure/planning/file_plan_store.js';
 import type { PlanStorePort } from '../domain/ports/plan_store.js';
@@ -31,7 +32,13 @@ import {
   defaultDebugWikiPath,
 } from '../infrastructure/knowledge/file_debug_wiki.js';
 import { runProjectAudit } from '../application/delivery/project_audit.js';
-import { isScenarioOutcomeJudgementError } from '../application/execution/scenario_outcome_judge.js';
+import {
+  frozenRequirementsFor, isScenarioOutcomeJudgementError, scenarioArtifactText,
+} from '../application/execution/scenario_outcome_judge.js';
+import { planContractFor } from '../application/execution/plan_contract.js';
+import { phaseDocForIteration } from '../domain/planning/document_contract.js';
+import { deliveryGateReportPath, renderDeliveryGateReport } from '../application/delivery/delivery_gate_report.js';
+import { moveIntoRuntimeTemp, phaseGateTempDir, workingChanges } from '../workspace/runtime_temp.js';
 import { judgeRuntimeScenarioOutcome } from './scenario_outcome.js';
 import {
   generateProjectDevelopmentReport,
@@ -39,12 +46,12 @@ import {
 import { refreshProjectMemory } from '../application/context/project_memory.js';
 import { updateProjectFile } from '../infrastructure/project/project_manifest.js';
 import type { Language, PlanIntent } from '../domain/planning/execution_plan.js';
-import { setLocale, t } from '../i18n/index.js';
+import { setLocale, setPromptTranslation, t } from '../i18n/index.js';
 import { PluginHost } from '../plugins/host.js';
 import type { XCompilerPlugin } from '../plugins/types.js';
 import { hasXcEnv } from '../config/env.js';
 import type { ProjectAuditResult } from '../application/delivery/project_audit.js';
-import type { ToolExecutionEvent, ToolPermissionRequest } from '../tools/types.js';
+import { PermissionDeniedError, type ToolExecutionEvent, type ToolPermissionRequest } from '../tools/types.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
 import { acceptedContractChanges } from '../application/execution/accepted_contract_changes.js';
 import { DomainAuditTrail } from '../application/observability/domain_audit_trail.js';
@@ -68,6 +75,7 @@ import type { RecordReplayMode } from '../application/record_replay/types.js';
 import { isCancellationError } from '../util/cancellation.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
+import { createRuntimePromptTranslator } from './translation_request.js';
 import { createRuntimeExecutionTurnRequestPort } from './execution_turn_request.js';
 import { defaultRoleForStep } from '../domain/workflow/work.js';
 import { RoleRegistry } from '../application/project_management/role_registry.js';
@@ -129,6 +137,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // AuditLogger 会立即创建过程日志，因此必须先应用配置语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
+  setPromptTranslation(cfg.prompt_translate === 'on');
   if (missingEnv.length > 0) {
     await runtimeLog(io, 'warning', t().system.configEnvMissing(missingEnv.join(', ')));
   }
@@ -318,6 +327,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         return { actorId: actor.id, role: actor.roleId, roleVersion: actor.roleVersion, modelPool: actor.modelPool };
       },
     }),
+    createRuntimePromptTranslator({ config: cfg, container, recordReplay, router, audit, io, signal: opts.abortSignal }),
   );
   if (recoverUnadvancedPhase) {
     if (!target.phasePlan || !target.phasePlanPath || !domainProject.currentPhaseId) {
@@ -737,10 +747,36 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       // schema mismatch produced — with no retry and nothing said about which scenario it was.
       // The Phase stays open instead, so the next run judges it again.
       let auditResult;
+      // What the canonical working copy held before the gate, so what the gate itself left there —
+      // scenario outputs above all — can be set aside instead of blocking every merge after it.
+      const gateEvaluatedAt = new Date().toISOString();
+      const changedBeforeGate = new Set((await workingChanges(git.raw())).map((change) => change.path));
+      const setAsideGateOutputs = async () => {
+        const left = (await workingChanges(git.raw())).filter((change) => !changedBeforeGate.has(change.path));
+        if (left.length === 0) return undefined;
+        const directory = phaseGateTempDir(domainPhase.name, gateEvaluatedAt);
+        const paths = await moveIntoRuntimeTemp(ws, git.raw(), left, directory);
+        await audit.event('note', `${domainPhase.name} delivery gate outputs set aside in ${directory}`, {
+          messageId: 'domain.phase_delivery_gate_outputs_set_aside',
+          projectId: domainProject.id,
+          phaseId: domainPhase.id,
+          directory,
+          paths,
+        });
+        return { directory, paths };
+      };
       // Read once per gate run: the judge compares the scene with the contract as it stands now.
       const phaseContractChanges = await acceptedContractChanges(domainRepository, {
         projectId: domainProject.id, phaseId: domainPhase.id,
       });
+      // The plan the user confirmed, and the requirement the Phase froze from it: together they let
+      // the judge tell code that breaks a sound requirement from code that follows a requirement
+      // frozen against the plan, whose repair belongs to requirement analysis.
+      const plannedScope = planContractFor(plan).phaseScope;
+      const requirementPath = phaseDocForIteration('REQUIREMENT_ANALYSIS', plan.phaseId);
+      const frozenRequirements = requirementPath
+        ? frozenRequirementsFor(requirementPath, await ws.readFile(requirementPath).catch(() => undefined))
+        : undefined;
       try {
         auditResult = await runProjectAudit({
         ws,
@@ -765,17 +801,20 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           scenario,
           scene,
           requirementDigest: plan.requirementDigest,
+          plannedScope,
+          frozenRequirements,
           acceptedContractChanges: phaseContractChanges,
           artifacts: {
             snapshot: snapshotArtifacts,
             read: async (relative, maxBytes) => {
-              const text = await ws.readFile(relative).catch(() => undefined);
-              return text === undefined ? undefined : text.slice(0, maxBytes);
+              const bytes = await fsp.readFile(ws.abs(relative)).catch(() => undefined);
+              return bytes === undefined ? undefined : scenarioArtifactText(bytes, maxBytes);
             },
           },
         }),
         });
       } catch (error) {
+        await setAsideGateOutputs();
         if (!isScenarioOutcomeJudgementError(error)) throw error;
         await audit.event('phase.delivery_gate', `${domainPhase.name} delivery gate could not be judged`, {
           messageId: 'domain.phase_delivery_gate_unjudged',
@@ -789,6 +828,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         };
       }
       finalProjectAudit = auditResult;
+      const setAside = await setAsideGateOutputs();
       await audit.event('phase.delivery_gate', `${domainPhase.name} delivery gate evaluated`, {
         messageId: 'domain.phase_delivery_gate_evaluated',
         projectId: domainProject.id,
@@ -796,6 +836,13 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         gate: phaseGate,
         result: finalProjectAudit,
       });
+      // The report is the gate run's deliverable; its outputs are not. Committed pass or fail, so the
+      // project's history keeps every judgement the gate made.
+      const gateReportPath = deliveryGateReportPath(domainPhase.name);
+      await ws.writeFile(gateReportPath, renderDeliveryGateReport({
+        phaseName: domainPhase.name, evaluatedAt: gateEvaluatedAt, result: finalProjectAudit, setAside,
+      }));
+      await git.snapshot(domainPhase.id, 0, `${domainPhase.name} delivery gate report`);
       await emitProjectAudit(io, finalProjectAudit);
       return {
         ok: finalProjectAudit.ok,
@@ -922,9 +969,17 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       await runtimeResult(io, 'run', 'cancelled', { message: msg, exitCode: 130 });
       return { status: 'cancelled', message: msg, exitCode: 130 };
     }
-    await runtimeLog(io, 'error', t().system.unhandledError(msg));
-    if (stack && stack !== msg) {
-      await runtimeLog(io, 'dim', stack);
+    if (err instanceof PermissionDeniedError) {
+      // A refusal to honour, not a defect: say what was refused and how to continue; no stack.
+      const { request } = err;
+      await runtimeLog(io, 'error', t().system.permissionDeniedStop(
+        request.operationType, request.target, request.denyBehavior, err.decisionReason,
+      ));
+    } else {
+      await runtimeLog(io, 'error', t().system.unhandledError(msg));
+      if (stack && stack !== msg) {
+        await runtimeLog(io, 'dim', stack);
+      }
     }
     await persistProjectMemory(ws, container.state, planStore, audit, planAbs, plan.language, plan.intent);
     await audit.end({ status: 'error', message: msg, stack });

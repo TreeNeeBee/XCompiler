@@ -48,6 +48,11 @@ export const PlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
     code: z.ZodIssueCode.custom, path: ['operation'], message: 'Planning owner role and work must match its operation',
   });
 });
+/** Translation between the user's locale and the models' English; it belongs to no project or Step. */
+export const TextTranslationOwnerSchema = ModelPoolBindingSchema.extend({
+  kind: z.literal('text-translation'), operationId: UUID,
+  role: z.literal('project-manager'), roleVersion: Text, work: z.literal('text.translate'),
+}).strict();
 export const ProjectPlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('project-planning-operation'), operationId: UUID,
   operation: z.literal('phase-decomposition'), projectId: ObjectId,
@@ -56,11 +61,13 @@ export const ProjectPlanningOperationOwnerSchema = ModelPoolBindingSchema.extend
 export const StepExecutionOwnerSchema = ExecutionRequestScopeSchema.extend({ kind: z.literal('step-execution') }).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
   ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema, ProjectPlanningOperationOwnerSchema, StepExecutionOwnerSchema,
+  TextTranslationOwnerSchema,
 ]);
 export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
 export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema>;
 export type ProjectPlanningOperationOwner = z.infer<typeof ProjectPlanningOperationOwnerSchema>;
 export type StepExecutionOwner = z.infer<typeof StepExecutionOwnerSchema>;
+export type TextTranslationOwner = z.infer<typeof TextTranslationOwnerSchema>;
 export type BusinessRequestOwner = z.infer<typeof BusinessRequestOwnerSchema>;
 const Identity = z.object({
   schemaVersion: z.literal(1), logicalRequestId: UUID,
@@ -129,7 +136,7 @@ export function businessRequestSelectionId(input: { logicalRequestId: string; ow
 export function assertBusinessRequestSnapshotOwner(
   snapshot: RuleRequestSnapshot, owner: BusinessRequestOwner, auditContext?: BusinessRequestAuditContext,
 ): void {
-  const projectMatches = owner.kind === 'planning-operation'
+  const projectMatches = owner.kind === 'planning-operation' || owner.kind === 'text-translation'
     ? snapshot.context.projectId === undefined
     : snapshot.context.projectId?.toLowerCase() === owner.projectId;
   const scopeMatches = projectMatches && snapshot.context.work === businessRequestWork(owner);
@@ -344,7 +351,8 @@ export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInp
       ownerMatches = input.owner.kind === 'planning-operation' || input.owner.kind === 'project-planning-operation';
       break;
   }
-  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'step-execution' || input.owner.operation !== operation
+  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'step-execution'
+    || input.owner.kind === 'text-translation' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion
     || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(protocol)) {
     throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });

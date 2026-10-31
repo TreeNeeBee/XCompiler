@@ -10,6 +10,12 @@ import type {
   RuntimeRunCommandOptions,
 } from '../../src/runtime/commands.js';
 import type { ExecuteResult } from '../../src/runtime/run.js';
+import type { JsonRpcRequest } from '../../src/acp/protocol.js';
+import { emitRuntimeEvent, type RuntimeEventInput, type RuntimeIO } from '../../src/runtime/io.js';
+import { present } from '../support/domain_objects.js';
+
+/** Emits as Runtime does: `emitRuntimeEvent` stamps the envelope (id, version, time) the ACP mapper reads. */
+const emit = (io: RuntimeIO | undefined, event: RuntimeEventInput) => (io ? emitRuntimeEvent(io, event) : undefined);
 
 const root = path.resolve(__dirname, '..', '..');
 
@@ -51,11 +57,12 @@ class MemoryTransport implements AcpTransport {
     return msg.result;
   }
 
-  async waitForClientRequest(method: string, predicate: (params: Record<string, unknown>) => boolean = () => true): Promise<JsonRpcMessage> {
+  async waitForClientRequest(method: string, predicate: (params: Record<string, unknown>) => boolean = () => true): Promise<JsonRpcRequest> {
+    // Only a message with a method and an id passes, which is a request.
     return this.waitFor((msg) => {
       if (!('method' in msg) || msg.method !== method || !('id' in msg)) return false;
       return predicate((msg as { params?: Record<string, unknown> }).params ?? {});
-    });
+    }) as Promise<JsonRpcRequest>;
   }
 
   async waitForEvent(type: string): Promise<Record<string, unknown>> {
@@ -108,12 +115,13 @@ class FakeRuntime implements AcpRuntimeFacade {
 
   async build(opts: RuntimeBuildCommandOptions): Promise<RuntimeBuildCommandResult> {
     this.buildCalls.push(opts);
-    await opts.io?.emit({ type: 'log', level: 'info', message: 'build preparing plan' });
+    await emit(opts.io, { type: 'log', level: 'info', message: 'build preparing plan' });
     const ok = await opts.io!.interaction!.confirm({ message: 'Apply generated plan?', default: true });
-    if (!ok) return { workspace: opts.workspace };
-    const planPath = path.join(opts.workspace, 'plan.json');
-    await opts.io?.emit({ type: 'result', command: 'build', status: 'ok', data: { planPath } });
-    return { workspace: opts.workspace, planPath };
+    const workspace = present(opts.workspace, 'workspace');
+    if (!ok) return { workspace };
+    const planPath = path.join(workspace, 'plan.json');
+    await emit(opts.io, { type: 'result', command: 'build', status: 'ok', data: { planPath } });
+    return { workspace, planPath };
   }
 
   async run(opts: RuntimeRunCommandOptions): Promise<ExecuteResult> {
@@ -133,14 +141,14 @@ class FakeRuntime implements AcpRuntimeFacade {
       tool: 'run_tests',
     });
     if (!decision.approved) {
-      await opts.io?.emit({ type: 'result', command: 'run', status: 'failed', data: { exitCode: 4 } });
+      await emit(opts.io, { type: 'result', command: 'run', status: 'failed', data: { exitCode: 4 } });
       return { status: 'failed', message: 'permission denied', exitCode: 4 };
     }
-    await opts.io?.emit({ type: 'tool_call', callId: 'test-call-1', status: 'started', stepId: 'S005', tool: 'run_tests', target: 'npm test' });
-    await opts.io?.emit({ type: 'file_changed', callId: 'write-call-1', stepId: 'S004', tool: 'write_file', path: 'src/main.ts' });
-    await opts.io?.emit({ type: 'patch_proposed', callId: 'patch-call-1', stepId: 'S004', tool: 'apply_patch', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n' });
-    await opts.io?.emit({ type: 'tool_call', callId: 'test-call-1', status: 'completed', stepId: 'S005', tool: 'run_tests', ok: true, summary: 'npm test exit=0' });
-    await opts.io?.emit({ type: 'result', command: 'run', status: 'ok', data: { executedSteps: 1 } });
+    await emit(opts.io, { type: 'tool_call', callId: 'test-call-1', status: 'started', stepId: 'S005', tool: 'run_tests', target: 'npm test' });
+    await emit(opts.io, { type: 'file_changed', callId: 'write-call-1', stepId: 'S004', tool: 'write_file', path: 'src/main.ts' });
+    await emit(opts.io, { type: 'patch_proposed', callId: 'patch-call-1', stepId: 'S004', tool: 'apply_patch', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n' });
+    await emit(opts.io, { type: 'tool_call', callId: 'test-call-1', status: 'completed', stepId: 'S005', tool: 'run_tests', ok: true, summary: 'npm test exit=0' });
+    await emit(opts.io, { type: 'result', command: 'run', status: 'ok', data: { executedSteps: 1 } });
     return { status: 'ok' };
   }
 }
@@ -293,8 +301,9 @@ describe('ACP Code Agent adapter', () => {
         answer = await opts.io!.interaction!.input({
           message: 'Q1 [functionality] Choose scope\n  ↳ Define the first delivery\n  A. Core only\n  B. Core and reports\n  Choose A-B or provide a custom answer',
         });
-        await opts.io!.emit({ type: 'result', command: 'build', status: 'ok' });
-        return { workspace: opts.workspace, planPath: path.join(opts.workspace, 'phasePlan.json') };
+        await emit(opts.io, { type: 'result', command: 'build', status: 'ok' });
+        const workspace = present(opts.workspace, 'workspace');
+        return { workspace, planPath: path.join(workspace, 'phasePlan.json') };
       },
       run: async () => ({ status: 'ok' }),
     };
@@ -319,11 +328,38 @@ describe('ACP Code Agent adapter', () => {
     expect(answer).toBe('B');
   });
 
+  it.each(['select', 'input', 'editor'] as const)('reports a %s prompt the client cancels as a dismissal, never as a value', async (kind) => {
+    let outcome: unknown;
+    const runtime: AcpRuntimeFacade = {
+      build: async (opts) => {
+        const interaction = opts.io!.interaction!;
+        const asked = kind === 'select'
+          ? interaction.select({ message: 'Confirm the topic', choices: [{ name: 'Confirm', value: 'confirm' }, { name: 'Cancel', value: 'cancel' }] })
+          : kind === 'input' ? interaction.input({ message: 'Describe the report' })
+            : interaction.editor({ message: 'Edit the requirement', default: 'Original text' });
+        outcome = await asked.catch((error: unknown) => error);
+        await emit(opts.io, { type: 'result', command: 'build', status: 'cancelled' });
+        return { workspace: present(opts.workspace, 'workspace') };
+      },
+      run: async () => ({ status: 'ok' }),
+    };
+    const transport = new MemoryTransport();
+    const server = new AcpServer({ runtime, logger: { info: () => undefined, warn: () => undefined, error: () => undefined } });
+    await server.start(transport);
+    await transport.inject(req(1, AcpMethod.SessionNew, { cwd: root, mcpServers: [] }));
+    const sessionId = (await transport.waitForResponse(1)).sessionId as string;
+    await transport.inject(req(2, AcpMethod.SessionPrompt, { sessionId, prompt: [{ type: 'text', text: 'build' }], autoRunAfterBuild: false }));
+    const prompt = await transport.waitForClientRequest(AcpMethod.SessionRequestPermission);
+    await transport.inject({ jsonrpc: '2.0', id: prompt.id!, result: { outcome: { outcome: 'cancelled' } } });
+    await transport.waitForResponse(2);
+    expect(outcome).toMatchObject({ code: 'interaction_dismissed', kind });
+  });
+
   it('cancels a task waiting for Build interaction and settles the prompt', async () => {
     const runtime: AcpRuntimeFacade = {
       build: async (opts) => {
         await opts.io!.interaction!.confirm({ message: 'Wait for cancellation', default: false });
-        return { workspace: opts.workspace };
+        return { workspace: present(opts.workspace, 'workspace') };
       },
       run: async () => ({ status: 'ok' }),
     };

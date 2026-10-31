@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { ImplementationPhaseSchema } from '../src/domain/planning/execution_plan.js';
 import { Planner } from '../src/agents/planner.js';
 import { LLMRequestError } from '../src/llm/errors.js';
 import type { PhaseDecompositionRequestPort } from '../src/application/planning/phase_decomposition_request.js';
 import type { PhasePlanRequestPort } from '../src/application/planning/phase_plan_request.js';
-import type { ClarificationRequestPort } from '../src/application/planning/clarification_request.js';
 import type { Language } from '../src/domain/planning/execution_plan.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 
@@ -28,19 +28,6 @@ function plannerWithPlanningPorts(llm: LLMClient, language: Language = 'python')
     },
   };
   return new Planner(undefined, language, false, undefined, undefined, port, undefined, decompositionPort);
-}
-
-function plannerWithClarificationPort(llm: LLMClient): Planner {
-  const port: ClarificationRequestPort = {
-    name: llm.name,
-    async send(input) {
-      const text = await llm.chat([...input.messages], {
-        ...input.options, validate: input.validate, signal: input.signal,
-      });
-      return { text, provider: llm.name };
-    },
-  };
-  return new Planner(undefined, 'python', false, undefined, undefined, undefined, port);
 }
 
 function fakeLLM(reply: string | string[]): LLMClient {
@@ -113,10 +100,10 @@ const minimalStep = (id: string, phase: string, outputs: string[] = [], iteratio
     title: `${phase} ${id}`,
     description: 'd',
     systemPrompt: '本 Step 专属提示词：明确范围、输入、产出、验收与禁令。',
-    tools: [],
-    inputs: [],
+    tools: [] as string[],
+    inputs: [] as string[],
     outputs,
-    dependsOn: [],
+    dependsOn: [] as string[],
     acceptance: 'ok',
   });
 
@@ -169,7 +156,10 @@ function withDeliveryGates<T extends { implementationPhases: readonly Record<str
   } as T;
 }
 
-function vModelSteps(iterationId = 'P1', start = 1, sourcePath = 'src/x.py', moduleTestPath = 'tests/test_x.py') {
+/** A Step as the planner's model writes it in JSON: the fields a fixture sets, plus optional subtasks. */
+type DraftStepFixture = ReturnType<typeof minimalStep> & { role?: string; subTasks?: Record<string, unknown>[] };
+
+function vModelSteps(iterationId = 'P1', start = 1, sourcePath = 'src/x.py', moduleTestPath = 'tests/test_x.py'): DraftStepFixture[] {
   const functionalDocs = iterationId === 'P1'
     ? ['README.md', 'docs/quickstart.md', 'docs/08-functional-test.md']
     : [iterationDoc(iterationId, '08-functional-test.md'), iterationDoc(iterationId, 'quickstart.md')];
@@ -191,9 +181,9 @@ function vModelSteps(iterationId = 'P1', start = 1, sourcePath = 'src/x.py', mod
 }
 
 const planMetadata = {
-  projectType: 'application',
+  projectType: 'application' as const,
   complexityAssessment: {
-    level: 'simple',
+    level: 'simple' as const,
     rationale: 'test fixture',
     splitRecommended: false,
     userForcedPhaseSplit: false,
@@ -203,7 +193,7 @@ const planMetadata = {
       id: 'P1',
       title: 'Core functionality',
       objective: 'Exercise the planner skeleton fixture.',
-      status: 'current',
+      status: 'current' as const,
       scope: ['Core fixture'],
       deliverables: ['Valid draft plan'],
       dependsOn: [],
@@ -212,134 +202,12 @@ const planMetadata = {
   ],
 };
 
-const clarifyOptions = [
-  { label: 'A', answer: 'Use the recommended default setting for phase one.' },
-  { label: 'B', answer: 'Use the stricter enterprise-oriented setting.' },
-  { label: 'C', answer: 'Use the smallest demonstrable setting.' },
-];
-
-const withClarifyOptions = <T extends { options?: typeof clarifyOptions }>(question: T): T & { options: typeof clarifyOptions } => ({
-  ...question,
-  options: question.options ?? clarifyOptions,
-});
-
-const projectShapeQuestions = [
-  {
-    id: 'Q1',
-    category: 'functionality',
-    question: 'Who are the primary users of the weather data capability?',
-    why: 'Defines the user-facing journeys.',
-  },
-  {
-    id: 'Q2',
-    category: 'data',
-    question: 'Which weather fields must be accepted and returned?',
-    why: 'Defines the input and output contract.',
-  },
-  {
-    id: 'Q3',
-    category: 'acceptance',
-    question: 'What examples should prove the API is correct?',
-    why: 'Defines verifiable acceptance cases.',
-  },
-  {
-    id: 'Q4',
-    category: 'functionality',
-    question: 'How should unknown locations be handled?',
-    why: 'Defines failure behaviour.',
-  },
-  {
-    id: 'Q5',
-    category: 'data',
-    question: 'Should responses include raw provider payloads or normalized values only?',
-    why: 'Defines the data boundary.',
-  },
-  {
-    id: 'Q6',
-    category: 'boundary',
-    question: 'Should this deliverable be an API library or SDK, a runnable application or service, or a mixed deliverable with both?',
-    why: 'Determines projectType and delivery documentation.',
-  },
-  {
-    id: 'Q7',
-    category: 'quality',
-    question: 'What concrete latency and reliability targets should the weather lookup meet?',
-    why: 'Defines measurable quality gates.',
-  },
-  {
-    id: 'Q8',
-    category: 'extensibility',
-    question: 'Which future provider or forecast capability should the design keep stable for?',
-    why: 'Defines extension points.',
-  },
-  {
-    id: 'Q9',
-    category: 'data',
-    question: 'Do you already have a weather provider API key, token, or auth method for this external API call?',
-    why: 'Determines whether implementation should use user-provided credentials or a public no-key provider.',
-    options: [
-      { label: 'A', answer: 'No credentials are available; use a public no-key/no-token weather API by default.' },
-      { label: 'B', answer: 'Use a user-provided API key or token from environment variables.' },
-      { label: 'C', answer: 'Support both configured credentials and a no-key public fallback.' },
-    ],
-  },
-].map(withClarifyOptions);
-
-const languageClarificationQuestion = {
-  id: 'Q10',
-  category: 'boundary',
-  question: 'Which development language should this project use for the first delivery?',
-  why: 'Determines whether XCompiler should generate Python or TypeScript runtime, tests, and sandbox commands.',
-  options: [
-    { label: 'A', answer: 'Python CLI/script implementation, the default when no language is specified.' },
-    { label: 'B', answer: 'TypeScript / Node.js CLI implementation.' },
-  ],
-};
-
 describe('Planner.decompose — V 模型骨架完整性校验', () => {
   it('澄清缺少 Runtime 接口时明确报错，不回退到直接模型调用', async () => {
     const planner = new Planner();
-    await expect(planner.clarify('Build an API for weather data'))
+    await expect(planner.nextClarification({ rawRequirement: 'Build an API for weather data', projectType: 'application',
+      sandbox: { mode: 'subprocess', network: 'download-only' }, transcript: [], questionId: 'Q3', budgetUsedPercent: 10 }))
       .rejects.toMatchObject({ code: 'clarification_request_not_configured' });
-  });
-
-  it('澄清阶段在 API/library 与应用形态不明时必须提出项目形态问题', async () => {
-    const questionsWithoutShape = projectShapeQuestions.map((question) =>
-      question.id === 'Q6'
-        ? {
-            ...question,
-            question: 'Which external weather provider is in scope for the first release?',
-            why: 'Defines external-system ownership.',
-          }
-        : question,
-    );
-    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(questionsWithoutShape)));
-    await expect(p.clarify('Build an API for weather data')).rejects.toThrow(/project shape question/);
-  });
-
-  it('澄清阶段接受显式 API library / application / mixed 边界问题', async () => {
-    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(projectShapeQuestions)));
-    const questions = await p.clarify('Build an API for weather data');
-    expect(questions.some((question) => question.question.includes('API library'))).toBe(true);
-  });
-
-  it('澄清阶段在外部 API 需求中必须确认凭证或免 key 接口策略', async () => {
-    const questionsWithoutCredential = projectShapeQuestions.filter((question) => question.id !== 'Q9');
-    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(questionsWithoutCredential)));
-    await expect(p.clarify('Build a CLI that fetches weather data from an external API')).rejects.toThrow(/external API credential question/);
-  });
-
-  it('澄清阶段在 topic 无法判断开发语言时必须确认 Python 或 TypeScript', async () => {
-    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify(projectShapeQuestions)));
-    await expect(
-      p.clarify('Build a report generator tool', { languageAmbiguous: true }),
-    ).rejects.toThrow(/development language question/);
-  });
-
-  it('澄清阶段接受开发语言确认问题', async () => {
-    const p = plannerWithClarificationPort(fakeLLM(JSON.stringify([...projectShapeQuestions, languageClarificationQuestion])));
-    const questions = await p.clarify('Build a report generator tool', { languageAmbiguous: true });
-    expect(questions.some((question) => question.question.includes('development language'))).toBe(true);
   });
 
   it('拒绝只有 REQUIREMENT_ANALYSIS + HIGH_LEVEL_DESIGN 两步的残缺 plan（用户回放）', async () => {
@@ -602,6 +470,29 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     })).rejects.toThrow(/execution\.command must contain one executable only/);
   });
 
+  it('拒绝把完整 shell 命令塞进交付场景检查命令的 command 字段', async () => {
+    // Cloned: the shared fixture's scenario objects must not carry this case's inspect into the next.
+    const invalid = structuredClone(withDeliveryGates({
+      requirementDigest: 'Build a small TypeScript command.',
+      globalPrompt: '',
+      projectType: 'application',
+      complexityAssessment: planMetadata.complexityAssessment,
+      implementationPhases: planMetadata.implementationPhases,
+    }));
+    // Its own valid execution: an earlier case writes an invalid one into the shared fixture.
+    invalid.implementationPhases[0]!.deliveryGate.scenarios[0]!.execution = { command: 'npx', args: ['tsx', 'src/main.ts'] };
+    (invalid.implementationPhases[0]!.deliveryGate.scenarios[0]! as { inspect?: unknown }).inspect = [{
+      command: 'node -e "console.log(1)"',
+      args: [],
+    }];
+    const planner = plannerWithPlanningPorts(fakeLLM(JSON.stringify(invalid)), 'typescript');
+
+    await expect(planner.planPhasePlan({
+      rawRequirement: 'Build a small TypeScript command.',
+      clarifications: [],
+    })).rejects.toThrow(/inspect execution\.command must contain one executable only/);
+  });
+
   it('拒绝 StepPlan 未交付 Phase 真实场景引用的 TypeScript 入口', async () => {
     const phasePlan = withDeliveryGates({
       requirementDigest: 'Build a small TypeScript command.',
@@ -757,11 +648,14 @@ describe('Planner.decompose — V 模型骨架完整性校验', () => {
     const planner = plannerWithPlanningPorts(observingLLM(JSON.stringify(stepPlan), seen));
     await planner.decomposePhase(
       { rawRequirement: 'Build the core fixture.', clarifications: [] },
-      withDeliveryGates({
+      // The phase plan as the planner holds it after parsing its own phase-plan response.
+      {
         requirementDigest: 'Build the core fixture.',
         globalPrompt: '',
         ...planMetadata,
-      }),
+        implementationPhases: withDeliveryGates(planMetadata).implementationPhases
+          .map((phase) => ImplementationPhaseSchema.parse(phase)),
+      },
       'P1',
     );
 

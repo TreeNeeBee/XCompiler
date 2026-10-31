@@ -1,7 +1,7 @@
 import type { ExecutionTurnPayload } from '../../application/execution/execution_turn_request.js';
 import { RuleBusinessRequestError } from '../../llm/rule_business_request.js';
 import type { ChatMessage } from '../../llm/types.js';
-import { resolveSkillOperationWindow, type SkillOperationWindow } from '../../llm/window.js';
+import { estimateMessageTokens, resolveSkillOperationWindow, type SkillOperationWindow } from '../../llm/window.js';
 import { renderExecutionUserPrompt } from './prompt_renderer.js';
 import { describeToolForStep } from './tool_action_normalizer.js';
 
@@ -35,8 +35,7 @@ export function projectExecutionProviderMessages(
     cursor = found + 1;
   });
 
-  const window = resolveSkillOperationWindow({ contextWindowTokens,
-    promptChars: actualMessages.reduce((sum, message) => sum + message.content.length, 0) });
+  const window = resolveSkillOperationWindow({ contextWindowTokens, promptTokens: estimateMessageTokens(actualMessages) });
   const context = { ...payload.promptContext, ctx: { ...payload.promptContext.ctx, ...window } };
   const userPrompt = renderCapturedUserPrompt(payload, context);
   const messages = actualMessages.map((message, index) => Object.freeze(index === initialUserIndex

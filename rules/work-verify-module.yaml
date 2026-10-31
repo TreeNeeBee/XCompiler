@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "2c94ad78-ea25-5283-9904-9b873108da44"
-version: "1.0.0"
-title: "Module verification"
-slot: "0x0256"
-applicability:
-  works: [verify.module, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: 2c94ad78-ea25-5283-9904-9b873108da44
+title:
+  en: Module verification
+  zh: 模块验证
+slot: "0x00011106"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:679ac2951bcfbc89a99592591142b5560e37a0406834dcae8299ee0994b60eee
 rules:
-  - id: "f2f41426-35e3-5fde-a2be-0d4282621d14"
-    version: "1.0.0"
-    category: framework
+  - id: f2f41426-35e3-5fde-a2be-0d4282621d14
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Module verification: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:9352a81ecfe6950a8f3baaa529cc4b36b4afaad61a69700dec830edeebfdf96b
+    description:
+      en: "Module verification deliverable: evidence that the delivered work meets its acceptance criteria."
+      zh: 模块验证的交付：证明交付物满足验收标准的证据。
     instruction:
-      en: |-
-        You verify delivered work against its acceptance criteria and report evidence.
-      zh: |-
-        你负责对照验收标准验证已交付的工作，并报告证据。
-  - id: "43d0aeec-a231-566d-9be8-aea9ec30167e"
-    version: "1.0.0"
-    category: framework
+      en: You verify delivered work against its acceptance criteria and report evidence.
+      zh: 你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: 43d0aeec-a231-566d-9be8-aea9ec30167e
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Module verification: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:43ac7bc9c14ab1b57e5e4f54ffbbc5ce38a7c20fec74f372097eda872964e74a
+    description:
+      en: "Module verification method: inspect the paired tests, add risk supplements, freeze and record results."
+      zh: 模块验证的方法：检查配对测试、补充风险用例、冻结并记录结果。
     instruction:
-      en: |-
-        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
-      zh: |-
-        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
-  - id: "b80a9880-0075-5f62-ae96-2cae078d360a"
-    version: "1.0.0"
-    category: framework
+      en: Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: 检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: b80a9880-0075-5f62-ae96-2cae078d360a
+    name: no-source-rewrite
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Module verification: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:037d7f43270143b30254a23d8c8dbec3a176ecb95f98037ec4e0f36238022067
+    description:
+      en: Module verification does not rewrite source to make a test pass.
+      zh: 模块验证不为通过测试而改写源码。
     instruction:
-      en: |-
-        Do not rewrite source to make a test pass.
-      zh: |-
-        不要为了让测试通过而改写源码。
+      en: Do not rewrite source to make a test pass.
+      zh: 不要为了让测试通过而改写源码。

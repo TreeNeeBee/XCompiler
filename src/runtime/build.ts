@@ -8,15 +8,21 @@ import { preflightProviders } from '../llm/preflight.js';
 import { ProjectContainer } from '../workspace/project_container.js';
 import { archiveIfExists } from '../workspace/doc_archive.js';
 import {
+  CLARIFICATION_CATEGORIES,
   Planner,
   buildPlan,
   type ClarificationCategory,
+  type ClarificationCoverage,
+  type ClarificationFeasibility,
+  type ClarificationFinalReason,
+  type ClarificationTranscriptEntry,
+  type ClarificationTurn,
   type ClarifyOption,
   type ClarifyQuestion,
   type DraftPhasePlan,
   type PlannerInput,
 } from '../agents/planner.js';
-import { PlanSchema } from '../domain/planning/execution_plan.js';
+import { LANGUAGES, PlanSchema, PROJECT_TYPES, type ProjectType } from '../domain/planning/execution_plan.js';
 import { DOC_NAMES } from '../domain/planning/document_contract.js';
 import { loadIncrementalBaseline, isIncrementalIntent } from '../application/planning/incremental.js';
 import { lintPlan } from '../domain/planning/plan_lint.js';
@@ -40,14 +46,17 @@ import {
 } from '../domain/planning/compiler.js';
 import { DomainAuditTrail } from '../application/observability/domain_audit_trail.js';
 import { DomainObjectRepository } from '../infrastructure/repository/domain_object_repository.js';
-import { AuditLogger } from '../audit/audit.js';
+import { AuditLogger, redactCredentialText } from '../audit/audit.js';
+import { LLMRequestError, ProviderCapacityExhausted } from '../llm/errors.js';
+import { estimatePromptTokens } from '../llm/window.js';
 import { acquireLock, LockError } from '../infrastructure/locking/file_lock.js';
-import { setLocale, t } from '../i18n/index.js';
+import { getLocale, getPromptLocale, setLocale, setPromptTranslation, t, tFor, type Locale } from '../i18n/index.js';
 import type { Language, PlanIntent } from '../domain/planning/execution_plan.js';
 import { PluginHost } from '../plugins/host.js';
 import type { XCompilerPlugin } from '../plugins/types.js';
 import { hasXcEnv, xcEnv } from '../config/env.js';
 import {
+  InteractionDismissedError,
   requireRuntimeInteraction,
   emitRuntimeEvent,
   runtimeLog,
@@ -63,16 +72,50 @@ import {
 import { ProjectPlanningGovernanceService } from '../application/planning/project_planning_governance_service.js';
 import { FileProjectProjectionWriter } from '../infrastructure/projections/index.js';
 import { Workspace } from '../workspace/workspace.js';
+import { roleProfile } from '../domain/workflow/role.js';
 import {
+  INTAKE_DRAFT_PATH,
+  IntakeDraftError,
+  chosenOption,
+  clarificationBudgetPercent,
+  clarificationPromptLimit,
+  codeConclusion,
+  conclusionFromTurn,
+  condensedRequirement,
+  feasibilityChoices,
+  fixedIntakeQuestion,
   formatClarificationQuestion,
+  formatFinalAssessment,
+  formatFixedQuestion,
+  formatInfeasibility,
+  knownLanguage,
+  knownProjectType,
+  parseTopicDecisions,
+  renderTopicFeasibility,
+  renderTopicFrontMatter,
+  requireChoice,
   resolveClarificationAnswer,
   resolveCompileLanguage,
+  parseIntakeDraft,
+  phasePlanReserveTokens,
+  clarificationProgress,
+  topicAddenda,
+  topicForModels,
+  topicTranslationPairs,
+  type ClarificationProgress,
+  type FeasibilityDecision,
+  type IntakeConclusion,
+  type IntakeDecision,
+  type IntakeDraft,
+  type TopicFeasibility,
+  type TopicOpenPoint,
 } from '../application/planning/requirement_intake.js';
 import { buildRuntimeCapabilities } from '../application/capabilities/runtime_capabilities.js';
 import { validateImplementationPhaseDraft } from '../agents/planning/phase_strategy.js';
 import { createRuntimePhasePlanRequestPort } from './phase_plan_request.js';
 import { createRuntimePhaseDecompositionRequestPort } from './phase_decomposition_request.js';
 import { createRuntimeClarificationRequestPort } from './clarification_request.js';
+import { createRuntimePromptTranslator } from './translation_request.js';
 
 export {
   formatClarificationQuestion,
@@ -148,6 +191,7 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   const { config: cfg, path: cfgPath, missingEnv } = await loadConfigWithPath(opts.configPath);
   // Locale 必须在第一条输出之前生效，确保终端与审计文件从头到尾使用同一语言。
   if (!hasXcEnv('LANG')) setLocale(cfg.locale);
+  setPromptTranslation(cfg.prompt_translate === 'on');
   if (missingEnv.length > 0) {
     await runtimeLog(io, 'warning', t().system.configEnvMissing(missingEnv.join(', ')));
   }
@@ -168,9 +212,11 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   }
 
   let scoreStore: ScoreStore | undefined;
+  let buildAudit: AuditLogger | undefined;
   try {
   const M = t();
   const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'xcompiler_build' });
+  buildAudit = audit;
   await audit.start({
     workspace: ws.root,
     config: opts.configPath ?? '(default)',
@@ -274,57 +320,340 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     trace('audit.userInput.intake.done');
   }
 
-  const initialLanguage = resolveCompileLanguage({
-    rawRequirement,
-    intent,
-    baseline,
-  });
-
-  // 2. Clarify — topic 模式跳过（topic.md 已经是冻结后的选题书）
+  // 2. Intake: the development language and the deliverable form first, each asked only when the
+  //    requirement or the existing project has not settled it; then clarification asks one question
+  //    at a time, each built on every earlier answer, until the model judges the requirement clear.
+  //    When the clarification would no longer fit its share of the clarifying or the planning
+  //    model's window, or its answers stop settling anything, the next turn is a final assessment
+  //    the user acts on. A topic file is an intake that already happened, so topic mode asks nothing.
   trace('clarify.section.enter');
+  // With prompt translation on, models read English while the user reads their locale: free text
+  // crosses through the translator, text with an English preset is taken from the prompt locale.
+  const translator = createRuntimePromptTranslator({ config: cfg, container, recordReplay, router, audit, io, signal: opts.abortSignal });
+  const P = tFor(getPromptLocale()).compile;
+  /** `question`/`answer` are what the model reads; `shown`, when it differs, is what the user saw and typed. */
+  type IntakeRecord = { question: ClarifyQuestion; answer: string; fixed: boolean; shown?: { question: ClarifyQuestion; answer: string } };
+  const shownForm = (model: { question: ClarifyQuestion; answer: string }, shown: { question: ClarifyQuestion; answer: string }) =>
+    JSON.stringify(model) === JSON.stringify(shown) ? undefined : shown;
+  let records: IntakeRecord[] = [];
+  let languageDecision: IntakeDecision<Language> | undefined = topicMode ? undefined
+    : knownLanguage({ rawRequirement, intent, baseline });
+  let projectTypeDecision: IntakeDecision<ProjectType> | undefined = topicMode ? undefined
+    : knownProjectType({ rawRequirement, intent, baseline });
+  let openPoints: TopicOpenPoint[] = [];
+  /** The same open points as the model wrote them, for the topic models read. */
+  let modelOpenPoints: TopicOpenPoint[] = [];
+  /** The defaults a clear clarification leaves to planning: as the user reads them, and as the model wrote them. */
+  let assumptions: readonly string[] = [];
+  let modelAssumptions: readonly string[] = [];
+  let topicFeasibility: TopicFeasibility | undefined;
+  trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
+  if (!opts.yes && !topicMode) {
+    const interaction = requireRuntimeInteraction(io, 'clarification questions');
+    const sourceDigest = createHash('sha256').update(rawRequirement).digest('hex');
+    let questionSeq = 0;
+    let stalled = 0;
+    let progress: ClarificationProgress | undefined;
+    const feasibilityDecisions: FeasibilityDecision[] = [];
+    // An unfinished intake of the same requirement is offered back rather than asked again.
+    const saved = await readIntakeDraft(container.state, io, audit);
+    if (saved && saved.sourceDigest === sourceDigest && saved.intent === intent
+      && saved.locale === getLocale() && saved.promptLocale === getPromptLocale()
+      && await interaction.confirm({ message: M.compile.resumeIntake(saved.records.length), default: true })) {
+      rawRequirement = saved.rawRequirement;
+      languageDecision = saved.language ?? languageDecision;
+      projectTypeDecision = saved.projectType ?? projectTypeDecision;
+      questionSeq = saved.questionSeq;
+      records = saved.records.map((item) => ({ ...item, question: { ...item.question, options: [...item.question.options] },
+        ...(item.shown ? { shown: { ...item.shown, question: { ...item.shown.question, options: [...item.shown.question.options] } } } : {}) }));
+      feasibilityDecisions.push(...saved.feasibilityDecisions);
+      stalled = saved.stalled;
+      progress = saved.progress;
+      await audit.event('note', `clarification resumed with ${records.length} answer(s)`, {
+        messageId: 'compile.intake_resumed', answers: records.length, questionSeq,
+      });
+    } else if (saved) {
+      await container.state.remove(INTAKE_DRAFT_PATH);
+    }
+    const saveDraft = () => container.state.writeFileAtomic(INTAKE_DRAFT_PATH, JSON.stringify({
+      version: 1, sourceDigest, intent, locale: getLocale(), promptLocale: getPromptLocale(), rawRequirement,
+      ...(languageDecision ? { language: languageDecision } : {}),
+      ...(projectTypeDecision ? { projectType: projectTypeDecision } : {}),
+      questionSeq, records, feasibilityDecisions, stalled, ...(progress ? { progress } : {}),
+    } satisfies IntakeDraft));
+    const record = async (question: ClarifyQuestion, answer: string, fixed = false, shown?: IntakeRecord['shown']) => {
+      questionSeq += 1;
+      records.push({ question, answer, fixed, ...(shown ? { shown } : {}) });
+      await audit.userInput(M.compile.auditClarifyAnswer(question.id, (shown?.question ?? question).question), shown?.answer ?? answer);
+      await saveDraft();
+    };
+    /** A model question as the user reads it. */
+    const showQuestion = async (question: ClarifyQuestion): Promise<ClarifyQuestion> => {
+      if (!translator.active) return question;
+      const shown = await translator.toUser([question.question, question.why, ...question.options.map((option) => option.answer)]);
+      return { ...question, question: shown[0]!, why: shown[1]!, options: question.options.map((option, index) => ({ ...option, answer: shown[index + 2]! })) };
+    };
+    /** A conclusion as the user reads it; intake's own summary is already in the user's locale. */
+    const showConclusion = async (conclusion: IntakeConclusion): Promise<IntakeConclusion> => {
+      if (!translator.active) return conclusion;
+      const shown = await translator.toUser([conclusion.source === 'model' ? conclusion.summary : '',
+        ...conclusion.blockers.map((blocker) => blocker.detail), ...conclusion.openPoints.map((point) => point.detail ?? ''),
+        conclusion.feasibleScope ?? '']);
+      let next = 1;
+      return { ...conclusion, summary: conclusion.source === 'model' ? shown[0]! : conclusion.summary,
+        blockers: conclusion.blockers.map((blocker) => ({ ...blocker, detail: shown[next++]! })),
+        openPoints: conclusion.openPoints.map((point) => { const detail = shown[next++]!; return point.detail ? { ...point, detail } : point; }),
+        ...(conclusion.feasibleScope ? { feasibleScope: shown[next]! } : {}) };
+    };
+    let modelRequirement = await translator.oneToModel(rawRequirement);
+    const nextId = () => `Q${questionSeq + 1}`;
+    // Language and deliverable form: reported when the requirement or the project settles them, asked otherwise.
+    const settleDecisions = async () => {
+      if (languageDecision) {
+        if (languageDecision.source !== 'user') {
+          await runtimeLog(io, 'info', M.compile.intakeDecided(M.compile.intakeSubjects.language,
+            M.compile.intakeLanguage.options[languageDecision.value], languageDecision.source));
+        }
+      } else {
+        const fixed = fixedIntakeQuestion(nextId(), M.compile.intakeLanguage, LANGUAGES);
+        const model = fixedIntakeQuestion(fixed.question.id, P.intakeLanguage, LANGUAGES);
+        const value = await interaction.select({ message: formatFixedQuestion(fixed.question), choices: fixed.choices });
+        languageDecision = { value: requireChoice(LANGUAGES, value, 'language'), source: 'user' };
+        const answers = { question: model.question, answer: model.answerFor(languageDecision.value) };
+        await record(answers.question, answers.answer, true,
+          shownForm(answers, { question: fixed.question, answer: fixed.answerFor(languageDecision.value) }));
+      }
+      if (projectTypeDecision) {
+        if (projectTypeDecision.source !== 'user') {
+          await runtimeLog(io, 'info', M.compile.intakeDecided(M.compile.intakeSubjects.deliverable,
+            M.compile.intakeDeliverable.options[projectTypeDecision.value], projectTypeDecision.source));
+        }
+      } else {
+        const fixed = fixedIntakeQuestion(nextId(), M.compile.intakeDeliverable, PROJECT_TYPES);
+        const model = fixedIntakeQuestion(fixed.question.id, P.intakeDeliverable, PROJECT_TYPES);
+        const value = await interaction.select({ message: formatFixedQuestion(fixed.question), choices: fixed.choices });
+        projectTypeDecision = { value: requireChoice(PROJECT_TYPES, value, 'deliverable'), source: 'user' };
+        const answers = { question: model.question, answer: model.answerFor(projectTypeDecision.value) };
+        await record(answers.question, answers.answer, true,
+          shownForm(answers, { question: fixed.question, answer: fixed.answerFor(projectTypeDecision.value) }));
+      }
+      return { language: languageDecision.value, projectType: projectTypeDecision.value };
+    };
+    // A revised requirement settles again what the old text alone had settled; the user's own choices stand.
+    const resettleFromRequirement = async () => {
+      if (languageDecision?.source === 'requirement') languageDecision = knownLanguage({ rawRequirement, intent, baseline });
+      if (projectTypeDecision?.source === 'requirement') projectTypeDecision = knownProjectType({ rawRequirement, intent, baseline });
+      return settleDecisions();
+    };
+    let decided = await settleDecisions();
+    // Everything clarified must fit both the model asking and the model that plans from the topic.
+    const [clarifyWindow, planningWindow] = [roleProfile('project-manager'), roleProfile('planner')]
+      .map((profile) => router.primaryContextWindow(router.resolvePool(profile.defaultPool))) as [number, number];
+    const ratio = cfg.planning.clarification.context_ratio;
+    const limits = { clarification: clarificationPromptLimit(clarifyWindow, ratio), planning: clarificationPromptLimit(planningWindow, ratio) };
+    const phasePlanReserve = phasePlanReserveTokens(planningWindow);
+    const stallTurns = cfg.planning.clarification.stall_turns;
+    // What depends on the decided language: the asking planner, the sandbox judged against, planning's own prompt.
+    const forLanguage = (language: Language) => {
+      const planner = new Planner(audit, language, io.terminalOutput === true, opts.abortSignal, capabilities.skills, undefined,
+        createRuntimeClarificationRequestPort({ config: cfg.rules, container, recordReplay, router, audit }));
+      const languageSandbox = cfg.agent.sandboxes[language];
+      return {
+        planner,
+        sandbox: { mode: languageSandbox.mode,
+          network: (languageSandbox.mode === 'docker' ? languageSandbox.docker : languageSandbox.local).limits.network },
+        planningOverhead: planner.planningPromptOverheadTokens({ intent, baselineSummary: baseline.summary }),
+      };
+    };
+    let setup = forLanguage(decided.language);
+    let ended: 'clear' | 'proceed' | 'narrowed' = 'clear';
+    let finalReason: ClarificationFinalReason | null = null;
+    let budgetUsedPercent = 0;
+    let budget: Record<string, number> = {};
+    let coverage: ClarificationCoverage | undefined;
+    let feasibility: ClarificationFeasibility | undefined;
+    const F = M.compile.infeasible;
+    for (;;) {
+      const questionId = nextId();
+      const transcript: ClarificationTranscriptEntry[] = records.map(({ question, answer }) => ({
+        id: question.id, category: question.category, question: question.question, answer,
+      }));
+      const turnInput = { rawRequirement: modelRequirement, intent, hasBaseline: !!baseline.summary, projectType: decided.projectType,
+        sandbox: setup.sandbox, transcript, questionId, budgetUsedPercent: 0 };
+      // Planning reads the topic, not this prompt, so its side is measured on the topic as rendered now.
+      const clarificationTokens = setup.planner.clarificationPromptTokens(turnInput);
+      const topicTokens = estimatePromptTokens(renderTopicDraft(modelRequirement, records.map(({ question, answer }) => ({
+        question: question.question, answer, category: question.category,
+      })), '', { decisions: decided }));
+      const planningTokens = topicTokens + setup.planningOverhead + phasePlanReserve;
+      budget = { clarificationTokens, topicTokens, planningOverheadTokens: setup.planningOverhead, phasePlanReserveTokens: phasePlanReserve, planningTokens };
+      budgetUsedPercent = clarificationBudgetPercent([
+        { tokens: clarificationTokens, limit: limits.clarification }, { tokens: planningTokens, limit: limits.planning },
+      ]);
+      const final: ClarificationFinalReason | null = clarificationTokens >= limits.clarification || planningTokens >= limits.planning
+        ? 'budget' : stalled >= stallTurns ? 'stalled' : null;
+      const spin = io.progress(M.compile.spinClarify(questionId), { animate: false });
+      let turn: ClarificationTurn | undefined;
+      let conclusion: IntakeConclusion | undefined;
+      try {
+        trace(`planner.clarify.call ${questionId} final=${final ?? 'no'}`);
+        turn = await setup.planner.nextClarification({ ...turnInput, budgetUsedPercent, finalAssessment: final });
+        spin.succeed(turn.status === 'ask' ? M.compile.clarifyAsked(questionId)
+          : turn.status === 'clear' ? M.compile.clarifyEnded.clear(records.length) : final ? M.compile.final.spin : F.spin);
+      } catch (err) {
+        spin.fail(M.compile.clarifyFail);
+        // A final assessment must not strand the intake: when no candidate gave a usable one, or none
+        // could hold the request, intake builds it from the last valid turn and the user still decides.
+        if (!final || !finalAssessmentUnavailable(err)) throw err;
+        conclusion = codeConclusion({ coverage, feasibility });
+        await runtimeLog(io, 'warning', M.compile.final.codeBuilt);
+        await audit.event('note', 'final assessment built by intake', {
+          messageId: 'compile.clarification_final_unavailable', questionId, finalAssessment: final,
+          cause: err instanceof LLMRequestError ? err.failure.code : (err as { code?: string }).code,
+        });
+      }
+      if (turn) {
+        coverage = turn.coverage;
+        feasibility = turn.feasibility;
+        if (turn.status === 'clear') {
+          ended = 'clear';
+          finalReason = final;
+          modelAssumptions = turn.assumptions;
+          assumptions = await translator.toUser(turn.assumptions);
+          break;
+        }
+        if (turn.status === 'ask') {
+          // Answers that settle no dimension beyond the most settled so far, and leave the verdict as
+          // it was, are stalling, however the model reshuffles which dimensions it calls open.
+          const moved = clarificationProgress(progress, turn);
+          stalled = moved.progressed ? 0 : stalled + 1;
+          progress = moved.progress;
+          const settled = CLARIFICATION_CATEGORIES.filter((category) => turn!.coverage[category] !== 'open').length;
+          await runtimeLog(io, 'info', M.compile.clarifyProgress(settled, CLARIFICATION_CATEGORIES.length,
+            turn.feasibility.verdict, budgetUsedPercent));
+          const shownQuestion = await showQuestion(turn.question);
+          const rawAnswer = await interaction.input({ message: formatClarificationQuestion(shownQuestion) });
+          // Answers reach the model, the topic and the draft; a credential pasted into one reaches none of them.
+          const typed = resolveClarificationAnswer(shownQuestion, rawAnswer);
+          const kept = redactCredentialText(typed);
+          if (kept !== typed) await runtimeLog(io, 'warning', M.compile.answerRedacted);
+          // A chosen option is the model's own text; only an answer in the user's words needs translating.
+          const label = chosenOption(turn.question, rawAnswer);
+          const modelAnswer = label ? resolveClarificationAnswer(turn.question, label) : await translator.oneToModel(kept);
+          await record(turn.question, modelAnswer, false, shownForm({ question: turn.question, answer: modelAnswer },
+            { question: shownQuestion, answer: kept }));
+          continue;
+        }
+        conclusion = conclusionFromTurn(turn);
+      }
+      if (!conclusion) throw new Error('clarification turn produced neither a question nor a conclusion');
+      const shown = await showConclusion(conclusion);
+      // Undeliverable, or a final assessment that leaves points open: the model may be wrong, so the user decides.
+      const choices = feasibilityChoices({ feasibleScope: conclusion.feasibleScope, final });
+      const message = final ? formatFinalAssessment(shown, final, stallTurns) : formatInfeasibility(shown);
+      const choice = requireChoice(choices.map((item) => item.value), await interaction.select({ message, choices }), 'feasibility');
+      await audit.event('note', `clarification ${final ? 'final assessment' : 'judged undeliverable'}: ${choice}`, {
+        messageId: final ? 'compile.clarification_final' : 'compile.clarification_infeasible', questionId,
+        finalAssessment: final, status: conclusion.status, source: conclusion.source, summary: conclusion.summary,
+        blockers: conclusion.blockers, openPoints: conclusion.openPoints, feasibleScope: conclusion.feasibleScope,
+        choice, budgetUsedPercent, ...(shown !== conclusion ? { shown } : {}),
+      });
+      if (choice === 'cancel') {
+        await container.state.remove(INTAKE_DRAFT_PATH);
+        await runtimeLog(io, 'warning', F.cancelled);
+        await audit.end({ status: 'cancelled', stage: 'clarification' });
+        await runtimeResult(io, 'build', 'cancelled', { stage: 'clarification' });
+        return {};
+      }
+      if (choice === 'continue') {
+        stalled = 0;
+        await saveDraft();
+        continue;
+      }
+      if (choice === 'proceed') {
+        if (conclusion.status === 'infeasible') feasibilityDecisions.push({ choice: 'proceed' });
+        ended = 'proceed';
+        finalReason = final;
+        openPoints = [...shown.openPoints];
+        modelOpenPoints = [...conclusion.openPoints];
+        break;
+      }
+      if (choice === 'narrow') {
+        const scope = conclusion.feasibleScope!;
+        // The topic records the scope as the user read it; the model reads its own wording.
+        feasibilityDecisions.push({ choice: 'narrow', scope: shown.feasibleScope! });
+        const narrowed = {
+          question: { id: questionId, category: 'boundary' as const, question: P.infeasible.narrowQuestion(conclusion.summary), why: conclusion.summary, options: [] },
+          answer: P.infeasible.narrowAnswer(scope),
+        };
+        await record(narrowed.question, narrowed.answer, false, shownForm(narrowed, {
+          question: { ...narrowed.question, question: F.narrowQuestion(shown.summary), why: shown.summary },
+          answer: F.narrowAnswer(shown.feasibleScope!),
+        }));
+        if (final) {
+          ended = 'narrowed';
+          finalReason = final;
+          openPoints = [...shown.openPoints];
+          modelOpenPoints = [...conclusion.openPoints];
+          break;
+        }
+        // The narrowed scope is a new requirement as far as stalling goes.
+        stalled = 0;
+        progress = undefined;
+        continue;
+      }
+      if (final === 'budget') {
+        // No room is left to ask again over the same answers: they are folded into the requirement
+        // the user edits, and clarification restarts from it with only the fixed answers kept.
+        const answered = records.filter((item) => !item.fixed)
+          .map((item) => ({ question: (item.shown?.question ?? item.question).question, answer: item.shown?.answer ?? item.answer }));
+        const edited = (await interaction.editor({ message: M.compile.final.reviseCondensedMsg,
+          default: condensedRequirement(rawRequirement, answered), postfix: '.md' })).trim();
+        if (edited) {
+          rawRequirement = edited;
+          records = records.filter((item) => item.fixed);
+          await audit.userInput(F.auditRevised, edited);
+        }
+      } else {
+        const revised = (await interaction.editor({ message: F.reviseEditorMsg, default: rawRequirement, postfix: '.md' })).trim();
+        if (revised && revised !== rawRequirement) {
+          rawRequirement = revised;
+          await audit.userInput(F.auditRevised, revised);
+        }
+      }
+      stalled = 0;
+      progress = undefined;
+      modelRequirement = await translator.oneToModel(rawRequirement);
+      const resettled = await resettleFromRequirement();
+      if (resettled.language !== decided.language) setup = forLanguage(resettled.language);
+      decided = resettled;
+      await saveDraft();
+    }
+    if (feasibility) {
+      const details = await translator.toUser(feasibility.blockers.map((blocker) => blocker.detail));
+      topicFeasibility = { verdict: feasibility.verdict, decisions: feasibilityDecisions,
+        blockers: feasibility.blockers.map((blocker, index) => ({ ...blocker, detail: details[index]! })) };
+    }
+    if (ended !== 'clear') await runtimeLog(io, 'warning', M.compile.clarifyEnded[ended](records.length));
+    await audit.event('note', `clarification ended: ${ended}`, {
+      messageId: 'compile.clarification_ended', ended, finalAssessment: finalReason, asked: records.length, assumptions: modelAssumptions,
+      budgetUsedPercent, budget, limits, windows: [clarifyWindow, planningWindow], openPoints,
+      language: languageDecision, projectType: projectTypeDecision, feasibility: feasibility?.verdict, feasibilityDecisions,
+      ...(coverage ? { coverage } : {}),
+    });
+  }
   const clarifications: Array<{
     question: string;
     answer: string;
     category?: ClarificationCategory;
     why?: string;
     options?: ClarifyOption[];
-  }> = [];
-  let clarificationQuestions: ClarifyQuestion[] = [];
-  trace(`clarify.section.flag yes=${opts.yes} topicMode=${topicMode}`);
-  if (!opts.yes && !topicMode) {
-    const clarifyPlanner = new Planner(
-      audit,
-      initialLanguage.language,
-      io.terminalOutput === true,
-      opts.abortSignal,
-      capabilities.skills,
-      undefined,
-      createRuntimeClarificationRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
-    );
-    trace('ora.clarify.start');
-    const spin = io.progress(M.compile.spinClarify, { animate: false });
-    trace('ora.clarify.started');
-    try {
-      trace('planner.clarify.call');
-      clarificationQuestions = await clarifyPlanner.clarify(rawRequirement, {
-        intent,
-        hasBaseline: !!baseline.summary,
-        languageAmbiguous: initialLanguage.ambiguous,
-      });
-      trace(`planner.clarify.return n=${clarificationQuestions.length}`);
-      spin.succeed(M.compile.clarifySucceed(clarificationQuestions.length));
-    } catch (err) {
-      spin.fail(M.compile.clarifyFail);
-      throw err;
-    }
-    const interaction = requireRuntimeInteraction(io, 'clarification questions');
-    for (const q of clarificationQuestions) {
-      const rawAnswer = await interaction.input({ message: formatClarificationQuestion(q) });
-      const ans = resolveClarificationAnswer(q, rawAnswer);
-      clarifications.push({ question: q.question, answer: ans, category: q.category, why: q.why, options: q.options });
-      await audit.userInput(M.compile.auditClarifyAnswer(q.id, q.question), ans);
-    }
-  }
+  }> = records.map(({ question, answer, shown }) => {
+    // The clarification record kept for the user, the topic and PM is the form the user saw.
+    const asked = shown?.question ?? question;
+    return { question: asked.question, answer: shown?.answer ?? answer, category: asked.category, why: asked.why, options: asked.options };
+  });
+  let clarificationQuestions: ClarifyQuestion[] = records.map(({ question, shown }) => shown?.question ?? question);
 
   // 2.5 用户自定义补充需求（预留位，可为空）— topic 模式下也跳过（topic.md 应已自含全部上下文）
   let userAddenda = '';
@@ -347,6 +676,8 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       }
     }
   }
+  // A plugin may rewrite the record the user reads; intake then knows no translation of it.
+  const clarificationsAsRecorded = JSON.stringify(clarifications);
   const clarifyContext = {
     rawRequirement,
     questions: clarificationQuestions,
@@ -372,7 +703,29 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
     await draftWs.writeFile(draftTopic, topicMd);
   } else {
     trace('renderTopicDraft');
-    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda);
+    topicMd = renderTopicDraft(rawRequirement, clarifications, userAddenda, {
+      decisions: { language: languageDecision?.value, projectType: projectTypeDecision?.value },
+      assumptions,
+      openPoints,
+      feasibility: topicFeasibility,
+    });
+    if (translator.active) {
+      // The topic models read is put together from what intake already translated, as it went:
+      // the requirement, the models' own questions and the answers as they were sent. Remembered
+      // section by section as the translation of the topic the user reads, it lets planning, later
+      // phases and --topic reruns translate only a section the user changes. The feasibility
+      // section has no such form and is translated when read.
+      const modelTopic = renderTopicDraft(
+        await translator.oneToModel(rawRequirement),
+        JSON.stringify(clarifications) === clarificationsAsRecorded
+          ? records.map(({ question, answer }) => ({ question: question.question, answer, category: question.category })) : [],
+        await translator.oneToModel(userAddenda),
+        { decisions: { language: languageDecision?.value, projectType: projectTypeDecision?.value }, assumptions: modelAssumptions,
+          openPoints: modelOpenPoints },
+        'en',
+      );
+      await translator.remember(topicTranslationPairs(topicMd, modelTopic, translator.userLocale));
+    }
     trace('ws.writeFile.draftTopic');
     await draftWs.writeFile(draftTopic, topicMd);
     trace('ws.writeFile.draftTopic.done');
@@ -382,14 +735,15 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       await runtimeLog(io, 'raw', topicMd);
       await runtimeLog(io, 'accent', M.compile.topicPreviewFooter);
       const interaction = requireRuntimeInteraction(io, 'topic confirmation gate');
-      const decision = await interaction.select({
+      // Anything but one of the three choices is refused rather than read as a confirmation.
+      const decision = requireChoice(GATE1_CHOICES, await interaction.select({
         message: M.compile.gate1Confirm,
         choices: [
           { name: M.compile.gate1ChoiceConfirm, value: 'confirm' },
           { name: M.compile.gate1ChoiceEdit, value: 'edit' },
           { name: M.compile.gate1ChoiceCancel, value: 'cancel' },
         ],
-      });
+      }), 'gate1');
       await audit.userDecision(M.compile.gate1AuditLabel, decision);
       if (decision === 'cancel') {
         await draftWs.remove(draftDir);
@@ -411,22 +765,33 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   //   下次可用 `xcompiler build --topic docs/topic.md` 直接重跑而不必再澄清一次。
   trace('ws.readFile.finalTopic');
   const finalTopicMd = await draftWs.readFile(draftTopic);
-  const languageResolution = resolveCompileLanguage({
-    rawRequirement: finalTopicMd,
-    clarifications,
-    userAddenda,
-    intent,
-    baseline,
-  });
+  // The topic decides the addenda too: an edit at Gate 1 or a --topic file is what planning reads,
+  // so it is what the plan records and what the plan's own checks judge.
+  userAddenda = topicAddenda(finalTopicMd);
+  // The topic's front matter is authoritative: it holds the intake decisions, an edit made at Gate 1,
+  // or what an earlier build recorded for a --topic rerun. Text inference covers only its absence.
+  const decided = parseTopicDecisions(finalTopicMd);
+  const languageResolution = decided.language
+    ? { language: decided.language, source: languageDecision?.value === decided.language ? languageDecision.source : 'topic', ambiguous: false }
+    : resolveCompileLanguage({
+        rawRequirement: finalTopicMd,
+        clarifications,
+        userAddenda,
+        intent,
+        baseline,
+      });
   const language = languageResolution.language;
   await audit.event('note', `target language resolved: ${language}`, {
     messageId: 'compile.language_resolved',
     language,
     source: languageResolution.source,
     ambiguous: languageResolution.ambiguous,
+    ...(decided.projectType ? { projectType: decided.projectType } : {}),
   });
   await archiveIfExists(ws, DOC_NAMES.topic, audit, container.state);
   await ws.writeFile(DOC_NAMES.topic, finalTopicMd);
+  // The topic now holds the intake; an unfinished-intake draft would only offer a stale resume.
+  await container.state.remove(INTAKE_DRAFT_PATH);
   await audit.event('topic.persist', M.compile.auditTopicPersisted(ws.abs(DOC_NAMES.topic)), {
     messageId: 'compile.topic_persisted',
     topicPath: ws.abs(DOC_NAMES.topic),
@@ -463,9 +828,12 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       createRuntimePhaseDecompositionRequestPort({ config: cfg.rules, container, recordReplay, router, audit }),
     );
     const plannerInput: PlannerInput = {
-      rawRequirement: finalTopicMd,
-      clarifications,
-      userAddenda,
+      rawRequirement: await topicForModels(finalTopicMd, translator),
+      // topic.md already carries every answer and the addenda, including any edited at Gate 1; sending
+      // them again would double their size and, after an edit, contradict the topic (the addenda block
+      // even claims priority over it). Later phases read the topic alone too.
+      clarifications: [],
+      userAddenda: '',
       baselineContext: baseline.summary,
       intent,
     };
@@ -511,6 +879,13 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
       });
     } else {
       draftPhasePlan = await planner.planPhasePlan(decomposeContext.input);
+      // The deliverable form was decided at intake; the planning model may not change it.
+      if (decided.projectType && draftPhasePlan.projectType !== decided.projectType) {
+        await audit.event('note', `PhasePlan projectType pinned to ${decided.projectType}`, {
+          messageId: 'compile.project_type_pinned', decided: decided.projectType, planned: draftPhasePlan.projectType,
+        });
+        draftPhasePlan = { ...draftPhasePlan, projectType: decided.projectType };
+      }
       existingPhasePlan = buildPhasePlanCheckpoint({
         language,
         intent,
@@ -622,7 +997,8 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   // 6. 确认门 2
   if (!opts.yes) {
     await runtimeLog(io, 'accent', `\n${M.compile.planPreviewHeader}`);
-    await runtimeLog(io, 'raw', planMd.split('\n').slice(0, 60).join('\n'));
+    // The plan stays as the models wrote it; the user reviews it in their own language.
+    await runtimeLog(io, 'raw', await translator.oneToUser(planMd.split('\n').slice(0, 60).join('\n')));
     if (planMd.split('\n').length > 60) await runtimeLog(io, 'dim', M.compile.planPreviewTruncated);
     await runtimeLog(io, 'accent', M.compile.planPreviewFooter);
     const interaction = requireRuntimeInteraction(io, 'plan confirmation gate');
@@ -784,6 +1160,14 @@ export async function runCompile(opts: CompileOptions): Promise<{ planPath?: str
   await audit.end({ status: 'ok', planPath, phasePlanPath, steps: persistedPlan.steps.length });
   await runtimeResult(io, 'build', 'ok', { planPath: phasePlanPath, currentPlanPath: planPath, steps: persistedPlan.steps.length });
   return { planPath: phasePlanPath };
+  } catch (err) {
+    // A prompt closed without an answer cancels the build. An unfinished intake stays saved, so the
+    // next build of the same requirement can still offer to resume it.
+    if (!(err instanceof InteractionDismissedError)) throw err;
+    await runtimeLog(io, 'warning', t().compile.interactionDismissed);
+    await buildAudit?.end({ status: 'cancelled', reason: err.code, prompt: err.kind });
+    await runtimeResult(io, 'build', 'cancelled', { reason: err.code });
+    return {};
   } finally {
     try { await scoreStore?.flush(); } catch { /* never block release */ }
     await lock.release();
@@ -846,17 +1230,20 @@ async function intake(inputFile: string | undefined, io: RuntimeIO): Promise<str
 
 function renderTopicDraft(
   raw: string,
-  qa: Array<{
-    question: string;
-    answer: string;
-    category?: ClarificationCategory;
-    why?: string;
-    options?: ClarifyOption[];
-  }>,
+  qa: Array<{ question: string; answer: string; category?: ClarificationCategory }>,
   addenda: string = '',
+  intake: {
+    decisions?: { language?: Language; projectType?: ProjectType };
+    assumptions?: readonly string[];
+    openPoints?: readonly TopicOpenPoint[];
+    feasibility?: TopicFeasibility;
+  } = {},
+  locale: Locale = getLocale(),
 ): string {
-  const M = t().compile;
+  const M = tFor(locale).compile;
   const lines: string[] = [];
+  const decisions = intake.decisions ?? {};
+  if (decisions.language || decisions.projectType) lines.push(renderTopicFrontMatter(decisions));
   lines.push(M.topicTitle);
   lines.push('');
   lines.push(M.topicPreamble);
@@ -869,18 +1256,35 @@ function renderTopicDraft(
     lines.push(M.topicSecClarify);
     lines.push('');
     for (const [i, c] of qa.entries()) {
+      // An answered question needs only its answer, which carries the chosen option's text: the
+      // reasons and the options not chosen would more than double what planning has to read.
       lines.push(`- **Q${i + 1}${c.category ? ` · ${c.category}` : ''}** ${c.question}`);
-      if (c.why) lines.push(`  - **Why** ${c.why}`);
-      if (c.options && c.options.length > 0) {
-        lines.push('  - **Options**');
-        for (const option of c.options) {
-          lines.push(`    - ${option.label}. ${option.answer}`);
-        }
-      }
       lines.push(`  - **A** ${c.answer}`);
     }
     lines.push('');
   }
+  if (decisions.language || decisions.projectType) {
+    lines.push(M.topicSecDecisions);
+    lines.push('');
+    if (decisions.language) lines.push(`- ${M.intakeSubjects.language}: ${M.intakeLanguage.options[decisions.language]}`);
+    if (decisions.projectType) lines.push(`- ${M.intakeSubjects.deliverable}: ${M.intakeDeliverable.options[decisions.projectType]}`);
+    lines.push('');
+  }
+  if (intake.assumptions && intake.assumptions.length > 0) {
+    lines.push(M.topicSecAssumptions);
+    lines.push('');
+    lines.push(M.topicAssumptionsNote);
+    for (const assumption of intake.assumptions) lines.push(`- ${assumption}`);
+    lines.push('');
+  }
+  if (intake.openPoints && intake.openPoints.length > 0) {
+    lines.push(M.topicSecOpen);
+    lines.push('');
+    lines.push(M.topicOpenNote);
+    for (const point of intake.openPoints) lines.push(`- ${point.category}${point.detail ? `: ${point.detail}` : ''}`);
+    lines.push('');
+  }
+  lines.push(...renderTopicFeasibility(intake.feasibility, locale));
   const trimmed = addenda.trim();
   if (trimmed) {
     lines.push(M.topicSecAddenda);
@@ -889,4 +1293,29 @@ function renderTopicDraft(
     lines.push('');
   }
   return lines.join('\n');
+}
+
+/** The saved unfinished intake, if any; an unreadable one is reported, recorded and discarded. */
+async function readIntakeDraft(state: Pick<Workspace, 'exists' | 'readFile' | 'remove'>, io: RuntimeIO, audit: AuditLogger) {
+  if (!(await state.exists(INTAKE_DRAFT_PATH))) return undefined;
+  try {
+    return parseIntakeDraft(await state.readFile(INTAKE_DRAFT_PATH));
+  } catch (error) {
+    if (!(error instanceof IntakeDraftError)) throw error;
+    await runtimeLog(io, 'warning', t().compile.intakeDraftInvalid);
+    await audit.event('note', 'unreadable intake draft discarded', {
+      messageId: 'compile.intake_draft_invalid', path: INTAKE_DRAFT_PATH, code: error.code, cause: String(error.cause),
+    });
+    await state.remove(INTAKE_DRAFT_PATH);
+    return undefined;
+  }
+}
+
+const GATE1_CHOICES = ['confirm', 'edit', 'cancel'] as const;
+
+/** A final assessment the model could not give: every candidate's reply was refused, or no provider could hold the request. */
+function finalAssessmentUnavailable(error: unknown): boolean {
+  if (error instanceof ProviderCapacityExhausted) return true;
+  return error instanceof LLMRequestError && error.failure.code === 'all_providers_failed'
+    && error.failure.details?.contentRejectedOnly === true;
 }

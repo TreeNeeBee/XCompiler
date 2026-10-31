@@ -1,40 +1,52 @@
-# Compiler-maintained RuleList. Changes require manual source, version and manifest updates.
-# Author comments never enter prompts. Runtime binds this list; it is never a retrieval candidate (D-14).
-schemaVersion: "1"
-id: "ea2efae9-84b6-5d1f-b025-433d5e76dc20"
-version: "1.0.0"
-title: "Functional verification"
-slot: "0x0257"
-applicability:
-  works: [verify.functional, repair.debug, change.apply]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: ea2efae9-84b6-5d1f-b025-433d5e76dc20
+title:
+  en: Functional verification
+  zh: 功能验证
+slot: "0x00011107"
+version: 2.0.0
+ctime: 2026-10-16T15:15:35Z
+mtime: 2026-10-19T00:00:00Z
+digest: sha256:b783f64c604926f40a69c3bd0eb8c8683627db974c26bac0ef8d1d4cde3e9aba
 rules:
-  - id: "cd917fda-2073-5b73-9fcd-0f27e4459bfc"
-    version: "1.0.0"
-    category: framework
+  - id: cd917fda-2073-5b73-9fcd-0f27e4459bfc
+    name: deliverable
+    version: 2.0.0
     level: required
-    retrievalDescription: "Functional verification: what this work delivers"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:dfff4d24dcf71bcc1424d89950fbe410f7f56fc1762145e4654335c3a7e89c9f
+    description:
+      en: "Functional verification deliverable: evidence that the delivered work meets its acceptance criteria."
+      zh: 功能验证的交付：证明交付物满足验收标准的证据。
     instruction:
-      en: |-
-        You verify delivered work against its acceptance criteria and report evidence.
-      zh: |-
-        你负责对照验收标准验证已交付的工作，并报告证据。
-  - id: "31c2a391-ad34-5334-a8e2-2af0ab85e509"
-    version: "1.0.0"
-    category: framework
+      en: You verify delivered work against its acceptance criteria and report evidence.
+      zh: 你负责对照验收标准验证已交付的工作，并报告证据。
+  - id: 31c2a391-ad34-5334-a8e2-2af0ab85e509
+    name: method
+    version: 2.0.0
     level: required
-    retrievalDescription: "Functional verification: how this work is done"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:c6ff797a2816eef13672b59d0073dd3346b6db9fbe0a843ff77e1b242d27ed1e
+    description:
+      en: "Functional verification method: inspect the paired tests, add risk supplements, freeze and record results."
+      zh: 功能验证的方法：检查配对测试、补充风险用例、冻结并记录结果。
     instruction:
-      en: |-
-        Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
-      zh: |-
-        检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
-  - id: "452f1fb2-f7ba-5890-acb8-f2a6943455d6"
-    version: "1.0.0"
-    category: framework
+      en: Inspect paired tests, add isolated risk supplements, freeze the suite, and record measured results.
+      zh: 检查配对测试，补充隔离的风险测试，冻结测试集，并记录实测结果。
+  - id: 452f1fb2-f7ba-5890-acb8-f2a6943455d6
+    name: no-source-rewrite
+    version: 2.0.0
     level: forbidden
-    retrievalDescription: "Functional verification: forbidden shortcut 1"
+    ctime: 2026-10-16T15:15:35Z
+    mtime: 2026-10-19T00:00:00Z
+    digest: sha256:78ce30406bf132b156dd81ace39b7c591911f82fb29624dcd9d54cefd5114d8b
+    description:
+      en: Functional verification does not rewrite source to make a test pass.
+      zh: 功能验证不为通过测试而改写源码。
     instruction:
-      en: |-
-        Do not rewrite source to make a test pass.
-      zh: |-
-        不要为了让测试通过而改写源码。
+      en: Do not rewrite source to make a test pass.
+      zh: 不要为了让测试通过而改写源码。

@@ -30,6 +30,8 @@ export const WORK_IDS = [
   'plan.decompose',
   'judge.scenario',
   'manage.project',
+  /** Translating free text between the user's locale and the English models read (prompt translation). */
+  'text.translate',
 ] as const;
 
 export type StepWorkId = (typeof STEP_WORK_IDS)[number];
@@ -76,6 +78,8 @@ const OPERATION_ROLE: Readonly<Record<Exclude<WorkId, StepWorkId | 'repair.debug
     'plan.decompose': 'planner',
     'judge.scenario': 'project-manager',
     'manage.project': 'project-manager',
+    // PM owns what passes between the user and the models.
+    'text.translate': 'project-manager',
   });
 
 function developerFor(language: Language): RoleId {

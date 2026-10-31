@@ -166,7 +166,7 @@ describe('bootstrap qualification', () => {
 
   it('renders a reproducible report', () => {
     const result: BootstrapResult = {
-      repository: '/repo', worktree: '/candidate', branch: 'xcompiler/bootstrap/x',
+      repository: '/repo', container: '/bootstrap', worktree: '/bootstrap/worktrees/master', branch: 'xcompiler/bootstrap/x',
       baseCommit: 'abc', candidateCommit: 'def', runId: 'x', status: 'qualified',
       reportPath: '/repo/.xcompiler/bootstrap/reports/x.md', changedFiles: ['src/a.ts'], checks: [],
     };

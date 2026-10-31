@@ -1,7 +1,7 @@
 # 0.4.0 当前进度、Executor 实现与审查交接
 
 日期：2026-10-15。工作分支：`feature/0.4.0`，对应 `origin/feature/0.4.0`。
-本次差异基线：`29d6cca`（P03 分解请求留存节点）。本文用于 cc 审查当前阶段，
+本次差异基线：`29d6cca`（P03（阶段拆解） 分解请求留存节点）。本文用于 cc 审查当前阶段，
 不表示整个 0.4.0 已完成，也不表示已通过发布验收。
 
 切到该功能分支后，可用 `git diff 29d6cca..HEAD -- src tests docs/features/0.4.0` 查看
@@ -28,11 +28,11 @@ Application 和 Agent 不直接引入新的持久化生命周期状态。
 |---|---|---|---|
 | M0 | Core 职责拆分及模块边界 | Domain/Application/Infrastructure/Runtime 迁移基础已实现 | 全面模块、导出、安装资源边界收口 |
 | D1 | Rule 与校准合同 | Q0-Q6、四组细化选择已确认 | 按来源记录提取处置，逐类定义新增表示修复证明 |
-| F1 | 完整响应、原始审计、请求与尝试证据 | 基础已实现，J06、Planner、Executor 已接入相应请求留存 | 剩余指令所有者的完整计量和边界核对 |
-| R1 | YAML、RuleSelector/Decorator、向量索引和快照 | 基础及 Runtime 组合已实现，有本地文件/HTTP 证据 | 更多正式定义/绑定、真实语义参数校准；基础实现不等于召回质量已验证 |
-| C1 | 协议校准基础 | 完成性、确定性处理/证明、固定协议模板、持久额度及原提供方协调器已有实现 | 生产调用完整组合、更多引号/转义保持证明 |
+| F1（请求与证据基础） | 完整响应、原始审计、请求与尝试证据 | 基础已实现，J06（场景结果判定）、Planner、Executor 已接入相应请求留存 | 剩余指令所有者的完整计量和边界核对 |
+| R1（Rule 目录与组装） | YAML、RuleSelector/Decorator、向量索引和快照 | 基础及 Runtime 组合已实现，有本地文件/HTTP 证据 | 更多正式定义/绑定、真实语义参数校准；基础实现不等于召回质量已验证 |
+| C1（协议纠正） | 协议校准基础 | 完成性、确定性处理/证明、固定协议模板、持久额度及原提供方协调器已有实现 | 生产调用完整组合、更多引号/转义保持证明 |
 | V1/V2-a | J06 场景判定 | 当前证据判定、YAML 准则、请求留存与恢复已接入 | 与其余功能共同完成最终验收 |
-| V1/V2-b | P02 PhasePlan、P01 澄清、P03 分解 | 保留原提示和业务门禁，实际 Build/PM/Run/阶段推进及只读恢复已验证 | 各来源的后续 Rule 提取仍单独实施 |
+| V1/V2-b | P02（阶段规划） PhasePlan、P01（需求澄清） 澄清、P03 分解 | 保留原提示和业务门禁，实际 Build/PM/Run/阶段推进及只读恢复已验证 | 各来源的后续 Rule 提取仍单独实施 |
 | V1/V2-c | Executor 完整留存节点 | 本次收尾范围；实现与实际调用回归已完成 | 以本文第 5 节记录的最终门禁结果为准 |
 | V1/V2-d | 其余指令来源迁移 | 待实施 | P04-P14 等逐项处置，保持语义所有者及确定性门禁 |
 | V1/V2-e | 受控业务 Rule 生效 | 已确认方向，尚未完成生产闭环 | 接受计划后正式绑定；CR 质量证据和实际集成成功后发布新正式版本 |
@@ -172,6 +172,6 @@ Ollama null 帧回归失败。前者更新为实际 owner 绑定断言；后者�
 Rule 生效闭环；按完整功能节点验证，G1 汇总后进入 P1。新增真实模型/派生工程场景先确认
 访问与支出范围。已确认的 Q0-Q6 不应重新当作未选方案；本次工程字段没有新增用户决策。
 
-更完整历史见 [HANDOVER](HANDOVER.md)，实施依赖和未完成批次见
-[implementation-plan](implementation-plan.md)，接口见 [rule-artifacts](rule-artifacts.md)，
-协议限制见 [output-calibration](output-calibration.md)。
+更完整历史见 [HANDOVER](../features/0.4.0/HANDOVER.md)，实施依赖和未完成批次见
+[implementation-plan](../features/0.4.0/implementation-plan.md)，接口见 [rule-artifacts](../features/0.4.0/rule-artifacts.md)，
+协议限制见 [output-calibration](../features/0.4.0/output-calibration.md)。

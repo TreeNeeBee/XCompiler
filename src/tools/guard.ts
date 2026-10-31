@@ -120,7 +120,8 @@ export class EditGuard {
     if (!WRITE_TOOLS.has(t.name)) return t;
     return {
       name: t.name,
-      description: t.description,
+      // Read through, so the wrapped tool keeps describing itself in the current prompt language.
+      get description() { return t.description; },
       argsSchema: t.argsSchema,
       run: async (args: A, ctx: ToolContext): Promise<ToolResult<R>> => {
         if (this.accumulatedLines > this.maxLines) {

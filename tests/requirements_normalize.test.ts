@@ -33,6 +33,11 @@ describe('calibratePythonRequirements', () => {
     expect(out.some((r) => /^pytest$/.test(r))).toBe(true);
   });
 
+  it('always ensures pytest-cov, which the unit-test gate measures coverage with', () => {
+    expect(calibratePythonRequirements(['requests'])).toContain('pytest-cov');
+    expect(calibratePythonRequirements(['pytest-cov', 'requests']).filter((r) => r === 'pytest-cov')).toHaveLength(1);
+  });
+
   it('strips PEP 440 version specifiers from arbitrary packages', () => {
     const out = calibratePythonRequirements([
       'fastapi==0.110.*',

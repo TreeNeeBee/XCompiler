@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { xcEnv } from '../../config/env.js';
-import { bundledInstallationRoot } from '../../config/installation_root.js';
+import { installationRoot } from '../../config/installation_root.js';
 import { assertStateTransition, type StateTransitions } from '../../util/state_machine.js';
 import type { DebugBrief } from '../../application/execution/debug_brief.js';
 import type { Phase } from '../../domain/planning/execution_plan.js';
@@ -62,7 +62,7 @@ export function defaultDebugWikiPath(fallbackRoot?: string): string {
   const configured = xcEnv('PATH')?.trim();
   const candidate = configured
     ? path.resolve(configured)
-    : bundledInstallationRoot();
+    : installationRoot();
   const base = isFilesystemRoot(candidate) && fallbackRoot
     ? path.resolve(fallbackRoot)
     : candidate;
@@ -74,7 +74,7 @@ function isFilesystemRoot(candidate: string): boolean {
 }
 
 export function bundledDebugWikiPath(): string {
-  return path.join(bundledInstallationRoot(), BUNDLED_DEBUG_WIKI_REL_PATH);
+  return path.join(installationRoot(), BUNDLED_DEBUG_WIKI_REL_PATH);
 }
 
 export class FileDebugWiki implements DebugWikiPort {

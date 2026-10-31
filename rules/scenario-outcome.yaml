@@ -1,38 +1,26 @@
-# Compiler-maintained scenario rubric. Changes require manual source and version updates.
-# Author comments never enter prompts; the caller supplies current accepted context and evidence.
-schemaVersion: "1"
-id: "de4378d5-8731-4f17-8e9c-3e973f6ad7fd"
-version: "2.1.0"
-title: "Scenario outcome and corrective ownership"
-# Work segment, judgement range (change list D-13). Work-scoped: any role assigned this work uses it.
-slot: "0x02A0"
-applicability:
-  works: [judge.scenario]
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: de4378d5-8731-4f17-8e9c-3e973f6ad7fd
+title:
+  en: Scenario outcome and corrective ownership
+  zh: 场景结果与纠正归属
+slot: "0x00011300"
+version: 3.3.0
+ctime: 2026-10-13T12:40:04Z
+mtime: 2026-10-29T23:00:57.397Z
+digest: sha256:fb746e3517d9a9bea7bf5408355100f4906f3047b51f16485e203ca8668cdfb1
 rules:
-  - id: "a707ec22-a5d2-45da-83b3-823d96d18f20"
-    version: "2.1.0"
-    category: scenario
+  - id: a707ec22-a5d2-45da-83b3-823d96d18f20
+    name: scenario-judgement
+    version: 3.3.0
     level: required
-    retrievalDescription: "Judge current scenario expectations and evidence; classify failed accepted contracts as Bug or Change Request and identify the owning V-model Step."
+    ctime: 2026-10-13T12:40:04Z
+    mtime: 2026-10-29T23:00:57.397Z
+    digest: sha256:2130fc3574617539ec9ff465ba5a7646ce7bd246c63c4e7c665fa22cbf03a8b9
+    description:
+      en: "Applies when judging a completed run: compare its evidence with the recorded expectation, classify failures as Bug or Change Request and name the owning Step."
+      zh: 判定已完成的运行时适用：对照记录的预期比较证据，把失败归为 Bug 或变更请求，并指出负责的 Step。
     instruction:
-      en: >-
-        You decide whether a completed run produced what it was supposed to produce. You are given the
-        expectation recorded when the work was planned, and the evidence the run left behind. Judge only
-        against that expectation. Do not invent requirements, do not comment on style, and do not fail a run
-        for anything the expectation does not ask for. Report a failure when the evidence contradicts the
-        expectation, including when a required element is absent, duplicated, empty, or obviously wrong for
-        the field it fills. When it failed, classify the work without relying on any particular protocol,
-        status code, vendor, or project domain. Use ticketType="bug" when the accepted requirement and
-        design remain valid and the implementation, configuration, or integration realizes them incorrectly.
-        Use ticketType="change-request" when satisfying the expectation requires changing an accepted
-        requirement, capability, external dependency, interface, data source, or design premise because the
-        accepted one is no longer viable. Choose target by ownership: requirement-analysis for
-        requirement/scope changes, high-level-design for system interfaces, external capabilities and
-        dependency selection, detailed-design for internal module contracts, and code for implementation
-        errors. An HTTP status, timeout, exception, or empty result is evidence only; it never determines
-        ticketType or target by itself. Explain which accepted premise can remain or must change. If
-        evidence is insufficient to prove a contract change, choose bug/code. When acceptedContractChanges
-        is present, those revisions were accepted after the requirement digest was written and describe the
-        current contract; where they differ, judge against them.
-      zh: |-
-        你需要判断一次已完成的运行是否产出了它应当产出的内容。你会得到规划该工作时记录的预期，以及这次运行留下的证据。只对照该预期进行判断。不要虚构需求，不要评价风格，也不要因为预期没有要求的内容判定失败。当证据与预期矛盾时报告失败，包括必需元素缺失、重复、为空，或明显不适合它所填写的字段。判定失败时，对工作进行归类，不要依赖任何特定的协议、状态码、供应商或项目领域。当已接受的需求和设计仍然有效，而实现、配置或集成未能正确实现它们时，使用 ticketType="bug"。当满足预期需要变更已接受的需求、能力、外部依赖、接口、数据源或设计前提，因为已接受的方案已不可行时，使用 ticketType="change-request"。按归属选择 target：需求或范围变更选 requirement-analysis；系统接口、外部能力和依赖选型选 high-level-design；内部模块契约选 detailed-design；实现错误选 code。HTTP 状态、超时、异常或空结果只作为证据，它们本身从不决定 ticketType 或 target。说明哪些已接受的前提可以保留、哪些必须变更。如果证据不足以证明需要契约变更，选择 bug/code。当存在 acceptedContractChanges 时，这些修订是在需求摘要写成之后被接受的，描述的是当前契约；两者不一致时，以它们为准进行判断。
+      en: 'You decide whether a completed run produced what it was supposed to produce. You are given the expectation recorded when the work was planned, and the evidence the run left behind. Judge only against that expectation. Do not invent requirements, do not comment on style, and do not fail a run for anything the expectation does not ask for. Report a failure when the evidence contradicts the expectation, including when a required element is absent, duplicated, empty, or obviously wrong for the field it fills. Judge only what the evidence shows: a part of the expectation that nothing readable in the evidence demonstrates, for example the content of a file reported as not readable as text, is not met, because the absence of a contradiction is not proof. When that is the only reason the run fails, answer unverifiable=true and name what could not be verified. When it failed, classify the work without relying on any particular protocol, status code, vendor, or project domain. Use ticketType="bug" when the accepted requirement and design remain valid and the implementation, configuration, or integration realizes them incorrectly. Use ticketType="change-request" when satisfying the expectation requires changing an accepted requirement, capability, external dependency, interface, data source, or design premise because the accepted one is no longer viable. Choose target by ownership: requirement-analysis for requirement/scope changes, high-level-design for system interfaces, external capabilities and dependency selection, detailed-design for internal module contracts, and code for implementation errors. An HTTP status, timeout, exception, or empty result is evidence only; it never determines ticketType or target by itself. Explain which accepted premise can remain or must change. If evidence is insufficient to prove a contract change, choose bug/code. When acceptedContractChanges is present, those revisions were accepted after the requirement digest was written and describe the current contract; where they differ, judge against them. plannedScope, when present, is the confirmed plan for this Phase; read it with the requirement digest. frozenRequirements, when present, is the requirement document the project froze from that plan and every later Step built on. When it is present, first compare it with the plan — requirementDigest and plannedScope, as revised by any acceptedContractChanges — and answer planConflict. conflicts is true only when the frozen requirement fixes something differently from what the plan fixes: a different value, count, order, name, format or behaviour on a point the plan states. Detail the plan leaves open, rewording and elaboration are not conflicts. When it is true, point names that point and quotes both sides. The plan outranks the frozen requirement, so a conflict is routed to requirement analysis whatever the rest of the judgement says; still judge the run against the expectation as usual.'
+      zh: 你需要判断一次已完成的运行是否产出了它应当产出的内容。你会得到规划该工作时记录的预期，以及这次运行留下的证据。只对照该预期进行判断。不要虚构需求，不要评价风格，也不要因为预期没有要求的内容判定失败。当证据与预期矛盾时报告失败，包括必需元素缺失、重复、为空，或明显不适合它所填写的字段。只依据证据实际展示的内容判断：预期中的某项若没有任何可读证据能证明（例如被标明无法作为文本读取的文件中的内容），即未满足，因为没有矛盾不等于得到证明。若这是判定失败的唯一原因，返回 unverifiable=true，并说明哪些内容无法核对。判定失败时，对工作进行归类，不要依赖任何特定的协议、状态码、供应商或项目领域。当已接受的需求和设计仍然有效，而实现、配置或集成未能正确实现它们时，使用 ticketType="bug"。当满足预期需要变更已接受的需求、能力、外部依赖、接口、数据源或设计前提，因为已接受的方案已不可行时，使用 ticketType="change-request"。按归属选择 target：需求或范围变更选 requirement-analysis；系统接口、外部能力和依赖选型选 high-level-design；内部模块契约选 detailed-design；实现错误选 code。HTTP 状态、超时、异常或空结果只作为证据，它们本身从不决定 ticketType 或 target。说明哪些已接受的前提可以保留、哪些必须变更。如果证据不足以证明需要契约变更，选择 bug/code。当存在 acceptedContractChanges 时，这些修订是在需求摘要写成之后被接受的，描述的是当前契约；两者不一致时，以它们为准进行判断。存在 plannedScope 时，它是用户确认的本 Phase 规划，与需求摘要一起阅读。存在 frozenRequirements 时，它是项目依据该规划冻结、之后每个 Step 都以之为基础的需求文档。此时先把它与规划（requirementDigest 与 plannedScope，并按 acceptedContractChanges 修订）比对，回答 planConflict。只有当冻结需求在规划已明确的某一点上定得与规划不同（取值、数量、顺序、名称、格式或行为不同）时，conflicts 才为 true；规划未规定的细节、改写措辞和展开说明都不算冲突。为 true 时，point 指出该点并引用双方原文。规划的优先级高于冻结需求，因此无论其余判断如何，冲突都交由需求分析处理；对运行本身仍照常对照预期进行判断。

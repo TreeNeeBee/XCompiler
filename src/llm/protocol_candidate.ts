@@ -3,7 +3,7 @@ import { assessResponseCompletion } from './completion_eligibility.js';
 import { inspectJsonProtocol, proveJsonEscapeInsertion, type JsonOutputProtocol } from './protocol_json.js';
 import { RoutedResponseEvidenceSchema, type RoutedResponseEvidence } from './response_evidence.js';
 
-/** Internal C1 entry: provider facts precede parsing or representation repair. No caller validation. */
+/** Internal protocol-correction entry: provider facts precede parsing or representation repair. No caller validation. */
 export function assessJsonProtocolResponse(response: RoutedResponseEvidence, protocol: JsonOutputProtocol) {
   const parsed = RoutedResponseEvidenceSchema.safeParse(response);
   if (!parsed.success) return Object.freeze({

@@ -1,4 +1,5 @@
 import type { FileTreeEntry } from '../../domain/workspace/file_tree.js';
+import { getLocale, tFor } from '../../i18n/index.js';
 
 /**
  * The delivered file manifest: what the project consists of, as the filesystem had it at delivery.
@@ -34,18 +35,18 @@ export function renderFileManifest(
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((entry) => `| \`${entry.path}\` | ${entry.type} |`);
 
+  // The manifest is part of a delivered document, so it is written in the user's language; its markers never change.
+  const text = tFor(getLocale()).generated.fileManifest;
   return [
     FILE_MANIFEST_BEGIN,
     '',
-    '## 文件清单 / File manifest',
+    text.heading,
     '',
-    `Generated from the project file tree${options.scannedAt ? ` (reconciled ${options.scannedAt})` : ''}. ` +
-      'Do not edit by hand — this region is replaced on every delivery.',
+    text.intro(options.scannedAt),
     '',
-    `${files.length} files. Size and timestamps are generated data and are recorded on the project ` +
-      'file tree rather than here: writing this section changes them for the document that carries it.',
+    text.count(files.length),
     '',
-    '| Path | Type |',
+    `| ${text.path} | ${text.type} |`,
     '| --- | --- |',
     ...(rows.length > 0 ? rows : ['| _(empty)_ | — |']),
     '',

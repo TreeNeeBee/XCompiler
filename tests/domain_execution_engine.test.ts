@@ -2,7 +2,9 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Plan } from '../src/domain/planning/execution_plan.js';
+import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
+import type { ObjectId } from '../src/domain/identity/object_id.js';
+import { objectsOf, type TicketOf } from './support/domain_objects.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../src/application/project_management/orchestrator.js';
 import type { AttemptInput, AttemptResult } from '../src/application/execution/attempt_runner.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
@@ -14,10 +16,11 @@ import { FileProjectProjectionWriter } from '../src/infrastructure/projections/f
 import { PluginHost } from '../src/plugins/host.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { reviseActor } from '../src/domain/project_management/index.js';
-import { VALIDATION_CONTRACT_DEFECT_CODE } from '../src/domain/tickets/ticket.js';
+import { TicketSchema, VALIDATION_CONTRACT_DEFECT_CODE } from '../src/domain/tickets/ticket.js';
 import { failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
 import { classifyFailure } from '../src/application/execution/failure_classification.js';
+import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 
 describe('ProjectOrchestrator', () => {
   it('parks a storage interruption without a Bug, merge or provider retry', async () => {
@@ -215,6 +218,138 @@ describe('ProjectOrchestrator', () => {
     expect(project.objectType === 'project' && project.state).toBe('closed');
   });
 
+  describe('a delivery finding that comes back after its repair', () => {
+    // A live Phase gate found the same product defect after the Bug for it had been repaired through
+    // a Change Request. The Bug was reopened, but it still counted as that closed Change Request's
+    // work, so nothing scheduled it; the gate reran every five seconds and parked a duplicate each lap.
+    const finding = {
+      category: 'product-defect' as const,
+      code: 'scenario_expectation_failed:primary-flow',
+      summary: 'The exported sheet does not have the required columns.',
+      evidence: ['header has 17 columns, 16 required'],
+      target: 'code' as const,
+      affectedArtifacts: [],
+      dependencyPackages: [],
+    };
+
+    it('repairs it again at its Step until the gate passes', async () => {
+      const setup = await fixture();
+      const calls: string[] = [];
+      let gateRuns = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, calls)),
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns > 6) throw new Error('the delivery gate is being rerun without a repair');
+          return gateRuns <= 2
+            ? { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] }
+            : { ok: true, evidence: ['scenario passes'] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failedStepId, JSON.stringify({ result, calls })).toBeUndefined();
+      expect(gateRuns).toBe(3);
+      const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+      expect(calls.filter((call) => call === `${code.name}:debug`).length).toBeGreaterThanOrEqual(2);
+    });
+
+    // The live run reopened BUG-P1-003 six times: CODE followed the frozen requirement each time,
+    // changed nothing, and the gate failed the same way again, raising the attempt limit each lap.
+    it('stops when a repair that changed nothing meets the same finding again', async () => {
+      const setup = await fixture();
+      const calls: string[] = [];
+      const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+      const events: Array<Record<string, unknown>> = [];
+      let gateRuns = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, {
+          initialize: async () => undefined,
+          run: async (input: AttemptInput): Promise<AttemptResult> => {
+            calls.push(`${input.domainStep.name}:${input.mode}`);
+            const attempt = await passingAttempt(setup.repository, input.domainStep);
+            // The repair concludes the code already meets its contract and changes no file.
+            return input.domainStep.id === code.id && input.mode === 'debug' ? { ...attempt, changedFiles: [] } : attempt;
+          },
+        }),
+        audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } } as never,
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns > 3) throw new Error('the delivery gate is being rerun after an unchanged repair');
+          return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(gateRuns).toBe(2);
+      expect(calls.filter((call) => call === `${code.name}:debug`)).toHaveLength(1);
+      expect(result.failedStepId).toBeDefined();
+      expect(result.failureReason).toContain(finding.code);
+      expect(result.failureReason).toContain(code.name);
+      expect(events).toContainEqual(expect.objectContaining({
+        messageId: 'domain.repair_recurred_unchanged', failureCode: finding.code, targetStepName: code.name,
+      }));
+      // Refused before anything was written: the Bug still waits on the verdict it already has.
+      const bugs = (await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }))
+        .filter((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug');
+      expect(bugs.map((bug) => bug.objectType === 'ticket' && bug.state)).toEqual(['resolved']);
+    });
+
+    // A live repair chain for a delivery-gate Bug was contradicted and interrupted, so its solution was
+    // never marked verified; the next gate passed and closing the Bug threw, ending the run on success.
+    it('closes it on the passing gate even when nothing upstream marked its solution verified', async () => {
+      const setup = await fixture();
+      let gateRuns = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns > 3) throw new Error('the delivery gate is being rerun');
+          if (gateRuns === 1) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+          // The state the live chain left: repaired, proven at its Step, awaiting this gate, unverified.
+          const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+            .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+          for (const bug of bugs) {
+            expect(bug.state).toBe('resolved');
+            await setup.repository.commit([TicketSchema.parse({ ...bug, ...reviseObjectEnvelope(bug), solution: { ...bug.solution!, status: 'proposed' } })]);
+          }
+          return { ok: true, evidence: ['scenario passes'] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(gateRuns).toBe(2);
+      const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+        .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+      expect(bugs.map((bug) => [bug.state, bug.solution?.status])).toEqual([['closed', 'verified']]);
+      expect(bugs[0]!.solution!.verification.some((line) => line.startsWith('Phase delivery gate passed'))).toBe(true);
+    });
+
+    it('stops with the reason instead of rerunning the gate when nothing was scheduled', async () => {
+      const setup = await fixture();
+      let gateRuns = 0;
+      let gateFailed = false;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        finalGate: async () => {
+          gateRuns += 1;
+          gateFailed = true;
+          return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+        },
+      }, setup.plan);
+      const scheduler = (engine as unknown as { scheduler: { resume: (id: string) => Promise<unknown> } }).scheduler;
+      const resume = scheduler.resume.bind(scheduler);
+      // Whatever the intake routed, nothing is schedulable once the gate has failed.
+      scheduler.resume = async (id) => (gateFailed ? undefined : resume(id));
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(gateRuns).toBe(1);
+      expect(result.failureReason).toContain('left no work to schedule');
+      expect(result.failureReason).toContain(finding.code);
+    });
+  });
+
   it('routes every Phase delivery finding as its own Ticket and keeps dependencies separate', async () => {
     const setup = await fixture();
     const calls: string[] = [];
@@ -249,6 +384,7 @@ describe('ProjectOrchestrator', () => {
               summary: 'The live entrypoint returns an invalid payload.',
               evidence: ['expected source:string, received undefined'],
               target: 'code' as const,
+              affectedArtifacts: [],
               dependencyPackages: [],
             },
             {
@@ -257,6 +393,7 @@ describe('ProjectOrchestrator', () => {
               summary: 'The functional baseline omits the empty-response scenario.',
               evidence: ['requirement R-12 has no executable case'],
               target: 'requirement-analysis' as const,
+              affectedArtifacts: [],
               dependencyPackages: [],
             },
             {
@@ -274,6 +411,7 @@ describe('ProjectOrchestrator', () => {
               summary: 'Schema validation requires the declared package.',
               evidence: ['Cannot resolve package zod'],
               target: 'high-level-design' as const,
+              affectedArtifacts: [],
               dependencyPackages: ['zod'],
             },
           ],
@@ -315,14 +453,40 @@ describe('ProjectOrchestrator', () => {
     const intakeTickets = tickets.filter((ticket) => ticket.source.kind === 'pm-intake');
     expect(intakeTickets.length).toBeGreaterThanOrEqual(4);
     expect(intakeTickets.every((ticket) => ticket.creatorActorId === pm?.id)).toBe(true);
-    const phaseAssessments = (await setup.repository.list({
+    const phaseAssessments = objectsOf(await setup.repository.list({
       objectType: 'quality-assessment',
       projectId: setup.graph.project.id,
-    })).filter((object) => object.objectType === 'quality-assessment' &&
-      object.subject.objectType === 'phase');
+    }), 'quality-assessment').filter((object) => object.subject.objectType === 'phase');
     expect(phaseAssessments.some((assessment) => !assessment.passed && assessment.findings.length === 4))
       .toBe(true);
     expect(phaseAssessments.some((assessment) => assessment.passed)).toBe(true);
+  });
+
+  it('stops when a verification Step fails the same way after a repair that changed nothing', async () => {
+    const setup = await fixture();
+    const calls: string[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+    const engine = new ProjectOrchestrator({
+      ...options(setup.workspace, setup.repository, {
+        initialize: async () => undefined,
+        run: async (input: AttemptInput): Promise<AttemptResult> => {
+          calls.push(`${input.domainStep.name}:${input.mode}`);
+          if (calls.length > 40) throw new Error(`still cycling: ${calls.join(', ')}`);
+          if (input.domainStep.type === 'UNIT_TEST') {
+            return { ok: false, reason: 'unit contract failed', failureLog: 'expected 16 columns, received 17',
+              changedFiles: [], wikiEntryIds: [], testOutcomes: [] };
+          }
+          const attempt = await passingAttempt(setup.repository, input.domainStep);
+          return input.domainStep.id === code.id && input.mode !== 'normal' ? { ...attempt, changedFiles: [] } : attempt;
+        },
+      }),
+      audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } } as never,
+    }, setup.plan);
+
+    const result = await engine.run(setup.graph.phases[0]!.id);
+    expect(result.failureReason, JSON.stringify({ result, calls })).toContain(code.name);
+    expect(events).toContainEqual(expect.objectContaining({ messageId: 'domain.repair_recurred_unchanged', targetStepName: code.name }));
   });
 
   it('routes a test failure to Debug and propagates one CR through every downstream gate', async () => {
@@ -386,7 +550,7 @@ describe('ProjectOrchestrator', () => {
     expect(calls).toContain('P1-S004:debug');
     expect(calls).toContain('P1-S005:change-request');
     expect(calls).toContain('P1-S008:change-request');
-    const tickets = await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id });
+    const tickets = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket');
     const bug = tickets.find((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug');
     const request = tickets.find((ticket) => ticket.objectType === 'ticket' && ticket.type === 'change-request');
     expect(bug?.objectType === 'ticket' && bug.state).toBe('closed');
@@ -402,7 +566,7 @@ describe('ProjectOrchestrator', () => {
       expect(hop.type === 'change-request' && hop.contractDelta.affectedArtifacts.length)
         .toBeGreaterThan(0);
     }
-    const hops = rootRequests.filter((ticket) => ticket.type === 'change-request');
+    const hops = rootRequests.filter((ticket): ticket is TicketOf<'change-request'> => ticket.type === 'change-request');
     const downstream = hops.filter((hop) => hop.parentChangeRequestId);
     expect(downstream.length).toBeGreaterThan(0);
     for (const hop of downstream) {
@@ -573,7 +737,7 @@ describe('ProjectOrchestrator', () => {
     const requests = tickets.filter((ticket) => ticket.type === 'change-request');
     const stepIds = (...names: string[]) =>
       names.map((name) => setup.graph.steps.find((step) => step.name === name)!.id).sort();
-    const targetsOf = (sourceTicketId: string) => requests
+    const targetsOf = (sourceTicketId: ObjectId) => requests
       .filter((ticket) => ticket.type === 'change-request' && ticket.sourceTicketIds.includes(sourceTicketId))
       .map((ticket) => (ticket.type === 'change-request' ? ticket.targetStepId : ''))
       .sort();
@@ -862,6 +1026,41 @@ describe('ProjectOrchestrator', () => {
     expect(outcome.failureReason ?? '').not.toContain('merge gate failed');
   });
 
+  it('stops when the merge gate fails the same way after a repair that changed nothing', async () => {
+    const setup = await fixture();
+    const calls: string[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+    let merges = 0;
+    const engine = new ProjectOrchestrator({
+      ...options(setup.workspace, setup.repository, {
+        initialize: async () => undefined,
+        run: async (input: AttemptInput): Promise<AttemptResult> => {
+          calls.push(`${input.domainStep.name}:${input.mode}`);
+          if (calls.length > 40) throw new Error(`still cycling: ${calls.join(', ')}`);
+          const attempt = await passingAttempt(setup.repository, input.domainStep);
+          return input.domainStep.id === code.id && input.mode !== 'normal' ? { ...attempt, changedFiles: [] } : attempt;
+        },
+      }),
+      audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } } as never,
+      integrateTicket: async (ticketId) => {
+        merges += 1;
+        if (merges > 20) throw new Error('the merge gate is being rerun after an unchanged repair');
+        const ticket = await setup.repository.read(ticketId);
+        // The CODE delivery and its repair are refused; what the repair propagates is not under test.
+        const refused = ticket.objectType === 'ticket' && (ticket.type === 'bug' ||
+          (ticket.type === 'story' && ticket.stepId === code.id));
+        return refused
+          ? { status: 'failed', reason: 'merge gate failed for ticket/code', failureLog: 'tests: tests exited 1' }
+          : { status: 'merged' };
+      },
+    }, setup.plan);
+
+    const result = await engine.run(setup.graph.phases[0]!.id);
+    expect(result.failureReason, JSON.stringify({ result, calls })).toContain(code.name);
+    expect(events).toContainEqual(expect.objectContaining({ messageId: 'domain.repair_recurred_unchanged' }));
+  });
+
   it('stops before downstream execution when merge authorization is missing', async () => {
     const setup = await fixture();
     const calls: string[] = [];
@@ -970,12 +1169,11 @@ async function fixture() {
 
 function samplePlan(): Plan {
   const phases = [
-    ['REQUIREMENT_ANALYSIS', 'Planner'], ['HIGH_LEVEL_DESIGN', 'Architect'],
-    ['DETAILED_DESIGN', 'Architect'], ['CODE', 'Coder'], ['UNIT_TEST', 'Tester'],
-    ['INTEGRATION_TEST', 'Tester'], ['MODULE_TEST', 'Tester'], ['FUNCTIONAL_TEST', 'Tester'],
+    'REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE',
+    'UNIT_TEST', 'INTEGRATION_TEST', 'MODULE_TEST', 'FUNCTIONAL_TEST',
   ] as const;
   return {
-    version: '1', language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
+    version: PLAN_VERSION, language: 'typescript', intent: 'greenfield', phaseId: 'P1', projectType: 'application',
     requirementDigest: 'Build a service.',
     complexityAssessment: { level: 'simple', rationale: 'one phase', splitRecommended: false, userForcedPhaseSplit: false },
     implementationPhases: [{
@@ -984,9 +1182,9 @@ function samplePlan(): Plan {
       verificationGate: { summary: 'All gates pass.', checks: ['acceptance'], failurePolicy: 'Open a Bug.' },
     }],
     globalPrompt: 'Implement.', baselineSummary: '', dependencies: [], userAddenda: '', createdAt: new Date().toISOString(),
-    steps: phases.map(([phase, role], index) => ({
+    steps: phases.map((phase, index) => ({
       id: `S${String(index + 1).padStart(3, '0')}`, iterationId: 'P1', phase,
-      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`, role,
+      title: phase, description: `Execute ${phase}.`, systemPrompt: `Execute ${phase}.`,
       tools: ['read_file'], inputs: [], outputs: [`artifact-${index + 1}`],
       subTasks: index === 6
         ? [{
