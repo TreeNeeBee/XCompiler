@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../workspace/workspace.js';
+import type { ToolFailureCode } from './types.js';
 
 export interface WorkspacePathResult {
   ok: true;
@@ -12,6 +13,7 @@ export interface WorkspacePathResult {
 export interface WorkspacePathError {
   ok: false;
   error: string;
+  code?: ToolFailureCode;
 }
 
 export type WorkspacePathCheck = WorkspacePathResult | WorkspacePathError;
@@ -48,8 +50,9 @@ export async function resolveWorkspacePath(
   );
   const requested = usePrefixed ? prefixedRequested! : directRequested;
 
+  // The workspace root is no file: a write that names it, or names nothing, has no target path.
   if (opts.forWrite && (requested === logicalRoot || requested === root)) {
-    return deny(operation, raw);
+    return deny(operation, raw, 'path_argument_missing');
   }
 
   if (opts.mustExist) {
@@ -58,7 +61,11 @@ export async function resolveWorkspacePath(
       if (!isInside(root, real)) return deny(operation, raw);
       return resolved(root, real);
     } catch (err) {
-      return { ok: false, error: `${operation} failed: ${(err as Error).message}` };
+      return {
+        ok: false,
+        error: `${operation} failed: ${(err as Error).message}`,
+        ...((err as NodeJS.ErrnoException).code === 'ENOENT' ? { code: 'path_not_found' as const } : {}),
+      };
     }
   } else if (opts.forWrite) {
     const existingTarget = await fs.realpath(requested).catch(() => undefined);
@@ -153,9 +160,14 @@ async function nearestExistingParent(start: string): Promise<string> {
   }
 }
 
-function deny(operation: string, rawPath: string): WorkspacePathError {
+function deny(
+  operation: string,
+  rawPath: string,
+  code: ToolFailureCode = 'path_outside_project',
+): WorkspacePathError {
   return {
     ok: false,
     error: `${operation} denied: path "${rawPath}" is outside the project directory`,
+    code,
   };
 }

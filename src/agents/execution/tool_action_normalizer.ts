@@ -1,5 +1,5 @@
 import type { Step } from '../../domain/planning/execution_plan.js';
-import type { Tool, ToolContext, ToolResult } from '../../tools/types.js';
+import type { Tool, ToolContext, ToolFailureCode, ToolResult } from '../../tools/types.js';
 import type { LLMAction } from './turn_parser.js';
 
 export interface NormalizedActions {
@@ -55,7 +55,9 @@ export function normalizeActions(raw: unknown, toolMap?: ReadonlyMap<string, Too
       invalid.push({
         index,
         raw: item,
-        result: { tool: item.tool, ok: false, error: `invalid action at index ${index}: ${normalizedArgs.error}` },
+        result: {
+          tool: item.tool, ok: false, error: `invalid action at index ${index}: ${normalizedArgs.error}`, code: 'invalid_args',
+        },
       });
       return;
     }
@@ -66,7 +68,7 @@ export function normalizeActions(raw: unknown, toolMap?: ReadonlyMap<string, Too
       invalid.push({
         index,
         raw: item,
-        result: { tool: item.tool, ok: false, error: schemaError },
+        result: { tool: item.tool, ok: false, ...schemaError },
       });
       return;
     }
@@ -134,7 +136,10 @@ export async function safeRunTool(tool: Tool, args: unknown, context: ToolContex
   }
 }
 
-function validateToolArgsAgainstSchema(tool: ToolArgumentContract, args: Record<string, unknown>): string | undefined {
+function validateToolArgsAgainstSchema(
+  tool: ToolArgumentContract,
+  args: Record<string, unknown>,
+): { error: string; code: ToolFailureCode } | undefined {
   for (const [key, rawDescriptor] of Object.entries(tool.argsSchema)) {
     if (typeof rawDescriptor !== 'string') continue;
     const token = rawDescriptor.trim().split(/\s+/, 1)[0] ?? '';
@@ -163,17 +168,27 @@ function validateToolArgsAgainstSchema(tool: ToolArgumentContract, args: Record<
   return undefined;
 }
 
-function formatToolArgError(tool: ToolArgumentContract, key: string, expectedType: string): string {
+function formatToolArgError(
+  tool: ToolArgumentContract,
+  key: string,
+  expectedType: string,
+): { error: string; code: ToolFailureCode } {
   const expected = JSON.stringify(tool.argsSchema);
   if (key === 'path' && expectedType === 'string') {
-    return `invalid ${tool.name} args: path must be a non-empty string; expected args=${expected}`;
+    return {
+      error: `invalid ${tool.name} args: path must be a non-empty string; expected args=${expected}`,
+      code: 'path_argument_missing',
+    };
   }
   const label = expectedType === 'string[]'
     ? 'a string array'
     : expectedType.startsWith('Record<')
       ? 'an object'
       : `a ${expectedType || 'valid'} value`;
-  return `invalid ${tool.name} args: ${key} must be ${label}; expected args=${expected}`;
+  return {
+    error: `invalid ${tool.name} args: ${key} must be ${label}; expected args=${expected}`,
+    code: key === 'content' ? 'content_argument_invalid' : 'invalid_args',
+  };
 }
 
 function normalizeActionArgs(

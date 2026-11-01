@@ -6,10 +6,10 @@ title:
   en: Implementation
   zh: 实现
 slot: "0x00011103"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:96f8d403af43040e4acf5128c4293b27b8b81c79b2dc37fcde137f7846d01f81
+mtime: 2026-10-31T20:06:29.407Z
+digest: sha256:995a64b2521821eec1650f0a80cc42930d96f8b4c8f3f1b3f74107eb1c8ac7dd
 rules:
   - id: bde655b1-df78-5e82-8fbb-2603eb9232ea
     name: deliverable
@@ -63,3 +63,29 @@ rules:
     instruction:
       en: Do not expand scope beyond the assigned Ticket.
       zh: 不要超出所分配 Ticket 的范围。
+  - id: 9504f402-f378-40d7-9ef8-2cfa7184534d
+    name: complete-input-parsing
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:55.519Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:c5184dabe81e36890dbb4e29d960268afc1d2d40fa1f095058e6cafd18ed599e
+    description:
+      en: "Applies when implementing code that parses an external input format: input it does not consume is reported, never dropped silently."
+      zh: 实现解析外部输入格式的代码时适用：未被消费的输入必须报告，不得静默丢弃。
+    instruction:
+      en: "Input parsing: code that reads an external format must notice input it did not consume — an unterminated string, a misread escaped delimiter, an unknown or malformed entry, trailing content — and report it as an error or a visible warning; never return a partial result as complete success. Cover such input in its unit tests."
+      zh: 输入解析：读取外部格式的代码必须察觉没有消费掉的输入——未闭合的字符串、被误读的转义分隔符、未知或格式错误的条目、多余的尾部内容——并以错误或可见的警告报告，不得把部分结果当作完全成功返回。在单元测试中覆盖这类输入。
+  - id: ac41c352-3e4e-4ca7-b54e-08e1fcf96d59
+    name: literal-text-output
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:55.915Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:aa71a5df4000b3d68fb12feeb22123024525435f649c4ab37dbcd2560a03e78d
+    description:
+      en: "Applies when writing text from inputs into a format that interprets cell or field content, such as a spreadsheet: the text is written literally."
+      zh: 把来自输入的文字写入会解释单元格或字段内容的格式（如电子表格）时适用：按原文写出。
+    instruction:
+      en: "Text output: when text taken from inputs goes into a format that interprets cell or field content (a spreadsheet, or CSV a spreadsheet will open), write it as a literal string, so that it is never evaluated as a formula or converted to another type."
+      zh: 文字输出：把来自输入的文字写入会解释单元格或字段内容的格式（电子表格，或会被电子表格打开的 CSV）时，按字面字符串写出，使它不会被当作公式求值，也不会被转换成其他类型。

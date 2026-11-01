@@ -342,6 +342,7 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     expect(result).toMatchObject({ status: 'failed', exitCode: 4 });
     expect(controlled.gates).toHaveLength(1);
     expect(controlled.gates[0]).toMatchObject({ ok: false, reason: expect.stringContaining('could not be judged') });
+    expect(controlled.gates[0]).toMatchObject({ stop: { code: 'gate_unjudged' } });
     expect(controlled.gates[0]).not.toHaveProperty('findings');
     const events = await current.events();
     expect(events.some(event => event.messageId === 'domain.phase_delivery_gate_unjudged')).toBe(true);

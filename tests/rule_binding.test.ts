@@ -185,6 +185,62 @@ describe('the Rule block a request receives', () => {
     expect((await boundRuleBlock({ ...design, work: 'repair.debug', baselineDeferred: true })).content).not.toContain('Design Step');
   });
 
+  // A contract-change hop kept the old contract's assertions so its baseline stayed green; the CODE
+  // change then failed the verification Step, and the Bug went back to the design Step.
+  it('tells a deferred design hop to move its baseline to a changed contract', async () => {
+    const design = { role: 'system-architect', work: 'change.apply', stepWork: 'design.high-level', language: 'python' } as const;
+    expect((await boundRuleBlock({ ...design, baselineDeferred: true })).content)
+      .toContain('never keep an assertion of the superseded contract');
+    expect((await boundRuleBlock({ ...design, baselineDeferred: false })).content).not.toContain('superseded contract');
+  });
+
+  // A requirement-analysis Step froze a column order the confirmed plan had already fixed otherwise.
+  it('holds every Step execution to the confirmed plan contract', async () => {
+    const verify = { role: 'test-engineer', work: 'verify.module', stepWork: 'verify.module', language: 'python' } as const;
+    for (const bind of [code, { ...code, work: 'repair.debug' }, { ...code, work: 'change.apply' }, verify] as const) {
+      expect((await boundRuleBlock(bind)).content).toContain('Plan contract: what this Step freezes');
+    }
+  });
+
+  // A unit verification Step without a coverage tool wrote probe scripts into its supplement root;
+  // they were collected as its tests and the next run stopped on them.
+  it('keeps the supplement root to executable tests only where a Step may write there', async () => {
+    const verify = { role: 'test-engineer', work: 'verify.unit', stepWork: 'verify.unit', language: 'python' } as const;
+    const supplement = { writablePaths: ['docs/05-unit-test-report.md', 'tests/verification/p1/unit-test/s005/'] };
+    expect((await boundRuleBlock(verify, 'en', supplement)).content).toContain('Verification supplements:');
+    expect((await boundRuleBlock(verify, 'en', { writablePaths: ['docs/05-unit-test-report.md'] })).content)
+      .not.toContain('Verification supplements:');
+    expect((await boundRuleBlock(code, 'en', TYPESCRIPT_CODE_FACTS)).content).not.toContain('Verification supplements:');
+  });
+
+  // A parser passed every well-formed sample and silently dropped a value-table entry it could not
+  // read; an exporter wrote a comment beginning with "=" as a spreadsheet formula.
+  it('asks implementation and verification for unconsumed input and literal output, each where it belongs', async () => {
+    const verify = (work: 'verify.unit' | 'verify.integration' | 'verify.module' | 'verify.functional') =>
+      ({ role: 'test-engineer', work, stepWork: work, language: 'python' }) as const;
+    const implement = (await boundRuleBlock({ ...code, role: 'python-developer', language: 'python' })).content;
+    expect(implement).toContain('Input parsing:');
+    expect(implement).toContain('Text output:');
+    for (const work of ['verify.unit', 'verify.module'] as const) {
+      expect((await boundRuleBlock(verify(work))).content).toContain('Malformed input:');
+    }
+    for (const work of ['verify.module', 'verify.functional'] as const) {
+      expect((await boundRuleBlock(verify(work))).content).toContain('Output fidelity:');
+    }
+    const integration = (await boundRuleBlock(verify('verify.integration'))).content;
+    expect(integration).not.toContain('Malformed input:');
+    expect(integration).not.toContain('Output fidelity:');
+  });
+
+  // README documented a `python -m` invocation that failed and a column list the product no longer wrote.
+  it('has functional verification run what the documentation shows, when it can run programs', async () => {
+    const functional = { role: 'test-engineer', work: 'verify.functional', stepWork: 'verify.functional', language: 'python' } as const;
+    expect((await boundRuleBlock(functional, 'en', { tools: ['write_file', 'run_tests', 'run_program'] })).content)
+      .toContain('Documentation: run every command shown in README');
+    expect((await boundRuleBlock(functional, 'en', { tools: ['write_file', 'run_tests'] })).content)
+      .not.toContain('Documentation: run every command');
+  });
+
   it('renders every bound Rule in the request locale', async () => {
     const en = (await boundRuleBlock({ ...code, work: 'repair.debug' }, 'en', TYPESCRIPT_CODE_FACTS)).content;
     const zh = (await boundRuleBlock({ ...code, work: 'repair.debug' }, 'zh', TYPESCRIPT_CODE_FACTS)).content;
@@ -222,6 +278,9 @@ describe('migrated prompt text has a single source', () => {
       'For TypeScript package.json, use Vitest only', 'exactly one HIGH_LEVEL_DESIGN Step must output package.json',
       '严禁写成 "from src.<module>', 'XCompiler 已自动生成 tests/conftest.py', '带显式 ".ts" 后缀的 ESM 相对导入',
       'TypeScript package.json 只能使用 Vitest', 'vi.setSystemTime',
+      // Contract-change baseline and plan-contract conduct have one source: the work Rules.
+      'do not keep an assertion of the old contract', 'naming the conflicting point and the Step that owns it',
+      '指出冲突点和负责它的 Step',
     ]) expect(source, phrase).not.toContain(phrase);
   });
 });

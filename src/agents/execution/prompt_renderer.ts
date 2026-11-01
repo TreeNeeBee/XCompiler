@@ -198,21 +198,22 @@ export function renderExecutionUserPrompt(
         '',
       ].join('\n')
     : '';
+  const baselineText = tFor(locale).prompts.executorBaselineGate;
   const baselineGateBlock = (['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE'] as const)
     .includes(input.step.phase as never)
     ? input.baselineTestExecution === 'defer'
       ? [
           '## development delivery gate',
           ...(input.step.deliveryGate?.checks ?? []).map((check) => `- ${check}`),
-          'Validate all declared stage deliverables, upstream alignment, solution evidence, and paired baseline test assets.',
+          baselineText.validateDeliverables,
           input.baselineTestExecutionReason === 'pre-code-correction'
-            ? 'This correction still occurs before S4 has established product code: update and statically validate the exact baseline tests, but defer their executable run.'
+            ? baselineText.preCodeCorrection
             : input.baselineTestExecutionReason === 'contract-change'
-              ? 'This hop carries a contract change ahead of S4: move the exact baseline tests to the new contract with the specification and statically validate them, but defer their executable run. They are expected to fail against the current product until S4 applies the change later in this chain, where the paired verification Step runs them; do not keep an assertion of the old contract to stay green.'
-              : 'This is the initial pre-CODE pass: author and statically validate the baseline tests, but do not execute them because product code does not exist yet.',
-          'Keep planned product imports, calls, and behavioral assertions executable in the test source. Do not comment them out, replace them with expect(true)/assert True, or duplicate the planned product behavior inside the test. Missing product files are an expected pre-CODE condition; an inert test is not.',
-          'Only executable baseline execution is deferred; no deliverable, plan, contract, or test-asset check is skipped.',
-          'Do not report unavailable paired-test metrics as measured values. If completion=1 and the only remaining condition is product code owned by S4, put it only in blockedBy with gaps=[]; duplicating it in gaps is a contradictory quality report and Runtime will reject it before PM intake.',
+              ? baselineText.contractChange
+              : baselineText.initialPass,
+          baselineText.keepTestsExecutable,
+          baselineText.onlyExecutionDeferred,
+          baselineText.blockedByNotGaps,
           '',
         ].join('\n')
       : [

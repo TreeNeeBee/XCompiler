@@ -1,3 +1,4 @@
+import { t } from '../../i18n/index.js';
 import type { ToolContext, ToolPermissionRequest } from '../../tools/types.js';
 
 export function actionTargetPaths(tool: string, args: unknown): string[] {
@@ -34,48 +35,36 @@ export function buildPermissionRequest(
   const target = actionTargetPaths(tool, args).join(', ');
   const runtime = language === 'typescript' ? 'npm' : 'python';
   const stepLabel = stepName?.trim() || stepId;
+  const text = t().permissionRequest;
   if (['write_file', 'append_file', 'replace_in_file', 'apply_patch'].includes(tool)) {
     return permission('file_write', target || '(workspace file)',
-      `Step ${stepLabel} requested ${tool} to update project files.`,
-      'This operation modifies files in the current workspace.', 'current workspace',
-      'The tool call is skipped and the agent must continue with an alternative or fail the step.',
+      text.fileWrite.reason(stepLabel, tool), text.fileWrite.risk, 'current workspace', text.fileWrite.denyBehavior,
       stepId, tool, stepLabel, redactLargeArgs(args));
   }
   if (tool === 'add_dependency') {
     return permission('install_dependency', Array.isArray(values.packages) ? values.packages.join(', ') : '(packages)',
-      `Step ${stepLabel} requested dependency changes and sandbox synchronization.`,
-      'This can contact a dependency registry, download code, and execute installation scripts.',
-      'configured dependency registry',
-      'The dependency change is skipped; later build or test steps may fail and report the missing dependency.',
-      stepId, tool, stepLabel, args);
+      text.addDependency.reason(stepLabel), text.addDependency.risk, 'configured dependency registry',
+      text.addDependency.denyBehavior, stepId, tool, stepLabel, args);
   }
   if (tool === 'install_deps') {
     return permission('install_dependency', Array.isArray(values.packages) ? values.packages.join(', ') : '(packages)',
-      `Step ${stepLabel} requested dependency installation.`,
-      'This may execute package manager scripts and download code from registries.',
-      'current workspace sandbox',
-      'Dependency installation is skipped and the task continues with the missing dependency reported.',
-      stepId, tool, stepLabel, args);
+      text.installDeps.reason(stepLabel), text.installDeps.risk, 'current workspace sandbox',
+      text.installDeps.denyBehavior, stepId, tool, stepLabel, args);
   }
   if (tool === 'run_tests') {
     return permission('test_command', runtime === 'npm' ? 'npm test' : 'pytest',
-      `Step ${stepLabel} requested test execution to validate changes.`,
-      'Project test scripts may execute arbitrary local project code.', 'current workspace sandbox',
-      'Tests are skipped and the final result must mark verification as incomplete.',
+      text.runTests.reason(stepLabel), text.runTests.risk, 'current workspace sandbox', text.runTests.denyBehavior,
       stepId, tool, stepLabel, args);
   }
   if (tool === 'run_program') {
     const command = `${runtime} ${Array.isArray(values.args) ? values.args.join(' ') : ''}`.trim();
-    return permission('shell_command', command, `Step ${stepLabel} requested program execution.`,
-      'This executes project code in the configured sandbox.', 'current workspace sandbox',
-      'The command is skipped and the agent must use another validation strategy or fail the step.',
+    return permission('shell_command', command,
+      text.runProgram.reason(stepLabel), text.runProgram.risk, 'current workspace sandbox', text.runProgram.denyBehavior,
       stepId, tool, stepLabel, args);
   }
   if (tool === 'http_fetch') {
     return permission('network_access', typeof values.url === 'string' ? values.url : '(url)',
-      `Step ${stepLabel} requested network access.`,
-      'This contacts an external HTTP endpoint from the host process.', 'network',
-      'The network call is skipped; the agent must use local context or report the missing data.',
+      text.httpFetch.reason(stepLabel), text.httpFetch.risk, 'network', text.httpFetch.denyBehavior,
       stepId, tool, stepLabel, redactLargeArgs(args));
   }
   return undefined;

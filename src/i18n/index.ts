@@ -1,6 +1,10 @@
 import en from './en.js';
 import zh from './zh.js';
 import type { Locale, Messages } from './types.js';
+import { resolveLocale, UnsupportedLocaleError } from '../domain/locale.js';
+
+// Adapters reach the locale registry through here, never through the domain layer itself.
+export { localeFlags, resolveLocale, UnsupportedLocaleError } from '../domain/locale.js';
 
 export type { Locale, Messages } from './types.js';
 
@@ -13,19 +17,18 @@ export function getLocale(): Locale {
   return current;
 }
 
-/** Set active locale. Accepts loose forms: `en`, `EN`, `cn`, `CN`, `zh`, `zh-CN`. */
+/** Set active locale. Accepts any alias the locale registry lists (`en`, `EN`, `cn`, `zh-CN`, …). */
 export function setLocale(loc: string | Locale | undefined): Locale {
   current = normaliseLocale(loc);
   return current;
 }
 
-/** Normalise CLI / config inputs to internal {@link Locale}. */
+/** Normalise CLI / config inputs to internal {@link Locale}; a language not registered is refused. */
 export function normaliseLocale(loc: string | undefined | null): Locale {
   if (!loc) return current;
-  const v = String(loc).trim().toLowerCase();
-  if (v === 'en' || v === 'us' || v === 'uk' || v === 'gb' || v === 'en-us' || v === 'en-gb') return 'en';
-  if (v === 'zh' || v === 'cn' || v === 'zh-cn' || v === 'zh-hans' || v === 'chinese') return 'zh';
-  return 'en';
+  const locale = resolveLocale(String(loc));
+  if (!locale) throw new UnsupportedLocaleError(String(loc));
+  return locale;
 }
 
 /** Active message bundle for the current locale. */

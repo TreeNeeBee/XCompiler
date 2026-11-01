@@ -6,10 +6,10 @@ title:
   en: Runtime execution policy shared by every Step work
   zh: 所有 Step 工作共享的运行时执行策略
 slot: "0x00011000"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:185c06ea37f499ebab3daed5ec0703cd31a8d76fea76db87f50311cf65729225
+mtime: 2026-10-31T20:06:29.407Z
+digest: sha256:5e215b7f19df35cbf9a55b39d82a155ec055fad29595f3270e1356debe2608f7
 rules:
   - id: ce645440-2b30-58e0-a535-1118d420a022
     name: workspace-paths
@@ -115,3 +115,32 @@ rules:
     instruction:
       en: "Completion evidence: done=true requires all declared outputs plus successful mutation/verification evidence appropriate to this Step. A right-side V-model Step first inspects its paired baseline and performs risk analysis. It may add focused tests only under the Runtime-declared verification supplement root, then freezes and executes the complete baseline plus supplement set. It must never rewrite baseline tests or product source. Do not diagnose from historical failure text or write reports/documentation until the current frozen run_tests result is returned in a later round. Put each independent defect or shortfall in qualityAssessment.findings so Runtime can route one Ticket per finding. Give every finding a stable machine code: reuse the code when the same problem recurs and use a different code for an independent problem. Use product-defect when the accepted contract remains valid and its implementation is wrong; use change-request when satisfying the expectation requires an accepted requirement, capability, interface, dependency, data source, or design premise to change. A status code, timeout, exception, or empty result is evidence only and never selects between them. Include affectedArtifacts with the exact workspace paths that finding permits a correction to modify; dependency findings remain separate from product/test defects."
       zh: 完成证据：done=true 前必须完成全部声明产物，并取得与当前 Step 匹配的成功修改或验证证据。V 模型右侧 Step 先独立检查配对基线并做风险分析，只能在 Runtime 声明的 verification supplement root 下追加聚焦测试，随后冻结并执行完整的“基线 + 补充”集合；禁止改写基线测试或产品源码。在下一轮收到当前冻结集合的 run_tests 结果前，禁止依据历史失败文本诊断，也禁止写入报告/文档。每个独立缺陷或短板必须分别写入 qualityAssessment.findings，由 Runtime 逐项建票。每个 finding 必须提供稳定的机器 code：同一问题重现时复用，独立问题使用不同 code。已接受契约仍有效但实现错误时使用 product-defect；满足预期必须调整已接受的需求、能力、接口、依赖、数据源或设计前提时使用 change-request。状态码、超时、异常和空结果只作为证据，不能直接决定二者。affectedArtifacts 必须填写该 finding 允许修复的精确工作区路径；依赖 finding 继续独立于产品/测试缺陷路由。
+  - id: c61c2949-63a4-45c4-b9eb-1f4da1280f47
+    name: plan-contract
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-31T20:05:35.278Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:2b044750a0dfad2290d081ed038b5ebf4aabbf2cb5db508f0e5ccae92bdb234f
+    description:
+      en: "Applies to every Step execution: what the Step freezes, designs or implements agrees with the confirmed plan contract, and an upstream disagreement is corrected or reported, never carried forward."
+      zh: 适用于每次 Step 执行：本 Step 冻结、设计或实现的内容与已确认的规划契约一致；上游的不一致要修正或报告，不得延续。
+    instruction:
+      en: "Plan contract: what this Step freezes, designs or implements must agree with the confirmed plan contract in the request. Where an upstream document or test disagrees with it, do not carry the disagreement forward: correct it if it is inside this Step's writable paths; otherwise record it in qualityAssessment.blockedBy, naming the conflicting point and the Step that owns it."
+      zh: 规划契约：本 Step 冻结、设计或实现的内容必须与请求中已确认的规划契约一致。上游文档或测试与它不一致时，不要把不一致延续下去：在本 Step 可写路径内的，按契约修正；不在的，写入 qualityAssessment.blockedBy，指出冲突点和负责它的 Step。
+  - id: 3b429c00-01de-4fa3-8da0-58079b95dc49
+    name: supplement-tests-only
+    version: 1.0.0
+    level: mandatory
+    ctime: 2026-10-31T20:05:35.664Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:4b06024f6bf2c0e75c64243932ab93735a7570aa33f3c897a0e5edd6e974eee8
+    description:
+      en: "Applies when a verification Step writes its risk supplements: files under the verification supplement root are executable tests, and Runtime measures coverage."
+      zh: 验证 Step 编写风险补充测试时适用：补充测试目录下只能是可执行测试，覆盖率由 Runtime 测量。
+    instruction:
+      en: "Verification supplements: every file under this Step's verification supplement root runs as one of its tests, so each must be an executable test case for this Step's verification scope. Never put probes, measurement scripts or helper code there. Runtime measures coverage itself: do not add coverage tools, options or scripts."
+      zh: 验证补充测试：本 Step 补充测试目录下的每个文件都会作为本 Step 的测试运行，因此每个文件都必须是针对本 Step 验证范围的可执行测试用例。不要在那里放探针、测量脚本或辅助代码。覆盖率由 Runtime 自行测量：不要添加覆盖率工具、选项或脚本。
+    applicability:
+      paths:
+        - tests/verification/**

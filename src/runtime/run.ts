@@ -79,6 +79,7 @@ import { createRuntimePromptTranslator } from './translation_request.js';
 import { createRuntimeExecutionTurnRequestPort } from './execution_turn_request.js';
 import { defaultRoleForStep } from '../domain/workflow/work.js';
 import { RoleRegistry } from '../application/project_management/role_registry.js';
+import { recordedRunStop, renderRunStop, type RunStop } from '../application/project_management/run_stop.js';
 
 export interface ExecuteOptions {
   planPath: string;
@@ -370,7 +371,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       phaseId: domainPhase.id,
       planPath: planAbs,
     });
-    await runtimeLog(io, 'success', `recovered ${domainPhase.name} from the canonical Project state`);
+    await runtimeLog(io, 'success', t().execute.phaseRecovered(domainPhase.name));
     projectFilePath = await updateProjectFile({
       workspace: ws.root,
       container: container.root,
@@ -531,11 +532,11 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     authorizeMerge: (changeSet) => requestPermission({
           operationType: 'git_operation',
           target: `merge ${changeSet.sourceBranch} into ${container.canonicalBranch}`,
-          reason: 'Land the validated CODE ChangeSet so downstream V-model Steps test the new code.',
-          risk: 'Creates one squash commit on the canonical project branch.',
+          reason: t().permissionRequest.mergeChangeSet.reason(),
+          risk: t().permissionRequest.mergeChangeSet.risk,
           scope: 'canonical project repository',
           skippable: false,
-          denyBehavior: 'Keep the ChangeSet gate-passed and stop delivery before downstream testing.',
+          denyBehavior: t().permissionRequest.mergeChangeSet.denyBehavior,
           metadata: {
             requiresExternalAuthorization: true,
             changeSetId: changeSet.id,
@@ -709,25 +710,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         const decision = await requestPermission({
           operationType: 'test_command',
           target: 'project audit gate',
-          reason: 'Run the phase delivery audit before closing its Epic.',
-          risk: 'The audit may execute tests or the project entrypoint in the configured sandbox.',
+          reason: t().permissionRequest.projectAudit.reason(),
+          risk: t().permissionRequest.projectAudit.risk,
           scope: 'current workspace sandbox',
           skippable: false,
-          denyBehavior: 'Keep the phase open and return a failed run.',
+          denyBehavior: t().permissionRequest.projectAudit.denyBehavior,
         });
-        if (!decision.approved) return { ok: false, reason: 'project audit permission denied' };
+        if (!decision.approved) return gateStop({ code: 'gate_audit_permission_denied' });
         if (phaseGate.scenarios.some((scenario) => scenario.environment === 'live')) {
           const networkDecision = await requestPermission({
             operationType: 'network_access',
             target: `${domainPhase.name} live delivery scenarios`,
-            reason: 'Validate the delivered functionality through declared real-user operations.',
-            risk: 'The product commands may contact live external services using the configured sandbox.',
+            reason: t().permissionRequest.liveScenarios.reason(),
+            risk: t().permissionRequest.liveScenarios.risk,
             scope: 'current workspace sandbox',
             skippable: false,
-            denyBehavior: 'Keep the Phase open without creating a product-defect Ticket.',
+            denyBehavior: t().permissionRequest.liveScenarios.denyBehavior,
           });
           if (!networkDecision.approved) {
-            return { ok: false, reason: 'phase delivery live-scenario permission denied' };
+            return gateStop({ code: 'gate_live_scenario_permission_denied' });
           }
         }
       }
@@ -822,10 +823,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
           phaseId: domainPhase.id,
           detail: error instanceof Error ? error.message : String(error),
         });
-        return {
-          ok: false,
-          reason: `phase delivery gate could not be judged: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        return gateStop({ code: 'gate_unjudged', detail: error instanceof Error ? error.message : String(error) });
       }
       finalProjectAudit = auditResult;
       const setAside = await setAsideGateOutputs();
@@ -846,9 +844,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       await emitProjectAudit(io, finalProjectAudit);
       return {
         ok: finalProjectAudit.ok,
-        reason: finalProjectAudit.ok
-          ? undefined
-          : `project audit failed (${finalProjectAudit.errors} error(s))`,
+        ...(finalProjectAudit.ok ? {} : gateStop({ code: 'gate_audit_failed', errors: finalProjectAudit.errors })),
         failureLog: finalProjectAudit.checks
           .filter((check) => check.severity === 'error' && !check.ok)
           .map((check) => `${check.name}: ${check.summary}${check.detail ? `\n${check.detail}` : ''}`)
@@ -869,7 +865,9 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     if (r.failedStepId) {
       await runtimeLog(io, 'error', t().execute.runInterrupted(r.failedStepId, r.executedSteps, r.totalSteps));
       if (r.failureReason) {
-        await runtimeLog(io, 'error', `${t().execute.runReasonLabel}${r.failureReason}`);
+        // Records keep the English reason; the terminal shows the same fact in the user's language.
+        const shown = r.stop ? renderRunStop(r.stop, t().runStop) : r.failureReason;
+        await runtimeLog(io, 'error', `${t().execute.runReasonLabel}${shown}`);
       }
       if (r.failureLog) {
         const tail = r.failureLog.split('\n').slice(-40).join('\n');
@@ -922,11 +920,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       });
     }
     if (phaseAdvance?.nextPlan) {
-      await runtimeLog(
-        io,
-        'success',
-        `iteration ${phaseAdvance.completedPhaseId} passed; prepared ${phaseAdvance.nextPlan.phaseId}`,
-      );
+      await runtimeLog(io, 'success', t().execute.iterationPrepared(phaseAdvance.completedPhaseId, phaseAdvance.nextPlan.phaseId));
     }
     await runtimeLog(io, 'success', t().execute.runAllDone(r.executedSteps, r.totalSteps));
     await audit.end({
@@ -1000,6 +994,11 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   } finally {
     await lock.release();
   }
+}
+
+/** A failed delivery gate for one of its own reasons: the typed fact, with the English rendering records keep. */
+function gateStop(stop: RunStop): { ok: false; reason: string; stop: RunStop } {
+  return { ok: false, reason: recordedRunStop(stop), stop };
 }
 
 async function persistProjectMemory(

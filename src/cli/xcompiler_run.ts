@@ -1,11 +1,11 @@
 import { Command } from 'commander';
 import { XCOMPILER_VERSION, XCompilerRuntime, type ExecuteResult } from '../runtime.js';
 import { setLocale, t } from '../i18n/index.js';
-import { configureLocalizedHelp, localeFromArgv, parseLocale, parseRecordReplayMode } from './arguments.js';
+import { configureLocalizedHelp, parseLocale, parseRecordReplayMode, startupLocale } from './arguments.js';
 import { xcEnv } from '../config/env.js';
 import { createCliRuntimeIO, isCliCancellation, runCliAbortable } from './runtime_adapter.js';
 
-setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
+setLocale(startupLocale(process.argv, xcEnv('LANG')));
 const runtime = new XCompilerRuntime({ io: createCliRuntimeIO() });
 
 const program = new Command();

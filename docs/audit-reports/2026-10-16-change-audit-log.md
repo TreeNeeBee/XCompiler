@@ -2887,3 +2887,143 @@ P1 包资源问题仍延后；不启用外部付费模型。
 
 **dbc2excel-5 的后续**：直接 run。没有可调度工作，门禁再判一次，通过后由对账关闭 BUG-P1-015，进入合并与交付。
 
+
+### Codex 审计 XC-01～XC-04 修复与终端提示 i18n（2026-11-01，用户决定，D-62）
+
+**用户要求**："1、修复，2、使用过程中有很多提示没有做i18n，补一下，3、看看最新的改动部分有哪些可以抽取到rule中"；随后补充"只做固定提示词的 i18n，断言之类的判定还是保持英文唯一"。设计选择（用户均选推荐方案）：XC-02 改白名单；XC-03 门禁通过才关闭；i18n 只做终端可见文字；业务工程问题对应的缺口并入 Rule 分析。
+
+**核对**：报告的 7 项在 HEAD `1766fc5` 上逐一属实，其中业务工程 3 项在副本中重新复现。另发现报告未提及的两点：
+- XC-01 的同一路径之后还会被读取；
+- `-o python_functions=test_pass` 同样能缩小测试范围。用真实 pytest 跑同一文件：不加参数为 1 failed、1 passed，加该参数后为 1 passed。
+
+**处理**：
+- XC-01（`src/tools/sandbox.ts`）：覆盖率报告路径只取门禁参数（Runtime 的 `PYTHON_COVERAGE_ARGS`），调用方给的 `--cov-report=json:` 路径不再被 Runtime 删除或读取。
+- XC-02（同文件）：
+  - `SCOPE_OPTIONS` 黑名单改为白名单：输出类长选项、带值的输出选项（`--tb`、`--color`、`--reporter` 等）、单字母 `v`/`q`/`s`/`l`；
+  - `-r` 接受任意值，`-p` 只接受 `no:cacheprovider`；
+  - 单字母参数连写时逐个字母判断；
+  - 覆盖率选项沿用原规则（门禁已有覆盖率时丢弃调用方的）；
+  - 被拒选项的说明末尾补一句"只传递输出类选项"。
+- XC-03（`orchestrator.ts`）：`reconcilePhaseDeliveryBugs` 只在 `gate.ok` 时调用。
+- XC-04（`src/workspace/git.ts`）：`restoreRuntimeIgnoreRules` 不再按行集合比较，改为要求当前内容以已提交内容开头，且其后每行都是 Runtime 规则、标题或空行。
+- i18n：
+  - 权限请求的 reason/risk/denyBehavior 迁入新组 `permissionRequest`（12 种请求）：`action_policy.ts` 6 处，编排器 2 处，`run.ts` 3 处，执行器沙箱同步 1 处；
+  - `target`/`scope` 是能力标识（权限服务以它们组成能力键），保持不变；
+  - CLI 权限确认框的"风险/范围"标签与拒绝原因输入提示、Ticket 路由兜底行、`run.ts` 两条状态行（恢复 Phase、迭代通过）迁入 i18n；
+  - CLI 拒绝授权时回传的 reason 原为 `denyBehavior + User reason`，会把用户语言的文字送给模型；改为只回传用户输入的理由。执行器反馈已有权限适应说明，Run 停止信息照常显示 denyBehavior；
+  - 按用户补充要求，停止原因、门禁原因、检查摘要、决策理由保持英文，已迁入的回退。
+
+**测试与证伪**：
+- 新增：
+  - `tools.test.ts`：调用方用相对或绝对路径命名覆盖率报告，在"门禁无覆盖率"与"无门禁"下都不删除、不读取，共 4 例；7 种缩小范围的写法不到达 runner；各种写法的输出选项全部到达；
+  - `domain_execution_engine.test.ts`：门禁无法评判时已修复的 Bug 保持 resolved、方案仍为 proposed、没有"Phase delivery gate passed"；另一场景失败时不关闭，门禁通过后两张都关闭；
+  - `squash_merge.test.ts`：调换规则顺序、删掉重复规则都保留用户改动并拒绝合并。
+- 修复前，XC-03 的两个新用例按预期失败（`closed`）。
+- 调用点证伪 4 处，均有用例失败，三个文件已逐字节恢复：
+  - 覆盖率报告改回取合并参数：4 例失败；
+  - 合并改回拒绝清单：6 例失败（`--co` 本在旧清单中）；
+  - 对账改回每次门禁都执行：2 例失败；
+  - 改回集合比较：2 例失败。
+- 真实 pytest 一次性复核（真实 `runTestsTool` + `unresolvedTestFailures`）：`-kpass`、`-o python_functions=test_pass` 都跑完整门禁（1 failed、1 passed），未解决失败仍为 1。报告中修复前的结果为 1 passed、1 deselected，未解决失败为 0。
+- i18n 按用户要求不加 zh 断言测试。英文文案与改动前逐字相同，en 下的测试无法区分调用点是否接线，因此这部分没有做调用点证伪。用一次性脚本确认 zh 下权限请求、确认框标签、路由行、状态行渲染为中文，`scope` 保持标识。
+
+**门禁**：typecheck（产品与测试）、lint、`git diff --check` 通过；core 130 文件 / 2,063 项，integration 67 / 1,608，e2e 3 / 22，全部通过。
+
+**未做**：
+- ACP 权限展示的标签（`Reason:`、`Risk:` 等）不属于终端，未改；其中的请求内容随本次改动按用户语言显示。
+- 模型可见的英文提示（如 `run_tests` 的工具反馈、执行器反馈）不在本次范围内。
+
+#### 补充：最新改动抽取到 Rule 与业务缺口的通用 Rule（2026-11-01，用户决定，D-63）
+
+**分析**：在 D-44～D-61 中找写死在代码里、指导模型行为的文字，同时把业务工程三个问题落到 XCompiler 的通用缺口上。
+- 抽取：D-59 契约变更跳的"不保留旧契约断言"（`prompt_renderer.ts` 的英文字面量，zh 提示下也是英文）；D-55 规划契约块中的冲突处理要求；D-45/D-46 补充目录只放可执行测试（原先只有出问题后的反馈）。
+- 补充：解析外部输入时未消费内容要报告，并有格式错误输入的测试（BIZ-01）；写入会解释单元格内容的格式时按原文写出，并回读比对（BIZ-02）；文档中的命令要实际跑通，字段表从实际输出抄写（BIZ-03 和 README 列名）。
+- 不抽取：
+  - 工具契约和反馈：`expectExitCode`、无结论说明、被拒选项说明；
+  - 规划场景声明：`plan.*` 在 0.4 不建 RuleList，放进 `role-planner` 会混淆角色与工作；
+  - 已在 `scenario-outcome` 中的裁判规则；
+  - 纯 Runtime 行为。
+
+**处理**：
+- 用 `xcompiler rule add` 写入本地差异层（`XC_RULES_LOCAL` 指向临时目录，未触及用户的 `~/.xc/rules-local`），`rule check` 通过后 `rule promote`。
+- 6 个列表 2.0.0 → 2.1.0，安装清单重新生成，生效 Rule 从 75 条变为 85 条。
+- `rule check` 的相似提示从 12 条变为 14 条，多出的两条是同一条 Rule 放在两个 Step 工作列表中。一次请求只绑定一个 Step 工作列表，与已有的 `deliverable`/`method` 做法相同。
+- 工作片段与 Step 工作列表整表必需，新条目不需要改 `MINIMUM_RULE_SET`。
+- `supplement-tests-only` 用 `paths: tests/verification/**`，`documented-commands` 用 `tools: run_program` 限定。
+- 删除 TS 中的重复：契约变更跳只陈述"静态校验、执行延后到 S4 之后"；`executorPlanContractBlock`（en/zh）只保留需求摘要与 Phase 目标、范围，标题去掉行为要求。
+
+**测试与证伪**（`tests/rule_binding.test.ts`，经 `boundRuleBlock` 加载已安装的 Rule 并按请求事实绑定）：
+- 新增 5 例：
+  - 契约变更跳在基线延后时带 `superseded-assertions`，不延后时不带；
+  - 代码、修 Bug、改 CR、模块验证都带 `plan-contract`；
+  - 可写补充目录时带 `supplement-tests-only`，只写报告或代码 Step 时不带；
+  - 实现带输入解析与文字输出，单元/模块验证带格式错误输入，模块/功能验证带输出保真，集成验证两者都不带；
+  - 功能验证有 `run_program` 时带 `documented-commands`，没有时不带。
+- 单一来源检查加入移走的三段原文。
+- `executor.test.ts` 两个用例改为只断言事实与数据。
+- 证伪 5 处，均有用例失败，已逐字节恢复：
+  - 6 个列表与清单回退到 HEAD：5 例失败；
+  - 原句放回 `prompt_renderer.ts`：单一来源检查失败；
+  - 冲突处理要求放回 zh 模板：单一来源检查失败；
+  - 清除 `supplement-tests-only` 的适用维度：对应用例失败；
+  - 清除 `documented-commands` 的适用维度：对应用例失败。
+- 后两处证伪用 `rule update --clear-scope` + `promote` 生成。
+
+**门禁**：
+- `rule check`（空的本地差异层）退出码 0，26 个列表、85 条 Rule。
+- typecheck、lint、`git diff --check` 通过；core 130 文件 / 2,068 项，integration 67 / 1,608，e2e 3 / 22，全部通过。
+- 首轮 e2e 有 2 例失败：`tests/e2e/rule_cli.test.ts` 把已安装的 Rule 条数写死为 75（新增一条后为 76）。已改为与写入前 `rule check` 报告的条数比较（新增后 +1，拒绝后不变），之后发布增删 Rule 不必再改这个测试。
+
+**说明**：Rule 级别只约束模型的遵守程度，不做机械检查。文档命令核对的机械保证仍需交付门禁执行文档中的命令，排在 0.5 的"规则与门禁的关联"。
+
+### 审查后续优化：类型化失败码、提示语言、类型化停止原因、语言登记表（2026-11-01，用户决定，D-64）
+
+**用户要求**："按照你的建议来，改完后加上之前的内容生成一份变更报告 供审计"。建议顺序为 A1、A2，然后 B1、B2 与语言扩展基础（登记表、未知语言报错、语言名称合并）。Rule 语言策略未改：代码中已有既定做法（新增语言时每条 Rule 都要提供该语言文本，不回退）。A2 原需决定，按建议采用"排除"。
+
+**处理**：
+- A1 类型化失败码：
+  - 工具侧新增 6 个 `ToolFailureCode`：
+    - 执行前的参数校验：`path` 对应 `path_argument_missing`，`content` 对应 `content_argument_invalid`，其他为 `invalid_args`；
+    - `fs`/`edit`/`deps` 的参数校验；
+    - `path_guard` 越界为 `path_outside_project`；写入工作区根目录、或写入时没有给出路径（默认为 `.`），为 `path_argument_missing`；ENOENT 为 `path_not_found`；
+    - 替换次数不符为 `replace_count_mismatch`；
+    - 路径守卫的码由各工具透传。
+  - 执行器：
+    - 未解决失败记录带 `code`；
+    - `hasOnlyUntargetedToolContractFailures`、`hasOnlySupersededToolContractFailures`、`isMissingArtifactRead`、`isIgnorableReadOnlyToolFailure` 改读失败码。
+  - 反馈渲染器：`unresolvedFailures` 改为结构化记录，五类纠正提示（路径、替换次数、内容类型、`add_dependency`、命令别名）按码、工具和执行状态选择。
+  - 核对后不改 `debug_brief`：生产调用方都传类型化失败，类别由失败码决定；文字分类只处理外部运行输出。
+- A2：`canAcceptDeferredVerificationFailure` 的"已执行失败"排除 `isTestRunWithoutVerdict`。
+- B1：执行器反馈 24 条、基线延后段 7 句、`run_tests`/`run_program`/TypeScript 运行器提示 11 条、无效补充文件说明，迁入按提示语言选取的 i18n。en 逐字不变；zh 新译，字段名、枚举值、工具名保持英文。
+- B2：
+  - 新增 `RunStop`（16 种）与 `renderRunStop`/`recordedRunStop`；
+  - 编排器的字面停止原因、结果处理器 4 种停止、门禁 4 种原因、"无改动修复复现"改为类型化；
+  - 记录用 `tFor('en')` 渲染，终端用 `t()` 渲染。
+- 语言登记表 `src/domain/locale.ts`：
+  - `LOCALES`、`LocaleSchema`、别名、CLI 标记、语言名称；
+  - 请求 schema、配置、翻译缓存、`RULE_LOCALES`、CLI 别名与两份语言名称表都改由它派生；
+  - `normaliseLocale` 对不支持的语言抛 `UnsupportedLocaleError`；
+  - CLI 启动改用 `startupLocale`：未知 `--lang` 交给参数解析器报错，未知 `XC_LANG` 提示后按英文运行；
+  - CLI 经 i18n 转出的函数访问登记表（架构测试要求适配层不直接引用 domain）。
+
+**测试与证伪**：
+- 新增：
+  - 工具产生失败码 9 例；
+  - 执行器：缺失文件读取不阻塞完成、无结论运行不延后、工具自身拒绝的无路径写入在输出补全恢复中放行；两个用例改用真实工具；
+  - 纠正提示按码选择 2 例；
+  - 类型化停止：结构化断言，并验证 zh 下记录仍为英文；
+  - 门禁停止集成断言；
+  - 登记表 3 例与 e2e 2 例（未知 `--lang` 报错且无堆栈、未知 `XC_LANG` 提示后继续）；
+  - 翻译语言名 2 例；
+  - 提示语言：反馈 26 例、基线 3 例、补充文件 1 例、工具提示 11 例。沿用 D-40 的写法：zh 提示下断言等于对应键，不写中文字面量。
+- 证伪：
+  - A1/A2 共 16 处。首轮有两处没有用例失败：
+    - `calls` 记录无效动作的码：没有判断读取它，撤回该改动；
+    - 无目标路径的契约判定：改动前就没有覆盖，补"工具自身拒绝"用例后失败。
+  - B2 共 4 处，均失败。
+  - 登记表 6 处。首轮"翻译语言名"一处没有用例失败，补用例后失败。
+  - B1 共 46 个调用点，逐个改回"永远英文"，均失败。脚本另有 2 处匹配到无关的 `text.length`，不计。
+  - 均已逐字节恢复。
+- 未能证伪：终端显示停止原因的那一行。en 下与记录相同，en 测试无法区分；按用户要求不为其加 zh 文字断言。
+
+**门禁**：见 [2026-11-01 审计后续变更报告](2026-11-01-followup-change-audit-report.md) 第 7 节。

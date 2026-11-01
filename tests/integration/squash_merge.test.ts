@@ -132,6 +132,28 @@ describe('squash merge onto the mainline', () => {
     })).rejects.toThrow(/uncommitted changes: \.gitignore/u);
   });
 
+  // A later ignore rule overrides an earlier one, so swapping two lines changes what Git ignores.
+  // Read as sets of lines, both orders looked the same: the user's edit was checked out away and the
+  // merge went ahead.
+  it.each([
+    ['reorders the committed rules', '*.log\n!important.log\n', '!important.log\n*.log\n'],
+    ['drops a repeated rule', '*.log\n!important.log\n*.log\n', '*.log\n!important.log\n'],
+  ])('keeps the edit and stops the merge when someone %s', async (_edit, committed, edited) => {
+    const { root, git, service } = await repository();
+    await fs.writeFile(path.join(root, '.gitignore'), committed);
+    await git.add('.');
+    await git.commit('project ignore rules');
+    const branch = 'xcompiler/ticket/T7';
+    await ticketBranch(root, service, branch);
+    await fs.writeFile(path.join(root, '.gitignore'), edited);
+
+    await expect(service.squashMerge({
+      targetBranch: 'master', sourceBranch: branch,
+      expectedTargetRevision: await service.revision('master'), message: '[xcompiler] T7',
+    })).rejects.toThrow(/uncommitted changes: \.gitignore/u);
+    expect(await fs.readFile(path.join(root, '.gitignore'), 'utf8')).toBe(edited);
+  });
+
   it('merges past an untracked artifact the incoming change never touches', async () => {
     // The phase delivery gate runs the product to judge what it produces, so its output sits in the
     // canonical copy by design. Git carries an untracked file straight through a squash merge, and

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { recordWorkspaceWrite, writeWorkspaceFile } from './workspace_write.js';
 import { promises as fs } from 'node:fs';
-import { deniedRuntimeOwnedWrite, deniedWrite, isAllowedWrite, type Tool } from './types.js';
+import { deniedRuntimeOwnedWrite, deniedWrite, isAllowedWrite, type Tool, type ToolFailureCode } from './types.js';
 import { runtimeOwnedAllows, runtimeOwnedFile } from '../domain/workspace/runtime_owned_file.js';
 import { resolveWorkspacePath } from './path_guard.js';
 import {
@@ -29,17 +29,17 @@ export const readFileTool: Tool<
   argsSchema: { path: 'string', offset: 'number?', maxBytes: 'number?' },
   async run(args, ctx) {
     if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
-      return { ok: false, error: 'invalid read_file args: path must be a non-empty string' };
+      return { ok: false, error: 'invalid read_file args: path must be a non-empty string', code: 'path_argument_missing' };
     }
     if (args.offset !== undefined && (!Number.isInteger(args.offset) || args.offset < 0)) {
-      return { ok: false, error: 'invalid read_file args: offset must be a non-negative integer' };
+      return { ok: false, error: 'invalid read_file args: offset must be a non-negative integer', code: 'invalid_args' };
     }
     if (args.maxBytes !== undefined && (!Number.isInteger(args.maxBytes) || args.maxBytes <= 0)) {
-      return { ok: false, error: 'invalid read_file args: maxBytes must be a positive integer' };
+      return { ok: false, error: 'invalid read_file args: maxBytes must be a positive integer', code: 'invalid_args' };
     }
     try {
       const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'read_file', { mustExist: true });
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
       const abs = resolved.abs;
       const stat = await fs.stat(abs);
       if (!stat.isFile()) return { ok: false, error: 'not a file' };
@@ -138,12 +138,12 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     const argError = validateTextFileArgs('write_file', args);
-    if (argError) return { ok: false, error: argError };
+    if (argError) return { ok: false, ...argError };
     const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'write_file', {
       forWrite: true,
       relativePathHints: ctx.allowedWrites,
     });
-    if (!resolved.ok) return { ok: false, error: resolved.error };
+    if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
     // A Runtime-owned path is decided by ownership, not by the Step's allowlist: the allowlist can
     // only report that the path is absent from it, which is the one thing the Step cannot act on.
     const owned = runtimeOwnedFile(resolved.rel, ctx.language);
@@ -236,12 +236,12 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
   argsSchema: { path: 'string', content: 'string' },
   async run(args, ctx) {
     const argError = validateTextFileArgs('append_file', args);
-    if (argError) return { ok: false, error: argError };
+    if (argError) return { ok: false, ...argError };
     const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'append_file', {
       forWrite: true,
       relativePathHints: ctx.allowedWrites,
     });
-    if (!resolved.ok) return { ok: false, error: resolved.error };
+    if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
     const owned = runtimeOwnedFile(resolved.rel, ctx.language);
     if (owned && !runtimeOwnedAllows(owned, 'append')) {
       return deniedRuntimeOwnedWrite('append', owned);
@@ -285,14 +285,14 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
   },
 };
 
-function validateTextFileArgs(tool: string, args: unknown): string | undefined {
-  if (!args || typeof args !== 'object') return `invalid ${tool} args: expected object`;
+function validateTextFileArgs(tool: string, args: unknown): { error: string; code: ToolFailureCode } | undefined {
+  if (!args || typeof args !== 'object') return { error: `invalid ${tool} args: expected object`, code: 'invalid_args' };
   const candidate = args as { path?: unknown; content?: unknown };
   if (typeof candidate.path !== 'string' || candidate.path.trim() === '') {
-    return `invalid ${tool} args: path must be a non-empty string`;
+    return { error: `invalid ${tool} args: path must be a non-empty string`, code: 'path_argument_missing' };
   }
   if (typeof candidate.content !== 'string') {
-    return `invalid ${tool} args: content must be a string`;
+    return { error: `invalid ${tool} args: content must be a string`, code: 'content_argument_invalid' };
   }
   return undefined;
 }
@@ -304,7 +304,7 @@ export const listDirTool: Tool<{ path?: string }, { entries: string[] }> = {
   async run(args, ctx) {
     try {
       const resolved = await resolveWorkspacePath(ctx.ws, args.path ?? '.', 'list_dir', { mustExist: true });
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
       const abs = resolved.abs;
       const entries = await fs.readdir(abs, { withFileTypes: true });
       return {

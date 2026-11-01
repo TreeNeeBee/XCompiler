@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../domain/locale.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -135,7 +136,6 @@ const ProviderSchema = z.object({
   think: z.boolean().optional(),
 });
 
-const LocaleSchema = z.enum(['en', 'zh']);
 export const SANDBOX_MODES = ['subprocess', 'docker'] as const;
 export const SANDBOX_NETWORK_POLICIES = ['off', 'download-only', 'full'] as const;
 const SandboxModeSchema = z.enum(SANDBOX_MODES);

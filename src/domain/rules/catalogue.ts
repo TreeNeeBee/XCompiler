@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { languageName, LOCALES } from '../locale.js';
 import { LANGUAGES, PLAN_INTENTS, PROJECT_TYPES } from '../planning/execution_plan.js';
 import { DEBUG_FAILURE_CATEGORIES } from '../quality/failure_category.js';
 import { RoleIdSchema } from '../workflow/role.js';
@@ -23,7 +24,7 @@ const Digest = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
  * Prompt locales a Rule renders in. A request renders the prompt locale: `config.locale`, or
  * English when `prompt_translate` is on (D-18, R-11, D-40).
  */
-export const RULE_LOCALES = ['en', 'zh'] as const;
+export const RULE_LOCALES = LOCALES;
 export type RuleLocale = (typeof RULE_LOCALES)[number];
 export const RuleLocaleSchema = z.enum(RULE_LOCALES);
 
@@ -35,12 +36,6 @@ export const RuleLocaleSchema = z.enum(RULE_LOCALES);
 export const RULE_TEXT_VARIABLES = ['outputLanguage'] as const;
 export type RuleTextVariable = (typeof RULE_TEXT_VARIABLES)[number];
 const RULE_TEXT_VARIABLE = /\{\{([^{}]*)\}\}/gu;
-
-/** How each output language is named in each prompt locale. */
-const LANGUAGE_NAMES: Readonly<Record<RuleLocale, Readonly<Record<RuleLocale, string>>>> = Object.freeze({
-  en: Object.freeze({ en: 'English', zh: 'Simplified Chinese' }),
-  zh: Object.freeze({ en: '英文', zh: '中文' }),
-});
 
 function textVariables(value: string): string[] {
   return [...value.matchAll(RULE_TEXT_VARIABLE)].map((match) => match[1]!);
@@ -84,7 +79,7 @@ export interface RuleTextContext {
 export function promptRuleText(text: RuleLocalizedText, context: RuleTextContext): string {
   const locale = context.locale ?? 'en';
   const values: Record<RuleTextVariable, string> = {
-    outputLanguage: LANGUAGE_NAMES[locale][context.outputLanguage ?? locale],
+    outputLanguage: languageName(context.outputLanguage ?? locale, locale),
   };
   return text[locale].replace(RULE_TEXT_VARIABLE, (match, name: string) =>
     (RULE_TEXT_VARIABLES as readonly string[]).includes(name) ? values[name as RuleTextVariable] : match);

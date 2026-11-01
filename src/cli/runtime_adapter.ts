@@ -5,6 +5,7 @@ import type {
   RuntimeIO, RuntimeInteraction, RuntimeLogLevel, RuntimePermissionPolicy, RuntimeProgress,
 } from '../runtime.js';
 import { isCancellationError } from '../util/cancellation.js';
+import { t } from '../i18n/index.js';
 
 function renderLog(level: RuntimeLogLevel, message: string): void {
   switch (level) {
@@ -44,13 +45,11 @@ export function createCliRuntimeIO(
     emit(event) {
       if (event.type === 'log') renderLog(event.level, event.message);
       if (event.type === 'workflow' && event.event === 'ticket_routed') {
-        console.log(chalk.cyan('↳'), event.message ?? [
+        console.log(chalk.cyan('↳'), event.message ?? t().execute.ticketRouted(
           event.creatorRole ?? 'discoverer',
-          'created',
           event.ticketName ?? event.ticketType ?? 'ticket',
-          '→ PM →',
           [event.assigneeRole, event.work].filter(Boolean).join('/'),
-        ].join(' '));
+        ));
       }
     },
     progress(message, opts): RuntimeProgress {
@@ -67,19 +66,20 @@ export function createCliRuntimeIO(
         message: [
           `${request.operationType}: ${request.target}`,
           request.reason,
-          `Risk: ${request.risk}`,
-          `Scope: ${request.scope}`,
+          t().system.permissionPromptRisk(request.risk),
+          t().system.permissionPromptScope(request.scope),
         ].join('\n'),
         default: false,
       });
       const denialReason = approved
         ? ''
-        : (await input({ message: 'Reason for denial (optional):' })).trim();
+        : (await input({ message: t().system.permissionDenialReasonPrompt })).trim();
+      // A refusal's reason travels back to the model, so it carries only what the user typed: the
+      // request's own consequence text is written for the user, in the user's language, and the
+      // model is already told how to adapt to a denied capability.
       return {
         approved,
-        reason: approved
-          ? 'Approved by CLI user.'
-          : `${request.denyBehavior}${denialReason ? ` User reason: ${denialReason}` : ''}`,
+        reason: approved ? 'Approved by CLI user.' : denialReason || undefined,
       };
     },
   };

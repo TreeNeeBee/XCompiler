@@ -3,7 +3,7 @@ import { CompileExitError, XCOMPILER_VERSION, XCompilerRuntime } from '../runtim
 import { setLocale, t } from '../i18n/index.js';
 import {
   configureLocalizedHelp,
-  localeFromArgv,
+  startupLocale,
   parseIntent,
   parseLocale,
   parseRecordReplayMode,
@@ -11,7 +11,7 @@ import {
 import { xcEnv } from '../config/env.js';
 import { createCliRuntimeIO } from './runtime_adapter.js';
 
-setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
+setLocale(startupLocale(process.argv, xcEnv('LANG')));
 const defaultBaseDir = xcEnv('DEFAULT_BASE_DIR') ?? '/tmp';
 const runtime = new XCompilerRuntime({ io: createCliRuntimeIO() });
 

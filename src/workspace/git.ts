@@ -204,12 +204,12 @@ export async function restoreRuntimeIgnoreRules(git: SimpleGit, root: string): P
   if (current === undefined) return false;
   const committed = await git.raw(['show', `HEAD:${PROJECT_GITIGNORE}`]).catch(() => undefined);
   if (committed === undefined || current === committed) return false;
-  const before = new Set(committed.split(/\r?\n/u));
-  const after = new Set(current.split(/\r?\n/u));
+  // Runtime only ever appends. The committed text must survive unchanged at the front — order and
+  // repeats included, since a later rule overrides an earlier one — and what follows it must be
+  // Runtime's own lines. Comparing the two as sets of lines read a user's reordering as no change.
+  if (!current.startsWith(committed)) return false;
   const ours = new Set<string>([...RUNTIME_EXCLUDE_PATTERNS, RUNTIME_IGNORE_HEADER, '']);
-  const onlyOurs = [...before].every((line) => after.has(line)) &&
-    [...after].every((line) => before.has(line) || ours.has(line));
-  if (!onlyOurs) return false;
+  if (!current.slice(committed.length).split(/\r?\n/u).every((line) => ours.has(line))) return false;
   await git.raw(['checkout', 'HEAD', '--', PROJECT_GITIGNORE]);
   return true;
 }

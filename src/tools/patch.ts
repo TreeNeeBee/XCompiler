@@ -27,7 +27,7 @@ export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }>
         forWrite: true,
         relativePathHints: ctx.allowedWrites,
       });
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
       if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
         return deniedWrite('write', resolved.rel, ctx.allowedWrites);
       }

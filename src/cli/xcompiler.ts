@@ -13,7 +13,7 @@ import { xcEnv } from '../config/env.js';
 import { createCliRuntimeIO, isCliCancellation, runCliAbortable } from './runtime_adapter.js';
 import { runAcpStdioServer } from '../acp/index.js';
 import {
-  localeFromArgv,
+  startupLocale,
   configureLocalizedHelp,
   parseIntent,
   parseFixtureAction,
@@ -26,7 +26,7 @@ import {
 
 // Resolve UI locale early — env var XC_LANG and the global --lang flag both work.
 // CLI flag wins (parsed below by Commander preAction).
-setLocale(localeFromArgv(process.argv) ?? xcEnv('LANG') ?? 'en');
+setLocale(startupLocale(process.argv, xcEnv('LANG')));
 const defaultBaseDir = xcEnv('DEFAULT_BASE_DIR') ?? '/tmp';
 const runtime = new XCompilerRuntime({ io: createCliRuntimeIO() });
 

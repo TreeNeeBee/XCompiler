@@ -21,16 +21,16 @@ export const replaceInFileTool: Tool<
   argsSchema: { path: 'string', find: 'string', replace: 'string', expectedCount: 'number?' },
   async run(args, ctx) {
     if (!args || typeof args.path !== 'string' || args.path.trim() === '') {
-      return { ok: false, error: 'invalid replace_in_file args: path must be a non-empty string' };
+      return { ok: false, error: 'invalid replace_in_file args: path must be a non-empty string', code: 'path_argument_missing' };
     }
     if (typeof args.find !== 'string' || typeof args.replace !== 'string') {
-      return { ok: false, error: 'invalid replace_in_file args: find and replace must be strings' };
+      return { ok: false, error: 'invalid replace_in_file args: find and replace must be strings', code: 'invalid_args' };
     }
     const resolved = await resolveWorkspacePath(ctx.ws, args.path, 'replace_in_file', {
       forWrite: true,
       relativePathHints: ctx.allowedWrites,
     });
-    if (!resolved.ok) return { ok: false, error: resolved.error };
+    if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
     // replace_in_file rewrites in place, so an append-owned file is still out of reach here: the
     // bootstrap block it would be free to overwrite is the reason the file is owned at all.
     // replace_in_file needs the file to exist anyway, so an owned path here always has content to
@@ -61,7 +61,7 @@ export const replaceInFileTool: Tool<
     try {
       original = await fs.readFile(abs, 'utf8');
     } catch {
-      return { ok: false, error: `file not found: ${resolved.rel}` };
+      return { ok: false, error: `file not found: ${resolved.rel}`, code: 'path_not_found' };
     }
     const expected = args.expectedCount ?? 1;
     const parts = original.split(args.find);
@@ -95,7 +95,7 @@ export const replaceInFileTool: Tool<
           hint.push(toolText().replaceInFile.firstLineMissing);
         }
       }
-      return { ok: false, error: hint.join('\n') };
+      return { ok: false, error: hint.join('\n'), code: 'replace_count_mismatch' };
     }
     const next = parts.join(args.replace);
     const truncationError = suspiciousTextTruncationError({
@@ -128,7 +128,7 @@ export const codeSearchTool: Tool<
   async run(args, ctx) {
     if (!args.query) return { ok: false, error: 'query empty' };
     const resolved = await resolveWorkspacePath(ctx.ws, args.root ?? '.', 'code_search', { mustExist: true });
-    if (!resolved.ok) return { ok: false, error: resolved.error };
+    if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
     const root = resolved.abs;
     const workspaceRoot = await fs.realpath(ctx.ws.root).catch(() => ctx.ws.root);
     const max = args.maxResults ?? 50;

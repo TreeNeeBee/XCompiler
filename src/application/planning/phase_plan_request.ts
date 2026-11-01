@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import { z } from 'zod';
 import {
   CLARIFICATION_CATEGORIES, CLARIFICATION_OPTION_LABELS,
@@ -31,9 +32,9 @@ const ClarificationSchema = z.object({
 /** Audit-only parsing inputs; provider messages retain the original i18n rendering. */
 export const PhasePlanPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('planning-phase-plan'),
-  templateVersion: z.literal(PHASE_PLAN_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  templateVersion: z.literal(PHASE_PLAN_TEMPLATE_VERSION), locale: LocaleSchema,
   /** The user's language, which deliverables are written in; absent, the prompt locale. */
-  outputLocale: z.enum(['en', 'zh']).optional(),
+  outputLocale: LocaleSchema.optional(),
   parseContext: ParseContextSchema, clarifications: z.array(ClarificationSchema),
   semanticAttempt: z.number().int().min(1), repairFeedback: z.string(),
 }).strict();

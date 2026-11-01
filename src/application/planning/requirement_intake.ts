@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import {
   CLARIFICATION_CATEGORIES,
   CLARIFICATION_OPTION_LABELS,
@@ -423,8 +424,8 @@ const IntakeDraftSchema = z.object({
    * The languages it was written in: its records hold what the user read in `locale` and what models
    * read in `promptLocale`, so it resumes only under the same two.
    */
-  locale: z.enum(['en', 'zh']),
-  promptLocale: z.enum(['en', 'zh']),
+  locale: LocaleSchema,
+  promptLocale: LocaleSchema,
   /** The requirement as last revised. */
   rawRequirement: z.string().min(1),
   language: z.object({ value: z.enum(LANGUAGES), source: IntakeDecisionSource }).strict().optional(),

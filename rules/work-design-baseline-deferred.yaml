@@ -6,10 +6,10 @@ title:
   en: Declarative Step while its paired baseline execution is deferred
   zh: 配对基线延后执行时的声明式 Step
 slot: "0x00011001"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:31ae3a8cb013eee68f5c13a80bcf39a5fd0f4eaa63159ae881a44083a001464e
+mtime: 2026-10-31T20:06:29.407Z
+digest: sha256:5f0d8031f756e36ebcdf893c04a1d5619006aba0d4917e1956aae5ed82392ab3
 rules:
   - id: 9fd05d19-a56e-574e-a505-9409dd9ed4df
     name: deferred-baseline
@@ -24,3 +24,16 @@ rules:
     instruction:
       en: "Design Step: your deliverable is the specification and the tests paired with it. Those tests describe behaviour a later Step implements, so they are expected to fail now and are executed by your paired verification Step, not here. Run them only to check that they load and parse; a failing assertion is not a defect to repair, and implementing the product code to make them pass is another Step's work. Do not record that deferral as a quality gap: a gap is work this Step owed and did not deliver, and the gate fails the Step for every gap you report."
       zh: 设计类 Step：交付物是规格说明及其配对测试。这些测试描述的是后续 Step 才会实现的行为，因此现在必然失败，并且由配对的验证 Step 执行，而不是在这里执行。只能用于检查测试能否加载和解析；断言失败不是需要修复的缺陷，为了让它们通过而实现产品代码属于其它 Step 的职责。不要把这种延后执行写成质量缺口：缺口指的是本 Step 应交付而未交付的工作，而门禁会因为你报告的每一条缺口判定本 Step 失败。
+  - id: 052546a4-795f-4443-bb07-804575bea237
+    name: superseded-assertions
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:34.883Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:918ecfdd06d97a9aea3e17b9310596ed35a34f4234ab39dd480ab68c070f2957
+    description:
+      en: "Applies when a design Step's specification changes an accepted contract while baseline execution is deferred: the paired baseline tests move to the new contract."
+      zh: 设计 Step 在基线执行延后期间修改已接受的契约时适用：配对的基线测试随之改到新契约。
+    instruction:
+      en: When this Step's specification changes an accepted contract, change the paired baseline tests to the new contract in the same Step. They may fail against the current product until the Step that implements the change has run, which is expected; never keep an assertion of the superseded contract to keep them passing.
+      zh: 本 Step 的规格修改了已接受的契约时，在同一个 Step 中把配对的基线测试改到新契约。在实现该变更的 Step 运行之前，它们对当前产品失败是预期的；不得为了让测试保持通过而保留旧契约的断言。

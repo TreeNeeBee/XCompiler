@@ -1,5 +1,5 @@
-import { getPromptLocale, tFor } from '../src/i18n/index.js';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { getPromptLocale, setLocale, setPromptTranslation, tFor } from '../src/i18n/index.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -13,7 +13,8 @@ import {
   writeFileTool,
 } from '../src/tools/fs.js';
 import { applyPatchTool, parseUnifiedDiff } from '../src/tools/patch.js';
-import { runTestsTool } from '../src/tools/sandbox.js';
+import { replaceInFileTool } from '../src/tools/edit.js';
+import { runProgramTool, runTestsTool, unresolvedProductImportHint } from '../src/tools/sandbox.js';
 import { addDependencyTool } from '../src/tools/deps.js';
 import type { ToolContext } from '../src/tools/types.js';
 
@@ -881,6 +882,92 @@ describe('runTestsTool / runPythonTool summary', () => {
   });
 });
 
+// The executor decides which failures a later call supersedes, and which correction to suggest, from
+// these codes. It used to match the tools' sentences, so rewording a message moved a Step between
+// completing and stalling.
+// These hints are read by the model, so they follow the prompt language like the tool descriptions.
+describe('run_tests and run_program hints follow the prompt language', () => {
+  afterEach(() => { setPromptTranslation(false); setLocale('en'); });
+
+  const exec = (exitCode: number, stderr = '') => async () => ({ exitCode, stdout: '', stderr, timedOut: false, durationMs: 1 });
+  const sandboxCtx = (overrides: Partial<ToolContext>, run: ReturnType<typeof exec>): ToolContext => ({
+    ws, allowedWrites: [], stepId: 'S005', language: 'python',
+    sandbox: { runTests: run, runProgram: run, async installDeps() { throw new Error('not used'); } } as never,
+    ...overrides,
+  });
+
+  const cases: Array<[string, () => Promise<string>, (locale: 'en' | 'zh') => string]> = [
+    ['unwritten declared tests', async () => (await runTestsTool.run({}, sandboxCtx({ testGateArgs: ['tests/unit/absent.test.ts'] }, exec(0)))).error!,
+      (l) => tFor(l).tools.runTests.declaredTestsUnwritten('tests/unit/absent.test.ts')],
+    ['options the gate does not pass on', async () => (await runTestsTool.run({ args: ['-k', 'x'] }, sandboxCtx({ testGateArgs: ['tests/unit/parser.test.ts'] }, exec(0)))).summary!,
+      (l) => tFor(l).tools.runTests.refusedOptions('-k x')],
+    ['a pytest run that reached no verdict', async () => (await runTestsTool.run({}, sandboxCtx({ testGateArgs: ['tests/unit/parser.test.ts'] }, exec(4)))).error!,
+      (l) => tFor(l).tools.runTests.pytestWithoutVerdict[4]],
+    ['an expected exit code out of range', async () => (await runProgramTool.run({ args: ['src/main.py'], expectExitCode: 300 }, sandboxCtx({}, exec(0)))).error!,
+      (l) => tFor(l).tools.runProgram.expectExitCodeInvalid('300')],
+    ['an expected exit code on a test runner', async () => (await runProgramTool.run({ args: ['-m', 'pytest'], expectExitCode: 1 }, sandboxCtx({}, exec(1)))).error!,
+      (l) => tFor(l).tools.runProgram.expectExitCodeForTestRunner],
+    ['an exit other than the declared one', async () => (await runProgramTool.run({ args: ['src/main.py'], expectExitCode: 2 }, sandboxCtx({}, exec(1)))).error!,
+      (l) => tFor(l).tools.runProgram.expectedExitMismatch(2, 1)],
+    ['an undeclared failure exit', async () => (await runProgramTool.run({ args: ['src/main.py'] }, sandboxCtx({}, exec(3)))).error!,
+      (l) => tFor(l).tools.runProgram.declareExpectedExit(3)],
+    ['a TypeScript runner that is not installed', async () => {
+      await ws.writeFile('package.json', '{}');
+      return (await runTestsTool.run({}, sandboxCtx({ language: 'typescript' }, exec(127, 'sh: vitest: command not found')))).error!;
+    }, (l) => tFor(l).tools.typescriptRunner.commandNotInstalled],
+    ['TypeScript sources CODE has not written yet', async () => {
+      await ws.writeFile('package.json', '{}');
+      return (await runProgramTool.run({ args: ['tsc', '--noEmit'] }, sandboxCtx({ language: 'typescript', phase: 'HIGH_LEVEL_DESIGN' }, exec(2, 'error TS18003: No inputs were found')))).error!;
+    }, (l) => tFor(l).tools.typescriptRunner.sourcesPending],
+    ['a TypeScript project without package.json', async () => (await runTestsTool.run({}, sandboxCtx({ language: 'typescript' }, exec(1, 'npm error')))).error!,
+      (l) => tFor(l).tools.typescriptRunner.manifestMissing(ws.root, 'tests')],
+  ];
+
+  it.each(cases)('explains %s in the prompt language', async (_case, call, expected) => {
+    for (const [translate, locale] of [[false, 'zh'], [true, 'en']] as const) {
+      setLocale('zh');
+      setPromptTranslation(translate);
+      await fs.rm(path.join(ws.root, 'package.json'), { force: true });
+      expect(await call()).toContain(expected(locale));
+    }
+  });
+
+  it('names the import prefix a test needs in the prompt language', () => {
+    const output = 'Error: Failed to load url ../src/models/record.ts (resolved id: x) in /repo/tests/unit/renderer/record.test.ts';
+    for (const [translate, locale] of [[false, 'zh'], [true, 'en']] as const) {
+      setLocale('zh');
+      setPromptTranslation(translate);
+      expect(unresolvedProductImportHint(output))
+        .toBe(tFor(locale).tools.runTests.importDepth('../src/models/record.ts', 'tests/unit/renderer/record.test.ts', 'tests/unit/renderer', '../../../'));
+    }
+  });
+});
+
+describe('file tools say why they failed with a code', () => {
+  it.each([
+    ['a missing file read', () => readFileTool.run({ path: 'src/absent.py' }, ctx), 'path_not_found'],
+    ['a missing directory listed', () => listDirTool.run({ path: 'absent-dir' }, ctx), 'path_not_found'],
+    ['a read with a blank path', () => readFileTool.run({ path: ' ' }, ctx), 'path_argument_missing'],
+    ['a write with no path', () => writeFileTool.run({ path: '', content: 'x' }, ctx), 'path_argument_missing'],
+    ['a write naming the workspace root', () => writeFileTool.run({ path: '.', content: 'x' }, ctx), 'path_argument_missing'],
+    ['a write outside the project', () => writeFileTool.run({ path: '../outside.py', content: 'x' }, ctx), 'path_outside_project'],
+    // Deliberately the wrong type: the case is a model sending a number for content.
+    ['a write whose content is not text', () => writeFileTool.run({ path: 'src/x.py', content: 1 as unknown as string }, ctx), 'content_argument_invalid'],
+    ['a dependency call without a package list', () => addDependencyTool.run({ packages: 'zod' as unknown as string[] }, ctx), 'invalid_args'],
+  ] as const)('reports %s', async (_case, call, code) => {
+    const result = await call();
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe(code);
+  });
+
+  it('reports a replacement whose find text occurs a different number of times', async () => {
+    await ws.ensure('src');
+    await ws.writeFile('src/x.py', 'old = 1\nold = 2\n');
+    const result = await replaceInFileTool.run({ path: 'src/x.py', find: 'old', replace: 'new' }, ctx);
+    expect(result).toMatchObject({ ok: false, code: 'replace_count_mismatch' });
+  });
+});
+
 describe('pytest coverage measured by the unit-test gate', () => {
   // A live Python UNIT_TEST Step was required to reach line and branch coverage targets with no
   // coverage tool in its environment. Each model-invented measurement (`--cov`, `python -m
@@ -978,6 +1065,59 @@ describe('pytest coverage measured by the unit-test gate', () => {
       pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
     );
     expect(seenArgs).toEqual([...gateArgs, '-q']);
+  });
+
+  // A report path from the caller had Runtime delete that file before the sandboxed run started,
+  // and read it afterwards as the run's measurement — anywhere on the host, not only in the project.
+  it.each([
+    ['a relative path', 'a gate without coverage', false, true],
+    ['a relative path', 'no gate', false, false],
+    ['an absolute path', 'a gate without coverage', true, true],
+    ['an absolute path', 'no gate', true, false],
+  ] as const)('neither deletes nor reads a coverage report the caller names by %s under %s', async (
+    _path, _gate, absolute, gated,
+  ) => {
+    const outside = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-')), 'report.json');
+    await fs.writeFile(outside, JSON.stringify({ totals }));
+    const report = absolute ? outside : path.relative(ws.root, outside);
+    const r = await runTestsTool.run(
+      { args: ['tests/unit/parser.test.ts', `--cov-report=json:${report}`] },
+      { ...pythonCtx(async () => ({ exitCode: 0 })), testGateArgs: gated ? ['tests/unit/parser.test.ts'] : undefined },
+    );
+    expect(r.ok).toBe(true);
+    await expect(fs.readFile(outside, 'utf8')).resolves.toContain('num_statements');
+    expect((r.data as { coverage?: unknown }).coverage).toBeUndefined();
+  });
+
+  // Narrowing has many spellings. Refusing the known ones let the rest through, and a subset's pass
+  // was then credited to the whole gate, clearing a failure in tests it never ran.
+  it.each([
+    [['-kpass']],
+    [['-o', 'python_functions=test_pass']],
+    [['--override-ini=python_files=test_pass.py']],
+    [['-xq']],
+    [['-p', 'no:python']],
+    [['--co']],
+    [['--runxfail']],
+  ])('does not pass %j on to the runner', async (requested) => {
+    let seenArgs: string[] = [];
+    const result = await runTestsTool.run(
+      { args: requested },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual(gateArgs);
+    expect(result.summary).toContain(`Runtime decides which tests this gate runs: ${requested.join(' ')}`);
+  });
+
+  it('passes output options on however they are spelled', async () => {
+    const requested = ['-vq', '-rA', '--tb=short', '--color', 'yes', '-pno:cacheprovider', '--durations', '5', '--no-header'];
+    let seenArgs: string[] = [];
+    const result = await runTestsTool.run(
+      { args: requested },
+      pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
+    );
+    expect(seenArgs).toEqual([...gateArgs, ...requested]);
+    expect(result.summary).not.toContain('Not passed to the runner');
   });
 });
 

@@ -6,10 +6,10 @@ title:
   en: Module verification
   zh: 模块验证
 slot: "0x00011106"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:679ac2951bcfbc89a99592591142b5560e37a0406834dcae8299ee0994b60eee
+mtime: 2026-10-31T20:06:29.407Z
+digest: sha256:2987298e4173e41e21d7bd2694fecc7d410f121a465b0f0f44b633cfa3094a8b
 rules:
   - id: f2f41426-35e3-5fde-a2be-0d4282621d14
     name: deliverable
@@ -50,3 +50,29 @@ rules:
     instruction:
       en: Do not rewrite source to make a test pass.
       zh: 不要为了让测试通过而改写源码。
+  - id: cc43193d-89e6-4f39-9669-496c58ed6c91
+    name: malformed-input-cases
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:56.698Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:2c407c80e88f0a0f5f73ee33a230546653a174041593b7185be793a8506b9b95
+    description:
+      en: "Applies when verifying a module that parses an external input format: its tests include malformed and partially valid input."
+      zh: 验证解析外部输入格式的模块时适用：测试要包含格式错误和部分合法的输入。
+    instruction:
+      en: "Malformed input: for every module that parses an external format, include cases with malformed and partially valid input — unterminated strings, escaped delimiters, unknown sections, truncated content — and assert the error or warning the product reports. Well-formed samples alone do not verify a parser."
+      zh: 格式错误的输入：对每个解析外部格式的模块，都要包含格式错误和部分合法输入的用例——未闭合的字符串、转义的分隔符、未知的段落、被截断的内容——并断言产品报告的错误或警告。只用格式正确的样例不足以验证解析器。
+  - id: 855a54a9-e270-46bf-b092-58b4e8a7cba7
+    name: output-round-trip
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:57.087Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:dc18be59ae76dfa6daf21a261366267a94af7bb128a10ca890fb1f46ebb331d8
+    description:
+      en: "Applies when verifying a product that writes a structured file: the test reloads the file and compares values and types with the source."
+      zh: 验证会写出结构化文件的产品时适用：测试要重新读取该文件，比对值和类型。
+    instruction:
+      en: "Output fidelity: when the product writes a structured file (a spreadsheet, CSV, JSON or similar), reload the written file in the test and compare each value and its type with the source data. That the file exists or opens does not verify its content."
+      zh: 输出保真：产品写出结构化文件（电子表格、CSV、JSON 等）时，在测试中重新读取写出的文件，逐项比对值及其类型与源数据是否一致。文件存在或能打开并不能证明内容正确。

@@ -6,12 +6,17 @@ import type { LanguageProfile } from '../application/execution/language_support.
 import type { ResponseRepairHint } from '../llm/errors.js';
 import type { RULE_LEVELS } from '../domain/rules/catalogue.js';
 
-/**
- * Locale code (ISO 639-1 lowercase). Currently only 'en' (default) and 'zh'.
- * The CLI flag uses ISO 3166-1 Alpha-2 country codes (EN / CN) but normalises
- * to the language code at the boundary — see `src/i18n/index.ts`.
- */
-export type Locale = 'en' | 'zh';
+import type { Locale } from '../domain/locale.js';
+
+/** A registered locale; the languages and their CLI aliases live in `src/domain/locale.ts`. */
+export type { Locale };
+
+/** What a permission request tells the user; its target and scope identify the capability and stay data. */
+export interface PermissionRequestText<Args extends unknown[] = []> {
+  reason: (...args: Args) => string;
+  risk: string;
+  denyBehavior: string;
+}
 
 export interface Messages {
   // ───────── shared LLM role guidance ─────────
@@ -55,6 +60,9 @@ export interface Messages {
     configEnvMissing: (names: string) => string;
     unhandledError: (message: string) => string;
     permissionDeniedStop: (operation: string, target: string, consequence: string, reason?: string) => string;
+    permissionPromptRisk: (risk: string) => string;
+    permissionPromptScope: (scope: string) => string;
+    permissionDenialReasonPrompt: string;
     unsupportedSubprocessNetworkOff: string;
     dockerInsideContainerUnsupported: string;
     smokeHeader: (baseUrl: string) => string;
@@ -62,6 +70,21 @@ export interface Messages {
     smokeFail: (model: string, message: string) => string;
   };
 
+  // ───────── permission requests Runtime asks the user to decide ─────────
+  permissionRequest: {
+    fileWrite: PermissionRequestText<[step: string, tool: string]>;
+    addDependency: PermissionRequestText<[step: string]>;
+    installDeps: PermissionRequestText<[step: string]>;
+    runTests: PermissionRequestText<[step: string]>;
+    runProgram: PermissionRequestText<[step: string]>;
+    httpFetch: PermissionRequestText<[step: string]>;
+    sandboxSync: PermissionRequestText<[tool: string, manifest: string]>;
+    gitSnapshots: PermissionRequestText;
+    sandboxBuild: PermissionRequestText;
+    mergeChangeSet: PermissionRequestText;
+    projectAudit: PermissionRequestText;
+    liveScenarios: PermissionRequestText;
+  };
   plugins: {
     invalidId: (id: string) => string;
     duplicateId: (id: string) => string;
@@ -177,7 +200,7 @@ export interface Messages {
     optPromote: string;
     optCleanup: string;
     optDockerQualification: string;
-    invalidLocale: (value: string) => string;
+    invalidLocale: (value: string, supported: string) => string;
     invalidIntent: (value: string, allowed: string) => string;
     invalidPhase: (value: string, allowed: string) => string;
     invalidStepId: (value: string) => string;
@@ -368,8 +391,27 @@ export interface Messages {
     replaceInFile: { description: string; noOpRefused: string; nearbyHint: string; firstLineMissing: string };
     codeSearch: { description: string };
     analyzeError: { description: string; missingModule: (name: string) => string; failedTests: (count: number) => string };
-    runProgram: { description: string };
-    runTests: { description: string };
+    runProgram: {
+      description: string;
+      expectExitCodeInvalid: (value: string) => string;
+      expectExitCodeForTestRunner: string;
+      expectedExitMismatch: (expected: number, actual: number) => string;
+      declareExpectedExit: (exitCode: number) => string;
+    };
+    runTests: {
+      description: string;
+      declaredTestsUnwritten: (files: string) => string;
+      refusedOptions: (options: string) => string;
+      /** Why a pytest exit reached no verdict, by exit code. */
+      pytestWithoutVerdict: Readonly<Record<3 | 4 | 5, string>>;
+      importDepth: (specifier: string, testPath: string, directory: string, prefix: string) => string;
+    };
+    /** What a TypeScript runner's failure means when it is not the product failing. */
+    typescriptRunner: {
+      commandNotInstalled: string;
+      sourcesPending: string;
+      manifestMissing: (root: string, subject: 'tests' | 'program') => string;
+    };
     installDeps: { description: string };
     applyPatch: { description: string };
     addDependency: { description: string };
@@ -437,11 +479,33 @@ export interface Messages {
     auditScenarioInspectSuggestion: (scenario: string, expected: string) => string;
     auditScenarioInspectReviewSuggestion: (scenario: string) => string;
     auditScenarioPlanConflict: (scenario: string) => string;
-    unchangedRepairStop: (detail: { ticketName: string; targetStepName: string; failureCode: string; changelistName: string }) => string;
     auditPackageJsonMissing: string;
     auditScriptMissing: (name: string) => string;
     auditCommandOk: (name: string) => string;
     auditCommandFailed: (name: string, exitCode: number, timedOut: boolean) => string;
+    phaseRecovered: (phase: string) => string;
+    iterationPrepared: (completed: string, next: string) => string;
+    ticketRouted: (creator: string, ticket: string, assignee: string) => string;
+  };
+
+  // ───────── why a run stopped: records render these in English, the terminal in the user's language ─────────
+  runStop: {
+    gateWithoutRoutableFindings: () => string;
+    gateFindingsLeftNoWork: (codes: string) => string;
+    sandboxBuildFailed: (detail: string) => string;
+    pendingMergeIntegration: (status: string) => string;
+    mergeIntegration: (status: string) => string;
+    mergeGateFailed: () => string;
+    mergeAuthorizationRequired: () => string;
+    noDownstreamVerification: (ticket: string) => string;
+    evidenceStorageFailed: (ticket: string, detail: string) => string;
+    permissionBlocked: (ticket: string, detail: string) => string;
+    infrastructureFailure: (ticket: string, detail: string) => string;
+    gateAuditPermissionDenied: () => string;
+    gateLiveScenarioPermissionDenied: () => string;
+    gateUnjudged: (detail: string) => string;
+    gateAuditFailed: (errors: number) => string;
+    unchangedRepairRecurred: (detail: { ticketName: string; targetStepName: string; failureCode: string; changelistName: string }) => string;
   };
 
   // ───────── engine ─────────
@@ -503,6 +567,48 @@ export interface Messages {
     executorUserPromptOutro: string;
     executorFeedbackHeader: string;
     executorFeedbackProtocolRejected: (diagnostic: string) => string;
+    /** What the executor tells the model after a turn, beyond the fixed lines above. */
+    executorFeedbackText: {
+      crOwnedArtifactsUnproven: (artifacts: string) => string;
+      missingOutputsDoneWithoutActions: (missing: string) => string;
+      crConvergence: string;
+      outputProgressStalled: (rounds: number, missing: string) => string;
+      directRepairTarget: (missing: string) => string;
+      noProgressCreateFirst: (first: string) => string;
+      noProgressComplete: string;
+      validationContractRepair: string;
+      deferredDispositionMissing: string;
+      deferredArtifactsOwned: (artifacts: string) => string;
+      deferredArtifactsUninspected: (artifacts: string) => string;
+      invalidBugNoopHandoff: (detail: string) => string;
+      crAllArtifactsOwned: (category: string, artifacts: string) => string;
+      crOwnedArtifactInScope: (category: string, artifacts: string) => string;
+      crVerificationRequired: (category: string, artifacts: string) => string;
+      crDispositionMissing: string;
+      qualityGateIncomplete: (missing: string) => string;
+      validationDefectRejected: string;
+      permissionAdaptation: (capabilities: string) => string;
+      pathArgumentMissing: string;
+      unresolvedFailures: (failures: string) => string;
+      replaceCountRecovery: string;
+      contentArgumentInvalid: string;
+      addDependencyArgs: string;
+      commandAliasCorrection: string;
+      deferredVerificationCompletion: (phase: string, stepId: string) => string;
+      invalidCompletionUnresolved: string;
+    };
+    /** The development delivery gate's guidance for a Step whose paired baseline does not run yet. */
+    executorBaselineGate: {
+      validateDeliverables: string;
+      preCodeCorrection: string;
+      contractChange: string;
+      initialPass: string;
+      keepTestsExecutable: string;
+      onlyExecutionDeferred: string;
+      blockedByNotGaps: string;
+    };
+    /** Files under a verification supplement root that are not executable tests. */
+    invalidSupplementRepair: (root: string, files: readonly string[], language: 'python' | 'typescript') => string;
     executorFeedbackVerifyOk: string;
     executorFeedbackVerifyMissing: (paths: string) => string;
     executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) => string;

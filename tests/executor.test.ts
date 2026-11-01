@@ -9,6 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Workspace } from '../src/workspace/workspace.js';
 import { isCompleteTurnJson, StepExecutor, verifyOutputs, type ExecutorOptions } from '../src/agents/executor.js';
+import { renderExecutionFeedback } from '../src/agents/execution/feedback_renderer.js';
 import { ExecutionTurnProtocolError, rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
 import { LLMRequestError } from '../src/llm/errors.js';
@@ -230,7 +231,6 @@ describe('StepExecutor system prompt assembly', () => {
     expect(block).toContain('Requirement: Export signals to a workbook.');
     expect(block).toContain("This Phase's objective: Deliver the core export.");
     expect(block).toContain('- The signal sheet columns are, in order: source, message, signal.');
-    expect(block).toContain('qualityAssessment.blockedBy');
     expect(llm.lastSystem.indexOf('## Confirmed plan contract'))
       .toBeLessThan(llm.lastSystem.indexOf('# Assembled context'));
   });
@@ -1595,6 +1595,77 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.toolCalls).toContainEqual(expect.objectContaining({ tool: 'run_tests', ok: false }));
     expect(result.qualityAssessment?.tolerance.failedTests).toBe(0);
     expect(result.qualityAssessment?.evidence.join('\n')).toContain('remains deferred');
+  });
+
+  // pytest exited 4: it rejected the invocation and ran nothing. That is the Step's own call to fix,
+  // so it is no failed gate to hand to the paired verification Step downstream.
+  it('does not defer a paired gate whose run_tests reached no verdict', async () => {
+    class NoVerdictDeferredGateLLM implements LLMClient {
+      readonly name = 'no-verdict-deferred-gate';
+      calls = 0;
+
+      async chat(): Promise<string> {
+        this.calls++;
+        if (this.calls === 1) {
+          return JSON.stringify({
+            thoughts: 'repair the upstream contract and collect the downstream failure once',
+            bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+            actions: [
+              { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 3\n' } },
+              { tool: 'run_tests', args: { args: ['tests/functional/test_cli.py'] } },
+            ],
+            done: false,
+          });
+        }
+        return JSON.stringify({
+          thoughts: 'the remaining failure belongs to CODE',
+          bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+          qualityAssessment: {
+            completion: 1, upstreamAlignment: 1, metrics: {},
+            tolerance: { failedTests: 1, skippedTests: 0, warnings: 0 },
+            evidence: ['src/x.py updated'], unavailableMetrics: [], gaps: [],
+            blockedBy: ['src/cli.py must be implemented by downstream CODE'],
+          },
+          actions: [],
+          done: true,
+        });
+      }
+    }
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new NoVerdictDeferredGateLLM(), maxRounds: 2 })).run({
+      step: {
+        ...baseStep,
+        phase: 'REQUIREMENT_ANALYSIS',
+        tools: ['write_file', 'run_tests'],
+        qualityGate: {
+          completionMin: 0.95, upstreamAlignmentMin: 0.9, metrics: {},
+          tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
+        },
+      },
+      work: 'repair.debug',
+      tools: [writeFileTool, runTestsTool],
+      ctx: {
+        ...ctx,
+        language: 'python',
+        sandbox: {
+          async runProgram() { throw new Error('not used'); },
+          async runTests() {
+            return { exitCode: 4, stdout: '', stderr: 'ERROR: usage: pytest [options]', timedOut: false, durationMs: 1 };
+          },
+          async installDeps() { throw new Error('not used'); },
+        } as never,
+      },
+      debugContext: {
+        bugTicketId: 'BUG-NO-VERDICT-DEFERRED-GATE',
+        reason: 'functional test failed',
+        failureLog: 'CLI output was not created',
+        repairRequired: true,
+        deferredVerificationScope: { stepId: 'S008', phase: 'FUNCTIONAL_TEST' },
+      },
+    });
+
+    expect(result.toolCalls).toContainEqual(expect.objectContaining({ tool: 'run_tests', ok: false, code: 'test_run_without_verdict' }));
+    expect(result.qualityAssessment?.evidence.join('\n') ?? '').not.toContain('remains deferred');
+    expect(result.success).toBe(false);
   });
 
   // A refused run never reached the suite, so there is no failed gate to hand downstream. The
@@ -3007,15 +3078,16 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.calls).toBe(1);
   });
 
-  it('tells a contract-change hop to move its baseline to the new contract instead of keeping it green', async () => {
+  it('tells a contract-change hop that its baseline run waits for the change to land', async () => {
     const llm = new CapturingLLM();
     await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
       step: { ...baseStep, phase: 'HIGH_LEVEL_DESIGN', outputs: ['docs/02-high-level-design.md', 'tests/modules/contract.test.ts'] },
       baselineTestExecution: 'defer', baselineTestExecutionReason: 'contract-change',
       tools: [writeFileTool], ctx: { ...ctx, allowedWrites: ['docs/', 'tests/'] },
     });
+    // What to do with the old assertions is the deferred-baseline Rule's; the prompt states the hop.
     expect(llm.lastUser).toContain('This hop carries a contract change ahead of S4');
-    expect(llm.lastUser).toContain('do not keep an assertion of the old contract to stay green');
+    expect(llm.lastUser).toContain('defer their executable run');
     expect(llm.lastUser).not.toContain('This is the initial pre-CODE pass');
   });
 
@@ -4124,6 +4196,43 @@ describe('StepExecutor system prompt assembly', () => {
       tool: 'list_dir', ok: false, executionStatus: 'tool-not-allowed',
     }));
     expect(r.success).toBe(true);
+  });
+
+  // A read that finds nothing inspected the path as surely as one that returns text; nothing later
+  // writes this one, so only recognising the missing file keeps it from blocking completion.
+  it('does not hold a read of a file that is not there against completion', async () => {
+    class MissingReadThenWriteLLM implements LLMClient {
+      readonly name = 'missing-read-then-write';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'check whether a previous draft exists, then write the required output',
+          actions: [
+            { tool: 'read_file', args: { path: 'docs/previous-draft.md' } },
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+          ],
+          done: true,
+        });
+      }
+    }
+    const exec = new StepExecutor(withFixtureExecutionRequest({ llm: new MissingReadThenWriteLLM(), maxRounds: 1 }));
+    const r = await exec.run({ step: { ...baseStep, tools: ['read_file', 'write_file'] }, tools: [readFileTool, writeFileTool], ctx });
+    expect(r.toolCalls).toContainEqual(expect.objectContaining({ tool: 'read_file', ok: false, code: 'path_not_found' }));
+    expect(r.success).toBe(true);
+  });
+
+  // Guidance follows what failed, not how the tool worded it.
+  it.each([
+    ['content_argument_invalid', 'write_file', 'args.content to be a literal string'],
+    ['invalid_args', 'add_dependency', 'add_dependency requires args.packages'],
+  ] as const)('suggests the correction for an unresolved %s failure of %s', (code, tool, guidance) => {
+    const feedback = renderExecutionFeedback([], { ok: true, missing: [] }, {
+      declaredDone: false, actionCount: 1, unresolvedFailures: [{ tool, code, detail: `${tool} FAIL reworded` }],
+    });
+    expect(feedback).toContain(guidance);
+    const uncoded = renderExecutionFeedback([], { ok: true, missing: [] }, {
+      declaredDone: false, actionCount: 1, unresolvedFailures: [{ tool, detail: `${tool} FAIL reworded` }],
+    });
+    expect(uncoded).not.toContain(guidance);
   });
 
   it('does not make unauthorized downstream verification tools permanent blockers in a development phase', async () => {
@@ -5692,6 +5801,41 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.toolCalls.find((call) => call.tool === 'write_file' && !call.ok)?.error).toContain('path must be a non-empty string');
   });
 
+  // Above, the argument check rejects the call before it runs, so nothing is left unresolved. A tool
+  // whose declared arguments do not cover the path reaches the tool, which then refuses it itself:
+  // that failure stays unresolved, and only its code says it targeted nothing.
+  it('allows output-completion recovery past a pathless write the tool itself refused', async () => {
+    class ToolRefusedWriteLLM implements LLMClient {
+      readonly name = 'tool-refused-write';
+      async chat(): Promise<string> {
+        return JSON.stringify({
+          thoughts: 'the preserved retry already created the required output, but I emitted a write without a path',
+          bugResolutionPlan: 'The prior debug attempt created the missing output; verify output presence and ignore the pathless write.',
+          actions: [{ tool: 'write_file', args: { content: 'x = 2\n' } }],
+          done: false,
+        });
+      }
+    }
+    const looseWrite: Tool = { ...writeFileTool, argsSchema: {} } as Tool;
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    const r = await new StepExecutor(withFixtureExecutionRequest({ llm: new ToolRefusedWriteLLM(), maxRounds: 1 })).run({
+      step: baseStep,
+      work: 'repair.debug',
+      tools: [looseWrite],
+      ctx,
+      debugContext: {
+        bugTicketId: 'BUG-1',
+        reason: 'The previous attempt stopped.',
+        missingOutputs: ['src/x.py'],
+        failureLog: 'previous Debugger retry wrote src/x.py but did not return done=true',
+        repairRequired: true,
+      },
+    });
+
+    expect(r.toolCalls).toContainEqual(expect.objectContaining({ tool: 'write_file', ok: false, code: 'path_argument_missing' }));
+    expect(r.success).toBe(true);
+  });
+
   it('does not accept DEBUG completion until repair or verification evidence exists', async () => {
     class DebugReadThenWriteLLM implements LLMClient {
       readonly name = 'debug-repair-gate';
@@ -5915,22 +6059,13 @@ describe('StepExecutor system prompt assembly', () => {
         });
       }
     }
-    const replaceMissTool: Tool = {
-      name: 'replace_in_file',
-      description: 'fake replace miss',
-      argsSchema: {},
-      async run() {
-        return {
-          ok: false,
-          error: 'expected 5 occurrences of find, found 7 in src/x.py',
-        };
-      },
-    };
+    // The real tool, so the guidance follows the miss the tool reports rather than its wording.
+    await ws.writeFile('src/x.py', 'old = 1\nold = 2\n');
     const llm = new ReplaceMissThenPatchLLM();
     const exec = new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 }));
     const r = await exec.run({
       step: { ...baseStep, tools: ['replace_in_file', 'write_file'] },
-      tools: [replaceMissTool, writeFileTool],
+      tools: [replaceInFileTool, writeFileTool],
       ctx,
     });
 
@@ -6341,20 +6476,11 @@ describe('an affected artifact that is not there', () => {
       }
     }
 
-    const missingRead = {
-      name: 'read_file',
-      description: 'read',
-      argsSchema: { path: 'string' },
-      run: async () => ({
-        ok: false as const,
-        error: "read_file failed: ENOENT: no such file or directory, realpath 'output/briefing-2026-09-01.md'",
-      }),
-    };
-
     const llm = new OutOfScopeLLM();
     const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 })).run({
       step: { ...baseStep, outputs: [] },
-      tools: [missingRead as never],
+      // The real tool reading a path that is not there, as the live Step did.
+      tools: [readFileTool],
       ctx: { ...ctx, allowedWrites: [], stepId: baseStep.id },
       changeRequest: executorChangeRequestFixture({
         id: 'CR-ABSENT', revision: 1, state: 'in_progress',

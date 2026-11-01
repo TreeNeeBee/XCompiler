@@ -21,6 +21,7 @@ import { failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.
 import { AuditPersistenceError } from '../src/audit/errors.js';
 import { classifyFailure } from '../src/application/execution/failure_classification.js';
 import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
+import { setLocale } from '../src/i18n/index.js';
 
 describe('ProjectOrchestrator', () => {
   it('parks a storage interruption without a Bug, merge or provider retry', async () => {
@@ -57,6 +58,7 @@ describe('ProjectOrchestrator', () => {
 
     const result = await engine.run(setup.graph.phases[0]!.id);
     expect(result.failureReason).toContain('Required evidence storage failed');
+    expect(result.stop?.code).toBe('evidence_storage_failed');
     expect(attempts).toBe(1);
     expect(merges).toBe(0);
     const firstStep = await setup.repository.read(setup.graph.steps[0]!.id);
@@ -120,6 +122,7 @@ describe('ProjectOrchestrator', () => {
     const failed = await engine.run(setup.graph.phases[0]!.id);
 
     expect(failed.failureReason).toContain('is pending for retry');
+    expect(failed.stop?.code).toBe('infrastructure_failure');
     const firstStep = await setup.repository.read(setup.graph.steps[0]!.id);
     const tickets = await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id });
     const story = tickets.find((ticket) => ticket.objectType === 'ticket' && ticket.stepId === firstStep.id);
@@ -286,6 +289,7 @@ describe('ProjectOrchestrator', () => {
       expect(result.failedStepId).toBeDefined();
       expect(result.failureReason).toContain(finding.code);
       expect(result.failureReason).toContain(code.name);
+      expect(result.stop).toMatchObject({ code: 'unchanged_repair_recurred', failureCode: finding.code, targetStepName: code.name });
       expect(events).toContainEqual(expect.objectContaining({
         messageId: 'domain.repair_recurred_unchanged', failureCode: finding.code, targetStepName: code.name,
       }));
@@ -326,6 +330,63 @@ describe('ProjectOrchestrator', () => {
       expect(bugs[0]!.solution!.verification.some((line) => line.startsWith('Phase delivery gate passed'))).toBe(true);
     });
 
+    // A gate that could not judge returns no findings, and a Bug's finding missing from it was taken
+    // as the Bug's pass: it closed, its solution was marked verified, and "Phase delivery gate passed"
+    // was recorded as the proof — on a run that stopped because the gate had not passed.
+    it('keeps a repaired Bug waiting when the next gate cannot judge', async () => {
+      const setup = await fixture();
+      let gateRuns = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns > 2) throw new Error('the delivery gate is being rerun');
+          if (gateRuns === 1) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+          // Repaired and proven at its Step, its solution not yet verified: what the gate decides on.
+          const waiting = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+            .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+          for (const bug of waiting) {
+            await setup.repository.commit([TicketSchema.parse({ ...bug, ...reviseObjectEnvelope(bug), solution: { ...bug.solution!, status: 'proposed' } })]);
+          }
+          return { ok: false, reason: 'scenario unverifiable: inspect cannot read workbook', findings: [] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failureReason).toContain('scenario unverifiable');
+      const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+        .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+      expect(bugs.map((bug) => [bug.state, bug.solution?.status])).toEqual([['resolved', 'proposed']]);
+      expect(bugs[0]!.solution!.verification.some((line) => line.startsWith('Phase delivery gate passed'))).toBe(false);
+    });
+
+    it('closes a repaired Bug only once a gate passes, not when another scenario fails instead', async () => {
+      const setup = await fixture();
+      const other = { ...finding, code: 'scenario_failed:other-scenario', summary: 'another scenario failed' };
+      let gateRuns = 0;
+      let stateWhileOtherFailed: string | undefined;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns > 4) throw new Error('the delivery gate is being rerun');
+          if (gateRuns === 1) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+          if (gateRuns === 2) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [other] };
+          const first = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+            .find((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug' && ticket.failure.code === finding.code);
+          stateWhileOtherFailed = first?.state;
+          return { ok: true, evidence: ['scenarios pass'] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(stateWhileOtherFailed).toBe('resolved');
+      const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+        .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+      expect(bugs.map((bug) => bug.state)).toEqual(['closed', 'closed']);
+    });
+
     it('stops with the reason instead of rerunning the gate when nothing was scheduled', async () => {
       const setup = await fixture();
       let gateRuns = 0;
@@ -347,6 +408,32 @@ describe('ProjectOrchestrator', () => {
       expect(gateRuns).toBe(1);
       expect(result.failureReason).toContain('left no work to schedule');
       expect(result.failureReason).toContain(finding.code);
+      expect(result.stop).toEqual({ code: 'gate_findings_left_no_work', findingCodes: [finding.code] });
+    });
+
+    // The terminal shows a stop in the user's language; the run result and audit keep one language,
+    // so a record means the same thing whoever ran the project.
+    it('keeps the recorded stop reason in English whatever the user locale', async () => {
+      const setup = await fixture();
+      let gateFailed = false;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        finalGate: async () => {
+          gateFailed = true;
+          return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
+        },
+      }, setup.plan);
+      const scheduler = (engine as unknown as { scheduler: { resume: (id: string) => Promise<unknown> } }).scheduler;
+      const resume = scheduler.resume.bind(scheduler);
+      scheduler.resume = async (id) => (gateFailed ? undefined : resume(id));
+      setLocale('zh');
+      try {
+        const result = await engine.run(setup.graph.phases[0]!.id);
+        expect(result.failureReason).toBe(`Phase delivery gate failed and its findings left no work to schedule: ${finding.code}`);
+        expect(result.stop?.code).toBe('gate_findings_left_no_work');
+      } finally {
+        setLocale('en');
+      }
     });
   });
 

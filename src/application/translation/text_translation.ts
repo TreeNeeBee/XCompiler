@@ -1,3 +1,4 @@
+import { languageName, type Locale } from '../../domain/locale.js';
 import { LLMRequestError, ProviderCapacityExhausted } from '../../llm/errors.js';
 import type { JsonOutputProtocol } from '../../llm/protocol_json.js';
 import type { ChatMessage } from '../../llm/types.js';
@@ -7,7 +8,7 @@ import type { ChatMessage } from '../../llm/types.js';
  * Text with a preset English form (prompt templates, Rules, interface messages) never comes here:
  * it is substituted directly. Only free text does: what the user writes and what models write.
  */
-export type TranslationLocale = 'en' | 'zh';
+export type TranslationLocale = Locale;
 
 export const TEXT_TRANSLATION_TEMPLATE_VERSION = 'text-translation/1' as const;
 const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = [
@@ -18,7 +19,6 @@ export const TEXT_TRANSLATION_PROTOCOL: JsonOutputProtocol = Object.freeze({
   id: 'text-translation', version: '1', root: 'object', transformations: PROTOCOL_TRANSFORMATIONS,
 });
 
-const LANGUAGE_NAMES: Readonly<Record<TranslationLocale, string>> = Object.freeze({ en: 'English', zh: 'Simplified Chinese' });
 
 /** A reply that parses but is not a faithful translation set; the model is asked again with the reason. */
 export class TranslationContractViolation extends Error {
@@ -52,8 +52,8 @@ export interface TranslationCache {
 export function buildTranslationMessages(input: {
   from: TranslationLocale; to: TranslationLocale; texts: readonly string[];
 }): ChatMessage[] {
-  const from = LANGUAGE_NAMES[input.from];
-  const to = LANGUAGE_NAMES[input.to];
+  const from = languageName(input.from, 'en');
+  const to = languageName(input.to, 'en');
   return [
     {
       role: 'system',

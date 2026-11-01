@@ -1929,7 +1929,7 @@ export class StepExecutor {
         content: renderExecutionFeedback(turnResults, verify, {
           declaredDone: turn.done === true,
           actionCount: actions.length,
-          unresolvedFailures: unresolvedFailureTexts(unresolvedToolFailures),
+          unresolvedFailures: [...unresolvedToolFailures.values()],
           readOnlyLoopWarning: consecutiveReadOnlyRounds >= 2
             ? {
                 rounds: consecutiveReadOnlyRounds,
@@ -2293,8 +2293,7 @@ function canAcceptExplicitChangeRequestNoop(
 
 /** Whether a failed read is the workspace saying the file is not there, rather than a tool misuse. */
 function isMissingArtifactRead(call: ToolCallRecord): boolean {
-  const detail = `${call.error ?? ''} ${call.summary ?? ''}`;
-  return /ENOENT|no such file or directory|does not exist|not found/i.test(detail);
+  return call.code === 'path_not_found';
 }
 
 function normalizeComparablePath(value: string): string {
@@ -2303,9 +2302,8 @@ function normalizeComparablePath(value: string): string {
 
 function hasOnlyUntargetedToolContractFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return true;
-  return [...unresolved.entries()].every(([key, { detail }]) =>
-    key.startsWith('tool:') &&
-    /invalid (?:write_file|append_file|replace_in_file|read_file) args: path must be a non-empty string/i.test(detail),
+  return [...unresolved.entries()].every(([key, { tool, code }]) =>
+    key.startsWith('tool:') && PATH_TOOLS.has(tool) && code === 'path_argument_missing',
   );
 }
 
@@ -2317,14 +2315,16 @@ function hasOnlyPermissionControlFailures(unresolved: Map<string, UnresolvedTool
 
 function hasOnlySupersededToolContractFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return true;
-  return [...unresolved.values()].every(({ tool, executionStatus, detail }) =>
-    /invalid (?:write_file|append_file|replace_in_file|apply_patch|read_file) args/i.test(detail) ||
-    /(?:read_file|write_file|append_file|replace_in_file|apply_patch) denied: path "\." is outside the project directory/i.test(detail) ||
-    /(?:read_file|write_file|append_file|replace_in_file) failed:.*path must be a non-empty string/i.test(detail) ||
-    /path must be a non-empty string/i.test(detail) ||
+  return [...unresolved.values()].every(({ tool, executionStatus, code }) =>
+    code === 'path_argument_missing' ||
+    ((PATH_TOOLS.has(tool) || tool === 'apply_patch') &&
+      (code === 'invalid_args' || code === 'content_argument_invalid')) ||
     (tool === 'add_dependency' && executionStatus === 'tool-not-allowed'),
   );
 }
+
+/** The file tools whose single target is `args.path`. */
+const PATH_TOOLS: ReadonlySet<string> = new Set(['read_file', 'write_file', 'append_file', 'replace_in_file']);
 
 function hasOnlyUnauthorizedVerificationFailures(unresolved: Map<string, UnresolvedToolFailure>): boolean {
   if (unresolved.size === 0) return false;
@@ -2356,11 +2356,13 @@ function canAcceptDeferredVerificationFailure(
   if (!input.debugContext?.deferredVerificationScope || unresolved.size === 0) return false;
   if (!assessment || assessment.blockedBy.length === 0) return false;
   // A refused or unpermitted run_tests never reached the suite, so it is no failure to defer —
-  // whichever permission outcome refused it.
+  // whichever permission outcome refused it. Neither is a run that reached no verdict: its
+  // invocation or its unwritten files are this Step's to fix, not a downstream Step's.
   const hasExecutedFailure = calls.some((call) =>
     call.tool === 'run_tests' &&
     !call.ok &&
-    call.executionStatus === undefined
+    call.executionStatus === undefined &&
+    !isTestRunWithoutVerdict(call.code)
   );
   if (!hasExecutedFailure) return false;
   return [...unresolved.keys()].every((key) => key.startsWith('verification:run_tests:'));
@@ -2844,8 +2846,7 @@ function compactActionArgs(tool: string, args: unknown): Record<string, unknown>
 /**
  * A failure still held against the Step, keyed by what a later call must resolve.
  *
- * Completion decides on the structured fields. `detail` is what prompts and audit show; only the
- * tool-contract checks still read it, because those Tools do not yet set a failure code.
+ * Completion decides on the structured fields. `detail` is what prompts and audit show.
  */
 interface UnresolvedToolFailure {
   tool: string;
@@ -2853,6 +2854,7 @@ interface UnresolvedToolFailure {
   executionStatus?: ToolCallRecord['executionStatus'];
   /** The capability a permission-blocked call asked for. */
   permissionOperation?: ToolPermissionRequest['operationType'];
+  code?: ToolFailureCode;
   detail: string;
 }
 
@@ -2907,7 +2909,9 @@ function updateUnresolvedToolFailures(
     `${action.tool} FAIL ${result.error ?? result.summary ?? 'unknown error'}`,
     1500,
   );
-  for (const key of keys) unresolved.set(key, { tool: action.tool, ...rejection, detail });
+  for (const key of keys) {
+    unresolved.set(key, { tool: action.tool, ...rejection, ...(result.code ? { code: result.code } : {}), detail });
+  }
 }
 
 function matchesAdvisoryFailureRule(
@@ -2936,8 +2940,7 @@ function isIgnorableReadOnlyToolFailure(
 ): boolean {
   const readOnly = action.tool === 'read_file' || action.tool === 'list_dir' || action.tool === 'code_search';
   if (!readOnly) return false;
-  return rejection?.executionStatus === 'tool-not-allowed' ||
-    /\bENOENT\b|no such file or directory/iu.test(result.error ?? '');
+  return rejection?.executionStatus === 'tool-not-allowed' || result.code === 'path_not_found';
 }
 
 const RAN_SELECTORS_PREFIX = 'verification:run_tests:ran:';
@@ -3066,11 +3069,11 @@ export async function syncSandboxIfManifestWritten(
       id: randomUUID(),
       operationType: 'install_dependency',
       target: manifest,
-      reason: `${action.tool} changed ${manifest}; the sandbox must install the declared dependencies before later build and test commands.`,
-      risk: 'The package manager may download code and execute dependency installation scripts.',
+      reason: t().permissionRequest.sandboxSync.reason(action.tool, manifest),
+      risk: t().permissionRequest.sandboxSync.risk,
       scope: 'current workspace sandbox',
       skippable: true,
-      denyBehavior: 'Keep the manifest change but skip sandbox synchronization; later build or test commands will report missing dependencies.',
+      denyBehavior: t().permissionRequest.sandboxSync.denyBehavior,
       stepId: ctx.stepId,
       tool: 'sandbox_sync',
       metadata: { triggerTool: action.tool, manifest },

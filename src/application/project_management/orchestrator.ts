@@ -12,6 +12,7 @@ import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.j
 import type { RoutingActor } from './role_registry.js';
 import type { PluginHost } from '../../plugins/host.js';
 import { PermissionDeniedError, type ToolPermissionRequest } from '../../tools/types.js';
+import { recordedRunStop, type RunStop } from './run_stop.js';
 import {
   DomainAttemptRunner,
   type AttemptInput,
@@ -61,6 +62,8 @@ export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, '
     failureLog?: string;
     findings?: DeliveryGateFinding[];
     evidence?: string[];
+    /** The typed reason behind `reason`, when the gate stopped for one of its own reasons. */
+    stop?: RunStop;
   }>;
   /**
    * Carries the Phase's ChangeSets onto the mainline once its work is finished.
@@ -114,6 +117,8 @@ export interface ProjectOrchestratorResult {
   failedStepId?: string;
   failureLog?: string;
   failureReason?: string;
+  /** The typed reason behind `failureReason`, when the run stopped for one of its own reasons. */
+  stop?: RunStop;
   phaseId: ObjectId;
   nextPhaseId?: ObjectId;
   projectDelivered?: boolean;
@@ -315,11 +320,11 @@ export class ProjectOrchestrator {
     await this.requirePermission({
       operationType: 'git_operation',
       target: 'git snapshots for transactional Step execution',
-      reason: 'Each Step attempt needs a reversible workspace baseline and a verified changelist commit.',
-      risk: 'XCompiler may initialize the workspace repository and create local commits.',
+      reason: t().permissionRequest.gitSnapshots.reason(),
+      risk: t().permissionRequest.gitSnapshots.risk,
       scope: 'current workspace',
       skippable: false,
-      denyBehavior: 'Stop because failed attempts cannot be rolled back safely.',
+      denyBehavior: t().permissionRequest.gitSnapshots.denyBehavior,
     });
     await this.options.git.ensureRepo();
     if (this.options.integratePendingAuthorization) {
@@ -330,7 +335,7 @@ export class ProjectOrchestrator {
           steps.length,
           0,
           undefined,
-          pending.reason ?? `pending merge integration ${pending.status}`,
+          pending.reason ?? { code: 'pending_merge_integration', status: pending.status },
         );
       }
     }
@@ -339,16 +344,16 @@ export class ProjectOrchestrator {
       await this.requirePermission({
         operationType: 'install_dependency',
         target: `sandbox build ${profileManifest}`,
-        reason: 'Prepare project dependencies before executing the V-model.',
-        risk: 'The configured package manager executes inside the selected sandbox.',
+        reason: t().permissionRequest.sandboxBuild.reason(),
+        risk: t().permissionRequest.sandboxBuild.risk,
         scope: 'configured dependency registry',
         skippable: false,
-        denyBehavior: 'Stop because downstream Steps cannot be verified.',
+        denyBehavior: t().permissionRequest.sandboxBuild.denyBehavior,
       });
       try {
         await this.options.sandbox.build(profileManifest);
       } catch (error) {
-        return this.failure(phase.id, steps.length, 0, steps[0], `sandbox build failed: ${(error as Error).message}`);
+        return this.failure(phase.id, steps.length, 0, steps[0], { code: 'sandbox_build_failed', detail: (error as Error).message });
       }
     }
 
@@ -382,11 +387,16 @@ export class ProjectOrchestrator {
           evidence: gate.evidence ?? [gate.reason ?? 'Phase delivery gate evaluated.'],
           findings: gate.findings ?? [],
         });
-        await this.scheduler.reconcilePhaseDeliveryBugs(
-          phase.id,
-          gate.findings ?? [],
-          phaseAssessment.id,
-        );
+        // Only a passing gate is a verdict on the Bugs waiting for it. A gate that failed, or could not
+        // judge at all, says nothing about a Bug whose finding it did not repeat; taking that silence
+        // as a pass closed one with "Phase delivery gate passed" recorded as its proof.
+        if (gate.ok) {
+          await this.scheduler.reconcilePhaseDeliveryBugs(
+            phase.id,
+            gate.findings ?? [],
+            phaseAssessment.id,
+          );
+        }
         if (!gate.ok) {
           const acceptance = steps.find((step) => step.type === 'FUNCTIONAL_TEST');
           if (!acceptance || !gate.findings?.length) {
@@ -395,7 +405,7 @@ export class ProjectOrchestrator {
               steps.length,
               executed,
               acceptance,
-              gate.reason ?? 'Phase delivery gate failed without routable findings',
+              gate.stop ?? gate.reason ?? { code: 'gate_without_routable_findings' },
             );
           }
           try {
@@ -424,8 +434,7 @@ export class ProjectOrchestrator {
               steps.length,
               executed,
               acceptance,
-              `Phase delivery gate failed and its findings left no work to schedule: ` +
-                `${gate.findings.map((finding) => finding.code).join(', ')}`,
+              { code: 'gate_findings_left_no_work', findingCodes: gate.findings.map((finding) => finding.code) },
             );
           }
           continue;
@@ -438,7 +447,7 @@ export class ProjectOrchestrator {
             // ours to write to. Both stop delivery without inventing a Bug.
             return this.failure(
               phase.id, steps.length, executed, undefined,
-              integration.reason ?? `merge integration ${integration.status}`,
+              integration.reason ?? { code: 'merge_integration', status: integration.status },
             );
           }
           if (integration.status === 'failed') {
@@ -446,7 +455,7 @@ export class ProjectOrchestrator {
             if (!acceptance) {
               return this.failure(
                 phase.id, steps.length, executed, undefined,
-                integration.reason ?? 'merge gate failed',
+                integration.reason ?? { code: 'merge_gate_failed' },
               );
             }
             // The gate observed the failure, so it creates the Bug and PM routes it.
@@ -591,7 +600,7 @@ export class ProjectOrchestrator {
         // Keep PM's derived cache aligned with those authoritative transitions at the session
         // boundary; no subsequent lifecycle event exists to refresh it for a stopped run.
         await this.projection.refresh(phase.projectId);
-        return this.failure(phase.id, steps.length, executed, work.step, disposition.reason);
+        return this.failure(phase.id, steps.length, executed, work.step, disposition.stop ?? disposition.reason);
       }
       if (result.ok && disposition.integrate !== false && this.options.integrateTicket) {
         // The delivering Ticket itself. Its ChangeSet is keyed on the CODE Story that owns the
@@ -633,12 +642,12 @@ export class ProjectOrchestrator {
             steps.length,
             executed,
             work.step,
-            landed.reason ?? 'merge authorization is required before downstream execution',
+            landed.reason ?? { code: 'merge_authorization_required' },
           );
         } else if (landed.status === 'blocked') {
           return this.failure(
             phase.id, steps.length, executed, work.step,
-            landed.reason ?? 'merge integration blocked',
+            landed.reason ?? { code: 'merge_integration', status: landed.status },
           );
         }
       }
@@ -701,7 +710,7 @@ export class ProjectOrchestrator {
       ...error.detail,
     });
     await this.projection.refresh(phase.projectId);
-    return this.failure(phase.id, totalSteps, executedSteps, step, t().execute.unchangedRepairStop(error.detail));
+    return this.failure(phase.id, totalSteps, executedSteps, step, { code: 'unchanged_repair_recurred', ...error.detail });
   }
 
   private failure(
@@ -709,15 +718,17 @@ export class ProjectOrchestrator {
     totalSteps: number,
     executedSteps: number,
     step: Step | undefined,
-    reason: string,
+    reason: string | RunStop,
   ): ProjectOrchestratorResult {
+    const recorded = typeof reason === 'string' ? reason : recordedRunStop(reason);
     return {
       phaseId,
       totalSteps,
       executedSteps,
       failedStepId: step?.id ?? phaseId,
-      failureReason: reason,
-      failureLog: reason,
+      failureReason: recorded,
+      failureLog: recorded,
+      ...(typeof reason === 'string' ? {} : { stop: reason }),
     };
   }
 }

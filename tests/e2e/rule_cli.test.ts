@@ -4,6 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+/** How many Rules `rule check` reports in effect; counted against, not hard-coded, as the release grows. */
+function rulesInEffect(stdout: string): number {
+  const count = /(\d+) Rules in effect/u.exec(stdout)?.[1];
+  expect(count, stdout).toBeDefined();
+  return Number(count);
+}
+
 const repository = path.resolve(__dirname, '..', '..');
 let overlayRoot: string;
 
@@ -34,6 +41,7 @@ describe('xcompiler rule (real CLI process)', () => {
   });
 
   it('adds a Rule to the local overlay, shows it in effect, validates it, and reports typed failures', async () => {
+    const released = rulesInEffect((await cli('check')).stdout);
     const added = await cli('add', 'bda408b8', '--name', 'cli-rule', '--level', 'advised',
       '--description-en', 'CLI description.', '--description-zh', 'CLI 描述。',
       '--instruction-en', 'CLI_RULE: added from the command line.', '--instruction-zh', 'CLI_RULE：命令行新增。');
@@ -45,8 +53,8 @@ describe('xcompiler rule (real CLI process)', () => {
     expect((await cli('show', reference!)).stdout).toContain('CLI_RULE: added from the command line.');
     const check = await cli('check');
     expect(check.code).toBe(0);
-    // 75 released Rules (genesis, base segment, languages, roles, works) plus the one just added.
-    expect(check.stdout).toContain('76 Rules in effect');
+    // The released Rules plus the one just added.
+    expect(rulesInEffect(check.stdout)).toBe(released + 1);
 
     // Removing Rules is disabled for now: the command stays, changes nothing and says so.
     const removal = await cli('rm', reference!);
@@ -54,7 +62,7 @@ describe('xcompiler rule (real CLI process)', () => {
     expect(removal.stderr).toContain('rule_command_disabled: rm');
     expect(removal.stderr).toContain('Removing a Rule is not available yet');
     expect((await cli('show', reference!)).stdout).toContain('CLI_RULE: added from the command line.');
-    expect((await cli('check')).stdout).toContain('76 Rules in effect');
+    expect(rulesInEffect((await cli('check')).stdout)).toBe(released + 1);
 
     const missing = await cli('show', 'bda408b8/ffffffff');
     expect(missing.code).toBe(1);
@@ -122,9 +130,41 @@ describe('xcompiler rule scope editing (revision 11.4)', () => {
   });
 
   it('refuses an unknown dimension before writing anything, naming the dimensions it accepts', async () => {
+    const released = rulesInEffect((await cli('check')).stdout);
     const result = await cli('add', 'bda408b8', '--name', 'x', '--level', 'advised', '--scope', 'phases=P1');
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('dimensions: projectIds, languages, roles, works, intents, projectTypes, tools, paths, failureCategories');
-    expect((await cli('check')).stdout).toContain('75 Rules in effect');
+    expect(rulesInEffect((await cli('check')).stdout)).toBe(released);
+  });
+});
+
+/** The real CLI process started with exactly these arguments and environment additions. */
+function rawCli(args: string[], env: Record<string, string> = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', 'src/cli/xcompiler.ts', ...args], {
+      cwd: repository, env: { ...process.env, XC_LANG: '', ...env, XC_RULES_LOCAL: overlayRoot }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+// A language XCompiler does not speak used to become English without a word.
+describe('choosing a language the CLI does not speak (real CLI process)', () => {
+  it('refuses an unknown --lang with the supported list, not a stack trace', async () => {
+    const result = await rawCli(['--lang', 'ja', 'rule', 'ls']);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('Unsupported language "ja"; use one of: EN, CN.');
+    expect(result.stderr).not.toMatch(/\n\s+at /u);
+  });
+
+  it('says an unknown XC_LANG is not honoured, and carries on in English', async () => {
+    const result = await rawCli(['rule', 'ls'], { XC_LANG: 'ja' });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('Unsupported language "ja"');
+    expect(result.stdout).toContain('Genesis declarations');
   });
 });

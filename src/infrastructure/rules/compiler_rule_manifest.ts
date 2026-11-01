@@ -96,16 +96,16 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
   Object.freeze({
     relativePath: 'work-execution-common.yaml',
     listId: '17f60a19-e45d-5961-86cf-a4f1c2c07302',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011000,
-    digest: 'sha256:185c06ea37f499ebab3daed5ec0703cd31a8d76fea76db87f50311cf65729225',
+    digest: 'sha256:5e215b7f19df35cbf9a55b39d82a155ec055fad29595f3270e1356debe2608f7',
   }),
   Object.freeze({
     relativePath: 'work-design-baseline-deferred.yaml',
     listId: '7392536a-a097-5853-9d97-217c39397fd6',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011001,
-    digest: 'sha256:31ae3a8cb013eee68f5c13a80bcf39a5fd0f4eaa63159ae881a44083a001464e',
+    digest: 'sha256:5f0d8031f756e36ebcdf893c04a1d5619006aba0d4917e1956aae5ed82392ab3',
   }),
   Object.freeze({
     relativePath: 'work-repair-debug.yaml',
@@ -145,16 +145,16 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
   Object.freeze({
     relativePath: 'work-code-implement.yaml',
     listId: '5203461d-9946-55a6-aed5-8e4793f3d59c',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011103,
-    digest: 'sha256:96f8d403af43040e4acf5128c4293b27b8b81c79b2dc37fcde137f7846d01f81',
+    digest: 'sha256:995a64b2521821eec1650f0a80cc42930d96f8b4c8f3f1b3f74107eb1c8ac7dd',
   }),
   Object.freeze({
     relativePath: 'work-verify-unit.yaml',
     listId: '727e302f-32c8-5413-9b45-94993894a0f9',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011104,
-    digest: 'sha256:dba1109a27d1488909c430a53ac7e1254702119794060e9091b9db39afcd7134',
+    digest: 'sha256:41507243f19d96fc4ca6fb150aa4c3949f7a9b90ad9a1e331a82574bfbf99c96',
   }),
   Object.freeze({
     relativePath: 'work-verify-integration.yaml',
@@ -166,16 +166,16 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
   Object.freeze({
     relativePath: 'work-verify-module.yaml',
     listId: '2c94ad78-ea25-5283-9904-9b873108da44',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011106,
-    digest: 'sha256:679ac2951bcfbc89a99592591142b5560e37a0406834dcae8299ee0994b60eee',
+    digest: 'sha256:2987298e4173e41e21d7bd2694fecc7d410f121a465b0f0f44b633cfa3094a8b',
   }),
   Object.freeze({
     relativePath: 'work-verify-functional.yaml',
     listId: 'ea2efae9-84b6-5d1f-b025-433d5e76dc20',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011107,
-    digest: 'sha256:b783f64c604926f40a69c3bd0eb8c8683627db974c26bac0ef8d1d4cde3e9aba',
+    digest: 'sha256:40dad68e7b71bca8f0e6a366535b20356a119ac99c3a0384f358f7ec03008f9c',
   }),
   Object.freeze({
     relativePath: 'scenario-outcome.yaml',

@@ -1,5 +1,5 @@
 import { Help, InvalidArgumentError, type Command } from 'commander';
-import { normaliseLocale, t, type Locale } from '../i18n/index.js';
+import { localeFlags, resolveLocale, t, type Locale } from '../i18n/index.js';
 import {
   PLAN_INTENTS,
   RECORD_REPLAY_MODES,
@@ -10,11 +10,6 @@ import {
 } from '../runtime.js';
 
 const FIXTURE_ACTIONS = ['prepare', 'inspect', 'verify', 'refresh'] as const;
-
-const LOCALE_ALIASES = new Set([
-  'en', 'us', 'uk', 'gb', 'en-us', 'en-gb',
-  'zh', 'cn', 'zh-cn', 'zh-hans', 'chinese',
-]);
 
 /** Apply localized Commander section headings and built-in option descriptions. */
 export function configureLocalizedHelp(command: Command): Command {
@@ -48,10 +43,26 @@ export function localeFromArgv(argv: string[]): string | undefined {
 }
 
 export function parseLocale(value: string): Locale {
-  if (!LOCALE_ALIASES.has(value.trim().toLowerCase())) {
-    throw new InvalidArgumentError(t().cli.invalidLocale(value));
+  const locale = resolveLocale(value);
+  if (!locale) throw new InvalidArgumentError(t().cli.invalidLocale(value, localeFlags().join(', ')));
+  return locale;
+}
+
+/**
+ * The locale a CLI process starts in, before its options are parsed: `--lang`, then `XC_LANG`, then
+ * English. An unknown `--lang` is left for the option parser to refuse with its message; an unknown
+ * `XC_LANG` has no parser after it, so it is reported here rather than silently replaced.
+ */
+export function startupLocale(argv: string[], env: string | undefined): Locale {
+  const fromArgs = localeFromArgv(argv);
+  const requested = fromArgs !== undefined ? resolveLocale(fromArgs) : undefined;
+  if (requested) return requested;
+  if (env !== undefined && env.trim() !== '' && fromArgs === undefined) {
+    const fromEnv = resolveLocale(env);
+    if (fromEnv) return fromEnv;
+    console.error(t().cli.invalidLocale(env, localeFlags().join(', ')));
   }
-  return normaliseLocale(value);
+  return 'en';
 }
 
 export function parseIntent(value: string): PlanIntent {

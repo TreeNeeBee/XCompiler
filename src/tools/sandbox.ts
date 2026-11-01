@@ -45,11 +45,9 @@ export function unresolvedProductImportHint(output: string): string | undefined 
     // prefix they already used sends them looking for a difference that is not there.
     const written = /^(\.\.\/)+/u.exec(specifier)?.[0] ?? '';
     if (written === '../'.repeat(depth)) continue;
-    lines.add(
-      `${specifier} from ${testPath} resolves outside the workspace — ` +
-      `from ${testPath.slice(0, testPath.lastIndexOf('/'))}/ the product is reached with exactly ` +
-      `${'../'.repeat(depth)}src/…`,
-    );
+    lines.add(toolText().runTests.importDepth(
+      specifier, testPath, testPath.slice(0, testPath.lastIndexOf('/')), '../'.repeat(depth),
+    ));
   }
   return lines.size > 0 ? [...lines].join('\n') : undefined;
 }
@@ -135,13 +133,12 @@ export const runProgramTool: Tool<
     // to clear that exact call, which only an exit 0 of the same command could resolve.
     const expected = args.expectExitCode;
     if (expected !== undefined && !(Number.isInteger(expected) && expected >= 0 && expected <= 255)) {
-      return { ok: false, error: `run_program.expectExitCode must be an integer exit code from 0 to 255; got ${JSON.stringify(expected)}.` };
+      return { ok: false, error: toolText().runProgram.expectExitCodeInvalid(JSON.stringify(expected)) };
     }
     if (ranTests && expected !== undefined && expected !== 0) {
       return {
         ok: false,
-        error: 'run_program.expectExitCode is for the product\'s own exit codes. A test runner\'s non-zero exit is its ' +
-          'verdict on the tests and cannot be declared expected; fix the tests or the product instead.',
+        error: toolText().runProgram.expectExitCodeForTestRunner,
       };
     }
     const r = await ctx.sandbox.runProgram(args.args, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
@@ -190,15 +187,13 @@ function withExitCodeGuidance(
   if (run.expected !== undefined && run.expected !== 0) {
     return {
       ...failure,
-      error: `${failure.error}\nThe call declared expectExitCode: ${run.expected}, but the program exited ${run.exitCode}.`,
+      error: `${failure.error}\n${toolText().runProgram.expectedExitMismatch(run.expected, run.exitCode)}`,
     };
   }
   if (run.exitCode === 0) return failure;
   return {
     ...failure,
-    error: `${failure.error}\nIf exit ${run.exitCode} is what the product's specified contract requires for this input ` +
-      `(for example a documented failure exit code), run the same command again with expectExitCode: ${run.exitCode}; ` +
-      'otherwise fix the cause.',
+    error: `${failure.error}\n${toolText().runProgram.declareExpectedExit(run.exitCode)}`,
   };
 }
 
@@ -271,15 +266,14 @@ export const runTestsTool: Tool<
       return {
         ok: false,
         code: 'declared_tests_unwritten',
-        error:
-          `run_tests refused: this Step's declared test files do not exist yet: ${unwritten.join(', ')}. ` +
-          'Write them first — the suite cannot run, let alone pass, until they exist. ' +
-          'Author each file with its real assertions against the product module it verifies.',
+        error: toolText().runTests.declaredTestsUnwritten(unwritten.join(', ')),
       };
     }
     const { args: runArgs, refused: refusedOptions } = mergeTestGateArgs(gateArgs, requestedEffectiveArgs);
-    // A report left by an earlier run must not pass for this run's measurement.
-    const coverageReport = ctx.language === 'typescript' ? undefined : pytestCoverageReport(runArgs);
+    // A report left by an earlier run must not pass for this run's measurement. Only the gate's own
+    // report is cleared and read: a path from the caller had Runtime delete, before the sandboxed run
+    // even started, and then read any file on the host.
+    const coverageReport = ctx.language === 'typescript' ? undefined : pytestCoverageReport(gateArgs);
     const runDirectory = cwd.abs ?? ctx.ws.root;
     if (coverageReport) await fs.rm(path.resolve(runDirectory, coverageReport), { force: true });
     const r = await ctx.sandbox.runTests(runArgs, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
@@ -303,7 +297,7 @@ export const runTestsTool: Tool<
       runArgs.length > 0 ? `args=${runArgs.join(' ')}` : '',
     ].filter(Boolean).join(' ');
     const scopeNote = refusedOptions.length > 0
-      ? `Not passed to the runner, because Runtime decides which tests this gate runs: ${refusedOptions.join(', ')}`
+      ? toolText().runTests.refusedOptions(refusedOptions.join(', '))
       : '';
     const coverage = coverageReport && passed ? await readPytestCoverage(path.resolve(runDirectory, coverageReport)) : undefined;
     const successEvidence = ctx.language === 'typescript' ? extractVitestEvidence(r.stdout)
@@ -401,8 +395,7 @@ async function diagnoseSandboxFailure(
   // fixes it — a whole live run went by without `install_deps` being called once.
   if (/\bcommand not found\b|\bENOENT\b.*\bvitest\b/iu.test(result.stderr)) {
     return {
-      error: `${base}\nThe command is named in package.json but is not installed in this sandbox. ` +
-        'Run install_deps for the devDependencies it declares, then run it again.',
+      error: `${base}\n${toolText().typescriptRunner.commandNotInstalled}`,
     };
   }
   // `tsc` found no inputs because the sources it is configured to compile do not exist yet. Before
@@ -413,19 +406,13 @@ async function diagnoseSandboxFailure(
   if (isProductAuthoringPending(ctx.phase) && /\bTS18003\b/u.test(result.stderr)) {
     return {
       code: 'product_not_implemented',
-      error: `${base}\nThe configured source files do not exist yet; they are the CODE Step's output. ` +
-        'This is expected before CODE runs and is not this Step\'s to repair. Do not edit tsconfig.json ' +
-        'to make the compiler quiet — leave the configuration describing the source layout it will have.',
+      error: `${base}\n${toolText().typescriptRunner.sourcesPending}`,
     };
   }
   if (await ctx.ws.exists('package.json')) return { error: base };
   return {
     code: 'manifest_missing',
-    error: `${base}\nNo package.json in ${ctx.ws.root}, so nothing declares ${
-      intent === 'tests' ? 'a test script' : 'this command'
-    } or the packages it needs. ` +
-      'This project\'s manifest is written by the HIGH_LEVEL_DESIGN Step; a Step running before it ' +
-      'cannot execute anything here and must not try to repair it.',
+    error: `${base}\n${toolText().typescriptRunner.manifestMissing(ctx.ws.root, intent)}`,
   };
 }
 
@@ -466,22 +453,13 @@ export function isPytestInvocation(args: readonly string[]): boolean {
  * Exit 2 is left out on purpose: pytest also returns it for errors while collecting, which include
  * a product module that fails to import — a real verdict on the product.
  */
-const PYTEST_EXIT_WITHOUT_VERDICT: ReadonlyMap<number, string> = new Map([
-  [3, 'pytest stopped on an internal error before any test reached a verdict. No test failed; ' +
-    'read the error above (often a conftest.py or plugin problem) and fix that before running again.'],
-  [4, 'pytest rejected the invocation itself (an unknown option, or a path that does not exist), so no ' +
-    'test ran. No test failed; correct the arguments. Runtime already supplies the test selectors and, ' +
-    'at UNIT_TEST, the coverage options — pass only extra flags pytest itself accepts.'],
-  [5, 'pytest collected no tests, so no test reached a verdict. Make sure the selected files define ' +
-    'test functions named test_* (or classes named Test*) that pytest can collect.'],
-]);
 
 function pytestRunWithoutVerdict(
   base: string,
   exitCode: number,
 ): { code: ToolFailureCode; error: string } | undefined {
-  const explanation = PYTEST_EXIT_WITHOUT_VERDICT.get(exitCode);
-  return explanation ? { code: 'test_run_without_verdict', error: `${base}\n${explanation}` } : undefined;
+  if (exitCode !== 3 && exitCode !== 4 && exitCode !== 5) return undefined;
+  return { code: 'test_run_without_verdict', error: `${base}\n${toolText().runTests.pytestWithoutVerdict[exitCode]}` };
 }
 
 /** Coverage a test run measured, in percent; branches only when branch measurement was on. */
@@ -490,7 +468,7 @@ export interface MeasuredCoverage {
   branches?: number;
 }
 
-/** The JSON report a pytest-cov run was asked to write, relative to the directory it ran in. */
+/** The JSON report a pytest-cov gate asks for, relative to the directory the run happens in. */
 function pytestCoverageReport(args: readonly string[]): string | undefined {
   const option = args.find((arg) => arg.startsWith('--cov-report=json:'));
   return option ? option.slice('--cov-report=json:'.length) : undefined;
@@ -524,16 +502,6 @@ async function readPytestCoverage(file: string): Promise<MeasuredCoverage | unde
 }
 
 /**
- * Runner options that change which tests a gate runs, or whether it runs any: the Runtime decides
- * the gate's scope, so these are refused with their value. `--collect-only` would pass a gate that
- * ran nothing.
- */
-const SCOPE_OPTIONS: ReadonlySet<string> = new Set([
-  '-k', '-m', '--deselect', '--ignore', '--ignore-glob', '--maxfail', '-t', '--testNamePattern', '--shard', '--related',
-  '--project', '--lf', '--last-failed', '--sw', '--stepwise', '--sw-skip', '-x', '--exitfirst', '--collect-only', '--co',
-  '--setup-plan', '--bail', '--changed', '--only',
-]);
-/**
  * Output options that stand alone, so the token after one is never taken as its value: after `-v`,
  * a path is a selector, and selectors are the Runtime's.
  */
@@ -544,11 +512,63 @@ const OPTIONS_WITHOUT_VALUE: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The gate's own arguments, then the caller's runner options.
+ * The caller options a gate passes on: those that change only what the run prints.
+ *
+ * This used to be the other way round — options known to narrow a run were refused and everything
+ * else passed. pytest spells the same narrowing many ways: `-kpass` is `-k pass`, and
+ * `-o python_functions=test_pass` selects tests through an ini override. Each got through, ran a
+ * subset, and its pass was credited to the whole gate, clearing the failure it had not rerun.
+ */
+const OUTPUT_FLAGS: ReadonlySet<string> = new Set([
+  '--verbose', '--quiet', '--no-header', '--no-summary', '--disable-warnings', '--showlocals', '--no-showlocals',
+  '--full-trace', '--setup-show', '--cache-clear', '--ff', '--failed-first', '--nf', '--new-first',
+  '--silent', '--no-color', '--hideSkippedTests', '--logHeapUsage', '--printConsoleTrace',
+]);
+/** Output options that take a value, after `=` or as the next token. */
+const OUTPUT_OPTIONS_WITH_VALUE: ReadonlySet<string> = new Set([
+  '--tb', '--color', '--code-highlight', '--durations', '--durations-min', '--show-capture', '--capture',
+  '--log-level', '--log-cli-level', '--reporter',
+]);
+/** Single-letter output flags, which may be run together (`-vq`). */
+const OUTPUT_SHORT_FLAGS: ReadonlySet<string> = new Set(['v', 'q', 's', 'l']);
+/** Single-letter output options that take a value, and which values keep them output options. */
+const OUTPUT_SHORT_OPTIONS: ReadonlyMap<string, (value: string) => boolean> = new Map<string, (value: string) => boolean>([
+  ['r', () => true],
+  // A plugin can select tests; switching off the cache is the only plugin choice that is output.
+  ['p', (value: string) => value === 'no:cacheprovider'],
+]);
+
+/** One caller option at `index` with the value it takes, and whether it only shapes the output. */
+function readCallerOption(args: readonly string[], index: number): { tokens: string[]; output: boolean } {
+  const arg = args[index]!;
+  const next = args[index + 1];
+  const nextIsValue = next !== undefined && !next.startsWith('-');
+  if (arg.startsWith('--')) {
+    if (arg.includes('=')) return { tokens: [arg], output: OUTPUT_OPTIONS_WITH_VALUE.has(arg.slice(0, arg.indexOf('='))) };
+    if (OUTPUT_FLAGS.has(arg)) return { tokens: [arg], output: true };
+    // Whatever the option, the value after it is its own, so a refusal names the option whole.
+    return { tokens: nextIsValue ? [arg, next] : [arg], output: OUTPUT_OPTIONS_WITH_VALUE.has(arg) };
+  }
+  // Letters may run together, and a letter that takes a value takes the rest of the token.
+  const letters = arg.slice(1);
+  for (let at = 0; at < letters.length; at += 1) {
+    const letter = letters[at]!;
+    if (OUTPUT_SHORT_FLAGS.has(letter)) continue;
+    const inline = letters.slice(at + 1);
+    const tokens = inline === '' && nextIsValue && at === 0 ? [arg, next] : [arg];
+    const accepts = OUTPUT_SHORT_OPTIONS.get(letter);
+    if (!accepts) return { tokens, output: false };
+    const value = inline !== '' ? inline : tokens[1];
+    return { tokens, output: value !== undefined && accepts(value) };
+  }
+  return { tokens: [arg], output: letters.length > 0 };
+}
+
+/**
+ * The gate's own arguments, then the caller's output options.
  *
  * Only option tokens used to survive, so an option's value was dropped: `-p no:cacheprovider` reached
- * pytest as a bare `-p`, a usage error that ran no test. An option now keeps the value written after
- * it, unless it is one that takes none.
+ * pytest as a bare `-p`, a usage error that ran no test. An option keeps the value written after it.
  */
 function mergeTestGateArgs(
   gateArgs: readonly string[],
@@ -562,18 +582,22 @@ function mergeTestGateArgs(
     // The Runtime owns selectors. The model may add runner flags, but it cannot replace the exact
     // paired gate with a smaller or unrelated test scope.
     if (!arg.startsWith('-')) continue;
-    const next = requestedArgs[index + 1];
-    const name = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
-    const takesNext = !arg.includes('=') && !OPTIONS_WITHOUT_VALUE.has(arg) &&
-      next !== undefined && !next.startsWith('-');
-    const option = takesNext ? [arg, next] : [arg];
-    if (takesNext) index += 1;
-    if (SCOPE_OPTIONS.has(name)) {
-      refused.push(option.join(' '));
+    if (isCoverageArgument(arg)) {
+      const next = requestedArgs[index + 1];
+      const option = !arg.includes('=') && !OPTIONS_WITHOUT_VALUE.has(arg) && next !== undefined && !next.startsWith('-')
+        ? [arg, next]
+        : [arg];
+      index += option.length - 1;
+      if (!merged.some(isCoverageArgument)) merged.push(...option);
       continue;
     }
-    if (isCoverageArgument(arg) && merged.some(isCoverageArgument)) continue;
-    if (option.length === 1 ? !merged.includes(arg) : true) merged.push(...option);
+    const { tokens, output } = readCallerOption(requestedArgs, index);
+    index += tokens.length - 1;
+    if (!output) {
+      refused.push(tokens.join(' '));
+      continue;
+    }
+    if (tokens.length === 1 ? !merged.includes(arg) : true) merged.push(...tokens);
   }
   return { args: merged, refused };
 }

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildTranslationMessages,
   PromptTranslator, TranslationContractViolation, validateTranslationResponse, type TextTranslationPort,
 } from '../src/application/translation/text_translation.js';
 import { topicAddenda, topicForModels, topicTranslationPairs } from '../src/application/planning/requirement_intake.js';
@@ -173,4 +174,14 @@ describe('the translation cache', () => {
     await fs.writeFile(path.join(root, 'translations', file!), '{"schemaVersion":1');
     expect(await cache.read({ from: 'zh', to: 'en', text: '需求' })).toBeUndefined();
   });
+});
+
+// The translator model reads its instructions in English, so it is told both languages by their
+// English names, whichever language the user speaks.
+describe('the translation request names its languages in English', () => {
+  it.each([['zh', 'en', 'from Simplified Chinese to English'], ['en', 'zh', 'from English to Simplified Chinese']] as const)(
+    'names %s to %s as "%s"', (from, to, phrase) => {
+      expect(buildTranslationMessages({ from, to, texts: ['x'] })[0]!.content).toContain(phrase);
+    },
+  );
 });

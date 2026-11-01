@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
@@ -8,8 +9,8 @@ import type { Workspace } from '../../workspace/workspace.js';
 const EntrySchema = z.object({
   schemaVersion: z.literal(1),
   templateVersion: z.string().min(1),
-  from: z.enum(['en', 'zh']),
-  to: z.enum(['en', 'zh']),
+  from: LocaleSchema,
+  to: LocaleSchema,
   source: z.string(),
   translation: z.string(),
 }).strict();

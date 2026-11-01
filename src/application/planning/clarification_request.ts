@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import { z } from 'zod';
 import { CLARIFICATION_CATEGORIES, CLARIFICATION_FINAL_REASONS } from '../../agents/planning/clarification.js';
 import { SANDBOX_MODES, SANDBOX_NETWORK_POLICIES } from '../../config/config.js';
@@ -40,9 +41,9 @@ const ParseContextSchema = z.object({
 /** Audit-only intake inputs; provider messages retain the original i18n rendering. */
 export const ClarificationPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('planning-clarification'),
-  templateVersion: z.literal(CLARIFICATION_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  templateVersion: z.literal(CLARIFICATION_TEMPLATE_VERSION), locale: LocaleSchema,
   /** The user's language, which deliverables are written in; absent, the prompt locale. */
-  outputLocale: z.enum(['en', 'zh']).optional(),
+  outputLocale: LocaleSchema.optional(),
   parseContext: ParseContextSchema,
 }).strict();
 export type ClarificationPayload = z.infer<typeof ClarificationPayloadSchema>;

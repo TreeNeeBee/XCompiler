@@ -6,10 +6,10 @@ title:
   en: Unit verification
   zh: 单元验证
 slot: "0x00011104"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:dba1109a27d1488909c430a53ac7e1254702119794060e9091b9db39afcd7134
+mtime: 2026-10-31T20:06:29.407Z
+digest: sha256:41507243f19d96fc4ca6fb150aa4c3949f7a9b90ad9a1e331a82574bfbf99c96
 rules:
   - id: 0b63d236-37b1-5df4-a644-eed4b66a547f
     name: deliverable
@@ -50,3 +50,16 @@ rules:
     instruction:
       en: Do not rewrite source to make a test pass.
       zh: 不要为了让测试通过而改写源码。
+  - id: 143cbdb6-fa3b-47fa-b59a-5287ba40ccd6
+    name: malformed-input-cases
+    version: 1.0.0
+    level: required
+    ctime: 2026-10-31T20:05:56.307Z
+    mtime: 2026-10-31T20:06:29.407Z
+    digest: sha256:91385ca6ad4dd263ca105e132b040bd0377109f6bd702e3c2994c3555a9e3395
+    description:
+      en: "Applies when verifying a module that parses an external input format: its tests include malformed and partially valid input."
+      zh: 验证解析外部输入格式的模块时适用：测试要包含格式错误和部分合法的输入。
+    instruction:
+      en: "Malformed input: for every module that parses an external format, include cases with malformed and partially valid input — unterminated strings, escaped delimiters, unknown sections, truncated content — and assert the error or warning the product reports. Well-formed samples alone do not verify a parser."
+      zh: 格式错误的输入：对每个解析外部格式的模块，都要包含格式错误和部分合法输入的用例——未闭合的字符串、转义的分隔符、未知的段落、被截断的内容——并断言产品报告的错误或警告。只用格式正确的样例不足以验证解析器。

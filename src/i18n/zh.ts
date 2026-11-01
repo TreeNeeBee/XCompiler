@@ -248,6 +248,9 @@ const messages: Messages = {
     permissionDeniedStop: (operation, target, consequence, reason) =>
       `已停止：未获得 ${operation}（${target}）的授权${reason ? `（${reason}）` : ''}。${consequence}\n` +
       '如需继续，请重新运行并批准该操作，或使用 --permission-mode auto 让本次运行自动批准 Runtime 授权。',
+    permissionPromptRisk: (risk) => `风险：${risk}`,
+    permissionPromptScope: (scope) => `范围：${scope}`,
+    permissionDenialReasonPrompt: '拒绝原因（可选）：',
     unsupportedSubprocessNetworkOff:
       'subprocess 模式无法兑现 sandbox network=off；请改用 mode=docker，或明确选择 download-only/full。',
     dockerInsideContainerUnsupported:
@@ -256,6 +259,68 @@ const messages: Messages = {
     smokeOk: (model, totalMs, firstTokenMs, chunks, preview) =>
       `[成功 总耗时=${totalMs}ms 首Token=${firstTokenMs}ms 分块=${chunks}] ${model} -> ${preview}`,
     smokeFail: (model, message) => `[失败] ${model} -> ${message}`,
+  },
+  permissionRequest: {
+    fileWrite: {
+      reason: (step, tool) => `Step ${step} 请求用 ${tool} 修改工程文件。`,
+      risk: '该操作会修改当前工作区中的文件。',
+      denyBehavior: '跳过这次工具调用，代理须改用其他做法，否则该 Step 失败。',
+    },
+    addDependency: {
+      reason: (step) => `Step ${step} 请求修改依赖并同步沙箱。`,
+      risk: '可能访问依赖仓库、下载代码并执行安装脚本。',
+      denyBehavior: '跳过这次依赖修改；之后的构建或测试可能失败，并报告缺少的依赖。',
+    },
+    installDeps: {
+      reason: (step) => `Step ${step} 请求安装依赖。`,
+      risk: '可能执行包管理器脚本，并从依赖仓库下载代码。',
+      denyBehavior: '跳过依赖安装，任务继续执行并报告缺少的依赖。',
+    },
+    runTests: {
+      reason: (step) => `Step ${step} 请求运行测试以验证改动。`,
+      risk: '工程的测试脚本可能执行任意本地工程代码。',
+      denyBehavior: '跳过测试，最终结果须标明验证未完成。',
+    },
+    runProgram: {
+      reason: (step) => `Step ${step} 请求运行程序。`,
+      risk: '会在配置的沙箱中执行工程代码。',
+      denyBehavior: '跳过该命令，代理须改用其他验证方式，否则该 Step 失败。',
+    },
+    httpFetch: {
+      reason: (step) => `Step ${step} 请求访问网络。`,
+      risk: '会从宿主进程访问外部 HTTP 地址。',
+      denyBehavior: '跳过这次网络访问，代理须使用本地上下文，或报告缺少的数据。',
+    },
+    sandboxSync: {
+      reason: (tool, manifest) => `${tool} 修改了 ${manifest}；沙箱须先安装声明的依赖，之后的构建和测试命令才能运行。`,
+      risk: '包管理器可能下载代码并执行依赖安装脚本。',
+      denyBehavior: '保留清单改动但跳过沙箱同步；之后的构建或测试命令会报告缺少的依赖。',
+    },
+    gitSnapshots: {
+      reason: () => '每次 Step 尝试都需要一个可回滚的工作区基线，以及一次经过校验的变更提交。',
+      risk: 'XCompiler 可能初始化工作区仓库并创建本地提交。',
+      denyBehavior: '停止运行，因为失败的尝试无法安全回滚。',
+    },
+    sandboxBuild: {
+      reason: () => '执行 V 模型之前先准备工程依赖。',
+      risk: '配置的包管理器会在所选沙箱中执行。',
+      denyBehavior: '停止运行，因为后续 Step 无法验证。',
+    },
+    mergeChangeSet: {
+      reason: () => '合入已验证的 CODE 变更集，让后续 V 模型 Step 测试新代码。',
+      risk: '会在工程的规范分支上创建一个 squash 提交。',
+      denyBehavior: '保留该变更集的门禁通过状态，在后续测试之前停止交付。',
+    },
+    projectAudit: {
+      reason: () => '关闭 Epic 之前运行 Phase 交付审计。',
+      risk: '审计可能在配置的沙箱中执行测试或工程入口。',
+      denyBehavior: '保持 Phase 未关闭，本次运行以失败结束。',
+    },
+    liveScenarios: {
+      reason: () => '通过声明的真实用户操作验证交付的功能。',
+      risk: '产品命令可能经由配置的沙箱访问真实的外部服务。',
+      denyBehavior: '保持 Phase 未关闭，不创建产品缺陷 Ticket。',
+    },
   },
   plugins: {
     invalidId: (id) => `插件 ID“${id}”无效；仅允许小写字母、数字、点、连字符或下划线。`,
@@ -368,7 +433,7 @@ const messages: Messages = {
     optPromote: '全部质量门通过后，快进合并到当前分支',
     optCleanup: '写入报告后删除隔离 worktree（保留候选分支）',
     optDockerQualification: '使用尚处于实验阶段的 Docker 环境执行候选质量门',
-    invalidLocale: (value) => `不支持的语言“${value}”，请使用 EN 或 CN。`,
+    invalidLocale: (value, supported) => `不支持的语言“${value}”，请使用以下之一：${supported}。`,
     invalidIntent: (value, allowed) => `无效 intent“${value}”，可选值：${allowed}。`,
     invalidPhase: (value, allowed) => `无效阶段“${value}”，可选值：${allowed}。`,
     invalidStepId: (value) => `无效 Step ID“${value}”，格式应为 S 加至少三位数字。`,
@@ -602,11 +667,43 @@ const messages: Messages = {
         '多写一个 python 前缀会被忽略。TypeScript：默认 npx tsx <entry>，也支持 npm/npx/node/tsx/tsc 前缀。' +
         '产品的既定契约要求对该输入以非 0 退出（例如文档规定的失败退出码）时，把 expectExitCode 设为该退出码：' +
         '只有程序恰好以该码退出时调用才算成功。不适用于测试运行器。',
+      expectExitCodeInvalid: (value) => `run_program.expectExitCode 必须是 0 到 255 之间的整数退出码；收到的是 ${value}。`,
+      expectExitCodeForTestRunner: 'run_program.expectExitCode 只用于产品自身的退出码。测试运行器的非 0 退出是它对测试的结论，' +
+        '不能声明为预期；请修正测试或产品。',
+      expectedExitMismatch: (expected, actual) => `调用声明了 expectExitCode: ${expected}，但程序以 ${actual} 退出。`,
+      declareExpectedExit: (exitCode) => `如果产品的既定契约对这个输入要求以 ${exitCode} 退出（例如文档规定的失败退出码），` +
+        `请用 expectExitCode: ${exitCode} 重新运行同一条命令；否则请修正原因。`,
     },
     runTests: {
       description: '在沙盒内运行测试套件（Python: pytest；TypeScript: npm test / Vitest），可指定额外参数。' +
         'TypeScript UNIT_TEST 门禁会自动启用覆盖率采集，无需重复传 --coverage。' +
         '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
+      declaredTestsUnwritten: (files) => `run_tests 被拒绝：本 Step 声明的测试文件还不存在：${files}。` +
+        '先写出这些文件——它们不存在时，测试套件无法运行，更谈不上通过。' +
+        '每个文件都要写出针对它所验证的产品模块的真实断言。',
+      refusedOptions: (options) => `以下参数没有传给测试运行器，因为本门禁运行哪些测试由 Runtime 决定：${options}。` +
+        '只传递输出类参数，例如 -v、-q、--tb 和 -p no:cacheprovider。',
+      pytestWithoutVerdict: {
+        3: 'pytest 在任何测试得出结论之前因内部错误停止。没有测试失败；' +
+          '请阅读上面的错误（通常是 conftest.py 或插件的问题），修好后再运行。',
+        4: 'pytest 拒绝了这次调用本身（未知参数，或不存在的路径），因此没有运行任何测试。没有测试失败；' +
+          '请修正参数。Runtime 已经提供测试选择器，UNIT_TEST 还提供覆盖率参数——只传 pytest 本身接受的额外参数。',
+        5: 'pytest 没有收集到任何测试，因此没有测试得出结论。请确认所选文件定义了 pytest 能收集的、' +
+          '名为 test_* 的测试函数（或名为 Test* 的类）。',
+      },
+      importDepth: (specifier, testPath, directory, prefix) =>
+        `${testPath} 中的 ${specifier} 解析到了工作区之外——从 ${directory}/ 到产品代码恰好是 ${prefix}src/…`,
+    },
+    typescriptRunner: {
+      commandNotInstalled: '该命令在 package.json 中有声明，但沙箱里没有安装。' +
+        '请对它声明的 devDependencies 运行 install_deps，然后重新运行。',
+      sourcesPending: '配置的源文件还不存在；它们是 CODE Step 的产出。' +
+        '在 CODE 运行之前这是预期情况，不需要本 Step 修复。不要为了让编译器不报错而修改 tsconfig.json——' +
+        '保持配置描述将来的源代码布局。',
+      manifestMissing: (root, subject) => `${root} 中没有 package.json，因此没有任何地方声明${
+        subject === 'tests' ? '测试脚本' : '这条命令'
+      }及其所需的包。` +
+        '本工程的清单由 HIGH_LEVEL_DESIGN Step 编写；在它之前运行的 Step 无法在这里执行任何东西，也不要试图修复它。',
     },
     installDeps: {
       description: '在沙盒内安装一组额外依赖（Python: pip install；TypeScript: npm install）。不会自动写回依赖清单。',
@@ -701,15 +798,35 @@ const messages: Messages = {
       '然后用该 topic 重新 build；追加需求与原需求冲突时以追加需求为准。',
     auditScenarioPlanConflict: (scenario) =>
       `场景 ${scenario}：本 Phase 冻结的需求与已确认的规划冲突，交由需求分析按规划修正后再传到后续 Step`,
-    unchangedRepairStop: ({ ticketName, targetStepName, failureCode, changelistName }) =>
-      `已停止：${ticketName} 在 ${targetStepName} 上的上一次修复（${changelistName}）没有改动任何文件，同一失败（${failureCode}）又出现了；继续重试只会得到同样的结果。` +
-      '请判断这个失败依据的需求或规划是否需要调整：需要调整时，在 topic.md 的「用户补充需求 (Addenda)」一节写明正确的要求，然后用该 topic 重新 build' +
-      '（追加需求与原需求冲突时以追加需求为准）；如果需求无误而实现有误，修正实现后再 run。',
     auditPackageJsonMissing: '缺少 package.json',
     auditScriptMissing: (name) => `package.json 缺少 ${name} 脚本`,
     auditCommandOk: (name) => `${name} 通过`,
     auditCommandFailed: (name, exitCode, timedOut) =>
       `${name} 失败（exit=${exitCode}${timedOut ? '，超时' : ''}）`,
+    phaseRecovered: (phase) => `已从规范的 Project 状态恢复 ${phase}`,
+    iterationPrepared: (completed, next) => `迭代 ${completed} 已通过；已准备 ${next}`,
+    ticketRouted: (creator, ticket, assignee) => `${creator} 创建了 ${ticket} → PM → ${assignee}`,
+  },
+  runStop: {
+    gateWithoutRoutableFindings: () => 'Phase 交付门禁未通过，且没有可派发的问题',
+    gateFindingsLeftNoWork: (codes) => `Phase 交付门禁未通过，其问题没有产生可调度的工作：${codes}`,
+    sandboxBuildFailed: (detail) => `沙箱构建失败：${detail}`,
+    pendingMergeIntegration: (status) => `待处理的合并集成状态为 ${status}`,
+    mergeIntegration: (status) => `合并集成状态为 ${status}`,
+    mergeGateFailed: () => '合并门禁未通过',
+    mergeAuthorizationRequired: () => '需要先授权合并，才能执行后续 Step',
+    noDownstreamVerification: (ticket) => `${ticket} 没有后续验证路径`,
+    evidenceStorageFailed: (ticket, detail) => `必需的证据存储失败；${ticket} 已挂起，未创建缺陷 Ticket：${detail}`,
+    permissionBlocked: (ticket, detail) => `授权受阻；${ticket} 已挂起，未创建缺陷 Ticket：${detail}`,
+    infrastructureFailure: (ticket, detail) => `LLM 基础设施失败；${ticket} 已挂起，等待重试：${detail}`,
+    gateAuditPermissionDenied: () => '未获得项目审计的授权',
+    gateLiveScenarioPermissionDenied: () => '未获得 Phase 交付真实场景的授权',
+    gateUnjudged: (detail) => `Phase 交付门禁无法完成评判：${detail}`,
+    gateAuditFailed: (errors) => `项目审计未通过（${errors} 个错误）`,
+    unchangedRepairRecurred: ({ ticketName, targetStepName, failureCode, changelistName }) =>
+      `已停止：${ticketName} 在 ${targetStepName} 上的上一次修复（${changelistName}）没有改动任何文件，同一失败（${failureCode}）又出现了；继续重试只会得到同样的结果。` +
+      '请判断这个失败依据的需求或规划是否需要调整：需要调整时，在 topic.md 的「用户补充需求 (Addenda)」一节写明正确的要求，然后用该 topic 重新 build' +
+      '（追加需求与原需求冲突时以追加需求为准）；如果需求无误而实现有误，修正实现后再 run。',
   },
   engine: {
     cachedTestGateStart: (id, testArgs) =>
@@ -886,12 +1003,10 @@ ${opts.phasePlan}
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## 项目全局约束\n${globalPrompt}`,
     executorPlanContractBlock: (contract) => [
-      '\n\n## 已确认的规划契约（用户确认规划时批准；此后产出的需求、设计、测试和代码都必须与之一致）',
+      '\n\n## 已确认的规划契约（用户确认规划时批准）',
       `需求：${contract.requirementDigest}`,
       ...(contract.phaseObjective ? [`本 Phase 目标：${contract.phaseObjective}`] : []),
       ...(contract.phaseScope.length > 0 ? ['本 Phase 范围：', ...contract.phaseScope.map((item) => `- ${item}`)] : []),
-      '本 Step 冻结、设计或实现的内容必须与此契约一致。上游文档或测试与它不一致时，不要把不一致的部分延续下去：' +
-        '在本 Step 可写路径内的，按此契约修正；不在的，写入 qualityAssessment.blockedBy，指出冲突点和负责它的 Step。',
     ].join('\n'),
     executorAcceptedContractChangesBlock: (changes) =>
       '\n\n## 已合入的契约变更（晚于上面的全局约束，二者不一致时以此为准）\n' +
@@ -908,6 +1023,118 @@ ${opts.phasePlan}
       '上一条回复未通过完整 JSON 校验；该回复中的动作、权限请求和自动验证均未执行。' +
       '请针对当前任务重新生成一条完整 JSON turn，不要返回片段或多个 JSON 文档。' +
       `协议诊断：${diagnostic}`,
+    executorFeedbackText: {
+      crOwnedArtifactsUnproven: (artifacts) =>
+        `CR 完成无效：本 Step 拥有受影响的产物 ${artifacts}。` +
+        '这些文件存在、导出的符号名正确、只读检查通过，都不能证明报告的行为已经修复。' +
+        '请对照 CR 的变更前后契约和失败的调用检查当前实现，然后：用授权的修改工具做最小的语义改动；' +
+        '或者返回 changeRequestDisposition.outcome="not-applicable"，把本 Step 拥有的每个受影响产物列入 inspectedArtifacts，给出具体证据，并在 qualityAssessment.blockedBy 中写明真正的下游负责方。' +
+        '注释、空白、格式或无关的编辑都不算有效的修改证据。',
+      missingOutputsDoneWithoutActions: (missing) =>
+        '完成无效：必需的产出仍然缺失。' +
+        `下一次回复必须包含创建以下文件的具体写入动作：${missing}。` +
+        '这些文件存在之前，不要以 actions=[] 返回 done=true。',
+      crConvergence:
+        '变更请求收敛：如果检查到的证据否定了原始失败诊断，停止探查，也不要修改无关文件。返回 actions=[]、done=true 和 ' +
+        'changeRequestDisposition={outcome:"not-applicable",reasonCategory:"diagnosis-contradicted",' +
+        'rationale,inspectedArtifacts,evidence}。Runtime 会把这些证据转成由发现方角色负责的 Bug，由 PM 派发。' +
+        '否则，应用实际的契约增量，或报告另一种有证据支持的 not-applicable 类别。',
+      outputProgressStalled: (rounds, missing) =>
+        `产出进度警告：必需产出已连续 ${rounds} 个写入/进展轮次没有减少。` +
+        `接下来请创建这些缺失的产出：${missing}。` +
+        '不要反复重写已经满足声明产出的文件。',
+      directRepairTarget: (missing) =>
+        `直接修复目标：必需的产出仍然缺失：${missing}。` +
+        '下一次回复必须用 write_file/apply_patch/replace_in_file 创建或更新这些路径；' +
+        '如果它们已经存在，就运行具体的验证命令。不要再用一整轮只读取文件。',
+      noProgressCreateFirst: (first) =>
+        '无进展警告：actions=[] 且 done=false 不会推进 Step。' +
+        `现在只创建第一个缺失的产出：返回一个 write_file 动作，path="${first}"，并附上完整内容。` +
+        '不要只描述动作，也不要试图在一次回复中生成剩下的多个文件。',
+      noProgressComplete:
+        '无进展警告：actions=[] 且 done=false 不会推进 Step。' +
+        '所有必需产出都已存在并通过验证，Step 已经完成：在下一次回复中返回 done=true、actions=[]，' +
+        '并附上覆盖这些已验证产出的完整 qualityAssessment。' +
+        '只有当你还有已验证产出没有覆盖的具体工作时，才改为执行具体的工具动作。',
+      validationContractRepair:
+        '验证契约 Bug 没有实际修正就不能完成。发现方角色已经证明失败的验证契约、配对测试或其来源阶段的规格有缺陷。' +
+        '本配对来源 Step 必须修补或重写它拥有的受影响产出，并记录增量改动；actions=[] 不能把未改的缺陷推给下游。' +
+        '保留仍然有效的产品行为和断言，然后由 PM 通过变更请求传播修正后的契约。',
+      deferredDispositionMissing: '没有提供有效的结构化延后处置。',
+      deferredArtifactsOwned: (artifacts) => `提议交给下游的产物由本 Step 拥有：${artifacts}。`,
+      deferredArtifactsUninspected: (artifacts) => `提议交给下游的产物没有在当前工作区中检查过：${artifacts}。`,
+      invalidBugNoopHandoff: (detail) =>
+        `Bug 无操作移交无效：${detail}` +
+        '如果根因确实属于下游，返回 bugResolutionDisposition={outcome:"deferred",reasonCategory:"downstream-owned"|"external-dependency",rationale,affectedArtifacts:["path"],evidence:["fact"]}；' +
+        '每个受影响产物都必须不属于本 Step，并且有成功的上下文或读取检查作为依据。否则请修补本 Step 中存在缺陷的产出。',
+      crAllArtifactsOwned: (category, artifacts) =>
+        `变更请求分类无效：不能使用 reasonCategory="${category}"，因为本 Step 拥有全部声明的受影响产物（${artifacts}）。` +
+        '请在本 Step 中应用并验证契约增量；如果证据否定了不可变的原始失败诊断，使用 reasonCategory="diagnosis-contradicted"。',
+      crOwnedArtifactInScope: (category, artifacts) =>
+        `变更请求分类无效：不能使用 reasonCategory="${category}"，因为本 Step 拥有受影响产物 ${artifacts}。` +
+        '本 Step 拥有的增量在这里处理，只有其余产物可以委托出去。如果原始诊断本身不成立，使用 reasonCategory="diagnosis-contradicted"。',
+      crVerificationRequired: (category, artifacts) =>
+        `变更请求分类无效：没有成功的可执行验证，reasonCategory="${category}" 不能关闭本 Step 所拥有产物 ${artifacts} 上的不可变原始失败。` +
+        '请运行相关验证、应用契约增量；如果当前证据否定了原始诊断，使用 reasonCategory="diagnosis-contradicted"。',
+      crDispositionMissing:
+        '变更请求完成不完整。返回顶层 changeRequestDisposition，包含 outcome、reasonCategory、rationale、inspectedArtifacts 和 evidence。' +
+        '只有在有实际修改或成功的可执行验证证据时，才使用 outcome="applied"。' +
+        '只有在检查过声明的受影响产物之后，才使用 outcome="not-applicable"，同时 actions=[]、done=true，并给出具体证据。' +
+        '当 reasonCategory 为 downstream-owned 或 outside-step-scope 时，还要在 qualityAssessment.blockedBy 中写明真正的下游负责方；' +
+        'blockedBy 必须是 JSON 字符串数组，例如 ["CODE owns src/main.ts"]，不能是对象；' +
+        'already-aligned 和 diagnosis-contradicted 不得虚构负责方。' +
+        '不要为了伪造"已应用"而重写无关阶段的产出。',
+      qualityGateIncomplete: (missing) =>
+        `质量门禁协议不完整，缺少以下必需字段或证据：${missing}。` +
+        '不要重写已验证的产出。返回 actions=[] 和 done=true，并附上以现有产物、测试报告或命令证据为依据的完整 qualityAssessment。',
+      validationDefectRejected:
+        '验证缺陷被驳回：Bug 需要来自 run_tests 的可执行测试失败证据，而当前可执行门禁没有失败。' +
+        '请依据成功的测试证据完成本 Step，或在 qualityAssessment.gaps 中报告可度量的完整性/覆盖率不足，以便 Runtime 创建 Enhancement。',
+      permissionAdaptation: (capabilities) =>
+        `授权控制结果：本次 Runtime 任务无法使用以下能力：${capabilities}。` +
+        '你只有一个调整轮次。不要再请求任何被拒绝的能力。' +
+        '改用实质不同的、被允许的动作，或者返回 actions=[] 和 done=false，让 Runtime 向 PM 报告 permission_blocked，而不创建缺陷 Ticket。',
+      pathArgumentMissing:
+        '工具契约违规：文件读写工具要求 args.path 是非空的工作区相对路径。' +
+        '请使用当前 Step 输入、产出或可写白名单中的明确路径重试。',
+      unresolvedFailures: (failures) => `仍有未解决的工具失败：${failures}`,
+      replaceCountRecovery:
+        '替换次数恢复：expectedCount 或 find 与当前文件不符。' +
+        '不要猜测新的次数，也不要重复同样的 find 文本。下一次回复必须使用片段、read_file 或工具提示中显示的当前文件原文，' +
+        '或者改用 apply_patch 对同一个现有目标做最小修复，然后运行验证。' +
+        '只有目标文件确实不存在时才使用 write_file。',
+      contentArgumentInvalid:
+        '工具契约违规：write_file/append_file 要求 args.content 是字面字符串。' +
+        '不要发送 contentBytes、数组、对象，也不要省略 content；用有效的 content 字符串对同一目标重试。',
+      addDependencyArgs:
+        '工具契约违规：add_dependency 要求 args.packages 是非空字符串数组，' +
+        '例如 {"packages":["zod@3.23.8"]}；测试或构建工具请设置 dev=true。',
+      commandAliasCorrection:
+        '工具名纠正：execute_command/run_command/run_shell 不是 Runtime 工具。' +
+        '检查文件用 read_file/list_dir/code_search，声明的测试门禁用 run_tests，经授权的构建或程序检查用 run_program。' +
+        '同一能力的规范工具调用成功后，会取代被拒绝的别名调用。',
+      deferredVerificationCompletion: (phase, stepId) =>
+        `延后验证完成需要一份新的、完整的 qualityAssessment，其 blockedBy 证据把剩余失败归给下游 ${phase} Step ${stepId}。` +
+        '不要重跑未改动的门禁，也不要创建重复的 Bug。',
+      invalidCompletionUnresolved:
+        '完成无效：在每个失败的工具调用都被修正，或被同一目标上成功的工具调用取代之前，不要返回 done=true。',
+    },
+    executorBaselineGate: {
+      validateDeliverables: '校验所有声明的阶段交付物、与上游的一致性、方案证据，以及配对的基线测试资产。',
+      preCodeCorrection: '本次修正仍发生在 S4 建立产品代码之前：更新并静态校验对应的基线测试，但延后它们的执行。',
+      contractChange: '本跳在 S4 之前携带契约变更：静态校验基线测试，但延后执行；配对的验证 Step 会在本链路后续的 S4 应用变更之后运行它们。',
+      initialPass: '这是 CODE 之前的首次执行：编写并静态校验基线测试，但不要执行，因为产品代码还不存在。',
+      keepTestsExecutable: '让测试源码中规划好的产品导入、调用和行为断言保持可执行。不要把它们注释掉，不要替换成 expect(true)/assert True，也不要在测试里复制规划中的产品行为。产品文件缺失是 CODE 之前的预期情况；惰性测试则不是。',
+      onlyExecutionDeferred: '只延后基线测试的执行；交付物、规划、契约和测试资产的检查都不跳过。',
+      blockedByNotGaps: '不要把无法获得的配对测试指标当作测得值报告。如果 completion=1 且唯一剩下的条件是 S4 负责的产品代码，只把它写进 blockedBy，gaps=[]；同时写进 gaps 是自相矛盾的质量报告，Runtime 会在 PM 接收之前拒绝它。',
+    },
+    invalidSupplementRepair: (root, files, language) => [
+      `本 Step 补充测试目录（${root}）下的以下文件不是可执行测试：`,
+      ...files.map((detail) => `- ${detail}`),
+      '那里的每个文件都会作为本 Step 测试套件的一部分运行，并计为它的补充测试之一。请把每个文件的内容替换为针对本 Step 验证范围的可执行测试用例（' +
+        (language === 'typescript' ? 'it() 或 test() 调用' : 'test_* 函数') + '）。',
+      '探针、测量脚本和辅助代码不应放在那里；覆盖率由 Runtime 自行测量。只要还有这样的文件，本 Step 就无法交付。',
+    ].join('\n'),
     executorFeedbackVerifyOk: 'outputs 校验通过。如已完成，请把 done 设为 true 且 actions=[]。',
     executorFeedbackVerifyMissing: (paths: string) => `outputs 仍缺失：${paths}。请继续。`,
     executorFeedbackReadOnlyLoopWarning: (rounds: number, targets: string) =>

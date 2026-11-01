@@ -1,3 +1,4 @@
+import { getPromptLocale, tFor } from '../../i18n/index.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../../workspace/workspace.js';
@@ -179,15 +180,8 @@ export function renderInvalidSupplementRepair(
   invalidSupplements: readonly string[],
   language: Plan['language'],
 ): string {
-  return [
-    `These files under this Step's verification supplement root (${supplementRoot}) are not executable tests:`,
-    ...invalidSupplements.map((detail) => `- ${detail}`),
-    'Every file there runs as part of this Step\'s suite and counts as one of its supplements. Replace each ' +
-      'file\'s content with an executable test case for this Step\'s verification scope (' +
-      (language === 'typescript' ? 'an it() or test() call' : 'a test_* function') + ').',
-    'Probes, measurement scripts and helper code do not belong there; Runtime measures coverage itself. ' +
-      'This Step cannot deliver while any of these remain.',
-  ].join('\n');
+  // The model reads this, so it follows the prompt language.
+  return tFor(getPromptLocale()).prompts.invalidSupplementRepair(supplementRoot, invalidSupplements, language);
 }
 
 async function walk(abs: string, rel: string, out: string[]): Promise<void> {

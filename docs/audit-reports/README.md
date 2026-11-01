@@ -12,7 +12,7 @@
 | 日期 | 文件 | 类型 | 作者 | 范围 |
 |---|---|---|---|---|
 | 2026-10-15 | [2026-10-15-executor-review-handover.md](2026-10-15-executor-review-handover.md) | 进度与审查交接 | Codex | `29d6cca..` Executor 请求留存阶段 |
-| 2026-10-16 | [2026-10-16-change-audit-log.md](2026-10-16-change-audit-log.md) | 变更审计日志（持续追加） | CC | 变更清单 D-1～D-41 的实施过程、证伪明细和遗留 |
+| 2026-10-16 | [2026-10-16-change-audit-log.md](2026-10-16-change-audit-log.md) | 变更审计日志（持续追加） | CC | 变更清单 D-1～D-64 的实施过程、证伪明细和遗留 |
 | 2026-10-16 | [2026-10-16-cc-change-review-handover.md](2026-10-16-cc-change-review-handover.md) | 审查交接 | CC | `e2d0330..efb64b0`（M-C～P1） |
 | 2026-10-17 | [2026-10-17-change-audit-report.md](2026-10-17-change-audit-report.md) | 变更审计报告 | CC | `e6876df..c49b11c`，以及未提交的 C、E 批 |
 | 2026-10-17 | [2026-10-17-codex-audit-report.md](2026-10-17-codex-audit-report.md) | 补充审计 | Codex | Rule 快照与版本升级（SNP-01、DOC-01） |
@@ -22,6 +22,10 @@
 | 2026-10-20 | [2026-10-20-codex-audit-report.md](2026-10-20-codex-audit-report.md) | 独立审计 | Codex | RuleChain 修订（RC-01～RC-07）；处理见变更审计日志对应一节 |
 | 2026-10-21 | [2026-10-21-change-audit-report.md](2026-10-21-change-audit-report.md) | 变更审计报告 | CC | 2026-10-20 报告之后的未提交改动：Codex 审计处理（D-35）、测试类型检查、需求接收重做（D-36～D-38） |
 | 2026-10-21 | [2026-10-21-work-report.md](2026-10-21-work-report.md) | 工作内容报告 | CC | 语言与提示翻译（D-40）及其自我审查后的修正与优化（D-41） |
+| 2026-11-01 | [2026-11-01-change-audit-report.md](2026-11-01-change-audit-report.md) | 变更审计报告 | CC | dbc2excel 业务验证期间的工程修复（D-45～D-61），已随 `1766fc5` 提交；成因、风险与可优化之处 |
+| 2026-11-01 | [2026-11-01-codex-audit-report.md](2026-11-01-codex-audit-report.md) | 独立审计 | Codex | D-45～D-61 与 dbc2excel-5 P1 质量；7 项确认问题、独立验证及修复验收建议 |
+| 2026-11-01 | [2026-11-01-followup-change-audit-report.md](2026-11-01-followup-change-audit-report.md) | 变更审计报告 | CC | `1766fc5` 之上未提交的 D-62～D-64：Codex 审计 XC-01～XC-04 修复、终端与模型提示 i18n、Rule 抽取、类型化失败码与停止原因、语言登记表 |
+| 2026-11-01 | [2026-11-01-followup-codex-audit-report.md](2026-11-01-followup-codex-audit-report.md) | 独立审计 | Codex | D-62～D-64 修复复核；FU-01 覆盖率路径符号链接越界、FU-02 延后验证混合历史误放行；3,761 项测试通过 |
 
 ## 约定
 

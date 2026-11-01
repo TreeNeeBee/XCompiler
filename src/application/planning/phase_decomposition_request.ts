@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import { z } from 'zod';
 import {
   ComplexityAssessmentSchema, ImplementationPhaseSchema, PROJECT_TYPES,
@@ -28,9 +29,9 @@ const SkillNamesSchema = z.array(z.string().refine((value) => value.trim().lengt
 /** Original approved phase, context and Skill names are audit inputs, never a second prompt source. */
 export const PhaseDecompositionPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('planning-phase-decomposition'),
-  templateVersion: z.literal(PHASE_DECOMPOSITION_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  templateVersion: z.literal(PHASE_DECOMPOSITION_TEMPLATE_VERSION), locale: LocaleSchema,
   /** The user's language, which deliverables are written in; absent, the prompt locale. */
-  outputLocale: z.enum(['en', 'zh']).optional(),
+  outputLocale: LocaleSchema.optional(),
   parseContext: PhasePlanPayloadSchema.shape.parseContext,
   clarifications: PhasePlanPayloadSchema.shape.clarifications,
   phasePlan: DraftPhasePlanSchema,

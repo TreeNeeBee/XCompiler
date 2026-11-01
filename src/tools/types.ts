@@ -157,7 +157,19 @@ export type ToolFailureCode =
   /** The test runner started but reached no verdict: the invocation was rejected or found no tests. */
   | 'test_run_without_verdict'
   /** run_tests refused: this Step's own declared test files are not written yet. */
-  | 'declared_tests_unwritten';
+  | 'declared_tests_unwritten'
+  /** The call's arguments are malformed: a wrong type or a missing required value. */
+  | 'invalid_args'
+  /** A file tool was given no usable file path: absent, blank, or the workspace root itself. */
+  | 'path_argument_missing'
+  /** write_file/append_file content is not a string. */
+  | 'content_argument_invalid'
+  /** The path resolves outside the project directory. */
+  | 'path_outside_project'
+  /** The path names nothing in the workspace. */
+  | 'path_not_found'
+  /** replace_in_file found its find text a different number of times than it expected. */
+  | 'replace_count_mismatch';
 
 /**
  * Whether a failure describes a condition this Step does not own and cannot repair.

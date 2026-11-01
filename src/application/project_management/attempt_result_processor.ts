@@ -16,6 +16,7 @@ import type { TicketRegistrationService } from './ticket_registration_service.js
 import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
+import { recordedRunStop, type RunStop } from './run_stop.js';
 
 export interface AttemptResultProcessorOptions {
   repository: DomainObjectRepositoryPort;
@@ -48,7 +49,7 @@ export interface AttemptTransitionEvent {
 
 export type AttemptDisposition =
   | { action: 'continue'; integrate?: boolean }
-  | { action: 'stop'; reason: string };
+  | { action: 'stop'; reason: string; stop?: RunStop };
 
 export class AttemptResultProcessor {
   constructor(private readonly options: AttemptResultProcessorOptions) {}
@@ -78,10 +79,7 @@ export class AttemptResultProcessor {
         steps, work.step, affectedArtifacts, project.language,
       );
       if (affected.length === 0) {
-        return {
-          action: 'stop',
-          reason: `${work.ticket.name} has no downstream verification path`,
-        };
+        return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
       }
       const solution = correctiveSolution(work, result.solutionPlan, result.changedFiles, result.commit);
       const parentTicket = work.ticket.parentTicketId
@@ -201,10 +199,7 @@ export class AttemptResultProcessor {
       const reason = result.reason ?? result.failure!.message;
       // Record the interruption in the registry before touching the already failed audit sink.
       await this.options.controller.deferEvidencePersistenceFailure(work, reason);
-      return {
-        action: 'stop',
-        reason: `Required evidence storage failed; ${work.ticket.name} is pending without a defect Ticket: ${result.failureLog ?? reason}`,
-      };
+      return stopFor({ code: 'evidence_storage_failed', ticketName: work.ticket.name, detail: result.failureLog ?? reason });
     }
     await this.options.audit.event('note', `${work.step.name} attempt rejected`, {
       messageId: 'domain.step_attempt_rejected',
@@ -249,12 +244,11 @@ export class AttemptResultProcessor {
         workMode: mode,
         reason,
       });
-      return {
-        action: 'stop',
-        reason: permissionBlocked
-          ? `Permission blocked; ${work.ticket.name} is pending without a defect Ticket: ${result.failureLog ?? reason}`
-          : `LLM infrastructure failure; ${work.ticket.name} is pending for retry: ${result.failureLog ?? reason}`,
-      };
+      return stopFor({
+        code: permissionBlocked ? 'permission_blocked' : 'infrastructure_failure',
+        ticketName: work.ticket.name,
+        detail: result.failureLog ?? reason,
+      });
     }
     if (isAgentExecutionStall(result)) {
       const reason = result.reason ?? 'Agent execution stalled without project defect evidence.';
@@ -821,4 +815,9 @@ function fallbackExecutionFailure(reason?: string) {
     retryable: true,
     switchProvider: false,
   };
+}
+
+/** A stop for one of the processor's own reasons: the typed fact, with the English rendering records keep. */
+function stopFor(stop: RunStop): AttemptDisposition {
+  return { action: 'stop', reason: recordedRunStop(stop), stop };
 }

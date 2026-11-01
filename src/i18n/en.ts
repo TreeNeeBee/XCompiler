@@ -252,6 +252,9 @@ const messages: Messages = {
     permissionDeniedStop: (operation, target, consequence, reason) =>
       `Stopped: permission for ${operation} (${target}) was not granted${reason ? ` — ${reason}` : ''}. ${consequence}\n` +
       'To continue, run again and approve it, or pass --permission-mode auto to allow Runtime permissions for that run.',
+    permissionPromptRisk: (risk) => `Risk: ${risk}`,
+    permissionPromptScope: (scope) => `Scope: ${scope}`,
+    permissionDenialReasonPrompt: 'Reason for denial (optional):',
     unsupportedSubprocessNetworkOff:
       'sandbox network=off cannot be enforced in subprocess mode; use mode=docker or choose download-only/full explicitly.',
     dockerInsideContainerUnsupported:
@@ -260,6 +263,69 @@ const messages: Messages = {
     smokeOk: (model, totalMs, firstTokenMs, chunks, preview) =>
       `[OK total=${totalMs}ms first-token=${firstTokenMs}ms chunks=${chunks}] ${model} -> ${preview}`,
     smokeFail: (model, message) => `[FAIL] ${model} -> ${message}`,
+  },
+  permissionRequest: {
+    fileWrite: {
+      reason: (step, tool) => `Step ${step} requested ${tool} to update project files.`,
+      risk: 'This operation modifies files in the current workspace.',
+      denyBehavior: 'The tool call is skipped and the agent must continue with an alternative or fail the step.',
+    },
+    addDependency: {
+      reason: (step) => `Step ${step} requested dependency changes and sandbox synchronization.`,
+      risk: 'This can contact a dependency registry, download code, and execute installation scripts.',
+      denyBehavior: 'The dependency change is skipped; later build or test steps may fail and report the missing dependency.',
+    },
+    installDeps: {
+      reason: (step) => `Step ${step} requested dependency installation.`,
+      risk: 'This may execute package manager scripts and download code from registries.',
+      denyBehavior: 'Dependency installation is skipped and the task continues with the missing dependency reported.',
+    },
+    runTests: {
+      reason: (step) => `Step ${step} requested test execution to validate changes.`,
+      risk: 'Project test scripts may execute arbitrary local project code.',
+      denyBehavior: 'Tests are skipped and the final result must mark verification as incomplete.',
+    },
+    runProgram: {
+      reason: (step) => `Step ${step} requested program execution.`,
+      risk: 'This executes project code in the configured sandbox.',
+      denyBehavior: 'The command is skipped and the agent must use another validation strategy or fail the step.',
+    },
+    httpFetch: {
+      reason: (step) => `Step ${step} requested network access.`,
+      risk: 'This contacts an external HTTP endpoint from the host process.',
+      denyBehavior: 'The network call is skipped; the agent must use local context or report the missing data.',
+    },
+    sandboxSync: {
+      reason: (tool, manifest) =>
+        `${tool} changed ${manifest}; the sandbox must install the declared dependencies before later build and test commands.`,
+      risk: 'The package manager may download code and execute dependency installation scripts.',
+      denyBehavior: 'Keep the manifest change but skip sandbox synchronization; later build or test commands will report missing dependencies.',
+    },
+    gitSnapshots: {
+      reason: () => 'Each Step attempt needs a reversible workspace baseline and a verified changelist commit.',
+      risk: 'XCompiler may initialize the workspace repository and create local commits.',
+      denyBehavior: 'Stop because failed attempts cannot be rolled back safely.',
+    },
+    sandboxBuild: {
+      reason: () => 'Prepare project dependencies before executing the V-model.',
+      risk: 'The configured package manager executes inside the selected sandbox.',
+      denyBehavior: 'Stop because downstream Steps cannot be verified.',
+    },
+    mergeChangeSet: {
+      reason: () => 'Land the validated CODE ChangeSet so downstream V-model Steps test the new code.',
+      risk: 'Creates one squash commit on the canonical project branch.',
+      denyBehavior: 'Keep the ChangeSet gate-passed and stop delivery before downstream testing.',
+    },
+    projectAudit: {
+      reason: () => 'Run the phase delivery audit before closing its Epic.',
+      risk: 'The audit may execute tests or the project entrypoint in the configured sandbox.',
+      denyBehavior: 'Keep the phase open and return a failed run.',
+    },
+    liveScenarios: {
+      reason: () => 'Validate the delivered functionality through declared real-user operations.',
+      risk: 'The product commands may contact live external services using the configured sandbox.',
+      denyBehavior: 'Keep the Phase open without creating a product-defect Ticket.',
+    },
   },
   plugins: {
     invalidId: (id) => `Plugin ID "${id}" is invalid; use lowercase letters, digits, dots, hyphens, or underscores.`,
@@ -372,7 +438,7 @@ const messages: Messages = {
     optPromote: 'fast-forward the current branch after every qualification gate passes',
     optCleanup: 'remove the isolated worktree after writing the report (branch is retained)',
     optDockerQualification: 'use the experimental Docker runner for candidate qualification',
-    invalidLocale: (value) => `Unsupported language "${value}"; use EN or CN.`,
+    invalidLocale: (value, supported) => `Unsupported language "${value}"; use one of: ${supported}.`,
     invalidIntent: (value, allowed) => `Invalid intent "${value}"; expected one of: ${allowed}.`,
     invalidPhase: (value, allowed) => `Invalid phase "${value}"; expected one of: ${allowed}.`,
     invalidStepId: (value) => `Invalid Step ID "${value}"; expected S followed by at least three digits.`,
@@ -606,11 +672,46 @@ const messages: Messages = {
         'an extra python prefix is ignored. TypeScript: npx tsx <entry> by default; npm, npx, node, tsx and tsc prefixes also work. ' +
         'When the product\'s specified contract requires a non-zero exit for this input (for example a documented failure exit code), ' +
         'set expectExitCode to that code: the call then succeeds only if the program exits with exactly it. Not for test runners.',
+      expectExitCodeInvalid: (value) => `run_program.expectExitCode must be an integer exit code from 0 to 255; got ${value}.`,
+      expectExitCodeForTestRunner: 'run_program.expectExitCode is for the product\'s own exit codes. A test runner\'s non-zero exit is its ' +
+        'verdict on the tests and cannot be declared expected; fix the tests or the product instead.',
+      expectedExitMismatch: (expected, actual) => `The call declared expectExitCode: ${expected}, but the program exited ${actual}.`,
+      declareExpectedExit: (exitCode) => `If exit ${exitCode} is what the product's specified contract requires for this input ` +
+        `(for example a documented failure exit code), run the same command again with expectExitCode: ${exitCode}; ` +
+        'otherwise fix the cause.',
     },
     runTests: {
       description: 'Runs the test suite in the sandbox (Python: pytest; TypeScript: npm test / Vitest), with optional extra arguments. ' +
         'The TypeScript UNIT_TEST gate turns coverage collection on by itself, so do not pass --coverage again. ' +
         'On failure the summary carries the last lines of stderr and stdout, enough to fix from.',
+      declaredTestsUnwritten: (files) => `run_tests refused: this Step's declared test files do not exist yet: ${files}. ` +
+        'Write them first — the suite cannot run, let alone pass, until they exist. ' +
+        'Author each file with its real assertions against the product module it verifies.',
+      refusedOptions: (options) => `Not passed to the runner, because Runtime decides which tests this gate runs: ${options}. ` +
+        'Only output options such as -v, -q, --tb and -p no:cacheprovider are passed on.',
+      pytestWithoutVerdict: {
+        3: 'pytest stopped on an internal error before any test reached a verdict. No test failed; ' +
+          'read the error above (often a conftest.py or plugin problem) and fix that before running again.',
+        4: 'pytest rejected the invocation itself (an unknown option, or a path that does not exist), so no ' +
+          'test ran. No test failed; correct the arguments. Runtime already supplies the test selectors and, ' +
+          'at UNIT_TEST, the coverage options — pass only extra flags pytest itself accepts.',
+        5: 'pytest collected no tests, so no test reached a verdict. Make sure the selected files define ' +
+          'test functions named test_* (or classes named Test*) that pytest can collect.',
+      },
+      importDepth: (specifier, testPath, directory, prefix) =>
+        `${specifier} from ${testPath} resolves outside the workspace — from ${directory}/ the product is reached with exactly ${prefix}src/…`,
+    },
+    typescriptRunner: {
+      commandNotInstalled: 'The command is named in package.json but is not installed in this sandbox. ' +
+        'Run install_deps for the devDependencies it declares, then run it again.',
+      sourcesPending: 'The configured source files do not exist yet; they are the CODE Step\'s output. ' +
+        'This is expected before CODE runs and is not this Step\'s to repair. Do not edit tsconfig.json ' +
+        'to make the compiler quiet — leave the configuration describing the source layout it will have.',
+      manifestMissing: (root, subject) => `No package.json in ${root}, so nothing declares ${
+        subject === 'tests' ? 'a test script' : 'this command'
+      } or the packages it needs. ` +
+        'This project\'s manifest is written by the HIGH_LEVEL_DESIGN Step; a Step running before it ' +
+        'cannot execute anything here and must not try to repair it.',
     },
     installDeps: {
       description: 'Installs extra dependencies in the sandbox (Python: pip install; TypeScript: npm install). It does not write them back to the dependency manifest.',
@@ -707,15 +808,36 @@ const messages: Messages = {
       'and build again from that topic; where the addenda conflict with the earlier requirements, the addenda take precedence.',
     auditScenarioPlanConflict: (scenario) =>
       `scenario ${scenario}: the requirement this Phase froze conflicts with the confirmed plan; requirement analysis corrects it to the plan and the change is carried to the later Steps`,
-    unchangedRepairStop: ({ ticketName, targetStepName, failureCode, changelistName }) =>
-      `Stopped: the last repair of ${ticketName} on ${targetStepName} (${changelistName}) changed no file, and the same failure (${failureCode}) came back; retrying would only repeat it. ` +
-      'Decide whether the requirement or plan behind the failure needs to change: if so, state the correct requirement in the "User addenda" section of topic.md and build again from that topic ' +
-      '(where the addenda conflict with the earlier requirements, the addenda take precedence); if the requirement is right and the implementation is wrong, correct it and run again.',
     auditPackageJsonMissing: 'missing package.json',
     auditScriptMissing: (name) => `package.json has no ${name} script`,
     auditCommandOk: (name) => `${name} ok`,
     auditCommandFailed: (name, exitCode, timedOut) =>
       `${name} failed (exit=${exitCode}${timedOut ? ', timeout' : ''})`,
+    phaseRecovered: (phase) => `recovered ${phase} from the canonical Project state`,
+    iterationPrepared: (completed, next) => `iteration ${completed} passed; prepared ${next}`,
+    ticketRouted: (creator, ticket, assignee) => `${creator} created ${ticket} → PM → ${assignee}`,
+  },
+  runStop: {
+    gateWithoutRoutableFindings: () => 'Phase delivery gate failed without routable findings',
+    gateFindingsLeftNoWork: (codes) => `Phase delivery gate failed and its findings left no work to schedule: ${codes}`,
+    sandboxBuildFailed: (detail) => `sandbox build failed: ${detail}`,
+    pendingMergeIntegration: (status) => `pending merge integration ${status}`,
+    mergeIntegration: (status) => `merge integration ${status}`,
+    mergeGateFailed: () => 'merge gate failed',
+    mergeAuthorizationRequired: () => 'merge authorization is required before downstream execution',
+    noDownstreamVerification: (ticket) => `${ticket} has no downstream verification path`,
+    evidenceStorageFailed: (ticket, detail) =>
+      `Required evidence storage failed; ${ticket} is pending without a defect Ticket: ${detail}`,
+    permissionBlocked: (ticket, detail) => `Permission blocked; ${ticket} is pending without a defect Ticket: ${detail}`,
+    infrastructureFailure: (ticket, detail) => `LLM infrastructure failure; ${ticket} is pending for retry: ${detail}`,
+    gateAuditPermissionDenied: () => 'project audit permission denied',
+    gateLiveScenarioPermissionDenied: () => 'phase delivery live-scenario permission denied',
+    gateUnjudged: (detail) => `phase delivery gate could not be judged: ${detail}`,
+    gateAuditFailed: (errors) => `project audit failed (${errors} error(s))`,
+    unchangedRepairRecurred: ({ ticketName, targetStepName, failureCode, changelistName }) =>
+      `Stopped: the last repair of ${ticketName} on ${targetStepName} (${changelistName}) changed no file, and the same failure (${failureCode}) came back; retrying would only repeat it. ` +
+      'Decide whether the requirement or plan behind the failure needs to change: if so, state the correct requirement in the "User addenda" section of topic.md and build again from that topic ' +
+      '(where the addenda conflict with the earlier requirements, the addenda take precedence); if the requirement is right and the implementation is wrong, correct it and run again.',
   },
   engine: {
     cachedTestGateStart: (id, testArgs) =>
@@ -893,13 +1015,10 @@ Return strict JSON StepPlan for the current phase only.`,
       (suggestions ? `\n\n${suggestions}` : ''),
     executorGlobalBlock: (globalPrompt: string) => `\n\n## Project-wide constraints\n${globalPrompt}`,
     executorPlanContractBlock: (contract) => [
-      '\n\n## Confirmed plan contract (approved by the user; every requirement, design, test and code artifact produced since must agree with it)',
+      '\n\n## Confirmed plan contract (approved by the user when the plan was confirmed)',
       `Requirement: ${contract.requirementDigest}`,
       ...(contract.phaseObjective ? [`This Phase's objective: ${contract.phaseObjective}`] : []),
       ...(contract.phaseScope.length > 0 ? ["This Phase's scope:", ...contract.phaseScope.map((item) => `- ${item}`)] : []),
-      'What this Step freezes, designs or implements must agree with this contract. Where an upstream document or test ' +
-        'disagrees with it, do not carry the disagreement forward: correct it if it is inside this Step\'s writable paths; ' +
-        'otherwise record it in qualityAssessment.blockedBy, naming the conflicting point and the Step that owns it.',
     ].join('\n'),
     executorAcceptedContractChangesBlock: (changes) =>
       '\n\n## Accepted contract changes (newer than the constraints above; follow these where they differ)\n' +
@@ -916,6 +1035,137 @@ Return strict JSON StepPlan for the current phase only.`,
       'Your previous reply failed full-response JSON validation. No action, permission request or automatic verification from that reply was executed. ' +
       'Generate one complete JSON turn for the current task; do not return fragments or multiple JSON documents. ' +
       `Protocol diagnostic: ${diagnostic}`,
+    executorFeedbackText: {
+      crOwnedArtifactsUnproven: (artifacts) =>
+        'Invalid CR completion: this Step owns affected artifacts ' +
+        `${artifacts}. ` +
+        'Their existence, exported symbol names, and read-only inspection do not prove that the reported behavior was repaired. ' +
+        'Compare the CR before/after contract and failing invocation with the current implementation. Then either use an authorized mutation tool ' +
+        'for a minimal semantic delta, or return changeRequestDisposition.outcome="not-applicable" with every owned affected artifact in inspectedArtifacts, concrete evidence, and the true downstream owner in qualityAssessment.blockedBy. ' +
+        'Comments, whitespace, formatting, or unrelated edits are invalid mutation evidence.',
+      missingOutputsDoneWithoutActions: (missing) =>
+        'Invalid completion: required outputs are still missing. ' +
+        `Next response must include concrete write actions that create: ${missing}. ` +
+        'Do not return done=true with actions=[] until those files exist.',
+      crConvergence:
+        'Change Request convergence: if the inspected evidence disproves the original failure diagnosis, ' +
+        'stop probing and do not mutate unrelated files. Return actions=[], done=true and ' +
+        'changeRequestDisposition={outcome:"not-applicable",reasonCategory:"diagnosis-contradicted",' +
+        'rationale,inspectedArtifacts,evidence}. Runtime will turn that evidence into a Bug owned by the ' +
+        'discovering role and PM will route it. Otherwise apply the actual contract delta or report a ' +
+        'different evidence-backed not-applicable category.',
+      outputProgressStalled: (rounds, missing) =>
+        `Output progress warning: required outputs have not decreased for ${rounds} write/progress rounds. ` +
+        `Create these exact missing outputs next: ${missing}. ` +
+        'Do not keep rewriting files that already satisfy declared outputs.',
+      directRepairTarget: (missing) =>
+        `Direct repair target: required outputs are still missing: ${missing}. ` +
+        'Next response must create or update those exact paths with write_file/apply_patch/replace_in_file, ' +
+        'or run a concrete verification command if they already exist. Do not spend another round only reading files.',
+      noProgressCreateFirst: (first) =>
+        'No-progress warning: actions=[] with done=false does not advance the step. ' +
+        `Create exactly the first missing output now: return one write_file action with path="${first}" and its complete content. ` +
+        'Do not merely describe the action or try to generate several remaining files in one response.',
+      noProgressComplete:
+        'No-progress warning: actions=[] with done=false does not advance the step. ' +
+        'Every required output is present and verified, so the step is complete: return done=true ' +
+        'in the next response, with actions=[] and a complete qualityAssessment covering the ' +
+        'verified outputs. Run a concrete tool action instead only if you have specific work left ' +
+        'that the verified outputs do not yet cover.',
+      validationContractRepair:
+        'Validation-contract Bug completion is invalid without a real correction. The discovering role proved that the failed validation contract, paired test, or its source-stage specification is defective. ' +
+        'This paired source Step must patch or rewrite the affected output it owns and record the incremental change; actions=[] cannot delegate the unchanged defect downstream. ' +
+        'Preserve product behavior and assertions that remain valid, then let PM propagate the corrected contract through Change Requests.',
+      deferredDispositionMissing: 'No valid structured deferred disposition was supplied.',
+      deferredArtifactsOwned: (artifacts) => `The proposed downstream artifacts are owned by this Step: ${artifacts}.`,
+      deferredArtifactsUninspected: (artifacts) =>
+        `The proposed downstream artifacts were not inspected from the current workspace: ${artifacts}.`,
+      invalidBugNoopHandoff: (detail) =>
+        `Invalid Bug no-op handoff: ${detail} ` +
+        'If the root cause truly belongs downstream, return bugResolutionDisposition={outcome:"deferred",reasonCategory:"downstream-owned"|"external-dependency",rationale,affectedArtifacts:["path"],evidence:["fact"]}; ' +
+        'every affected artifact must be outside this Step ownership and backed by a successful context/read inspection. Otherwise patch the current Step output that owns the defect.',
+      crAllArtifactsOwned: (category, artifacts) =>
+        `Invalid Change Request classification: reasonCategory="${category}" cannot be used because ` +
+        `this Step owns every declared affected artifact (${artifacts}). ` +
+        'Apply and verify the contract delta in this Step, or use reasonCategory="diagnosis-contradicted" when the evidence disproves the immutable origin-failure diagnosis.',
+      crOwnedArtifactInScope: (category, artifacts) =>
+        `Invalid Change Request classification: reasonCategory="${category}" cannot be used because ` +
+        `this Step owns affected artifact(s) ${artifacts}. ` +
+        'Handle the owned delta here; only the remaining artifacts may be delegated. Use reasonCategory="diagnosis-contradicted" if the origin diagnosis itself is false.',
+      crVerificationRequired: (category, artifacts) =>
+        `Invalid Change Request classification: reasonCategory="${category}" cannot close an immutable origin failure ` +
+        `for owned artifact(s) ${artifacts} without successful executable verification. ` +
+        'Run the relevant verification, apply the contract delta, or use reasonCategory="diagnosis-contradicted" if current evidence disproves the original diagnosis.',
+      crDispositionMissing:
+        'Change Request completion is incomplete. Return a top-level changeRequestDisposition with outcome, reasonCategory, rationale, inspectedArtifacts, and evidence. ' +
+        'Use outcome="applied" only with real mutation or successful executable verification evidence. ' +
+        'Use outcome="not-applicable" only after inspecting the declared affected artifact(s), with ' +
+        'actions=[], done=true, and concrete evidence. When reasonCategory is downstream-owned or ' +
+        'outside-step-scope, also name the true downstream owner in qualityAssessment.blockedBy; ' +
+        'blockedBy must be a JSON string array such as ["CODE owns src/main.ts"], never objects; ' +
+        'already-aligned and diagnosis-contradicted must not invent one. ' +
+        'Do not rewrite unrelated phase outputs to manufacture an application.',
+      qualityGateIncomplete: (missing) =>
+        'Quality gate protocol is incomplete. Required fields/evidence are missing: ' +
+        `${missing}. ` +
+        'Do not rewrite verified outputs. Return actions=[] and done=true with a complete qualityAssessment ' +
+        'backed by the existing artifact, test-report, or command evidence.',
+      validationDefectRejected:
+        'Validation defect rejected: a Bug requires failed executable test evidence from run_tests. ' +
+        'The current executable gate did not fail. Complete the Step from the successful test evidence, ' +
+        'or report measurable completeness/coverage shortcomings in qualityAssessment.gaps so Runtime can create an Enhancement.',
+      permissionAdaptation: (capabilities) =>
+        'Permission control outcome: the following capabilities are unavailable for this Runtime task: ' +
+        `${capabilities}. ` +
+        'You have exactly one adaptation round. Do not request any denied capability again. ' +
+        'Use a materially different permitted action, or return actions=[] and done=false so Runtime ' +
+        'can report permission_blocked to PM without opening a defect Ticket.',
+      pathArgumentMissing:
+        'Tool contract violation: file write/read tools require args.path to be a non-empty relative workspace path. ' +
+        'Retry with an explicit path from the current Step inputs, outputs, or writable allowlist.',
+      unresolvedFailures: (failures) => `Unresolved tool failures remain: ${failures}`,
+      replaceCountRecovery:
+        'Replace count recovery: expectedCount or find does not match the current file. ' +
+        'Do not guess a new count or retry the same find text. Next response must use the exact current file bytes shown by snippets/read_file/tool hints, ' +
+        'or switch to apply_patch on the same existing target with a minimal repair, then run verification. ' +
+        'Use write_file only when the target file is genuinely missing.',
+      contentArgumentInvalid:
+        'Tool contract violation: write_file/append_file require args.content to be a literal string. ' +
+        'Do not send contentBytes, arrays, objects, or omitted content; retry the same target with a valid content string.',
+      addDependencyArgs:
+        'Tool contract violation: add_dependency requires args.packages as a non-empty string array, ' +
+        'for example {"packages":["zod@3.23.8"]}; set dev=true for test/build tooling.',
+      commandAliasCorrection:
+        'Tool name correction: execute_command/run_command/run_shell are not Runtime tools. ' +
+        'Use read_file/list_dir/code_search for inspection, run_tests for the declared test gate, ' +
+        'or run_program for an authorized build/program check. A successful canonical tool call ' +
+        'with the same capability supersedes the denied alias.',
+      deferredVerificationCompletion: (phase, stepId) =>
+        'Deferred verification completion requires a fresh, complete qualityAssessment whose blockedBy evidence ' +
+        `attributes the remaining failure to downstream ${phase} Step ${stepId}. ` +
+        'Do not rerun the unchanged gate or create a duplicate Bug.',
+      invalidCompletionUnresolved:
+        'Invalid completion: do not return done=true until each failed tool call is corrected ' +
+        'or superseded by a successful tool call on the same target.',
+    },
+    executorBaselineGate: {
+      validateDeliverables: 'Validate all declared stage deliverables, upstream alignment, solution evidence, and paired baseline test assets.',
+      preCodeCorrection: 'This correction still occurs before S4 has established product code: update and statically validate the exact baseline tests, but defer their executable run.',
+      contractChange: 'This hop carries a contract change ahead of S4: statically validate the baseline tests, but defer their executable run; the paired verification Step runs them after S4 applies the change later in this chain.',
+      initialPass: 'This is the initial pre-CODE pass: author and statically validate the baseline tests, but do not execute them because product code does not exist yet.',
+      keepTestsExecutable: 'Keep planned product imports, calls, and behavioral assertions executable in the test source. Do not comment them out, replace them with expect(true)/assert True, or duplicate the planned product behavior inside the test. Missing product files are an expected pre-CODE condition; an inert test is not.',
+      onlyExecutionDeferred: 'Only executable baseline execution is deferred; no deliverable, plan, contract, or test-asset check is skipped.',
+      blockedByNotGaps: 'Do not report unavailable paired-test metrics as measured values. If completion=1 and the only remaining condition is product code owned by S4, put it only in blockedBy with gaps=[]; duplicating it in gaps is a contradictory quality report and Runtime will reject it before PM intake.',
+    },
+    invalidSupplementRepair: (root, files, language) => [
+      `These files under this Step's verification supplement root (${root}) are not executable tests:`,
+      ...files.map((detail) => `- ${detail}`),
+      'Every file there runs as part of this Step\'s suite and counts as one of its supplements. Replace each ' +
+        'file\'s content with an executable test case for this Step\'s verification scope (' +
+        (language === 'typescript' ? 'an it() or test() call' : 'a test_* function') + ').',
+      'Probes, measurement scripts and helper code do not belong there; Runtime measures coverage itself. ' +
+        'This Step cannot deliver while any of these remain.',
+    ].join('\n'),
     executorFeedbackVerifyOk:
       'outputs verified. If you are done, set done=true and actions=[].',
     executorFeedbackVerifyMissing: (paths: string) =>

@@ -1,3 +1,4 @@
+import { LocaleSchema } from '../../domain/locale.js';
 import { z } from 'zod';
 import { AcceptedContractChangeSchema } from './accepted_contract_changes.js';
 import { PriorAttemptFailureSchema } from './execution_stall.js';
@@ -86,9 +87,9 @@ export type ExecutionPromptContext = z.infer<typeof ExecutionPromptContextSchema
 
 export const ExecutionTurnPayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal('step-execution-turn'),
-  templateVersion: z.literal(EXECUTION_TURN_TEMPLATE_VERSION), locale: z.enum(['en', 'zh']),
+  templateVersion: z.literal(EXECUTION_TURN_TEMPLATE_VERSION), locale: LocaleSchema,
   /** The user's language, which deliverables are written in; absent, the prompt locale. */
-  outputLocale: z.enum(['en', 'zh']).optional(),
+  outputLocale: LocaleSchema.optional(),
   parseContext: z.object({ language: z.enum(LANGUAGES) }).strict(), round: PositiveInteger,
   promptContext: ExecutionPromptContextSchema, initialMissingOutputs: z.array(z.string()),
   tools: z.array(z.object({ name: Text, description: z.string(), argsSchema: z.record(z.string(), z.json()) }).strict())

@@ -25,11 +25,11 @@ export const addDependencyTool: Tool<
   argsSchema: { packages: 'string[]', dev: 'boolean?' },
   async run(args, ctx) {
     if (!args || !Array.isArray(args.packages) || !args.packages.every((p) => typeof p === 'string')) {
-      return { ok: false, error: 'invalid add_dependency args: packages must be a non-empty string[]' };
+      return { ok: false, error: 'invalid add_dependency args: packages must be a non-empty string[]', code: 'invalid_args' };
     }
     const normalized = [...new Set(args.packages.map((p) => p.trim()).filter(Boolean))];
     if (normalized.length === 0) {
-      return { ok: false, error: 'invalid add_dependency args: packages must include at least one package name' };
+      return { ok: false, error: 'invalid add_dependency args: packages must include at least one package name', code: 'invalid_args' };
     }
     // One design decides the whole dependency set. A Step that edits the manifest under
     // HIGH_LEVEL_DESIGN changes what every other Step already resolved against, and nobody checked
@@ -50,7 +50,7 @@ export const addDependencyTool: Tool<
       forWrite: true,
       relativePathHints: ctx.allowedWrites,
     });
-    if (!resolved.ok) return { ok: false, error: resolved.error };
+    if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
     const abs = resolved.abs;
     const added: string[] = [];
     const updated: string[] = [];

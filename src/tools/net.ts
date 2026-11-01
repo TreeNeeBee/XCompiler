@@ -80,7 +80,7 @@ export const httpFetchTool: Tool<HttpFetchArgs, HttpFetchData> = {
         forWrite: true,
         relativePathHints: ctx.allowedWrites,
       });
-      if (!resolved.ok) return { ok: false, error: resolved.error };
+      if (!resolved.ok) return { ok: false, error: resolved.error, code: resolved.code };
       saveAsAbs = resolved.abs;
       const { isAllowedWrite } = await import('./types.js');
       if (!isAllowedWrite(resolved.rel, ctx.allowedWrites)) {
