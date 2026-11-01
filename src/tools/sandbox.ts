@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { toolText } from './tool_text.js';
 import path from 'node:path';
-import { isPathPattern, type Tool, type ToolContext, type ToolFailureCode } from './types.js';
+import { isPathPattern, type Tool, type ToolContext, type ToolFailureCode, type ToolResult } from './types.js';
 import type { StepType } from '../domain/steps/step.js';
 import { detectNetworkApiFailureInExec } from '../application/execution/network_failure.js';
 import { isCoverageArgument, normalizeTypeScriptTestArgs } from '../sandbox/test_args.js';
@@ -275,7 +275,11 @@ export const runTestsTool: Tool<
     // even started, and then read any file on the host.
     const coverageReport = ctx.language === 'typescript' ? undefined : pytestCoverageReport(gateArgs);
     const runDirectory = cwd.abs ?? ctx.ws.root;
-    if (coverageReport) await fs.rm(path.resolve(runDirectory, coverageReport), { force: true });
+    // Even the gate's own path is followed to where it really lands: a `coverage/` linking outside
+    // the project had Runtime delete a file there before the run, and pytest-cov would write there.
+    const coverageFile = coverageReport ? await confinedCoverageReport(ctx, runDirectory, coverageReport) : undefined;
+    if (coverageFile && !coverageFile.ok) return coverageFile.refusal;
+    if (coverageFile) await fs.rm(coverageFile.abs, { force: true });
     const r = await ctx.sandbox.runTests(runArgs, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     // A test runner's verdict is its exit code. Network text inside a passing suite is the suite's
     // own subject matter — a project whose tests cover "the source is unreachable" prints exactly
@@ -299,7 +303,10 @@ export const runTestsTool: Tool<
     const scopeNote = refusedOptions.length > 0
       ? toolText().runTests.refusedOptions(refusedOptions.join(', '))
       : '';
-    const coverage = coverageReport && passed ? await readPytestCoverage(path.resolve(runDirectory, coverageReport)) : undefined;
+    // Checked again: the directory may have been replaced while the suite ran.
+    const readable = coverageReport && passed ? await confinedCoverageReport(ctx, runDirectory, coverageReport) : undefined;
+    if (readable && !readable.ok) return readable.refusal;
+    const coverage = readable ? await readPytestCoverage(readable.abs) : undefined;
     const successEvidence = ctx.language === 'typescript' ? extractVitestEvidence(r.stdout)
       : coverage ? [`coverage lines=${coverage.lines}%${coverage.branches === undefined ? '' : ` branches=${coverage.branches}%`}`] : [];
     const failedTests = failed
@@ -466,6 +473,20 @@ function pytestRunWithoutVerdict(
 export interface MeasuredCoverage {
   lines: number;
   branches?: number;
+}
+
+/** The gate's coverage report where it really lands, or the refusal when that is outside the project. */
+async function confinedCoverageReport(
+  ctx: ToolContext,
+  runDirectory: string,
+  report: string,
+): Promise<{ ok: true; abs: string } | { ok: false; refusal: ToolResult<never> }> {
+  const resolved = await resolveWorkspacePath(ctx.ws, path.resolve(runDirectory, report), 'run_tests', { forWrite: true });
+  if (resolved.ok) return { ok: true, abs: resolved.abs };
+  return {
+    ok: false,
+    refusal: { ok: false, code: 'runtime_path_outside_project', error: toolText().runTests.coverageReportOutside(report) },
+  };
 }
 
 /** The JSON report a pytest-cov gate asks for, relative to the directory the run happens in. */

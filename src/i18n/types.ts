@@ -401,6 +401,7 @@ export interface Messages {
     runTests: {
       description: string;
       declaredTestsUnwritten: (files: string) => string;
+      coverageReportOutside: (report: string) => string;
       refusedOptions: (options: string) => string;
       /** Why a pytest exit reached no verdict, by exit code. */
       pytestWithoutVerdict: Readonly<Record<3 | 4 | 5, string>>;

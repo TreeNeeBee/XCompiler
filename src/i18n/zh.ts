@@ -678,6 +678,8 @@ const messages: Messages = {
       description: '在沙盒内运行测试套件（Python: pytest；TypeScript: npm test / Vitest），可指定额外参数。' +
         'TypeScript UNIT_TEST 门禁会自动启用覆盖率采集，无需重复传 --coverage。' +
         '失败时 summary 自动附带 stderr/stdout 末尾若干行，调用方可直接据此修复。',
+      coverageReportOutside: (report) => `run_tests 被拒绝：覆盖率报告路径 ${report} 实际指向项目目录之外。` +
+        'Runtime 不会删除、读取或采信那里的报告。请移除通往项目外的链接后重新运行。',
       declaredTestsUnwritten: (files) => `run_tests 被拒绝：本 Step 声明的测试文件还不存在：${files}。` +
         '先写出这些文件——它们不存在时，测试套件无法运行，更谈不上通过。' +
         '每个文件都要写出针对它所验证的产品模块的真实断言。',

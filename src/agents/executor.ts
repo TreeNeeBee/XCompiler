@@ -1234,6 +1234,13 @@ export class StepExecutor {
           data: r.data,
         });
         turnResults.push({ ...r, tool: a.tool });
+        // A path Runtime owns leads outside the project: no action of this Step can change that and
+        // the access cannot be authorised, so the attempt stops as permission blocked rather than
+        // reading the refusal as a failing suite or retrying it.
+        if (r.code === 'runtime_path_outside_project') {
+          permissionBlockedReason = `permission_blocked: ${r.error ?? a.tool}`;
+          return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
+        }
         const isFailedVerificationAction = a.tool === 'run_tests';
         if (
           isFailedVerificationAction &&
@@ -1466,7 +1473,6 @@ export class StepExecutor {
         canAcceptDeferredVerificationFailure(
           inp,
           unresolvedToolFailures,
-          calls,
           qualityAssessment,
         );
       const deferredNoopHandoff =
@@ -2350,22 +2356,20 @@ function isUnauthorizedVerification(key: string, failure: UnresolvedToolFailure)
 function canAcceptDeferredVerificationFailure(
   input: ExecutorRunInput,
   unresolved: Map<string, UnresolvedToolFailure>,
-  calls: ExecutorRunResult['toolCalls'],
   assessment: StageQualityAssessment | undefined,
 ): boolean {
   if (!input.debugContext?.deferredVerificationScope || unresolved.size === 0) return false;
   if (!assessment || assessment.blockedBy.length === 0) return false;
-  // A refused or unpermitted run_tests never reached the suite, so it is no failure to defer —
-  // whichever permission outcome refused it. Neither is a run that reached no verdict: its
-  // invocation or its unwritten files are this Step's to fix, not a downstream Step's.
-  const hasExecutedFailure = calls.some((call) =>
-    call.tool === 'run_tests' &&
-    !call.ok &&
-    call.executionStatus === undefined &&
-    !isTestRunWithoutVerdict(call.code)
+  // Only failures still unresolved now are deferred, and each must be a suite that ran to a verdict.
+  // A refused or unpermitted run_tests never reached the suite, whichever permission outcome refused
+  // it; a run with no verdict is this Step's invocation or unwritten files to fix. Reading the
+  // attempt's history instead let an earlier failure — even one a later pass resolved — carry a
+  // current no-verdict run downstream.
+  return [...unresolved.entries()].every(([key, failure]) =>
+    key.startsWith('verification:run_tests:') &&
+    failure.executionStatus === undefined &&
+    !isTestRunWithoutVerdict(failure.code),
   );
-  if (!hasExecutedFailure) return false;
-  return [...unresolved.keys()].every((key) => key.startsWith('verification:run_tests:'));
 }
 
 function canAcceptDeferredNoopHandoff(

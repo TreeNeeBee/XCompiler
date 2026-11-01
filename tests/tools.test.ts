@@ -1067,6 +1067,40 @@ describe('pytest coverage measured by the unit-test gate', () => {
     expect(seenArgs).toEqual([...gateArgs, '-q']);
   });
 
+  // The gate's own path can still lead elsewhere: a `coverage/` linking outside the project had
+  // Runtime delete the file there before the suite started, and pytest-cov would have written there.
+  it('refuses to run, clear or read a gate coverage report that resolves outside the project', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-cov-'));
+    await fs.writeFile(path.join(outside, 'coverage.json'), 'DO NOT DELETE');
+    await fs.symlink(outside, path.join(ws.root, 'coverage'));
+    let ran = false;
+    const r = await runTestsTool.run({}, pythonCtx(async () => { ran = true; return { exitCode: 0 }; }));
+    expect(r).toMatchObject({ ok: false, code: 'runtime_path_outside_project' });
+    expect(ran).toBe(false);
+    await expect(fs.readFile(path.join(outside, 'coverage.json'), 'utf8')).resolves.toBe('DO NOT DELETE');
+  });
+
+  it('does not read a coverage report whose directory was replaced by an outside link during the run', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-cov-'));
+    await fs.writeFile(path.join(outside, 'coverage.json'), JSON.stringify({ totals }));
+    const r = await runTestsTool.run({}, pythonCtx(async () => {
+      await fs.rm(path.join(ws.root, 'coverage'), { recursive: true, force: true });
+      await fs.symlink(outside, path.join(ws.root, 'coverage'));
+      return { exitCode: 0 };
+    }));
+    expect(r).toMatchObject({ ok: false, code: 'runtime_path_outside_project' });
+    expect((r.data as { coverage?: unknown } | undefined)?.coverage).toBeUndefined();
+    await expect(fs.readFile(path.join(outside, 'coverage.json'), 'utf8')).resolves.toContain('num_statements');
+  });
+
+  it('still measures through a coverage link that stays inside the project', async () => {
+    await ws.ensure('reports');
+    await fs.symlink(path.join(ws.root, 'reports'), path.join(ws.root, 'coverage'));
+    const r = await runTestsTool.run({}, pythonCtx(async () => ({ exitCode: 0, report: { totals } })));
+    expect(r.ok).toBe(true);
+    expect((r.data as { coverage?: unknown }).coverage).toEqual({ lines: 91.5, branches: 72.5 });
+  });
+
   // A report path from the caller had Runtime delete that file before the sandboxed run started,
   // and read it afterwards as the run's measurement — anywhere on the host, not only in the project.
   it.each([

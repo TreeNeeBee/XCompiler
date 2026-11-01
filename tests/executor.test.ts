@@ -1597,6 +1597,123 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.qualityAssessment?.evidence.join('\n')).toContain('remains deferred');
   });
 
+  // A failure earlier in the attempt — even one a later pass resolved — used to qualify the attempt
+  // for deferral, and the current run, which reached no verdict, was handed downstream with it.
+  it.each([[[1, 4]], [[1, 0, 4]]] as const)(
+    'does not defer a current run with no verdict after an earlier failure (pytest exits %j)',
+    async (exits) => {
+      class MixedHistoryLLM implements LLMClient {
+        readonly name = 'mixed-history-deferred-gate';
+        calls = 0;
+        async chat(): Promise<string> {
+          this.calls++;
+          if (this.calls <= exits.length) {
+            const last = this.calls === exits.length;
+            return JSON.stringify({
+              thoughts: 'repair, then run the paired gate again',
+              bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+              actions: [
+                { tool: 'write_file', args: { path: 'src/x.py', content: `x = ${this.calls}\n` } },
+                { tool: 'run_tests', args: { args: last ? ['--tb=not-a-style'] : [] } },
+              ],
+              done: false,
+            });
+          }
+          return JSON.stringify({
+            thoughts: 'the remaining failure belongs to CODE',
+            bugResolutionPlan: 'Keep the accepted CLI contract, repair its test launcher, and propagate implementation through CRs.',
+            qualityAssessment: {
+              completion: 1, upstreamAlignment: 1, metrics: {},
+              tolerance: { failedTests: 1, skippedTests: 0, warnings: 0 },
+              evidence: ['src/x.py updated'], unavailableMetrics: [], gaps: [],
+              blockedBy: ['src/cli.py must be implemented by downstream CODE'],
+            },
+            actions: [],
+            done: true,
+          });
+        }
+      }
+      await ws.ensure('tests');
+      await ws.writeFile('tests/test_gate.py', 'def test_gate():\n    assert True\n');
+      const remaining = [...exits];
+      const result = await new StepExecutor(withFixtureExecutionRequest({ llm: new MixedHistoryLLM(), maxRounds: exits.length + 2 })).run({
+        step: {
+          ...baseStep,
+          phase: 'REQUIREMENT_ANALYSIS',
+          tools: ['write_file', 'run_tests'],
+          qualityGate: {
+            completionMin: 0.95, upstreamAlignmentMin: 0.9, metrics: {},
+            tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 },
+          },
+        },
+        work: 'repair.debug',
+        tools: [writeFileTool, runTestsTool],
+        ctx: {
+          ...ctx,
+          language: 'python',
+          testGateArgs: ['tests/test_gate.py'],
+          sandbox: {
+            async runProgram() { throw new Error('not used'); },
+            async runTests() {
+              const exitCode = remaining.shift() ?? 0;
+              return { exitCode, stdout: exitCode === 1 ? 'FAILED tests/test_gate.py::test_gate' : '', stderr: '', timedOut: false, durationMs: 1 };
+            },
+            async installDeps() { throw new Error('not used'); },
+          } as never,
+        },
+        debugContext: {
+          bugTicketId: 'BUG-MIXED-HISTORY',
+          reason: 'functional test failed',
+          failureLog: 'CLI output was not created',
+          repairRequired: true,
+          deferredVerificationScope: { stepId: 'S008', phase: 'FUNCTIONAL_TEST' },
+        },
+      });
+
+      expect(result.toolCalls.filter((call) => call.tool === 'run_tests').at(-1)).toMatchObject({ ok: false, code: 'test_run_without_verdict' });
+      expect(result.qualityAssessment?.evidence.join('\n') ?? '').not.toContain('remains deferred');
+      expect(result.success).toBe(false);
+    },
+  );
+
+  // A coverage directory leading outside the project cannot be fixed by the Step, nor authorised.
+  it('stops as permission blocked when the gate coverage report resolves outside the project', async () => {
+    class RunGateLLM implements LLMClient {
+      readonly name = 'run-gate';
+      calls = 0;
+      async chat(): Promise<string> {
+        this.calls++;
+        return JSON.stringify({ thoughts: 'run the unit gate', actions: [{ tool: 'run_tests', args: {} }], done: false });
+      }
+    }
+    await ws.ensure('tests');
+    await ws.writeFile('tests/test_gate.py', 'def test_gate():\n    assert True\n');
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-cov-'));
+    await fs.writeFile(path.join(outside, 'coverage.json'), 'DO NOT DELETE');
+    await fs.symlink(outside, path.join(tmp, 'coverage'));
+    const llm = new RunGateLLM();
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 })).run({
+      step: { ...baseStep, phase: 'UNIT_TEST', tools: ['run_tests'] },
+      tools: [runTestsTool],
+      ctx: {
+        ...ctx,
+        language: 'python',
+        testGateArgs: ['tests/test_gate.py', '--cov=src', '--cov-branch', '--cov-report=json:coverage/coverage.json'],
+        sandbox: {
+          async runProgram() { throw new Error('not used'); },
+          async runTests() { throw new Error('the suite must not run'); },
+          async installDeps() { throw new Error('not used'); },
+        } as never,
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.failure).toMatchObject({ kind: 'infrastructure', code: 'permission_blocked' });
+    expect(result.toolCalls).toEqual([expect.objectContaining({ tool: 'run_tests', ok: false, code: 'runtime_path_outside_project' })]);
+    expect(llm.calls).toBe(1);
+    await expect(fs.readFile(path.join(outside, 'coverage.json'), 'utf8')).resolves.toBe('DO NOT DELETE');
+  });
+
   // pytest exited 4: it rejected the invocation and ran nothing. That is the Step's own call to fix,
   // so it is no failed gate to hand to the paired verification Step downstream.
   it('does not defer a paired gate whose run_tests reached no verdict', async () => {

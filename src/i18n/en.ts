@@ -684,6 +684,8 @@ const messages: Messages = {
       description: 'Runs the test suite in the sandbox (Python: pytest; TypeScript: npm test / Vitest), with optional extra arguments. ' +
         'The TypeScript UNIT_TEST gate turns coverage collection on by itself, so do not pass --coverage again. ' +
         'On failure the summary carries the last lines of stderr and stdout, enough to fix from.',
+      coverageReportOutside: (report) => `run_tests refused: the coverage report path ${report} resolves outside the project directory. ` +
+        'Runtime does not delete, read or count a report there. Remove the link that leads outside the project, then run again.',
       declaredTestsUnwritten: (files) => `run_tests refused: this Step's declared test files do not exist yet: ${files}. ` +
         'Write them first — the suite cannot run, let alone pass, until they exist. ' +
         'Author each file with its real assertions against the product module it verifies.',

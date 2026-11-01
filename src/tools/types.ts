@@ -169,7 +169,12 @@ export type ToolFailureCode =
   /** The path names nothing in the workspace. */
   | 'path_not_found'
   /** replace_in_file found its find text a different number of times than it expected. */
-  | 'replace_count_mismatch';
+  | 'replace_count_mismatch'
+  /**
+   * A path Runtime itself owns resolves outside the project. Nothing the Step does changes that, and
+   * access outside the project cannot be authorised, so the attempt stops as permission blocked.
+   */
+  | 'runtime_path_outside_project';
 
 /**
  * Whether a failure describes a condition this Step does not own and cannot repair.
