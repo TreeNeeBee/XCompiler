@@ -197,6 +197,11 @@ function buildExecutorSystem(profile: LanguageProfile): string {
   return profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM;
 }
 
+const RESPONSE_TRUNCATED_GUIDANCE =
+  '回复在达到输出长度上限时被截断，内容不完整，因此整条回复都未被采用。' +
+  '请缩短本轮回复：一次提交更少的 action；大文件分段写入——先用 write_file 写第一段，再用 append_file 逐段追加，可在本轮或后续轮次完成。' +
+  '若回复几乎没有内容，说明上限在开始作答前就已耗尽：请简短规划、尽快作答。';
+
 const messages: Messages = {
   llm: {
     invalidBaseUrl: (raw, fallback) => `[xcompiler] base_url 无效（${raw}）；请配置有效的 HTTP(S) URL（默认值：${fallback}）`,
@@ -206,11 +211,12 @@ const messages: Messages = {
       `上一次候选输出在任何 action 被解析、授权、执行或持久化之前就未通过调用方契约校验：${error.slice(0, 1800)}\n` +
       (hint === 'execution-turn-fields'
         ? '这是 Executor JSON：顶层必须同时包含 actions 数组和 done 布尔值；即使只报告质量评估或 finding 也不能省略。若要处理已分配 Ticket，actions 必须提交实际处理动作，不能只重复问题描述。\n'
-        : '') +
+        : hint === 'response-truncated' ? `${RESPONSE_TRUNCATED_GUIDANCE}\n` : '') +
       '该候选输出声称的工作区变更均未发生；只有原始对话中明确返回的工具结果才属于已执行状态。' +
       '请根据原始 system 和 user 要求重新返回完整结果。若被拒绝的候选输出原本要执行修改，必须再次提交该修改；在调用方工具结果确认修改成功前，不得直接跳到验证。' +
       '只返回要求的格式，不要解释或输出 Markdown。\n\n' +
       `<rejected-output never-executed="true">\n${rejectedOutput}\n</rejected-output>`,
+    responseTruncatedGuidance: RESPONSE_TRUNCATED_GUIDANCE,
     providerCallFailed: (role, model) => `[${role}] provider ${model} 调用失败，切换到下一个`,
     scoreReadFailed: (p, message) => `读取 ${p} 失败：${message}`,
     scoreChanged: (provider, score, previous) => `评分（${provider}）=${score}（原值 ${previous}）`,
@@ -712,6 +718,8 @@ const messages: Messages = {
     },
     applyPatch: {
       description: '应用 unified diff 补丁；每个 +++ 文件头必须包含具体的 workspace 相对目标路径，且目标必须在当前 Step writable allowlist 内。',
+      noFileDiff: 'apply_patch 没有找到可应用的文件差异。每个文件都需要 "--- a/<path>" 和 "+++ b/<path>" 头，每个块头都必须带行号范围，' +
+        '例如 "@@ -12,7 +12,9 @@"；不带行号的块头（如 "@@ name" 或单独的 "@@"）不会被读取。请为块头写上行号范围，或改用 replace_in_file 并给出当前文件的原文。',
     },
     addDependency: {
       description: '向依赖清单追加或更新依赖并重建沙盒。TypeScript packages 支持 name@version；测试/构建工具应设置 dev=true。',
@@ -1120,6 +1128,12 @@ ${opts.phasePlan}
         '不要重跑未改动的门禁，也不要创建重复的 Bug。',
       invalidCompletionUnresolved:
         '完成无效：在每个失败的工具调用都被修正，或被同一目标上成功的工具调用取代之前，不要返回 done=true。',
+      verificationSkippedAfterFailedChange: (tool) =>
+        `run_tests 没有运行：本轮中它前面的 ${tool} 调用失败了，自上一次失败的运行以来没有任何改动。请先修正那次改动，再运行测试。`,
+      providerOutputRejected: (error) =>
+        `上一次 provider 输出被拒绝：${error}\n` +
+        '请保留本对话中已有的具体文件/工具证据，不要重新读取这些文件。' +
+        '下一次回复必须应用聚焦的补丁/写入、执行要求的修复后验证，或说明具体阻塞原因。',
     },
     executorBaselineGate: {
       validateDeliverables: '校验所有声明的阶段交付物、与上游的一致性、方案证据，以及配对的基线测试资产。',

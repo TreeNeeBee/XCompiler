@@ -20,7 +20,7 @@ export const applyPatchTool: Tool<{ patch: string }, { changedFiles: string[] }>
   argsSchema: { patch: 'string' },
   async run(args, ctx) {
     const fileDiffs = parseUnifiedDiff(args.patch);
-    if (fileDiffs.length === 0) return { ok: false, error: 'no file diff parsed' };
+    if (fileDiffs.length === 0) return { ok: false, error: toolText().applyPatch.noFileDiff, code: 'invalid_args' };
     const changed: string[] = [];
     for (const fd of fileDiffs) {
       const resolved = await resolveWorkspacePath(ctx.ws, fd.target, 'apply_patch', {

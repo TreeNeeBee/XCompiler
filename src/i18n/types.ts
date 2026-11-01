@@ -25,6 +25,8 @@ export interface Messages {
     providerValidationFailed: (role: string, model: string) => string;
     providerValidationRetry: (role: string, model: string) => string;
     providerValidationRepairPrompt: (error: string, rejectedOutput: string, hint?: ResponseRepairHint) => string;
+    /** What a model is told when its reply was cut off at the response length limit. */
+    responseTruncatedGuidance: string;
     providerCallFailed: (role: string, model: string) => string;
     scoreReadFailed: (path: string, message: string) => string;
     scoreChanged: (provider: string, score: string, previous: string) => string;
@@ -414,7 +416,7 @@ export interface Messages {
       manifestMissing: (root: string, subject: 'tests' | 'program') => string;
     };
     installDeps: { description: string };
-    applyPatch: { description: string };
+    applyPatch: { description: string; noFileDiff: string };
     addDependency: { description: string };
   };
   /** Comments XCompiler writes into the generated project's own files: a deliverable, in the user's language. */
@@ -597,6 +599,8 @@ export interface Messages {
       commandAliasCorrection: string;
       deferredVerificationCompletion: (phase: string, stepId: string) => string;
       invalidCompletionUnresolved: string;
+      verificationSkippedAfterFailedChange: (tool: string) => string;
+      providerOutputRejected: (error: string) => string;
     };
     /** The development delivery gate's guidance for a Step whose paired baseline does not run yet. */
     executorBaselineGate: {

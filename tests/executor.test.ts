@@ -12,7 +12,7 @@ import { isCompleteTurnJson, StepExecutor, verifyOutputs, type ExecutorOptions }
 import { renderExecutionFeedback } from '../src/agents/execution/feedback_renderer.js';
 import { ExecutionTurnProtocolError, rejectedExecutionTurnEnvelopeKey } from '../src/agents/execution/turn_parser.js';
 import type { ChatMessage, ChatOptions, LLMClient } from '../src/llm/types.js';
-import { LLMRequestError } from '../src/llm/errors.js';
+import { LLMRequestError, ResponseValidationRejection } from '../src/llm/errors.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Step } from '../src/domain/planning/execution_plan.js';
@@ -20,6 +20,7 @@ import { getLanguageProfile } from '../src/application/execution/language_suppor
 import type { Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
+import { applyPatchTool } from '../src/tools/patch.js';
 import { runProgramTool, runTestsTool } from '../src/tools/sandbox.js';
 import {
   ExecutionTurnContractViolation, ExecutionTurnRequestConfigurationError, type ExecutionTurnRequestPort,
@@ -2866,6 +2867,57 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.error).toContain('next attempt must patch/write');
   });
 
+  // A live CODE Step sent a malformed patch and run_tests in one reply, twice: the patch failed, the
+  // run then repeated the last failing one, and each time the whole attempt was thrown away.
+  it('skips a run after a failed change in the same turn, and lets the attempt correct it', async () => {
+    class PatchThenFixLLM implements LLMClient {
+      readonly name = 'patch-then-fix';
+      calls = 0;
+      feedback: string[] = [];
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        this.feedback.push(messages.at(-1)?.content ?? '');
+        if (this.calls === 1) {
+          return JSON.stringify({ thoughts: 'write and test', actions: [
+            { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } },
+            { tool: 'run_tests', args: {} },
+          ], done: false });
+        }
+        if (this.calls === 2) {
+          return JSON.stringify({ thoughts: 'patch without line ranges, then test', actions: [
+            { tool: 'apply_patch', args: { patch: '--- a/src/x.py\n+++ b/src/x.py\n@@ x\n-x = 1\n+x = 2\n' } },
+            { tool: 'run_tests', args: {} },
+          ], done: false });
+        }
+        return JSON.stringify({ thoughts: 'rewrite the file and test again', actions: [
+          { tool: 'write_file', args: { path: 'src/x.py', content: 'x = 2\n' } },
+          { tool: 'run_tests', args: {} },
+        ], done: true });
+      }
+    }
+    const exits = [1, 0];
+    let runs = 0;
+    const llm = new PatchThenFixLLM();
+    const r = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 })).run({
+      step: { ...baseStep, tools: ['write_file', 'apply_patch', 'run_tests'] },
+      tools: [writeFileTool, applyPatchTool, runTestsTool],
+      ctx: {
+        ...ctx,
+        sandbox: {
+          async runProgram() { throw new Error('not used'); },
+          async runTests() { runs++; return { exitCode: exits.shift() ?? 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }; },
+          async installDeps() { throw new Error('not used'); },
+        } as never,
+      },
+    });
+
+    expect(r.error ?? '').not.toContain('verification command repeated without a successful mutation');
+    expect(r.success).toBe(true);
+    expect(runs).toBe(2);
+    expect(llm.feedback[2]).toContain(tFor('en').prompts.executorFeedbackText.verificationSkippedAfterFailedChange('apply_patch'));
+    expect(llm.feedback[2]).toContain(tFor('en').tools.applyPatch.noFileDiff);
+  });
+
   it('stops an identical failed dependency mutation repeated without progress', async () => {
     class RepeatedDependencyLLM implements LLMClient {
       readonly name = 'repeated-dependency';
@@ -5065,6 +5117,44 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.calls).toBe(2);
     expect(result.success).toBe(true);
     expect(llm.feedback).toContain('previous provider output was rejected');
+  });
+
+  // A reply cut off at the provider's length limit came back only as "did not satisfy its
+  // complete-output protocol", so the model resent the same oversized turn until the attempt failed.
+  it.each([
+    { name: 'says the reply was cut off when every provider refused a truncated reply', hint: 'response-truncated' as const },
+    { name: 'gives the generic refusal in the prompt language when the refusal carries no hint', hint: undefined },
+  ])('$name', async ({ hint }) => {
+    const message = 'all LLM providers failed for role python-developer: a/b: ' +
+      'Execution response did not satisfy its complete-output protocol.';
+    class RefusedThenValidLLM implements LLMClient {
+      readonly name = 'refused-then-valid';
+      calls = 0;
+      feedback = '';
+      async chat(messages: ChatMessage[]): Promise<string> {
+        if (++this.calls === 1) {
+          throw new LLMRequestError(message, { code: 'all_providers_failed', mode: 'router', retryable: true, switchProvider: true,
+            details: { role: 'python-developer', failures: ['a/b: …'], contentRejectedOnly: true } },
+          { cause: new ResponseValidationRejection('protocol', new Error('Execution response did not satisfy its complete-output protocol.'), hint) });
+        }
+        this.feedback = messages.at(-1)?.content ?? '';
+        return JSON.stringify({ thoughts: 'write the output',
+          actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 2\n' } }], done: true });
+      }
+    }
+    setLocale('zh');
+    try {
+      const llm = new RefusedThenValidLLM();
+      const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 10 })).run({
+        step: baseStep, tools: [writeFileTool], ctx,
+      });
+      expect(result.success).toBe(true);
+      expect(llm.feedback).toBe(hint
+        ? tFor('zh').llm.responseTruncatedGuidance
+        : tFor('zh').prompts.executorFeedbackText.providerOutputRejected(message));
+    } finally {
+      setLocale('en');
+    }
   });
 
   it('extends once when a successful mutation is followed by one inspection before verification', async () => {

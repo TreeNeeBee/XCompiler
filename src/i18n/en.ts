@@ -201,6 +201,12 @@ Do not output Steps for future planned phases. Do not output requirements.txt. D
 function buildExecutorSystem(profile: LanguageProfile): string {
   return profile.id === 'typescript' ? TYPESCRIPT_EXECUTOR_SYSTEM : PYTHON_EXECUTOR_SYSTEM;
 }
+const RESPONSE_TRUNCATED_GUIDANCE =
+  'The reply was cut off at the response length limit before it was complete, so none of it was used. ' +
+  'Send a shorter turn: fewer actions at once, and write a large file in parts — write_file with the first part, ' +
+  'then append_file with each following part, in this turn or the next. ' +
+  'If little or nothing of the reply arrived, the limit was spent before the answer began: plan briefly and answer sooner.';
+
 const messages: Messages = {
   llm: {
     invalidBaseUrl: (raw, fallback) => `[xcompiler] invalid base_url (${raw}); configure a valid HTTP(S) URL (default: ${fallback})`,
@@ -210,11 +216,12 @@ const messages: Messages = {
       `Your previous candidate failed the caller contract before any action was parsed, authorized, executed, or persisted: ${error.slice(0, 1800)}\n` +
       (hint === 'execution-turn-fields'
         ? 'This is Executor JSON: the top level must contain both an actions array and a boolean done field, even when reporting only an assessment or finding. To handle an assigned Ticket, actions must submit the actual handling operation instead of repeating the problem statement.\n'
-        : '') +
+        : hint === 'response-truncated' ? `${RESPONSE_TRUNCATED_GUIDANCE}\n` : '') +
       'Nothing claimed by that candidate changed the workspace. Treat only explicit tool results in the original conversation as executed state. ' +
       'Return a complete corrected response using the original system and user requirements. If the rejected candidate intended a mutation, submit that mutation again; do not jump to verification until a caller tool result confirms it succeeded. ' +
       'Return only the requested format without explanation or Markdown.\n\n' +
       `<rejected-output never-executed="true">\n${rejectedOutput}\n</rejected-output>`,
+    responseTruncatedGuidance: RESPONSE_TRUNCATED_GUIDANCE,
     providerCallFailed: (role, model) => `[${role}] provider ${model} failed; trying next`,
     scoreReadFailed: (p, message) => `failed to read ${p}: ${message}`,
     scoreChanged: (provider, score, previous) => `score(${provider}) = ${score} (was ${previous})`,
@@ -720,6 +727,9 @@ const messages: Messages = {
     },
     applyPatch: {
       description: 'Applies a unified diff patch; every +++ file header must name a concrete workspace-relative target path, and the target must be inside the current Step\'s writable allowlist.',
+      noFileDiff: 'apply_patch found no file diff it could apply. Each file needs "--- a/<path>" and "+++ b/<path>" headers, and every ' +
+        'hunk header must carry its line ranges, for example "@@ -12,7 +12,9 @@"; a header without them, such as "@@ name" or a bare ' +
+        '"@@", is not read. Write the hunk headers with line ranges, or use replace_in_file with the exact current text.',
     },
     addDependency: {
       description: 'Adds or updates dependencies in the dependency manifest and rebuilds the sandbox. TypeScript packages accept name@version; set dev=true for test and build tools.',
@@ -1149,6 +1159,14 @@ Return strict JSON StepPlan for the current phase only.`,
       invalidCompletionUnresolved:
         'Invalid completion: do not return done=true until each failed tool call is corrected ' +
         'or superseded by a successful tool call on the same target.',
+      verificationSkippedAfterFailedChange: (tool) =>
+        `run_tests was not run: the ${tool} call before it in this turn failed, so nothing has changed since the last failing run. ` +
+        'Fix that change first, then run the tests again.',
+      providerOutputRejected: (error) =>
+        `The previous provider output was rejected: ${error}\n` +
+        'Keep the concrete file/tool evidence already present in this conversation. ' +
+        'Do not reread those files. The next response must apply a focused patch/write, ' +
+        'run the required post-repair verification, or state a concrete blocker.',
     },
     executorBaselineGate: {
       validateDeliverables: 'Validate all declared stage deliverables, upstream alignment, solution evidence, and paired baseline test assets.',

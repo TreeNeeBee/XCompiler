@@ -116,11 +116,15 @@ export function createRuntimeExecutionTurnRequestPort(input: {
               corrections.set(response.providerAttemptId.toLowerCase(), corrected);
               return validateTurn(corrected.text);
             }
-            if (candidateValidationEnabled) throw new ResponseValidationRejection('protocol', cause);
+            // A reply the provider cut off at its length limit is not a format fault: the model can act
+            // only on being told it ran out of room.
+            const repairHint = 'completion' in cause.assessment && cause.assessment.completion.reason === 'truncated'
+              ? 'response-truncated' as const : undefined;
+            if (candidateValidationEnabled) throw new ResponseValidationRejection('protocol', cause, repairHint);
             throw new ExecutionTurnRoundRefusal(cause.assessment.status === 'assessed' ? 'protocol' : 'completion',
               cause.output, { assessment: cause.assessment, feedback: cause.assessment.status === 'assessed'
                 ? { stage: 'protocol', result: cause.assessment.result }
-                : { stage: 'completion', reason: cause.assessment.reason } }, { cause });
+                : { stage: 'completion', reason: cause.assessment.reason }, ...(repairHint ? { repairHint } : {}) }, { cause });
           }
           return validateTurn(text);
         },

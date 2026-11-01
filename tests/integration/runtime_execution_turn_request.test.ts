@@ -18,6 +18,7 @@ import {
   type ExecutionRequestScope, type ExecutionTurnPayload,
 } from '../../src/application/execution/execution_turn_request.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
+import { tFor } from '../../src/i18n/index.js';
 import * as installationRoots from '../../src/config/installation_root.js';
 import { type Step } from '../../src/domain/planning/execution_plan.js';
 import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
@@ -479,6 +480,33 @@ describe('Runtime retained Executor requests', () => {
     expect(server.calls).toHaveLength(2);
     expect(server.calls[1]!.messages.at(-1)!.content.includes('the top level must contain both an actions array and a boolean done field'))
       .toBe(hinted);
+  });
+
+  // A reply the provider cut off at its length limit was reported only as a protocol fault, so the
+  // model resent the same oversized turn: both refusal paths now carry the typed truncation hint.
+  it('marks a reply cut off at the length limit when the round is refused without regeneration', async () => {
+    const server = await endpoint(() => ({ output: valid.slice(0, 40), finish: 'length' }));
+    const current = await fixture(server.url);
+    await expect(current.port.send(request())).rejects.toMatchObject({ code: 'execution_turn_round_refused',
+      stage: 'completion', details: { repairHint: 'response-truncated' } });
+    expect(server.calls).toHaveLength(1);
+  });
+
+  it('tells the model its reply was cut off when regenerating a truncated candidate, and records why', async () => {
+    const server = await endpoint(call => (call === 1 ? { output: valid.slice(0, 40), finish: 'length' } : { output: valid }));
+    const current = await fixture(server.url, { currentScope: { ...scope, work: 'repair.debug' } });
+    const original = request();
+    const payload = { ...original.payload, promptContext: { ...original.payload.promptContext, work: 'repair.debug' as const },
+      validation: { ...original.payload.validation, debuggerRecovery: true } };
+    const docs = payload.tools.map(tool => `- ${tool.name}: ${describeToolForStep(tool, payload.promptContext.ctx, payload.promptContext.step)} args=${JSON.stringify(tool.argsSchema)}`).join('\n');
+    const messages = [original.messages[0]!, { role: 'user' as const,
+      content: renderExecutionUserPrompt(payload.promptContext, docs, payload.initialMissingOutputs, payload.locale) }];
+    await current.port.send({ ...original, payload, messages, validate: (text: string) => { validateExecutionTurnResponse(text, payload); } });
+    expect(server.calls).toHaveLength(2);
+    expect(server.calls[1]!.messages.at(-1)!.content).toContain(tFor('en').llm.responseTruncatedGuidance);
+    const refused = (await current.events()).find(event => event.messageId === 'llm.provider_validation_failed');
+    expect(refused?.data).toMatchObject({ validationError: { repairHint: 'response-truncated',
+      cause: { assessment: { completion: { reason: 'truncated' } } } } });
   });
 
   it('preserves an ordinary consumer exception with no retry, score or adopted result', async () => {

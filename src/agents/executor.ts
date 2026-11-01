@@ -34,7 +34,9 @@ import type {
   ToolPermissionRequest,
   ToolResult,
 } from '../tools/types.js';
-import { isContentRejectionExhausted, isLLMRequestError, ResponseValidationRejection } from '../llm/errors.js';
+import {
+  isContentRejectionExhausted, isLLMRequestError, ResponseValidationRejection, type ResponseRepairHint,
+} from '../llm/errors.js';
 import type { RuleBusinessChatOptions } from '../llm/rule_business_request.js';
 import {
   EXECUTION_TURN_TEMPLATE_VERSION, ExecutionTurnContractViolation, ExecutionTurnEnvelopeError,
@@ -428,7 +430,7 @@ export class StepExecutor {
     const providers = new Set<string>();
 
     const rejectProtocolRound = async (round: number, output: string, details: Readonly<Record<string, unknown>>,
-      feedback: unknown, provider?: string): Promise<ExecutorRunResult | undefined> => {
+      feedback: unknown, provider?: string, repairHint?: ResponseRepairHint): Promise<ExecutorRunResult | undefined> => {
       actualRounds = round;
       parseFailures++;
       await inp.ctx.audit?.executorTurn(inp.step.id, role, round, { actions: [], done: false, raw: output, provider });
@@ -441,7 +443,10 @@ export class StepExecutor {
           `permission_blocked: no permitted alternative was produced for ${[...deniedCapabilities].join(', ')}`;
         return permissionFailure(round, (await verifyOutputs(inp)).missing.length, permissionBlockedReason);
       }
-      messages.push({ role: 'user', content: tFor(getPromptLocale()).prompts.executorFeedbackProtocolRejected(JSON.stringify(feedback)) });
+      const prompts = tFor(getPromptLocale());
+      messages.push({ role: 'user', content: repairHint === 'response-truncated'
+        ? prompts.llm.responseTruncatedGuidance
+        : prompts.prompts.executorFeedbackProtocolRejected(JSON.stringify(feedback)) });
     };
 
     const stepLabel = inp.stepName?.trim() || inp.step.id;
@@ -557,7 +562,8 @@ export class StepExecutor {
         if (err instanceof AuditPersistenceError || isCancellationError(err, this.opts.signal)) throw err;
         if (err instanceof ExecutionTurnRoundRefusal) {
           const terminal = await rejectProtocolRound(round, err.output, { code: err.code, stage: err.stage, ...err.details },
-            err.details.feedback ?? { stage: err.stage }, provider);
+            err.details.feedback ?? { stage: err.stage }, provider,
+            err.details.repairHint === 'response-truncated' ? 'response-truncated' : undefined);
           if (terminal) return terminal;
           continue;
         }
@@ -639,14 +645,14 @@ export class StepExecutor {
                 done: false,
               }),
             });
+            const prompts = tFor(getPromptLocale());
             messages.push({
               role: 'user',
               content: err instanceof ExecutionTurnProtocolError
-                ? tFor(getPromptLocale()).prompts.executorFeedbackProtocolRejected(JSON.stringify(err.diagnostic))
-                : `The previous provider output was rejected: ${truncate(errMsg, 1600)}\n` +
-                'Keep the concrete file/tool evidence already present in this conversation. ' +
-                'Do not reread those files. The next response must apply a focused patch/write, ' +
-                'run the required post-repair verification, or state a concrete blocker.',
+                ? prompts.prompts.executorFeedbackProtocolRejected(JSON.stringify(err.diagnostic))
+                : rejectedResponseRepairHint(err) === 'response-truncated'
+                  ? prompts.llm.responseTruncatedGuidance
+                  : prompts.prompts.executorFeedbackText.providerOutputRejected(truncate(errMsg, 1600)),
             });
             await inp.ctx.audit?.event(
               'note',
@@ -1019,6 +1025,27 @@ export class StepExecutor {
         const previousExactVerificationFailure = exactVerificationKey
           ? failedExactVerificationAttempts.get(exactVerificationKey)
           : undefined;
+        // A change earlier in this turn that failed is not "nothing was changed": the run is skipped and
+        // the model told why, but the attempt goes on. Ending it here threw away two live CODE attempts
+        // whose run_tests came right after a malformed patch in the same reply.
+        const failedChangeThisTurn = previousExactVerificationFailure
+          ? turnResults.find((result) => !result.ok && isOutputMutationTool(result.tool))
+          : undefined;
+        if (failedChangeThisTurn) {
+          const skipped = tFor(getPromptLocale()).prompts.executorFeedbackText
+            .verificationSkippedAfterFailedChange(failedChangeThisTurn.tool);
+          turnResults.push({ tool: a.tool, ok: false, error: skipped });
+          await inp.ctx.audit?.event('note', skipped, {
+            messageId: 'audit.executor_verification_skipped_after_failed_change',
+            stepId: inp.step.id,
+            phase: inp.step.phase,
+            round,
+            mutationGeneration,
+            failedChangeTool: failedChangeThisTurn.tool,
+            action: a,
+          });
+          continue;
+        }
         if (previousExactVerificationFailure) {
           repeatedVerificationFailure =
             `verification command repeated without a successful mutation: ${verificationActionLabel(a)}; ` +
@@ -2080,6 +2107,12 @@ export class StepExecutor {
       metrics,
     };
   }
+}
+
+/** The typed hint of a refused reply, whether it arrives directly or after every provider refused it. */
+function rejectedResponseRepairHint(err: unknown): ResponseRepairHint | undefined {
+  if (err instanceof ResponseValidationRejection) return err.repairHint;
+  return isContentRejectionExhausted(err) && err.cause instanceof ResponseValidationRejection ? err.cause.repairHint : undefined;
 }
 
 function isReadOnlyOrProbeAction(action: LLMAction): boolean {

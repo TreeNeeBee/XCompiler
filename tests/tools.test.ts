@@ -943,6 +943,15 @@ describe('run_tests and run_program hints follow the prompt language', () => {
   });
 });
 
+describe('a patch whose hunks carry no line ranges', () => {
+  // Models write context-only hunk headers ("@@ name", a bare "@@"); the parser reads none of them,
+  // and "no file diff parsed" left a live Step sending the same shape again and again.
+  it.each([['a named header', '@@ RE_SIGNAL'], ['a bare header', '@@']])('is refused with %s, saying what a hunk header needs', async (_case, header) => {
+    const r = await applyPatchTool.run({ patch: ['--- a/src/x.py', '+++ b/src/x.py', header, '-a = 1', '+a = 2', ''].join('\n') }, ctx);
+    expect(r).toMatchObject({ ok: false, code: 'invalid_args', error: tFor('en').tools.applyPatch.noFileDiff });
+  });
+});
+
 describe('file tools say why they failed with a code', () => {
   it.each([
     ['a missing file read', () => readFileTool.run({ path: 'src/absent.py' }, ctx), 'path_not_found'],

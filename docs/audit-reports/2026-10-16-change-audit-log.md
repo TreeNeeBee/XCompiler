@@ -3057,3 +3057,45 @@ P1 包资源问题仍延后；不启用外部付费模型。
   - 执行器不立即停止：1 例失败。
 
 **同类检查（记录，未改）**：Runtime 写入 `.xc-tmp/`（`moveIntoRuntimeTemp`），以及写交付门禁报告、文件清单等固定路径时，用的是 `ws.abs()` 字符串拼接，没有做真实路径检查。这些目录如果被换成外部链接，会写到项目外。建议后续统一一个"Runtime 自有路径的约束"入口。
+
+### dbc2excel-5 P2 run 中 S004 的三处修复（2026-11-01，用户决定，D-66）
+
+**用户要求**："帮我实时监控下，最后审计下业务阐述质量，和最新的改动质量"。监控中 S004（P2 编码）连续失败，用户选择"中断，修复后继续"：apply_patch 解析失败时说明 hunk 头需要行号范围（或改用 replace_in_file）并返回类型码；同一轮前面的修改失败时跳过 run_tests 并反馈，不结束尝试。随后对截断选择"一并修"：回复因输出上限被截断时，反馈明确说明并要求大文件分段写入；审计记录被拒原因与 finish_reason。
+
+**核对**（run 审计 `.xcompiler/audit/audit.jsonl`）：
+- 第 1 次尝试：轮次用尽，`tests/unit/test_cli_exit_codes.py` 未写出。
+- 第 2、3 次尝试：`audit.executor_repeated_verification_without_mutation`。模型提交的 `apply_patch` hunk 头没有行号范围（`@@ name` 或单独的 `@@`），`parseUnifiedDiff` 解析不出任何文件 diff，工具返回不带类型码的"没有可应用的 diff"；同一轮随后的 `run_tests` 在未改动的代码上重跑，触发熔断。
+- 第 4 次尝试：provider 4 次返回 `finishReasons: ['length']`（`maxTokens` 16384），其中 2 次输出为空。模型在 Router 重生成提示和执行器反馈中看到的都只有 "Execution response did not satisfy its complete-output protocol."；执行器反馈还是写死的英文，而本次提示语言是中文。
+- 截断事实原本已在审计中：`llm.provider_validation_failed` 的 `validationError.cause.assessment.completion.reason` 为 `truncated`，`responseEvidence` 中有 `finishReasons`。缺的是传给模型的那一段：`execution_turn_request.ts` 构造拒绝时没有把它带出来。
+
+**处理**：
+- `src/tools/patch.ts`：没有可应用的文件 diff 时返回 `invalid_args` 与 `tools.applyPatch.noFileDiff`（说明 `---/+++` 文件头、hunk 头必须带行号范围，或改用 `replace_in_file`）。
+- `src/agents/executor.ts`（熔断）：在重复验证判定之前，如果同一轮中已有修改类工具失败，跳过这次 `run_tests`，记录 `verificationSkippedAfterFailedChange` 反馈与审计 `audit.executor_verification_skipped_after_failed_change`，不进入熔断。
+- 截断：
+  - `src/llm/errors.ts`：`ResponseRepairHint` 新增 `response-truncated`；
+  - `src/runtime/execution_turn_request.ts`：完成判定为 `truncated` 时，候选重生成路径（`ResponseValidationRejection`）与不重生成路径（`ExecutionTurnRoundRefusal.details.repairHint`）都带上该提示；
+  - Router 重生成提示（`llm.providerValidationRepairPrompt`）与执行器下一轮反馈都使用 `llm.responseTruncatedGuidance`：回复被截断、未被采用；减少单轮 action；大文件先 `write_file` 再 `append_file` 分段写入；若几乎没有输出，说明上限在作答前已耗尽，应简短规划、尽快作答；
+  - 执行器读取提示只看类型字段：直接的 `ResponseValidationRejection.repairHint`，或所有 provider 都拒绝内容后 `LLMRequestError.cause` 上的同一字段；
+  - 原先写死英文的通用拒绝反馈移到 `prompts.executorFeedbackText.providerOutputRejected`，英文文字不变；
+  - 审计：`repairHint` 是拒绝对象的自有字段，随 `validationError` 记录；不重生成路径中随 `audit.executor_turn_protocol_rejected` 的 details 记录。
+
+**测试与证伪**：
+- 新增：
+  - 工具层：hunk 头带名称、单独 `@@` 两种补丁返回 `invalid_args` 与指引；
+  - 执行器层：同一轮"失败的补丁 + run_tests"跳过运行并反馈，下一轮修正后成功，pytest 只运行 2 次；所有 provider 都拒绝截断回复时，下一轮反馈为截断指引；没有提示时为按提示语言渲染的通用拒绝（zh）；
+  - Runtime 层：不重生成路径的拒绝带 `repairHint`；重生成路径的第二次请求含截断指引，审计 `validationError` 记录 `repairHint` 与 `truncated`；
+  - 端到端（真实 Router、写工具）：provider 以 `length` 截断后，下一轮请求的最后一条消息即截断指引，被截断回复中的写入未执行。
+- 证伪 10 处，均有用例失败，已逐字节恢复：
+  - 跳过逻辑去掉：1 例失败；`apply_patch` 指引改回原文：3 例失败；
+  - 截断的 8 处：候选路径不传提示、拒绝 details 不带提示、Router 不转发提示、执行器拒绝调用点丢提示、执行器所有 provider 拒绝分支不读提示、读取函数不看 `cause`、英文提示分支删除、截断判定永不成立，各有 1～3 例失败。
+
+**门禁**：
+- `npm run typecheck`、`npm run lint`、`git diff --check`、`rule check`（26 个列表、85 条 Rule，退出码 0）通过。
+- 全量 `vitest run`：3767 通过，8 例失败，全部是超时，没有断言失败。超时的用例每次都不同，涉及 `domain_execution_engine`、`build_role_wiring`、`runtime_execution_turn_request` 三个文件，都使用本机 loopback HTTP 或编排流程。挂起期间 CPU 基本空闲（1%～9%）：
+  - 单独重跑三个文件：`domain_execution_engine` 25/25 通过；另两个文件仍各有一例随机用例挂起，每次不是同一例；挂起的用例单独补跑都在 1～3 秒内通过；
+  - 在 `f83c88b`（不含本次改动）的临时 worktree 中单独运行 `build_role_wiring`，同样有一例 intake 用例挂起 219 秒后超时；
+  - 结论：这是本机环境中原本就有的挂起，不是本次改动引入的回归。全量门禁在本机没有得到一次完全通过的结果。
+
+**记录，未改**：
+- 窗口预算没有为隐藏推理预留：`responseTokenBudget` 16384 与 `writeChunkBytes` 35389 都按"输出全是可见文本"计算，而本次两次空输出说明推理就用完了上限。截断指引能让模型少写，但单段写入上限仍可能超出实际可见输出的容量。需要按 provider 配置推理预留，属于预算合同变更，建议另行决定。
+- 同类路径：`phase_decomposition_request.ts`、`phase_plan_request.ts`、`clarification_request.ts`、`translation_request.ts` 构造协议拒绝时同样不带截断提示（它们的回复不写文件，指引需另拟）；这次只改了出问题的执行轮次路径。

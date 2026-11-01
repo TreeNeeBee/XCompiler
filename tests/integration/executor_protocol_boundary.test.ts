@@ -10,6 +10,7 @@ import { StepExecutor } from '../../src/agents/executor.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { AuditPersistenceError } from '../../src/audit/errors.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
+import { tFor } from '../../src/i18n/index.js';
 import { type Step } from '../../src/domain/planning/execution_plan.js';
 import { DEFAULT_MODEL_POOLS, roleProfile } from '../../src/domain/workflow/role.js';
 import { defaultRoleForStep, stepWork, type WorkId } from '../../src/domain/workflow/work.js';
@@ -48,7 +49,7 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function endpoint(outputs: string[]) {
+async function endpoint(outputs: Array<string | { output: string; finish: string }>) {
   const calls: Array<{ url: string; input: { messages: ChatMessage[]; stream?: boolean } }> = [];
   const probes: string[] = [];
   const server = createServer((request, response) => {
@@ -64,17 +65,18 @@ async function endpoint(outputs: string[]) {
     let body = '';
     request.on('data', chunk => { body += String(chunk); });
     request.on('end', () => {
-      const output = outputs[Math.min(calls.length, outputs.length - 1)]!;
+      const next = outputs[Math.min(calls.length, outputs.length - 1)]!;
+      const { output, finish } = typeof next === 'string' ? { output: next, finish: 'stop' } : next;
       const input = JSON.parse(body) as { messages: ChatMessage[]; stream?: boolean };
       calls.push({ url: request.url!, input });
       if (input.stream) {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        const frame = { model: 'actual-model', choices: [{ index: 0, delta: { content: output }, finish_reason: 'stop' }] };
+        const frame = { model: 'actual-model', choices: [{ index: 0, delta: { content: output }, finish_reason: finish }] };
         response.end(`data: ${JSON.stringify(frame)}\n\ndata: [DONE]\n\n`);
       } else {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ model: 'actual-model', choices: [{ index: 0,
-          message: { content: output }, finish_reason: 'stop' }] }));
+          message: { content: output }, finish_reason: finish }] }));
       }
     });
   });
@@ -145,6 +147,23 @@ describe('Executor whole-response protocol at the actual Router and Tool boundar
     expect(events.some(event => event.messageId === 'llm.provider_validation_retry')).toBe(false);
     expect(current.decay).not.toHaveBeenCalled();
     await expect(fs.stat(path.join(root, '.xcompiler', 'llm', 'protocol-corrections'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  // The model was told only that its reply broke the complete-output protocol, and resent the same
+  // oversized turn; a reply the provider cut off now reaches the next round as being cut off.
+  it('tells the next round a reply was cut off at the length limit, without executing any of it', async () => {
+    const server = await endpoint([{ output: rejected, finish: 'length' }, accepted]);
+    const current = await fixture(server.url);
+    const result = await new StepExecutor({ request: current.executionRequest('python-developer'), maxRounds: 2 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool],
+      ctx: { ...current.ctx, requestPermission: vi.fn(async () => ({ approved: true })) },
+    });
+    expect(result.success).toBe(true);
+    expect(server.calls).toHaveLength(2);
+    expect(server.calls[1]!.input.messages.at(-1)!.content).toBe(tFor('en').llm.responseTruncatedGuidance);
+    await expect(fs.stat(current.ws.abs('src/rejected.py'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await current.events()).find(event => event.messageId === 'audit.executor_turn_protocol_rejected')?.data)
+      .toMatchObject({ stage: 'completion', repairHint: 'response-truncated', assessment: { completion: { reason: 'truncated' } } });
   });
 
   it.each(['UNIT_TEST', 'INTEGRATION_TEST'] as const)(

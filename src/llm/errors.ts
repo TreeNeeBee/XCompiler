@@ -58,7 +58,7 @@ export function isLLMRequestError(error: unknown): error is LLMRequestError {
 }
 
 /** Extra guidance a caller asks the regeneration prompt to give, chosen by a typed code. */
-export type ResponseRepairHint = 'execution-turn-fields';
+export type ResponseRepairHint = 'execution-turn-fields' | 'response-truncated';
 
 /** Explicit candidate refusal; all other response-validator errors remain control/infrastructure failures. */
 export class ResponseValidationRejection extends Error {
