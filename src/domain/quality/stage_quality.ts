@@ -157,11 +157,31 @@ export function qualityAssessmentShapeIssues(value: unknown): string[] {
   ] as const) {
     if (candidate === undefined) continue;
     if (!Array.isArray(candidate) || candidate.some((item) => typeof item !== 'string')) {
-      issues.push(`qualityAssessment.${canonical} must be a JSON string array`);
+      issues.push(`qualityAssessment.${canonical} must be a JSON string array, such as ["CODE owns this work"], never objects`);
     }
+  }
+  // An invalid finding used to drop the whole assessment during normalization, so the rejection named
+  // every field as missing while all of them were present, and the model resent the same turn.
+  const findings = value.findings ?? value.deliveryFindings;
+  if (findings !== undefined) {
+    if (!Array.isArray(findings)) issues.push('qualityAssessment.findings must be a JSON array of finding objects');
+    else findings.forEach((finding, index) => issues.push(...findingShapeIssues(finding, `qualityAssessment.findings[${index}]`)));
   }
   return issues;
 }
+
+function findingShapeIssues(candidate: unknown, at: string): string[] {
+  const parsed = DeliveryGateFindingSchema.safeParse(candidate);
+  if (parsed.success) return [];
+  return parsed.error.issues.map((issue) => {
+    const where = [at, ...issue.path.map(String)].join('.');
+    return issue.code === 'unrecognized_keys'
+      ? `${where} has unknown field(s) ${issue.keys.map((key) => `"${key}"`).join(', ')}; allowed: ${FINDING_FIELDS}`
+      : `${where}: ${issue.message}`;
+  });
+}
+
+const FINDING_FIELDS = Object.keys(DeliveryGateFindingSchema.shape).join(', ');
 
 /**
  * Reject structurally contradictory model evidence before it can create a corrective Ticket.

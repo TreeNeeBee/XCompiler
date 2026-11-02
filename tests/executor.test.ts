@@ -3260,6 +3260,38 @@ describe('StepExecutor system prompt assembly', () => {
     expect(llm.lastUser).not.toContain('This is the initial pre-CODE pass');
   });
 
+  // Without completion-quality validation the round's own feedback read a malformed assessment the
+  // same way: as absent, naming every field, so the model had nothing to correct.
+  it('names what is wrong with a malformed finding in the round feedback, not every field as missing', async () => {
+    const assessment = { completion: 1, upstreamAlignment: 1, metrics: {}, gaps: [],
+      tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 }, evidence: ['docs/03-detailed-design.md'] };
+    class MalformedFindingLLM implements LLMClient {
+      readonly name = 'malformed-finding';
+      calls = 0;
+      feedback: string[] = [];
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls > 1) this.feedback.push(messages.at(-1)?.content ?? '');
+        if (this.calls === 1) return JSON.stringify({ thoughts: 'write the design', done: false,
+          actions: [{ tool: 'write_file', args: { path: 'docs/03-detailed-design.md', content: '# Detailed Design\n' } }] });
+        if (this.calls === 2) return JSON.stringify({ thoughts: 'report', actions: [], done: true,
+          qualityAssessment: { ...assessment, findings: [{ code: 'gap', summary: 'A gap.', evidence: 'one line', owner: 'CODE' }] } });
+        return JSON.stringify({ thoughts: 'report', actions: [], done: true, qualityAssessment: assessment });
+      }
+    }
+    const llm = new MalformedFindingLLM();
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 4 })).run({
+      step: { ...baseStep, phase: 'DETAILED_DESIGN', tools: ['write_file'], outputs: ['docs/03-detailed-design.md'],
+        qualityGate: { completionMin: 0.95, upstreamAlignmentMin: 0.9, metrics: {},
+          tolerance: { metricShortfall: 0.02, maxFailedTests: 0, maxSkippedTests: 0, maxWarnings: 0 } } },
+      tools: [writeFileTool], ctx: { ...ctx, allowedWrites: ['docs/'] },
+    });
+    expect(result.success, result.error).toBe(true);
+    expect(llm.calls).toBe(3);
+    expect(llm.feedback[1]).toContain('qualityAssessment.findings[0] has unknown field(s) "owner"');
+    expect(llm.feedback[1]).not.toContain('qualityAssessment.completion');
+  });
+
   it('keeps a gated Step in the same conversation until quality evidence is supplied', async () => {
     class QualityHandshakeLLM implements LLMClient {
       readonly name = 'quality-handshake';

@@ -363,6 +363,7 @@ export class StepExecutor {
     let changeRequestDisposition: ChangeRequestDisposition | undefined;
     let qualityAssessment: StageQualityAssessment | undefined;
     let qualityAssessmentRound = 0;
+    let qualityAssessmentShapeProblems: string[] = [];
     let lastToolActionRound = 0;
     let completionSignaled = false;
 
@@ -715,6 +716,7 @@ export class StepExecutor {
         // Doing so hides the actual protocol error and can make a CR repeat forever.
         qualityAssessment = turnQualityAssessment;
         qualityAssessmentRound = turnQualityAssessment ? round : 0;
+        qualityAssessmentShapeProblems = qualityAssessmentShapeIssues(rawTurnQualityAssessment);
       }
       const normalizedActions = normalizeActions(turn.actions, toolMap);
       let actions = normalizedActions.actions;
@@ -1458,12 +1460,15 @@ export class StepExecutor {
         verify.ok &&
         isDeclarativeOutputPhase(inp.step.phase) &&
         turnResults.some((result) => result.ok && isOutputMutationTool(result.tool));
-      const qualityAssessmentMissing = missingQualityAssessmentFields(
-        inp.step,
-        qualityAssessment,
-        qualityAssessmentRound > lastToolActionRound,
-        { baselineExecutionDeferred: inp.baselineTestExecution === 'defer' },
-      );
+      // A malformed assessment is not an absent one: name what is wrong with it, not every field.
+      const qualityAssessmentMissing = !qualityAssessment && qualityAssessmentShapeProblems.length > 0
+        ? qualityAssessmentShapeProblems
+        : missingQualityAssessmentFields(
+          inp.step,
+          qualityAssessment,
+          qualityAssessmentRound > lastToolActionRound,
+          { baselineExecutionDeferred: inp.baselineTestExecution === 'defer' },
+        );
       const invalidCompletionRound =
         turn.done === true &&
         actions.length === 0 &&
@@ -2574,8 +2579,7 @@ function validateExecutionTurnContract(
   const shapeIssues = qualityAssessmentShapeIssues(rawAssessment);
   if (shapeIssues.length > 0) {
     throw new ExecutionTurnContractViolation('quality-assessment-shape',
-      'low-quality Executor response: invalid qualityAssessment shape; ' +
-      `${shapeIssues.join(', ')}; use arrays such as blockedBy:["CODE owns this work"], never objects`,
+      `low-quality Executor response: invalid qualityAssessment shape; ${shapeIssues.join('; ')}`,
     );
   }
   const assessment = normalizeQualityAssessment(rawAssessment);

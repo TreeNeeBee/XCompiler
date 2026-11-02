@@ -53,6 +53,37 @@ describe('retained execution response against its original business contract', (
       payload({ completionQuality: true }))).toThrow(expect.objectContaining({ code: 'execution_turn_contract_violation', reason }));
   });
 
+  // The finding a live Architect sent while handing a product defect to CODE: the assessment was
+  // complete, but the refusal said `missing: qualityAssessment, ...completion, ...evidence`, so the
+  // model resent the same turn until its attempts ran out.
+  const assessed = { completion: 1, upstreamAlignment: 1, metrics: {}, evidence: ['run_tests: 104 passed, 1 failed'],
+    gaps: [], blockedBy: ['src/main.py is owned by CODE'], unavailableMetrics: [], tolerance: { failedTests: 1, skippedTests: 0, warnings: 0 } };
+
+  it('names what is wrong with a malformed finding instead of calling the whole assessment missing', () => {
+    const finding = { code: 'product-defect', summary: 'A failed file leaks its warnings.', affectedArtifacts: ['src/main.py'],
+      evidence: 'test_process_files_broken_file_yields_error_and_no_rows returned four warnings', owner: 'CODE / P2-S004' };
+    let refusal: unknown;
+    try {
+      validateExecutionTurnResponse(JSON.stringify({ actions: [], done: true, qualityAssessment: { ...assessed, findings: [finding] } }),
+        payload({ completionQuality: true }));
+    } catch (error) { refusal = error; }
+    expect(refusal).toMatchObject({ code: 'execution_turn_contract_violation', reason: 'quality-assessment-shape' });
+    const message = (refusal as Error).message;
+    expect(message).toContain('qualityAssessment.findings[0] has unknown field(s) "owner"');
+    expect(message).toContain('qualityAssessment.findings[0].category');
+    expect(message).toContain('qualityAssessment.findings[0].target');
+    expect(message).toContain('qualityAssessment.findings[0].evidence');
+    expect(message).not.toContain('missing: qualityAssessment');
+  });
+
+  it('accepts a well-formed finding beside a complete quality report', () => {
+    const value = { thoughts: 'Hand the product defect to CODE.', actions: [], done: true,
+      qualityAssessment: { ...assessed, findings: [{ category: 'product-defect', code: 'failed-file-warning-leak',
+        summary: 'A failed file leaks its warnings.', evidence: ['four warnings for broken_p2.dbc'], target: 'code',
+        affectedArtifacts: ['src/main.py'] }] } };
+    expect(validateExecutionTurnResponse(JSON.stringify(value), payload({ completionQuality: true }))).toEqual(value);
+  });
+
   it('accepts a complete quality report and leaves actual delivery verification to the existing gate', () => {
     const value = { thoughts: 'Report only original measured evidence.', actions: [], done: true,
       qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {}, evidence: ['The declared command passed.'],

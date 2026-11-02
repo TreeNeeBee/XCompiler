@@ -3099,3 +3099,33 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **记录，未改**：
 - 窗口预算没有为隐藏推理预留：`responseTokenBudget` 16384 与 `writeChunkBytes` 35389 都按"输出全是可见文本"计算，而本次两次空输出说明推理就用完了上限。截断指引能让模型少写，但单段写入上限仍可能超出实际可见输出的容量。需要按 provider 配置推理预留，属于预算合同变更，建议另行决定。
 - 同类路径：`phase_decomposition_request.ts`、`phase_plan_request.ts`、`clarification_request.ts`、`translation_request.ts` 构造协议拒绝时同样不带截断提示（它们的回复不写文件，指引需另拟）；这次只改了出问题的执行轮次路径。
+
+### 结构无效的 finding 被报成"评估缺失"（2026-11-02，用户决定，D-67）
+
+**用户要求**：监控中 S002 卡在 done 回复上，用户选择"中断，修复后继续"：扩展形状检查覆盖 findings，逐条报出缺 category/target、evidence 非数组、多余字段。用户作出选择前，run 已因 OpenRouter 30 秒无响应头（S008 处理 CR-P2-004 时）以基础设施失败结束，CR 待重试。
+
+**核对**（run 审计 `.xcompiler/audit/audit.jsonl`）：
+- S007 的 3 个模块测试失败退回 S002。S002 修正了自己拥有的两处契约测试（`as_row()` 的 Excel 往返形式、PGN 归属 Message），把剩余失败定位为产品缺陷：`src/main.py:76` 把全局 `warnings` 直接传给 `parse_dbc`，坏文件抛错前追加的警告泄漏到返回值，违反高层设计 §6 与详细设计 §1.2"失败文件整体丢弃，既不产生信号行也不产生警告行"。
+- 它的 done 回复中 `qualityAssessment` 的各字段都在，`findings[0]` 却是 `{code, summary, affectedArtifacts, evidence: "<字符串>", owner}`：缺 `category`、`target`，`evidence` 不是数组，`owner` 不在 strict schema 中。
+- `normalizeQualityAssessment` 在 findings 无效时返回 `undefined`，`missingQualityAssessmentFields` 于是报 `missing: qualityAssessment, qualityAssessment.completion, qualityAssessment.upstreamAlignment, qualityAssessment.evidence`；`qualityAssessmentShapeIssues` 只检查 4 个字符串数组字段，没有拦下它。模型得到的理由与事实不符，同一回复反复被拒，S002 连续 4 次尝试失败。
+- 后果（业务侧）：最终交付的那次尝试没有再提交产品缺陷，而是在 `docs/03-high-level-design-p2.md` 中追加了两个同名"附录 A"（一个要求丢弃失败文件的警告并由 CODE 实现，另一个裁定保留警告"属于实现自由度"），并把模块测试改为只断言警告归属该文件。`src/main.py` 未修改，缺陷保留在交付物中。
+- 同类路径：未启用完成质量校验时，逐轮反馈同样把结构无效的评估当作缺失，列出全部字段；它原本不调用结构检查，字符串数组字段写成对象时也是如此。
+
+**处理**：
+- `src/domain/quality/stage_quality.ts`：`qualityAssessmentShapeIssues` 对 `findings`（或 `deliveryFindings`）逐条用 `DeliveryGateFindingSchema` 校验，按 zod 问题的类型码与路径报出问题：未知字段单独成句并列出允许的字段，其余问题给出路径与 zod 的说明。不是数组时报一条。字符串数组字段的"不要写成对象"提示并入各自的问题文字。
+- `src/agents/executor.ts`：
+  - 候选校验路径的 `quality-assessment-shape` 拒绝改为逐条列出问题；
+  - 逐轮路径在本轮评估存在时记录其结构问题；评估结构无效时，`qualityAssessmentMissing` 即为这些问题，而不是全部字段。
+
+**测试与证伪**：
+- 新增：
+  - 契约层：用 run 中那条 finding 原样构造，拒绝原因为 `quality-assessment-shape`，文字含 `findings[0]` 的未知字段 `owner`、`category`、`target`、`evidence`，不含 `missing: qualityAssessment`；结构正确的 finding 照常通过；
+  - 执行器层：未启用完成质量校验时，结构无效的 finding 在下一轮反馈中按路径报出，不列出 `qualityAssessment.completion`；改正后成功。
+- 用 run 审计中真实被拒的那份 `qualityAssessment` 直接调用新检查，得到 4 条问题：`category` 取值、`evidence` 类型、`target` 取值、未知字段 `owner`（附允许字段）。
+- 证伪 5 处，均有用例失败，已逐字节恢复：不检查 findings（2 例失败）、未知字段文字丢失（2 例）、逐轮路径不记录问题（1 例）、逐轮路径不报告问题（1 例）、候选路径绕过结构检查（1 例）。
+
+**门禁**：`npm run typecheck`、`npm run lint`、`git diff --check`、`rule check`（26 个列表、85 条 Rule）通过；`vitest --project core` 2143 例、`--project integration --project e2e` 1635 例全部通过。
+
+**记录，未改**：
+- 交付物中的坏文件警告泄漏与高层设计中两个互相矛盾的"附录 A"仍在，需要后续 run 由 CODE 修复产品代码，并清理设计文档；交付门禁没有发现同名、互相矛盾的附录。
+- `recoveryProbeActionFingerprints` 只按 `工具:路径:offset` 记录已读窗口，不含修改代次；文件修改后再读同一 offset 的新内容，仍被当作重复读取拒绝（本次 S004、S002 都出现）。
