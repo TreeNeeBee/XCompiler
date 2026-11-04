@@ -4880,6 +4880,53 @@ describe('StepExecutor system prompt assembly', () => {
       const r = await run(new RunSuiteLLM(), suite(() => [`${root}test_risk.py::test_rows`]), { maxRounds: 3, maxFailedTestRuns: 2 });
       expect(r.error ?? '').not.toContain('run_tests failed');
     });
+
+    // A live P2 kept this failure at INTEGRATION_TEST because a P1 supplement of its level is its own,
+    // while the executor knew only this Phase's root. Stopped before each edit, it failed six times.
+    describe('in a supplement its level inherited from an earlier Phase', () => {
+      const inheritedRoot = 'tests/verification/p1/integration-test/';
+      const stale = `${inheritedRoot}01a18432/test_integration_supplement.py::test_sup01_sample_a_signals_keep_message_identity`;
+      const inheriting = (llm: LLMClient, tool: Tool<{ args?: string[] }, never>, options: { maxRounds: number; maxFailedTestRuns?: number }) =>
+        new StepExecutor(withFixtureExecutionRequest({ llm, ...options })).run({
+          step, tools: [tool], ctx: { ...ctx, supplementalTestRoot: root, inheritedTestAssets: [inheritedRoot] },
+        });
+
+      it('stays with the Step to repair', async () => {
+        const llm = new RunSuiteLLM();
+        const r = await inheriting(llm, suite((call) => call === 1 ? [stale] : []), { maxRounds: 2 });
+        expect(r.validationDefect).toBeUndefined();
+        expect(llm.calls).toBe(2);
+        expect(llm.users[1]).toContain(stale);
+      });
+
+      it('still hands on a failure that reaches a baseline case', async () => {
+        const llm = new RunSuiteLLM();
+        const r = await inheriting(llm, suite(() => [stale, 'tests/integration/test_pipeline.py::test_merge']), { maxRounds: 2 });
+        expect(r.validationDefect).toContain('tests/integration/test_pipeline.py::test_merge');
+        expect(llm.calls).toBe(1);
+      });
+
+      it('does not count toward the limit that hands the paired source phase a repair', async () => {
+        const r = await inheriting(new RunSuiteLLM(), suite(() => [stale]), { maxRounds: 3, maxFailedTestRuns: 2 });
+        expect(r.error ?? '').not.toContain('run_tests failed');
+      });
+
+      it('takes an edit to it before the gate of the same turn', async () => {
+        const order: string[] = [];
+        const llm: LLMClient = { name: 'edit-then-gate', chat: async () => JSON.stringify({ thoughts: 'correct the stale assertion',
+          actions: [{ tool: 'write_file', args: { path: `${inheritedRoot}01a18432/test_integration_supplement.py`, content: 'x' } },
+            { tool: 'run_tests', args: {} }], done: false }) };
+        const write: Tool<{ path: string; content: string }, never> = { name: 'write_file', description: 'writes', argsSchema: { path: 'string', content: 'string' },
+          async run() { order.push('write'); return { ok: true, summary: 'written' }; } };
+        const gate: Tool<{ args?: string[] }, never> = { name: 'run_tests', description: 'runs the frozen suite', argsSchema: { args: 'string[]' },
+          async run() { order.push('gate'); return { ok: true, summary: 'pytest exit=0' }; } };
+        await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
+          step: { ...step, tools: ['run_tests', 'write_file'] }, tools: [gate, write],
+          ctx: { ...ctx, supplementalTestRoot: root, inheritedTestAssets: [inheritedRoot], allowedWrites: [inheritedRoot] },
+        });
+        expect(order.slice(0, 2)).toEqual(['write', 'gate']);
+      });
+    });
   });
 
   it('resolves a failed product run once the same command meets its declared exit code', async () => {

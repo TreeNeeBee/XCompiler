@@ -3299,3 +3299,15 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **记录，未改**：
 - 根目录 README、quickstart 没有 Step 拥有（U1），列入 CR 会被 `artifact-not-owned` 拒绝。
 - CR 真实传播和这条入口尚未用真实模型跑过。
+
+### 继承补充目录的执行器判断（2026-11-04，真实 run 发现，D-72）
+
+**发现**：用 `61df4c4` 的包执行 CR 重跑。集成层先 3 例失败，2 例在 P1 基线，经详细设计修复；剩余 1 例在 `tests/verification/p1/integration-test/…/test_integration_supplement.py`，断言 `19 == 16`。`P2-S006` 连续 6 次都是读文件、自动追加 `run_tests`、立刻交接，没有一次写文件，`BUG-P2-007` 被收敛保护停止。
+
+**根因**：D-68 把继承目录加进了路由侧的 `failureConfinedToSupplement`，但执行器侧 `failuresConfinedToOwnSupplements` 和 `isVerificationSupplementAction` 仍只认 `supplementalTestRoot`。同一概念的另外两个决策点没有同步，D-68 当时的证伪只覆盖路由侧。
+
+**处理**：`executor.ts` 新增 `ownedSupplementRoots(ctx)`，门禁停止、失败轮次计数、验证前编辑顺序三处共用。
+
+**测试与证伪**：`tests/executor.test.ts` 用真实失败路径新增四例，修复前 `stays with the Step to repair` 失败。证伪 5 处（三个调用点各一处、定义丢继承目录、`every` 改 `some`），全部被杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2254 例通过；integration+e2e 1647 例通过，按退出码判定。修复尚未经真实 run 验证。

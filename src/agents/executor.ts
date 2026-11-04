@@ -1293,7 +1293,7 @@ export class StepExecutor {
           // stopping here first means it never does. A live INTEGRATION_TEST Step read its failing
           // supplement and reran the suite in one turn, six attempts running, and was stopped each
           // time before it could edit the expectation it had already diagnosed as wrong.
-          !failuresConfinedToOwnSupplements(r, inp.ctx.supplementalTestRoot) &&
+          !failuresConfinedToOwnSupplements(r, ownedSupplementRoots(inp.ctx)) &&
           (V_MODEL_TEST_PHASES as readonly string[]).includes(inp.step.phase) &&
           !advisoryFailureTools.has(a.tool)
         ) {
@@ -1369,7 +1369,7 @@ export class StepExecutor {
       // The limit hands the paired source phase a repair; a run with no verdict gives it none to make.
       if (
         turnResults.some((r) => r.tool === 'run_tests' && !r.ok && !isTestRunWithoutVerdict(r.code) &&
-          !failuresConfinedToOwnSupplements(r, inp.ctx.supplementalTestRoot)) &&
+          !failuresConfinedToOwnSupplements(r, ownedSupplementRoots(inp.ctx))) &&
         !advisoryFailureTools.has('run_tests')
       ) {
         failedTestRunRounds++;
@@ -2145,10 +2145,19 @@ function isPreVerificationInspectionAction(action: LLMAction): boolean {
     action.tool === 'analyze_error';
 }
 
+/**
+ * The supplements a verification Step answers for: its own, and those its level inherited from
+ * earlier Phases. Routing keeps a failure confined to either with this Step, so stopping on it here
+ * would leave nobody able to repair it.
+ */
+function ownedSupplementRoots(ctx: ToolContext): string[] {
+  return ctx.supplementalTestRoot ? [ctx.supplementalTestRoot, ...(ctx.inheritedTestAssets ?? [])] : [];
+}
+
 function isVerificationSupplementAction(action: LLMAction, ctx: ToolContext): boolean {
   if (!ctx.supplementalTestRoot) return false;
   if (!isOutputMutationTool(action.tool) && action.tool !== 'http_fetch') return false;
-  const roots = [ctx.supplementalTestRoot, `${RECORDED_FIXTURE_DIR}/`].map(normalizeRelPath);
+  const roots = [...ownedSupplementRoots(ctx), `${RECORDED_FIXTURE_DIR}/`].map(normalizeRelPath);
   const targets = actionTargetPaths(action.tool, action.args).map(normalizeRelPath);
   return targets.length > 0 && targets.every((target) =>
     roots.some((root) => target === root || target.startsWith(`${root.replace(/\/$/u, '')}/`))
@@ -2801,15 +2810,15 @@ function didPerformSuccessfulMutation(action: LLMAction, result: ToolResult): bo
     (Array.isArray(result.data.updated) && result.data.updated.length > 0);
 }
 
-/** Every failing case lies in this Step's own supplement root, so the repair is this Step's. */
-function failuresConfinedToOwnSupplements(result: ToolResult, supplementRoot: string | undefined): boolean {
-  if (!supplementRoot) return false;
+/** Every failing case lies in a supplement root this Step owns, so the repair is this Step's. */
+function failuresConfinedToOwnSupplements(result: ToolResult, supplementRoots: readonly string[]): boolean {
+  if (supplementRoots.length === 0) return false;
   const data = isPlainRecord(result.data) ? result.data : {};
   const failed = Array.isArray(data.failedTests)
     ? data.failedTests.filter((test): test is string => typeof test === 'string')
     : [];
-  const root = normalizeRelPath(supplementRoot).replace(/\/?$/u, '/');
-  return failed.length > 0 && failed.every((test) => normalizeRelPath(test).startsWith(root));
+  const roots = supplementRoots.map((root) => normalizeRelPath(root).replace(/\/?$/u, '/'));
+  return failed.length > 0 && failed.every((test) => roots.some((root) => normalizeRelPath(test).startsWith(root)));
 }
 
 /**
