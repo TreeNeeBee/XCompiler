@@ -42,6 +42,7 @@ export const STEP_WORK_RULE_SLOTS: Readonly<Record<StepWorkId, number>> = Object
 /** Work segment: operations with text of their own. Planning work has no RuleList in 0.4. */
 export const OPERATION_WORK_RULE_SLOTS: Readonly<Partial<Record<WorkId, number>>> = Object.freeze({
   'judge.scenario': 0x00011300,
+  'judge.contract-basis': 0x00011301,
 });
 
 const StepWorkSchema = z.enum(STEP_WORK_IDS);

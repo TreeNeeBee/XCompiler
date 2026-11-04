@@ -177,6 +177,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler build -t <topic.md>` | Reuse a clarified topic and skip Gate 1 |
 | `xcompiler run <phasePlan.json>` | Execute the active phase plan |
 | `xcompiler run --debug-wiki-path <dir>` | Reuse and update a shared layered debug wiki path |
+| `xcompiler run --change-request <file>` | Open a contract change in the Phase in progress, then continue it |
 | `xcompiler load <name.xc>` | Load project config/progress and continue |
 | `xcompiler append <name.xc> -i <file>` | Add a new requirement to an existing project |
 | `xcompiler evolve -w <workspace> -i <file>` | Build and run an incremental change |
@@ -194,6 +195,33 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `npm run release:local -- vX.Y.Z` | Prepare a local release commit and tag without pushing |
 
 ---
+
+### Changing a contract in a Phase in progress
+
+Gates find what they can execute. A defect every check still passes, such as two design sections
+that contradict each other, reaches a Phase through a change you write yourself:
+
+```yaml
+id: failed-file-discards-warnings   # stable: running the same file again opens nothing new
+target: high-level-design           # requirement-analysis | high-level-design | detailed-design | code
+summary: A file that fails to parse contributes no warnings.
+expected: A failed file yields an error row and nothing else.
+evidence:
+  - Two appendices disagree about what a failed file leaves behind.
+affectedArtifacts:                  # owned by the target or a later Step, or tests they inherit
+  - docs/iterations/P2/02-high-level-design.md
+  - src/main.py
+```
+
+```bash
+xcompiler run --change-request change.yaml
+```
+
+The file is checked before any Step or model runs; `--dry-run` stops after that check. The change
+becomes an ordinary Change Request: it starts at `target`, passes through every later V-model Step
+and the Phase gate, and each Step changes only the listed artifacts it owns. Only a Phase in
+progress accepts one, and an `id` already used with different content is refused rather than
+replaced.
 
 ## Runtime Defaults
 

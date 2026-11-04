@@ -1,3 +1,4 @@
+import type { TicketContractBasis } from '../../domain/tickets/ticket.js';
 import { t } from '../../i18n/index.js';
 import type { ProjectAuditResult } from './project_audit.js';
 
@@ -19,6 +20,8 @@ export function renderDeliveryGateReport(input: {
   result: ProjectAuditResult;
   /** Where this run's outputs were set aside, when it left any. */
   setAside?: { directory: string; paths: readonly string[] };
+  /** Every change this Phase made to a test an earlier Phase delivered, and the contract behind it. */
+  contractBases?: readonly (TicketContractBasis & { ticketName: string })[];
 }): string {
   const M = t().deliveryGateReport;
   const lines = [
@@ -44,6 +47,16 @@ export function renderDeliveryGateReport(input: {
     }
     if (check.detail) lines.push(fence(check.detail), '');
     if (check.finding) lines.push(`- ${M.finding}: \`${check.finding.code}\` → ${check.finding.target}`, '');
+  }
+  if (input.contractBases && input.contractBases.length > 0) {
+    lines.push(`## ${M.contractBases}`, '', M.contractBasesNote, '');
+    for (const basis of input.contractBases) {
+      const citation = basis.citation.kind === 'document'
+        ? `\`${basis.citation.document}\`@${basis.citation.revision.slice(0, 7)}: "${basis.citation.quote}"`
+        : basis.citation.ticketId;
+      lines.push(`- \`${basis.path}\` (${basis.ticketName}): ${basis.reason}`, `  - ${citation}`);
+    }
+    lines.push('');
   }
   if (input.setAside && input.setAside.paths.length > 0) {
     lines.push(`## ${M.setAside}`, '', M.setAsideNote(input.setAside.directory), '',

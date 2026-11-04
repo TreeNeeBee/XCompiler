@@ -99,6 +99,9 @@ only authority that changes Ticket state.
 - A Change Request propagation scope starts at its current target, contains unique Steps from one
   Project and Phase, and follows canonical V-model order. Invalid scope data is rejected before a
   Ticket, relation, or lifecycle transition is persisted.
+- A person's contract change enters only a Phase in progress, through `run --change-request`; PM
+  validates it before any model call and it then follows the ordinary propagation. Each listed
+  artifact must be owned by a Step the change reaches, and its id stays bound to its content.
 - A folded Change Request hop retains every source Ticket explicitly. Closing the hop must reconcile
   every source; its final hop must prove every active source Bug's exact verification contract before
   any closure transition. A secondary Bug or Enhancement must not remain parked indefinitely.
@@ -116,6 +119,31 @@ only authority that changes Ticket state.
 - S5-S8 independently inspect the inherited baseline tests, add risk-driven functional tests when
   required by their approved contract, freeze the test set, execute it, and distinguish test defects
   from product defects.
+- Each Phase's tests remain in the suite as regression. A Step inherits, and may update, the
+  executable test assets its same-level Steps of earlier Phases left: a development Step the baselines
+  its earlier counterparts authored, a verification Step its level's earlier supplement roots. Its
+  delivery gate runs the inherited tests it changed (development Steps) or its level's complete set
+  (verification Steps). Ownership judgements — writable scope, Change Request applicability, gate
+  routing, and whether a verification failure is confined to the Step's own supplements — read the
+  same inherited set, and the Step's prompt names what it inherited.
+- A completed Phase is a milestone, and a later Phase must not regress it. Its tests that stay
+  unchanged must keep passing at the Phase delivery gate. A change to one rests on a registered
+  contract basis: a verbatim clause of the current Phase's document at the test's level or above
+  (a functional test can only cite the requirement), or an accepted Change Request. The clause must
+  predate the Ticket, so a Step cannot cite what it just wrote, and a Change Request must name the
+  test among its affected artifacts. Writes without a basis are refused before any permission prompt.
+  A basis is registered only after its write succeeds, against the content that write left, so
+  delivery can recheck every inherited test the Ticket changed by path and content. The Phase delivery
+  gate report lists every registration.
+- Those checks prove a citation is real and at the right level, at every level, and no more. At the
+  functional level, what a user observes, a judge also decides whether the citation truly supersedes
+  the assertion; anything but a yes refuses the write. Below it an unrelated clause cited verbatim
+  still passes.
+- A test run that failed always leaves a failing check, whatever its output looks like. A failed
+  Phase test check names every failing case. Without per-case evidence it says so and routes as a
+  whole; with it, each owner of failing tests receives its cases, the full list of other owners'
+  cases, and the classification decision: an assertion an accepted contract change made stale, or a
+  product defect for its owner.
 - Every Step has a delivery gate. A failed gate creates complete evidence and an appropriate
   corrective route; it is never converted into a silent pass.
 - Every delivery-gate finding carries a stable machine code. Findings with the same category, target,

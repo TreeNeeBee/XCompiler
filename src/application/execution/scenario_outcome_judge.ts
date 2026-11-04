@@ -245,6 +245,23 @@ export interface ScenarioOutcomeReply {
 }
 
 /**
+ * The text a judgement may be read from: the proven correction of an unresolved reply, or a reply that
+ * is valid or normalized with its value preserved. Undefined when neither holds.
+ */
+export function adoptedJudgementText(assessment: BusinessProtocolAssessment, corrected?: string): string | undefined {
+  const inspection = assessment.inspection;
+  // A correction exists only for an unresolved reply; a readable reply keeps its own text.
+  if (corrected !== undefined) return assessment.outcome === 'unresolved' ? corrected : undefined;
+  if ((assessment.outcome !== 'valid' && assessment.outcome !== 'normalized') || inspection.status !== 'assessed'
+    || inspection.result.status === 'unresolved'
+    || (assessment.outcome === 'valid' && inspection.result.status !== 'valid')
+    || (assessment.outcome === 'normalized' && (inspection.result.status !== 'repairable'
+      || assessment.proof.status !== 'preserved' || assessment.proof.original !== inspection.result.original
+      || assessment.proof.candidate !== inspection.result.normalized))) return undefined;
+  return inspection.result.normalized;
+}
+
+/**
  * Protocol validity precedes the existing PM-owned business shape checks.
  *
  * `comparePlan` is set when the judge was given the frozen requirement, and then its reply must say
@@ -256,21 +273,11 @@ export function consumeScenarioOutcomeProtocol(
   assessment: BusinessProtocolAssessment, evidence: readonly string[], corrected?: string,
   options: { comparePlan?: boolean } = {},
 ): ScenarioOutcomeVerdict {
-  const inspection = assessment.inspection;
-  // A correction exists only for an unresolved reply; a readable reply keeps its own text.
-  if (corrected !== undefined && assessment.outcome !== 'unresolved') {
+  const answer = adoptedJudgementText(assessment, corrected);
+  if (answer === undefined) {
     throw new ScenarioOutcomeJudgementError('Scenario outcome judgement has no eligible, value-preserving JSON result');
   }
-  if (corrected === undefined && ((assessment.outcome !== 'valid' && assessment.outcome !== 'normalized') || inspection.status !== 'assessed'
-    || inspection.result.status === 'unresolved'
-    || (assessment.outcome === 'valid' && inspection.result.status !== 'valid')
-    || (assessment.outcome === 'normalized' && (inspection.result.status !== 'repairable'
-      || assessment.proof.status !== 'preserved' || assessment.proof.original !== inspection.result.original
-      || assessment.proof.candidate !== inspection.result.normalized)))) {
-    throw new ScenarioOutcomeJudgementError('Scenario outcome judgement has no eligible, value-preserving JSON result');
-  }
-  const verdict = parseVerdict(corrected ?? (inspection.status === 'assessed' && inspection.result.status !== 'unresolved'
-    ? inspection.result.normalized : ''), options.comparePlan === true);
+  const verdict = parseVerdict(answer, options.comparePlan === true);
   // A malformed judgement is neither evidence that the project passed nor evidence for a Bug. Stop
   // the gate without manufacturing a product Ticket; the runtime/provider failure remains visible.
   if (!verdict) {

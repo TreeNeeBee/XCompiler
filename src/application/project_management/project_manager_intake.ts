@@ -1,10 +1,20 @@
 import type { ObjectId } from '../../domain/identity/object_id.js';
+import type { Phase } from '../../domain/phases/phase.js';
+import type { Language } from '../../domain/planning/execution_plan.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
-import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { inheritedTestAssets } from '../../domain/quality/test_assets.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
 import type { Ticket } from '../../domain/tickets/ticket.js';
+import { t } from '../../i18n/index.js';
+import { earlierPhaseTestOwners } from '../execution/earlier_phase_test_owners.js';
+import { ownedAffectedArtifacts } from '../execution/execution_context.js';
+import { normalizeGitPath } from '../execution/v_model_policy.js';
 import { CorrectiveWorkflowService } from './corrective_workflow_service.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
+import {
+  UserChangeRequestError, userChangeRequestExternalId, userChangeRequestExternalPrefix, type ParsedUserChangeRequest,
+} from './user_change_request.js';
 
 export const PROJECT_MANAGER_PROBLEM_ORIGINS = [
   'phase-delivery-gate',
@@ -26,6 +36,14 @@ export interface ProjectManagerProblemIntake {
   correlationId: ObjectId;
 }
 
+export interface UserChangeRequestInput {
+  projectId: ObjectId;
+  phaseId: ObjectId;
+  change: ParsedUserChangeRequest;
+  language: Language;
+  artifactExists: (path: string) => Promise<boolean>;
+}
+
 export class ProjectManagerIntakeService {
   private readonly corrective: CorrectiveWorkflowService;
   private readonly registration: TicketRegistrationService;
@@ -33,6 +51,72 @@ export class ProjectManagerIntakeService {
   constructor(private readonly repository: DomainObjectRepositoryPort) {
     this.corrective = new CorrectiveWorkflowService(repository);
     this.registration = new TicketRegistrationService(repository);
+  }
+
+  /**
+   * Everything a person's change has to satisfy, without opening anything: `--dry-run` stops here.
+   * Only a Phase in progress can take it, because reopening a closed one is a decision of its own.
+   */
+  async checkUserChangeRequest(input: UserChangeRequestInput): Promise<UserChangeRequestCheck> {
+    const { request, digest } = input.change;
+    const phase = await this.repository.read(input.phaseId);
+    if (phase.objectType !== 'phase' || phase.projectId !== input.projectId) {
+      throw new Error(`PM intake phase ${input.phaseId} does not belong to Project ${input.projectId}`);
+    }
+    const messages = t().execute;
+    if (phase.state !== 'in_progress') {
+      throw new UserChangeRequestError('phase-not-open', messages.userChangeRequestPhaseNotOpen(phase.name, phase.state));
+    }
+    const prefix = userChangeRequestExternalPrefix(phase.name, request.id);
+    const previous = (await this.repository.list({ objectType: 'ticket', projectId: input.projectId })).find((object): object is Ticket =>
+      object.objectType === 'ticket' && object.source.externalId?.startsWith(prefix) === true);
+    if (previous) {
+      if (previous.source.externalId === userChangeRequestExternalId(phase.name, request.id, digest)) {
+        return { status: 'already-accepted', ticket: previous };
+      }
+      throw new UserChangeRequestError('id-conflict', messages.userChangeRequestIdConflict(request.id, previous.name));
+    }
+    const steps = (await Promise.all(phase.stepIds.map((id) => this.repository.read(id))))
+      .filter((object): object is Step => object.objectType === 'step');
+    const acceptance = steps.find((step) => step.type === 'FUNCTIONAL_TEST');
+    const target = steps.find((step) => step.type === FINDING_TARGET_STEP_TYPE[request.target]);
+    if (!acceptance || !target) throw new Error(`PM intake requires a complete V-model Phase: ${phase.name}`);
+    // Every hop takes the part of the list it owns, so one change can reach from a design to the
+    // code. Checked here, since a name no hop owns would be silently ignored by all of them.
+    const earlier = await earlierPhaseTestOwners(this.repository, phase.id);
+    const reached = steps.filter((step) => STEP_TYPE_ORDER[step.type] >= STEP_TYPE_ORDER[target.type]);
+    const claimed = new Set(reached.flatMap((step) => ownedAffectedArtifacts(step, request.affectedArtifacts,
+      inheritedTestAssets(step.type, earlier, input.language))));
+    const foreign = request.affectedArtifacts.filter((artifact) => !claimed.has(normalizeGitPath(artifact)));
+    if (foreign.length > 0) {
+      throw new UserChangeRequestError('artifact-not-owned', messages.userChangeRequestArtifactNotOwned(foreign.join(', '), target.name));
+    }
+    const missing = (await Promise.all(request.affectedArtifacts.map(async (artifact) =>
+      (await input.artifactExists(artifact) ? [] : [artifact])))).flat();
+    if (missing.length > 0) {
+      throw new UserChangeRequestError('artifact-missing', messages.userChangeRequestArtifactMissing(missing.join(', ')));
+    }
+    return { status: 'new', target, acceptance, phase };
+  }
+
+  /** From here on it is an ordinary contract Change Request, from its target through the V model. */
+  async acceptUserChangeRequest(input: UserChangeRequestInput & { correlationId: ObjectId }): Promise<UserChangeRequestCheck | { status: 'accepted'; ticket: Ticket; target: Step }> {
+    const check = await this.checkUserChangeRequest(input);
+    if (check.status === 'already-accepted') return check;
+    const { request, digest } = input.change;
+    const ticket = await this.corrective.routeContractChange({
+      reportingStepId: check.acceptance.id,
+      targetStepId: check.target.id,
+      summary: request.summary,
+      evidence: request.evidence,
+      expected: request.expected,
+      affectedArtifacts: request.affectedArtifacts,
+      creatorActorId: await this.registration.projectManagerActorId(input.projectId),
+      correlationId: input.correlationId,
+      sourceKind: 'pm-intake',
+      sourceExternalId: userChangeRequestExternalId(check.phase.name, request.id, digest),
+    });
+    return { status: 'accepted', ticket, target: check.target };
   }
 
   async accept(input: ProjectManagerProblemIntake): Promise<Ticket[]> {
@@ -150,6 +234,11 @@ export class ProjectManagerIntakeService {
   }
 }
 
+/** Where a person's change would land, or that the same change is already in this Phase. */
+export type UserChangeRequestCheck =
+  | { status: 'new'; target: Step; acceptance: Step; phase: Phase }
+  | { status: 'already-accepted'; ticket: Ticket };
+
 function reportTarget(
   steps: readonly Step[],
   acceptance: Step,
@@ -163,13 +252,7 @@ function reportTarget(
     if (!paired) throw new Error(`PM intake cannot resolve paired source for ${acceptance.name}`);
     return paired;
   }
-  const type = report.target === 'requirement-analysis'
-    ? 'REQUIREMENT_ANALYSIS'
-    : report.target === 'high-level-design'
-      ? 'HIGH_LEVEL_DESIGN'
-      : report.target === 'detailed-design'
-        ? 'DETAILED_DESIGN'
-        : 'CODE';
+  const type = FINDING_TARGET_STEP_TYPE[report.target];
   const target = steps.find((step) => step.type === type);
   if (!target) throw new Error(`PM intake cannot route report to missing ${type} Step`);
   return target;

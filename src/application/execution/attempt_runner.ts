@@ -1,4 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { ExecutionTurnRequestConfigurationError, type ExecutionTurnRequestPortFactory } from './execution_turn_request.js';
 import type { AuditLogger } from '../../audit/audit.js';
 import type { WorkspaceKind } from '../../domain/workspace/change_set.js';
@@ -28,6 +30,12 @@ import {
   computeStepAllowedWrites,
   stepContextChars,
 } from './execution_context.js';
+import { earlierPhaseTestOwners } from './earlier_phase_test_owners.js';
+import {
+  contractBasisDocuments, inheritedTestAssets, isExecutableTestPath, requiresContractBasisJudgement, type TestAssetOwnerStep,
+} from '../../domain/quality/test_assets.js';
+import { resolveContractBasis, type ContractBasisResolution, type ContractBasisSources } from './contract_basis.js';
+import { ContractBasisJudgementError, type ContractBasisJudge } from './contract_basis_judge.js';
 import {
   renderInvalidSupplementRepair,
   TestPhaseValidator,
@@ -43,19 +51,21 @@ import { getLanguageProfile, type LanguageProfile } from './language_support.js'
 import { inspectLanguageProjectContract } from './language_project_contract.js';
 import type { Language, Plan, Step as ExecutionStep } from '../../domain/planning/execution_plan.js';
 import type { StageQualityAssessment } from '../../domain/quality/stage_quality.js';
-import { STEP_TYPE_ORDER, type Step, type StepType } from '../../domain/steps/step.js';
+import { STEP_TYPE_ORDER, VERIFICATION_TO_SOURCE_STEP, type Step, type StepType, type VerificationStepType } from '../../domain/steps/step.js';
 import {
   TicketSchema,
   appendTicketCommit,
+  appendTicketContractBases,
   type BugTicket,
   type Ticket,
   type TicketCommit,
+  type TicketContractBasis,
   type TicketWorkspaceBinding,
 } from '../../domain/tickets/ticket.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import { QualityAssessmentService } from './quality_assessment_service.js';
 import type { QualityAssessment } from '../../domain/quality/quality.js';
-import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import type { Changelist } from '../../domain/evidence/evidence.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { DomainAuditTrail } from '../observability/domain_audit_trail.js';
@@ -71,6 +81,7 @@ import {
   EditGuard,
   resolveWriteChunkBytes,
   isAllowedWrite,
+  type ContractBasisGate,
   type ToolContext,
   type ToolExecutionReporter,
   type ToolPermissionRequester,
@@ -90,6 +101,7 @@ import {
 } from './failure_classification.js';
 import { collectTestOutcomes, unresolvedTestFailures, type TestOutcome } from './test_outcome.js';
 import { acceptedContractChanges } from './accepted_contract_changes.js';
+import { getPromptLocale, tFor } from '../../i18n/index.js';
 import { planContractFor } from './plan_contract.js';
 import { roleProfile, type RoleId } from '../../domain/workflow/role.js';
 import { defaultRoleForStep, stepWork, type WorkId } from '../../domain/workflow/work.js';
@@ -185,6 +197,8 @@ export interface AttemptRunnerOptions {
   recordChangeSetRevision?: (ticketId: Ticket['id'], revision: string) => Promise<void>;
   router: LLMRouter;
   executionRequests?: ExecutionTurnRequestPortFactory;
+  /** Confirms a citation at the levels where a real citation alone proves too little. */
+  judgeContractBasis?: ContractBasisJudge;
   audit: AuditLogger;
   repository: DomainObjectRepositoryPort;
   plugins: PluginHost;
@@ -415,7 +429,7 @@ export class DomainAttemptRunner {
         });
       }
 
-      const environment = await this.buildEnvironment(scope, input, debugContext?.suggestions);
+      const environment = await this.buildEnvironment(scope, input, baseline, debugContext?.suggestions);
       if (verificationInspection && verificationInspection.invalidSupplements.length > 0) {
         // First, so the renderer's per-snippet cap never cuts it: it is what this attempt must fix.
         environment.snippets.unshift({
@@ -589,6 +603,26 @@ export class DomainAttemptRunner {
         result,
       );
       if (deliveredContractFailure) return deliveredContractFailure;
+
+      const unregistered = await this.unregisteredInheritedChanges(scope, input, baseline);
+      if (unregistered.length > 0) {
+        const failureLog = tFor(getPromptLocale()).tools.contractBasis.unregisteredChange(unregistered.join(', '));
+        return await this.failAttempt(scope, baseline, input, {
+          reason: `${input.domainStep.name} changed inherited tests without a contract basis: ${unregistered.join(', ')}`,
+          failureLog,
+          failure: {
+            kind: 'execution',
+            category: 'quality',
+            code: 'inherited_test_change_unregistered',
+            message: failureLog,
+            retryable: true,
+            switchProvider: false,
+            details: { paths: unregistered },
+          },
+          executor: result,
+          wikiEntryIds: wikiMatches.map((match) => match.entry.id),
+        });
+      }
 
       // A verification Step's own supplements are checked once it has run, never before: it is the
       // only Step that may repair them. What it leaves invalid stays its work, not its source's.
@@ -791,7 +825,7 @@ export class DomainAttemptRunner {
     }
   }
 
-  private async buildEnvironment(scope: ExecutionScope, input: AttemptInput, debugSuggestions?: string) {
+  private async buildEnvironment(scope: ExecutionScope, input: AttemptInput, attemptBaseline: string, debugSuggestions?: string) {
     const incremental = input.mode !== 'normal';
     const verificationScope = resolveAttemptVerificationScope(
       input.plan,
@@ -837,7 +871,9 @@ export class DomainAttemptRunner {
     const supplementalTestRoot = isVerification(input.domainStep)
       ? this.testValidator(scope).supplementalRoot(input.executionStep)
       : undefined;
-    const allowedWrites = this.attemptAllowedWrites(scope, input);
+    const allowedWrites = await this.attemptAllowedWrites(scope, input);
+    const earlierTestOwners = await this.earlierTestOwners(input);
+    const inheritedTests = inheritedTestAssets(input.domainStep.type, earlierTestOwners, input.plan.language);
     const retryFeedback = await this.latestAttemptFailure(input);
     const rewriteExistingFiles = input.mode === 'debug'
       ? await this.failureEvidenceRewriteTargets(scope, input, allowedWrites, retryFeedback)
@@ -885,6 +921,10 @@ export class DomainAttemptRunner {
       writeChunkBytes: resolveWriteChunkBytes(window.writeChunkBytes, budgetContext),
       testGateArgs: resolveAttemptTestArgs(verificationScope, input.plan.language),
       supplementalTestRoot,
+      inheritedTestAssets: inheritedTests,
+      inheritedGateTests: this.inheritedGateTests(scope, input, earlierTestOwners, attemptBaseline),
+      contractBasisDocuments: inheritedTests.length > 0 ? contractBasisDocuments(input.domainStep.type, input.plan.phaseId) : undefined,
+      contractBasisGate: this.contractBasisGate(scope, input, earlierTestOwners, attemptBaseline),
       preserveExistingFiles: shouldPreserveExistingFiles(input.mode),
       rewriteExistingFiles,
       requestPermission: this.options.requestPermission,
@@ -1202,10 +1242,11 @@ export class DomainAttemptRunner {
   }
 
   /** What this attempt may write: its own outputs, and a verifier's supplement and fixture roots. */
-  private attemptAllowedWrites(scope: ExecutionScope, input: AttemptInput): string[] {
+  private async attemptAllowedWrites(scope: ExecutionScope, input: AttemptInput): Promise<string[]> {
+    const inherited = inheritedTestAssets(input.domainStep.type, await this.earlierTestOwners(input), input.plan.language);
     const baseWrites = input.mode !== 'normal'
-      ? computeIncrementalAllowedWrites(input.plan, input.executionStep, this.profile, input.ticket)
-      : computeStepAllowedWrites(input.executionStep);
+      ? computeIncrementalAllowedWrites(input.plan, input.executionStep, this.profile, input.ticket, inherited)
+      : computeStepAllowedWrites(input.executionStep, inherited);
     const supplementalTestRoot = isVerification(input.domainStep)
       ? this.testValidator(scope).supplementalRoot(input.executionStep)
       : undefined;
@@ -1215,6 +1256,163 @@ export class DomainAttemptRunner {
     ])];
   }
 
+  private earlierTestOwners(input: AttemptInput): Promise<TestAssetOwnerStep[]> {
+    return earlierPhaseTestOwners(this.options.repository, input.domainStep.phaseId);
+  }
+
+  /**
+   * The earlier Phases' tests the gate runs, resolved when run_tests runs. A test Step runs its level
+   * complete — the source level's earlier baselines and its own earlier supplements; a development
+   * Step runs only the inherited tests it has changed in this attempt, beside its own baselines.
+   */
+  private inheritedGateTests(
+    scope: ExecutionScope,
+    input: AttemptInput,
+    earlier: readonly TestAssetOwnerStep[],
+    attemptBaseline?: string,
+  ): () => Promise<string[]> {
+    const { language } = input.plan;
+    const type = input.domainStep.type;
+    const existing = async (paths: readonly string[]) =>
+      (await Promise.all(paths.map(async (file) => (await scope.workspace.exists(file) ? [file] : [])))).flat();
+    if (isVerification(input.domainStep)) {
+      const level = [
+        ...inheritedTestAssets(VERIFICATION_TO_SOURCE_STEP[type as VerificationStepType], earlier, language),
+        ...inheritedTestAssets(type, earlier, language),
+      ];
+      return () => existing(level);
+    }
+    const owned = inheritedTestAssets(type, earlier, language);
+    return async () => existing((await this.ticketChangedFiles(scope, input, attemptBaseline))
+      .filter((file) => isAllowedWrite(file, owned) && isExecutableTestPath(file, language)));
+  }
+
+  /**
+   * Every file this Ticket has changed on this Step, deleted ones included. Measured from its first
+   * baseline, not the working tree alone: a failed attempt's candidate is committed and kept for the
+   * next one, and the working tree would lose what it changed.
+   */
+  private async ticketChangedFiles(scope: ExecutionScope, input: AttemptInput, attemptBaseline?: string): Promise<string[]> {
+    const base = ticketBaseRevision(input, attemptBaseline);
+    const committed = base
+      ? await scope.git.raw().raw(['-c', 'core.quotePath=false', 'diff', '--no-renames', '--name-only', base])
+      : '';
+    const working = (await scope.git.raw().status()).files.map((file) => file.path);
+    return [...new Set([...committed.split('\n').map((line) => line.trim()).filter(Boolean), ...working].map(normalizeGitPath))];
+  }
+
+  /** Refuses a write to an inherited test without a contract this Step may cite, and records the ones it may. */
+  private contractBasisGate(
+    scope: ExecutionScope,
+    input: AttemptInput,
+    earlier: readonly TestAssetOwnerStep[],
+    attemptBaseline: string,
+  ): ContractBasisGate | undefined {
+    const step = input.domainStep;
+    const inherited = inheritedTestAssets(step.type, earlier, input.plan.language);
+    if (inherited.length === 0) return undefined;
+    const base = ticketBaseRevision(input, attemptBaseline)!;
+    const sources: ContractBasisSources = {
+      documents: contractBasisDocuments(step.type, input.plan.phaseId),
+      baseRevision: base,
+      readAtBase: (document) => scope.git.raw().raw(['show', `${base}:${document}`]).then((text) => text, () => undefined),
+      acceptedChanges: async () => Promise.all((await acceptedContractChanges(this.options.repository, {
+        projectId: step.projectId, phaseId: step.phaseId,
+      })).map(async ({ source }) => {
+        const ticket = await this.options.repository.read(source.ticketId);
+        const delta = ticket.objectType === 'ticket' && ticket.type === 'change-request' ? ticket.contractDelta : undefined;
+        return { ticketId: source.ticketId, affectedArtifacts: delta?.affectedArtifacts ?? [],
+          contract: [delta?.summary, ...(delta?.after ?? [])].filter(Boolean).join('\n') };
+      })),
+    };
+    return {
+      check: async (targets, basis, proposal) => {
+        // Normalized first: a path that walks back into an inherited test is that test.
+        const touched = targets.map((target) => path.posix.normalize(target)).filter((target) => isAllowedWrite(target, inherited));
+        if (touched.length === 0) return undefined;
+        const resolved = await resolveContractBasis(basis, touched, sources);
+        if (!resolved.ok) return { error: resolved.error };
+        if (requiresContractBasisJudgement(step.type)) {
+          const refusal = await this.judgeContractBasis(sources, touched, resolved, proposal);
+          if (refusal) return refusal;
+        }
+        return {
+          record: async () => {
+            const recordedAt = new Date().toISOString();
+            await this.recordContractBases(input, (await Promise.all(touched.map(async (file) => {
+              const contentHash = await fileContentHash(scope, file);
+              return contentHash ? [{ path: file, reason: resolved.reason, citation: resolved.citation, contentHash,
+                attempt: step.attempts, stepId: step.id, recordedAt }] : [];
+            }))).flat());
+          },
+        };
+      },
+    };
+  }
+
+  /**
+   * Asks the judge whether the citation truly supersedes the test. Anything short of a yes refuses the
+   * write: no judge, and a judge that said nothing usable, are not permission to change delivered
+   * behaviour. A provider that failed is thrown on, because that is an outage, not a verdict.
+   */
+  private async judgeContractBasis(
+    sources: ContractBasisSources,
+    touched: readonly string[],
+    resolved: Extract<ContractBasisResolution, { ok: true }>,
+    proposal: { tool: string; args: Record<string, unknown> },
+  ): Promise<{ error: string } | undefined> {
+    const text = tFor(getPromptLocale()).tools.contractBasis;
+    const { judgeContractBasis } = this.options;
+    if (!judgeContractBasis) return { error: text.judgementUnavailable };
+    const { contractBasis: _basis, ...change } = proposal.args;
+    const requirements = sources.documents[0] ? await sources.readAtBase(sources.documents[0]) : undefined;
+    for (const test of touched) {
+      const testAsDelivered = await sources.readAtBase(test);
+      const verdict = await judgeContractBasis({
+        test, reason: resolved.reason, citedContract: resolved.citedContract, proposedChange: JSON.stringify({ tool: proposal.tool, ...change }),
+        ...(testAsDelivered !== undefined ? { testAsDelivered } : {}), ...(requirements !== undefined ? { requirements } : {}),
+      }, this.options.abortSignal).catch((error: unknown) => {
+        if (error instanceof ContractBasisJudgementError) return undefined;
+        throw error;
+      });
+      if (!verdict) return { error: text.judgementUnavailable };
+      if (!verdict.supersedes) return { error: text.notSuperseded(test, verdict.reason) };
+    }
+    return undefined;
+  }
+
+  private async recordContractBases(input: AttemptInput, bases: readonly TicketContractBasis[]): Promise<void> {
+    const current = await this.options.repository.read(input.ticket.id);
+    if (current.objectType !== 'ticket') throw new Error(`Object ${input.ticket.id} is not a Ticket`);
+    const updated = appendTicketContractBases(current, bases);
+    await this.options.repository.update(TicketSchema.parse({ ...updated, ...reviseObjectEnvelope(updated) }), updated.state);
+    await this.options.audit.event('note', `${input.domainStep.name} registered a contract basis for ${bases.map((basis) => basis.path).join(', ')}`, {
+      messageId: 'domain.contract_basis_registered',
+      projectId: input.domainStep.projectId,
+      phaseId: input.domainStep.phaseId,
+      stepId: input.domainStep.id,
+      ticketId: input.ticket.id,
+      bases,
+    });
+  }
+
+  /**
+   * Inherited tests this Ticket changed without a registered basis. The write gate cannot see a change
+   * made by a program the Step ran, and a delivery must not rest on it alone.
+   */
+  private async unregisteredInheritedChanges(scope: ExecutionScope, input: AttemptInput, attemptBaseline: string): Promise<string[]> {
+    const inherited = inheritedTestAssets(input.domainStep.type, await this.earlierTestOwners(input), input.plan.language);
+    if (inherited.length === 0) return [];
+    const changed = (await this.ticketChangedFiles(scope, input, attemptBaseline)).filter((file) => isAllowedWrite(file, inherited));
+    if (changed.length === 0) return [];
+    const current = await this.options.repository.read(input.ticket.id);
+    if (current.objectType !== 'ticket') throw new Error(`Object ${input.ticket.id} is not a Ticket`);
+    // The path alone is not enough: an earlier registration must not cover what changed the file since.
+    const registered = new Set(current.contractBases.map((basis) => `${basis.path}\0${basis.contentHash}`));
+    const covered = await Promise.all(changed.map(async (file) => registered.has(`${file}\0${await fileContentHash(scope, file)}`)));
+    return changed.filter((_file, index) => !covered[index]);
+  }
+
   /**
    * Moves what running the product or its tests left outside this Step's writable scope into the
    * runtime temp directory, so it never enters the project's history. The tools cannot write there,
@@ -1222,7 +1420,7 @@ export class DomainAttemptRunner {
    * workbook its CLI wrote, which a Phase gate then overwrote in the canonical working copy.
    */
   private async setAsideRunOutputs(scope: ExecutionScope, input: AttemptInput): Promise<void> {
-    const allowed = this.attemptAllowedWrites(scope, input);
+    const allowed = await this.attemptAllowedWrites(scope, input);
     const strays = (await workingChanges(scope.git.raw())).filter((change) =>
       !isAllowedWrite(change.path, allowed) && !isRuntimeMaintained(change.path, input.plan.language));
     if (strays.length === 0) return;
@@ -1481,17 +1679,22 @@ export function deliveredManifest(changedFiles: readonly string[], manifestFile:
   return changedFiles.some((file) => file === manifestFile || file.endsWith(`/${manifestFile}`));
 }
 
+/** What a file holds now, in the form the ledger keeps; undefined for a file that no longer exists. */
+async function fileContentHash(scope: ExecutionScope, file: string): Promise<string | undefined> {
+  const bytes = await fs.readFile(scope.workspace.abs(file)).catch(() => undefined);
+  return bytes ? `sha256:${createHash('sha256').update(bytes).digest('hex')}` : undefined;
+}
+
+/** Where this Ticket's work on this Step began: its first attempt's baseline, once one is recorded. */
+function ticketBaseRevision(input: AttemptInput, attemptBaseline?: string): string | undefined {
+  return input.ticket.commits.find((commit) => commit.kind === 'baseline' && commit.stepId === input.domainStep.id)?.revision
+    ?? attemptBaseline;
+}
+
 function findingBelongsToStep(finding: DeliveryGateFinding, step: Step): boolean {
   if (finding.target === 'current-step') return true;
   if (finding.target === 'paired-source') return false;
-  const targetType: StepType = finding.target === 'requirement-analysis'
-    ? 'REQUIREMENT_ANALYSIS'
-    : finding.target === 'high-level-design'
-      ? 'HIGH_LEVEL_DESIGN'
-      : finding.target === 'detailed-design'
-        ? 'DETAILED_DESIGN'
-        : 'CODE';
-  return step.type === targetType;
+  return step.type === FINDING_TARGET_STEP_TYPE[finding.target];
 }
 
 function dependencyRequestFrom(

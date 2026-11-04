@@ -22,7 +22,8 @@ import type { ScheduledWork } from './work_scheduler.js';
 import { TicketWorkflow } from './ticket_workflow.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
 import { TicketBlockerService } from './ticket_blocker_service.js';
-import { VERIFICATION_SUPPLEMENT_DIR } from '../../domain/quality/test_assets.js';
+import { VERIFICATION_SUPPLEMENT_DIR, inheritedSupplementRoots } from '../../domain/quality/test_assets.js';
+import { earlierPhaseTestOwners } from '../execution/earlier_phase_test_owners.js';
 import { normalizeGitPath } from '../execution/v_model_policy.js';
 import {
   buildBugFailureContracts,
@@ -192,7 +193,8 @@ export class CorrectiveWorkflowService {
     let target = input.targetStepId
       ? await this.state.requireStep(input.targetStepId)
       : isVerificationStep(failed)
-        ? failureConfinedToSupplement(failed, input.testOutcomes ?? [])
+        ? failureConfinedToSupplement(failed, input.testOutcomes ?? [],
+          inheritedSupplementRoots(failed.type, await earlierPhaseTestOwners(this.repository, failed.phaseId)))
           ? failed
           : await this.state.requireStep(failed.pairedStepId)
         : failed;
@@ -1011,7 +1013,15 @@ function nextPropagationStepId(
  * matter what else failed alongside it. A supplement that correctly exposes a product defect lands
  * here first and reports it onward from here, which is how a verification Step raises one anyway.
  */
-function failureConfinedToSupplement(step: Step, outcomes: readonly TestOutcome[]): boolean {
+/**
+ * `inheritedRoots` are the supplement roots this Step's level inherited from earlier Phases: a P2
+ * verification Step owns its P1 supplements, so a failure confined to them stays its own too.
+ */
+function failureConfinedToSupplement(
+  step: Step,
+  outcomes: readonly TestOutcome[],
+  inheritedRoots: readonly string[] = [],
+): boolean {
   const failing = outcomes
     .filter((outcome) => outcome.status === 'failed' || outcome.status === 'timed_out')
     .flatMap((outcome) => outcome.failedTests);
@@ -1022,6 +1032,6 @@ function failureConfinedToSupplement(step: Step, outcomes: readonly TestOutcome[
   const owned = `${VERIFICATION_SUPPLEMENT_DIR}/`;
   return failing.every((test) => {
     const path = normalizeGitPath(test);
-    return path.startsWith(owned) && path.includes(step.id);
+    return (path.startsWith(owned) && path.includes(step.id)) || inheritedRoots.some((root) => path.startsWith(root));
   });
 }

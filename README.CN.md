@@ -162,6 +162,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler build -t <topic.md>` | 复用已澄清 topic，跳过 Gate 1 |
 | `xcompiler run <phasePlan.json>` | 执行当前阶段计划 |
 | `xcompiler run --debug-wiki-path <dir>` | 复用并更新共享分层 Debug wiki 路径 |
+| `xcompiler run --change-request <file>` | 向进行中的 Phase 提交契约变更，然后继续执行 |
 | `xcompiler load <name.xc>` | 读取工程配置/进度并继续 |
 | `xcompiler append <name.xc> -i <file>` | 在已有工程上追加新需求 |
 | `xcompiler evolve -w <workspace> -i <file>` | 编译并执行一次增量变更 |
@@ -176,6 +177,28 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `npm run release:local -- vX.Y.Z` | 本地准备 release commit 和 tag，不 push |
 
 ---
+
+### 修改进行中 Phase 的契约
+
+门禁只能发现可以执行的问题。如果所有检查都通过、缺陷却仍然存在（例如两段设计互相矛盾），可以自己写一份变更交给 Phase：
+
+```yaml
+id: failed-file-discards-warnings   # 稳定标识：同一文件重跑不会重复开单
+target: high-level-design           # requirement-analysis | high-level-design | detailed-design | code
+summary: 解析失败的文件不产生任何警告。
+expected: 失败文件只产生一条错误记录，没有其他输出。
+evidence:
+  - 两个附录对失败文件留下什么的说法不一致。
+affectedArtifacts:                  # 由 target 或其后续 Step 拥有，或是它们继承的测试
+  - docs/iterations/P2/02-high-level-design.md
+  - src/main.py
+```
+
+```bash
+xcompiler run --change-request change.yaml
+```
+
+文件在任何 Step 或模型运行之前校验，`--dry-run` 校验后即停止。变更随后成为普通的 Change Request：从 `target` 开始，经过之后每个 V 模型 Step 和阶段门禁，每个 Step 只修改列表中归自己所有的产物。只有进行中的 Phase 才能接收；`id` 已被不同内容使用时会报错，不会覆盖。
 
 ## 默认运行时
 

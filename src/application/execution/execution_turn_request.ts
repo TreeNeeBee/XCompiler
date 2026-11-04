@@ -77,7 +77,8 @@ export const ExecutionPromptContextSchema = z.object({
   ticket: TicketSchema.optional(), changeRequest: ChangeRequestTicketSchema.optional(),
   enhancement: EnhancementTicketSchema.optional(), debugContext: DebugContextSchema.optional(),
   ctx: z.object({
-    allowedWrites: z.array(z.string()), preserveExistingFiles: z.boolean().optional(),
+    allowedWrites: z.array(z.string()), inheritedTestAssets: z.array(z.string()).optional(),
+    contractBasisDocuments: z.array(z.string()).optional(), preserveExistingFiles: z.boolean().optional(),
     rewriteExistingFiles: z.array(z.string()).optional(),
     contextWindowTokens: PositiveInteger.optional(), responseTokenBudget: PositiveInteger.optional(),
     feedbackCharBudget: PositiveInteger.optional(), readChunkBytes: PositiveInteger.optional(), writeChunkBytes: PositiveInteger.optional(),

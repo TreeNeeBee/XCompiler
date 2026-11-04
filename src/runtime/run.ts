@@ -32,6 +32,13 @@ import {
   defaultDebugWikiPath,
 } from '../infrastructure/knowledge/file_debug_wiki.js';
 import { runProjectAudit } from '../application/delivery/project_audit.js';
+import { earlierPhaseTestOwners } from '../application/execution/earlier_phase_test_owners.js';
+import { createObjectId } from '../domain/identity/object_id.js';
+import {
+  ProjectManagerIntakeService, type UserChangeRequestInput,
+} from '../application/project_management/project_manager_intake.js';
+import { parseUserChangeRequest, UserChangeRequestError } from '../application/project_management/user_change_request.js';
+import { judgeRuntimeContractBasis } from './contract_basis_judgement.js';
 import {
   frozenRequirementsFor, isScenarioOutcomeJudgementError, scenarioArtifactText,
 } from '../application/execution/scenario_outcome_judge.js';
@@ -110,6 +117,8 @@ export interface ExecuteOptions {
   abortSignal?: AbortSignal;
   /** Overrides config.permissions.mode for this Runtime task. */
   permissionMode?: import('./io.js').RuntimePermissionPolicy;
+  /** A contract change for the Phase in progress, opened before its work resumes. */
+  changeRequestPath?: string;
 }
 
 export interface ExecuteResult {
@@ -265,6 +274,29 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   await runtimeLog(io, 'success', t().execute.planLoaded(planAbs));
   await runtimeLog(io, 'dim', t().execute.planSummary(plan.language, plan.steps.length));
   await runtimeLog(io, 'raw', '');
+
+  // Before anything is prepared or any model called: a file that cannot be accepted stops here.
+  const changeRequestIntake = new ProjectManagerIntakeService(domainRepository);
+  let userChange: UserChangeRequestInput | undefined;
+  if (opts.changeRequestPath) {
+    try {
+      const text = await fsp.readFile(opts.changeRequestPath, 'utf8').catch((cause: Error) => {
+        throw new UserChangeRequestError('unreadable', t().execute.userChangeRequestUnreadable(opts.changeRequestPath!, cause.message));
+      });
+      userChange = { projectId: domainProject.id, phaseId: domainPhase.id, change: parseUserChangeRequest(text),
+        language: plan.language, artifactExists: (artifact) => ws.exists(artifact) };
+      const check = await changeRequestIntake.checkUserChangeRequest(userChange);
+      await runtimeLog(io, 'dim', check.status === 'already-accepted'
+        ? t().execute.userChangeRequestAlreadyAccepted(userChange.change.request.id, check.ticket.name)
+        : t().execute.userChangeRequestValid(userChange.change.request.id, check.target.name));
+    } catch (err) {
+      if (!(err instanceof UserChangeRequestError)) throw err;
+      await runtimeLog(io, 'error', err.message);
+      await audit.end({ status: 'error', message: err.message, stage: 'change-request', problem: err.problem });
+      await runtimeResult(io, 'run', 'error', { message: err.message, exitCode: 7 });
+      return { status: 'error', message: err.message, exitCode: 7 };
+    }
+  }
 
   if (opts.dryRun) {
     for (const s of order) {
@@ -573,6 +605,12 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     executionRequests: (scope) => createRuntimeExecutionTurnRequestPort({
       config: cfg.rules, container, recordReplay, router, audit, scope,
     }),
+    judgeContractBasis: async (judgement, signal) => judgeRuntimeContractBasis({
+      config: cfg.rules, container, recordReplay, router, audit, projectId: domainProject.id, phaseId: domainPhase.id,
+      actor: await new RoleRegistry(domainRepository).ensureOperationActor(domainProject.id, 'judge.contract-basis')
+        .then(({ actor }) => ({ actorId: actor.id, role: actor.roleId, roleVersion: actor.roleVersion, modelPool: actor.modelPool })),
+      judgement, signal,
+    }),
     workspace: ws,
     git,
     sandbox,
@@ -784,6 +822,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
         sandbox,
         plan,
         profile,
+        earlierTestOwners: await earlierPhaseTestOwners(domainRepository, domainPhase.id),
         scenarios: phaseGate.scenarios,
         runLiveScenario: (operation) => recordReplay.runWithMode('off', operation),
         snapshotArtifacts,
@@ -837,7 +876,11 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       // The report is the gate run's deliverable; its outputs are not. Committed pass or fail, so the
       // project's history keeps every judgement the gate made.
       const gateReportPath = deliveryGateReportPath(domainPhase.name);
+      const phaseTickets = await domainRepository.list({ objectType: 'ticket', projectId: domainProject.id });
       await ws.writeFile(gateReportPath, renderDeliveryGateReport({
+        contractBases: phaseTickets.flatMap((ticket) => ticket.objectType === 'ticket' && ticket.phaseId === domainPhase.id
+          ? ticket.contractBases.map((basis) => ({ ...basis, ticketName: ticket.name }))
+          : []),
         phaseName: domainPhase.name, evaluatedAt: gateEvaluatedAt, result: finalProjectAudit, setAside,
       }));
       await git.snapshot(domainPhase.id, 0, `${domainPhase.name} delivery gate report`);
@@ -860,6 +903,18 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   }, plan);
 
   try {
+    if (userChange) {
+      const accepted = await changeRequestIntake.acceptUserChangeRequest({ ...userChange, correlationId: createObjectId() });
+      if (accepted.status === 'accepted') {
+        const message = t().execute.userChangeRequestAccepted(userChange.change.request.id, accepted.ticket.name, accepted.target.name);
+        await runtimeLog(io, 'dim', message);
+        await audit.event('note', message, {
+          messageId: 'domain.user_change_request_accepted', projectId: domainProject.id, phaseId: domainPhase.id,
+          ticketId: accepted.ticket.id, targetStepId: accepted.target.id, requestId: userChange.change.request.id,
+          digest: userChange.change.digest,
+        });
+      }
+    }
     const r = await engine.run(domainPhase.id);
     await persistProjectMemory(ws, container.state, planStore, audit, planAbs, plan.language, plan.intent);
     if (r.failedStepId) {

@@ -21,6 +21,7 @@ export type {
   ToolPermissionOperation,
   ToolPermissionRequest,
   ToolPermissionRequester,
+  ContractBasisGate,
   ToolResult,
 } from './types.js';
 export { EditGuard } from './guard.js';

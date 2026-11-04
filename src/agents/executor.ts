@@ -26,7 +26,7 @@ import type {
 import { VALIDATION_CONTRACT_DEFECT_CODE } from '../domain/tickets/ticket.js';
 import { getLanguageProfile, type LanguageProfile } from '../application/execution/language_support.js';
 import { RECORDED_FIXTURE_DIR } from '../domain/quality/external_dependency.js';
-import { isTestRunWithoutVerdict, isUnownedStepFailure } from '../tools/types.js';
+import { isAllowedWrite, isTestRunWithoutVerdict, isUnownedStepFailure } from '../tools/types.js';
 import type { ToolFailureCode } from '../tools/types.js';
 import type {
   Tool,
@@ -507,6 +507,8 @@ export class StepExecutor {
             ticket: inp.ticket, changeRequest: inp.changeRequest, enhancement: inp.enhancement, debugContext: inp.debugContext,
             ctx: {
               allowedWrites: inp.ctx.allowedWrites, preserveExistingFiles: inp.ctx.preserveExistingFiles,
+              ...(inp.ctx.inheritedTestAssets?.length ? { inheritedTestAssets: inp.ctx.inheritedTestAssets } : {}),
+              ...(inp.ctx.contractBasisDocuments?.length ? { contractBasisDocuments: inp.ctx.contractBasisDocuments } : {}),
               rewriteExistingFiles: inp.ctx.rewriteExistingFiles,
               contextWindowTokens: inp.ctx.contextWindowTokens, responseTokenBudget: inp.ctx.responseTokenBudget,
               feedbackCharBudget: inp.ctx.feedbackCharBudget, readChunkBytes: inp.ctx.readChunkBytes,
@@ -1082,6 +1084,12 @@ export class StepExecutor {
           });
           continue;
         }
+        // Before any permission prompt: a write no contract allows should not reach the user. It is
+        // answered as a failed call, so every later count and record treats it as one.
+        const basisVerdict = isOutputMutationTool(a.tool)
+          ? await inp.ctx.contractBasisGate?.check(actionTargetPaths(a.tool, a.args), a.args.contractBasis, a)
+          : undefined;
+        const basisRefusal = basisVerdict && 'error' in basisVerdict ? basisVerdict : undefined;
         const callId = randomUUID();
         const permission = buildPermissionRequest(a.tool, a.args, inp.step.id, inp.ctx.language, stepLabel);
         if (permission) permission.id = callId;
@@ -1095,7 +1103,7 @@ export class StepExecutor {
           args: a.args,
           patch: a.tool === 'apply_patch' && typeof a.args.patch === 'string' ? a.args.patch : undefined,
         });
-        if (permission && inp.ctx.requestPermission) {
+        if (permission && inp.ctx.requestPermission && !basisRefusal) {
           const requestedCapability = `${permission.operationType}:${permission.target}`;
           const decision = deniedCapabilities.has(requestedCapability)
             ? {
@@ -1158,11 +1166,15 @@ export class StepExecutor {
           t().stream.toolRunner,
           { enabled: this.opts.streamOutput === true },
         );
-        const r = await safeRunTool(selectedTool, a.args, inp.ctx);
+        const r: ToolResult = basisRefusal
+          ? { ok: false, error: basisRefusal.error, code: 'contract_basis_refused' }
+          : await safeRunTool(selectedTool, a.args, inp.ctx);
         toolReporter.done(r.ok ? 'done' : 'failed');
         await syncSandboxIfManifestWritten(a, r, inp.ctx);
         updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
         const successfulMutation = didPerformSuccessfulMutation(a, r);
+        // Only now: a basis covers a change that happened, never a write refused or denied on the way.
+        if (successfulMutation && basisVerdict && 'record' in basisVerdict) await basisVerdict.record();
         if (successfulMutation) {
           const hadPendingVerification = mutationGeneration > verifiedMutationGeneration;
           const baselineWasVerified = baselineTestVerifiedMutationGeneration === mutationGeneration;
@@ -2235,11 +2247,15 @@ function canAcceptOutputCompletionRecovery(inp: ExecutorRunInput, initialMissing
 function currentStepAffectedArtifacts(input: ExecutorRunInput): string[] {
   if (!input.changeRequest) return [];
   const outputs = input.step.outputs.map(normalizeRelPath);
+  // An earlier Phase's test this Step inherited is its own as surely as an output: judged by outputs
+  // alone, a Change Request naming only such a test read as not this Step's, while the allowlist
+  // let it write the file.
+  const inherited = input.ctx.inheritedTestAssets ?? [];
   return input.changeRequest.contractDelta.affectedArtifacts.filter((artifact) => {
     const affected = normalizeRelPath(artifact);
     return outputs.some((output) =>
       output === affected || output.startsWith(`${affected}/`) || affected.startsWith(`${output}/`),
-    );
+    ) || isAllowedWrite(affected, inherited);
   });
 }
 

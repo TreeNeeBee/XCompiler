@@ -72,6 +72,7 @@ REQUIRED_RULE_SOURCES=(
   rules/work-verify-module.yaml
   rules/work-verify-functional.yaml
   rules/scenario-outcome.yaml
+  rules/contract-basis-judgement.yaml
 )
 for rule_source in "${REQUIRED_RULE_SOURCES[@]}"; do
   if [[ ! -f "$ROOT/$rule_source" ]]; then

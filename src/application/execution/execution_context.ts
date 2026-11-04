@@ -1,4 +1,5 @@
 import { TEST_FIXTURE_DIR } from '../../domain/quality/external_dependency.js';
+import { isAllowedWrite } from '../../tools/types.js';
 import { isTestFilePath, normalizeGitPath } from './v_model_policy.js';
 import type { LanguageProfile } from './language_support.js';
 import type { Ticket } from '../../domain/tickets/ticket.js';
@@ -42,8 +43,9 @@ export function computeDebugAllowedWrites(
   plan: Plan,
   step: Step,
   profile: LanguageProfile,
+  inherited: readonly string[] = [],
 ): string[] {
-  if (isVerification(step)) return withTestFixtureAccess(step.outputs);
+  if (isVerification(step)) return withTestFixtureAccess([...step.outputs, ...inherited]);
   const byId = new Map(plan.steps.map((candidate) => [candidate.id, candidate]));
   const seen = new Set<string>();
   const stack = [...step.dependsOn];
@@ -54,7 +56,7 @@ export function computeDebugAllowedWrites(
     const dependency = byId.get(id);
     if (dependency) stack.push(...dependency.dependsOn);
   }
-  const outputs = new Set(step.outputs);
+  const outputs = new Set([...step.outputs, ...inherited]);
   for (const id of seen) {
     const dependency = byId.get(id);
     if (!dependency) continue;
@@ -82,6 +84,7 @@ export function computeIncrementalAllowedWrites(
   step: Step,
   profile: LanguageProfile,
   ticket: Ticket,
+  inherited: readonly string[] = [],
 ): string[] {
   if (ticket.type === 'enhancement' && ticket.affectedArtifacts.length > 0) {
     // Same floor the Change Request branch below already applies: an artifact list that names
@@ -89,14 +92,14 @@ export function computeIncrementalAllowedWrites(
     // cannot act on any instruction it is given — it spends its whole round budget reporting that.
     // A live Enhancement found at UNIT_TEST carried that Step's own documents and was routed to
     // CODE, which owns none of them.
-    const owned = ownedAffectedArtifacts(step, ticket.affectedArtifacts);
-    return owned.length > 0 ? withTestFixtureAccess(owned) : computeStepAllowedWrites(step);
+    const owned = ownedAffectedArtifacts(step, ticket.affectedArtifacts, inherited);
+    return owned.length > 0 ? withTestFixtureAccess(owned) : computeStepAllowedWrites(step, inherited);
   }
   if (ticket.type === 'change-request') {
-    const owned = ownedAffectedArtifacts(step, ticket.contractDelta.affectedArtifacts);
-    return owned.length > 0 ? withTestFixtureAccess(owned) : computeStepAllowedWrites(step);
+    const owned = ownedAffectedArtifacts(step, ticket.contractDelta.affectedArtifacts, inherited);
+    return owned.length > 0 ? withTestFixtureAccess(owned) : computeStepAllowedWrites(step, inherited);
   }
-  return computeDebugAllowedWrites(plan, step, profile);
+  return computeDebugAllowedWrites(plan, step, profile, inherited);
 }
 
 /**
@@ -119,10 +122,14 @@ function withTestFixtureAccess(scope: readonly string[]): string[] {
   return paths.includes(grant) ? paths : [...paths, grant];
 }
 
-export function computeStepAllowedWrites(step: Step): string[] {
+/**
+ * `inherited` is what an earlier Phase's Step of the same level left this one to own
+ * (`inheritedTestAssets`): regression tests a contract change in this Phase can make stale.
+ */
+export function computeStepAllowedWrites(step: Step, inherited: readonly string[] = []): string[] {
   // No plan declares the fixture directory and the instructions name it, so withholding it tells a
   // Step to write a fixture and then refuses the one path it was told to use.
-  return withTestFixtureAccess(step.outputs);
+  return withTestFixtureAccess([...step.outputs, ...inherited]);
 }
 
 export function stepContextChars(plan: Plan, step: Step): number {
@@ -161,9 +168,11 @@ function isVerification(step: Step): boolean {
   return (V_MODEL_TEST_PHASES as readonly string[]).includes(step.phase);
 }
 
-function ownedAffectedArtifacts(step: Step, artifacts: readonly string[]): string[] {
+/** Which of a Ticket's artifacts this Step takes on: each hop of a Change Request reads the same list. */
+export function ownedAffectedArtifacts(step: Pick<Step, 'outputs'>, artifacts: readonly string[], inherited: readonly string[] = []): string[] {
   return [...new Set(artifacts.map(normalizeGitPath))].filter((artifact) =>
-    step.outputs.some((output) => pathsOverlap(output, artifact))
+    step.outputs.some((output) => pathsOverlap(output, artifact)) ||
+    isAllowedWrite(artifact, [...inherited])
   );
 }
 

@@ -126,6 +126,17 @@ export interface ToolContext {
   testGateArgs?: string[];
   /** Verification-owned directory scanned at run_tests time and appended to the baseline gate. */
   supplementalTestRoot?: string;
+  /** Earlier Phases' tests this Step inherited and may update: files, or supplement roots ending in `/`. */
+  inheritedTestAssets?: string[];
+  /**
+   * The inherited tests the gate runs, resolved at run_tests time: a test Step runs its level
+   * complete, a development Step only the inherited tests it has changed in this attempt.
+   */
+  inheritedGateTests?: () => Promise<string[]>;
+  /** The documents this Step may cite as the basis for changing an inherited test. */
+  contractBasisDocuments?: string[];
+  /** Decides, before any permission or write, whether a write to inherited tests may proceed. */
+  contractBasisGate?: ContractBasisGate;
   /** Incremental Tickets may create files but must patch, rather than overwrite, accepted files. */
   preserveExistingFiles?: boolean;
   /**
@@ -146,6 +157,14 @@ export interface ToolContext {
 }
 
 /** Stable identifiers for failures other modules must recognise without reading the message. */
+/** Whether a write to inherited tests may proceed, and how to record it once it has. */
+export type ContractBasisVerdict = { error: string } | { record: () => Promise<void> };
+
+export interface ContractBasisGate {
+  /** Undefined when the write touches no inherited test. A refusal says what the Step has to change. */
+  check(targets: readonly string[], basis: unknown, proposal: { tool: string; args: Record<string, unknown> }): Promise<ContractBasisVerdict | undefined>;
+}
+
 export type ToolFailureCode =
   | 'write_denied'
   /** The run could not happen: an artifact another Step owns does not exist yet. */
@@ -164,6 +183,8 @@ export type ToolFailureCode =
   | 'path_argument_missing'
   /** write_file/append_file content is not a string. */
   | 'content_argument_invalid'
+  /** A write to an inherited test carried no contract basis this Step may cite. */
+  | 'contract_basis_refused'
   /** The path resolves outside the project directory. */
   | 'path_outside_project'
   /** The path names nothing in the workspace. */

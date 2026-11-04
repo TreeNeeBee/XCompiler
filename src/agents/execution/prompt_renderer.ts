@@ -267,6 +267,9 @@ export function renderExecutionUserPrompt(
     '## writable paths (tool allowlist)',
     input.ctx.allowedWrites.map((output) => `- ${output}`).join('\n'),
     '',
+    input.ctx.inheritedTestAssets?.length
+      ? `${tFor(locale).prompts.executorInheritedTests(pathList(input.ctx.inheritedTestAssets), pathList(input.ctx.contractBasisDocuments ?? []))}\n`
+      : '',
     '## active model operation window',
     `context_window_tokens: ${input.ctx.contextWindowTokens ?? '(runtime default)'}`,
     `response_token_budget: ${input.ctx.responseTokenBudget ?? '(runtime default)'}`,
@@ -313,6 +316,10 @@ function isDebugRepairSnippet(relativePath: string): boolean {
     normalized.startsWith('tests/') ||
     /^(?:package\.json|tsconfig(?:\.[^/]+)?\.json|requirements(?:-[^/]+)?\.txt|pyproject\.toml)$/u.test(normalized) ||
     /^(?:config|src\/config)\/.+\.(?:json|toml|ya?ml)$/u.test(normalized);
+}
+
+function pathList(paths: readonly string[]): string {
+  return paths.map((path) => `- ${path}`).join('\n');
 }
 
 function renderPhaseWriteBoundary(step: Step): string {

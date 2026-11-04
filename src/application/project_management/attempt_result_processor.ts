@@ -13,7 +13,7 @@ import { isEvidencePersistenceFailure } from '../execution/failure_classificatio
 import type { ProjectController, ScheduledWork } from './project_controller.js';
 import { workModeFor } from './work_scheduler.js';
 import type { TicketRegistrationService } from './ticket_registration_service.js';
-import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
@@ -708,13 +708,7 @@ function resolveFindingTarget(
     if (!paired) throw new Error(`Gate finding for ${current.name} requires a paired source Step`);
     return paired;
   }
-  const type = finding.target === 'requirement-analysis'
-    ? 'REQUIREMENT_ANALYSIS'
-    : finding.target === 'high-level-design'
-      ? 'HIGH_LEVEL_DESIGN'
-      : finding.target === 'detailed-design'
-        ? 'DETAILED_DESIGN'
-        : 'CODE';
+  const type = FINDING_TARGET_STEP_TYPE[finding.target];
   const target = steps.find((step) => step.type === type);
   if (!target) throw new Error(`Gate finding target ${type} is not materialized in this Phase`);
   return target;

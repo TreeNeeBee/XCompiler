@@ -2232,6 +2232,47 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.validationDefect).toContain('affected entrypoint already exists');
   });
 
+  // Codex audit F-02: the allowlist let a Step write an earlier Phase's test it inherited, while the
+  // Change Request judgement read only its outputs, so a CR naming only that test could be declined
+  // as another Step's work.
+  it('treats an inherited earlier-Phase test as this Step\'s own when a CR names it', async () => {
+    const stale = 'tests/verification/p1/unit-test/s005/test_header.py';
+    class DeclineInheritedLLM implements LLMClient {
+      readonly name = 'decline-inherited';
+      sawOwnershipFeedback = false;
+      async chat(messages: ChatMessage[]): Promise<string> {
+        const latestUser = messages.filter((message) => message.role === 'user').at(-1)?.content ?? '';
+        this.sawOwnershipFeedback ||= latestUser.includes('Invalid Change Request classification:');
+        return JSON.stringify({
+          thoughts: 'the stale assertion lives in a P1 file',
+          changeRequestDisposition: { outcome: 'not-applicable', reasonCategory: 'downstream-owned',
+            rationale: 'The file belongs to the P1 verification Step.', inspectedArtifacts: [stale],
+            evidence: ['The assertion still expects sixteen columns.'] },
+          qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {}, tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 },
+            evidence: [`${stale} inspected`], unavailableMetrics: [], gaps: [], blockedBy: ['P1 owns this file'] },
+          actions: [], done: true,
+        });
+      }
+    }
+    await ws.writeFile(stale, 'def test_header():\n    assert 19 == 16\n');
+    const llm = new DeclineInheritedLLM();
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
+      step: baseStep, tools: [readFileTool, writeFileTool],
+      ctx: { ...ctx, allowedWrites: [...ctx.allowedWrites, 'tests/verification/p1/unit-test/'],
+        inheritedTestAssets: ['tests/verification/p1/unit-test/'] },
+      changeRequest: executorChangeRequestFixture({
+        id: 'CR-INHERITED', revision: 1, state: 'in_progress', sourceTicketIds: ['BUG-P2-004'],
+        description: 'Bring the P1 header assertion to the accepted nineteen columns.',
+        triggerStepId: 'S008', sourceStepId: 'S004', targetStepId: 'S005',
+        originFailures: [{ category: 'test', code: 'delivery_check_failed:tests:unit-test', message: 'assert 19 == 16',
+          summary: 'stale P1 assertion', retryable: true, switchProvider: false, failedStepId: 'S005', failedStepType: 'UNIT_TEST',
+          targetStepId: 'S005', targetStepType: 'UNIT_TEST', verificationStepId: 'S005', verificationStepType: 'UNIT_TEST' }],
+        contractDelta: { summary: 'Nineteen columns.', before: ['Sixteen columns.'], after: ['Nineteen columns.'], affectedArtifacts: [stale] },
+      }),
+    });
+    expect(llm.sawOwnershipFeedback).toBe(true);
+  });
+
   it('records an inspected not-applicable CR application without manufacturing a mutation', async () => {
     class ReviewedNoopChangeRequestLLM implements LLMClient {
       readonly name = 'reviewed-noop-change-request';
@@ -3245,6 +3286,102 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.success, result.error).toBe(true);
     expect(result.rounds).toBe(1);
     expect(llm.calls).toBe(1);
+  });
+
+  // G4: models declined stale P1 assertions as another Phase's files; the allowlist alone said they
+  // could write them, not that keeping them current was theirs.
+  it.each(['en', 'zh'] as const)('names the inherited regression tests a Step owns, in the %s prompt', async (locale) => {
+    setLocale(locale);
+    try {
+      const llm = new CapturingLLM();
+      await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
+        step: baseStep, tools: [writeFileTool],
+        ctx: { ...ctx, allowedWrites: [...ctx.allowedWrites, 'tests/unit/test_cli.py'], inheritedTestAssets: ['tests/unit/test_cli.py'],
+          contractBasisDocuments: ['docs/iterations/P2/01-requirement-analysis.md'] },
+      });
+      expect(llm.lastUser).toContain(tFor(locale).prompts.executorInheritedTests(
+        '- tests/unit/test_cli.py', '- docs/iterations/P2/01-requirement-analysis.md'));
+    } finally {
+      setLocale('en');
+    }
+  });
+
+  describe('a write to a test an earlier Phase delivered', () => {
+    const inherited = 'tests/unit/test_cli.py';
+    const basis = { reason: 'The header assertion is stale.', document: 'docs/iterations/P2/01-requirement-analysis.md', quote: '表头为 19 列且前 16 列与 P1 一致' };
+    const refusal = 'No contract basis: cite one.';
+    const gatedCtx = (asked: unknown[][]) => ({ ...ctx, allowedWrites: [...ctx.allowedWrites, inherited],
+      requestPermission: vi.fn(async (_request: { target?: string }) => ({ approved: true })),
+      contractBasisGate: { check: async (targets: readonly string[], given: unknown, proposal: { tool: string; args: Record<string, unknown> }) => {
+        asked.push([...targets, given]);
+        proposed.push(proposal.tool, proposal.args.content);
+        if (!targets.includes(inherited)) return undefined;
+        return given === undefined ? { error: refusal } : { record: async () => { recorded.push(await ws.readFile(inherited)); } };
+      } } });
+    const recorded: string[] = [];
+    const proposed: unknown[] = [];
+    class WriteThenRegisterLLM implements LLMClient {
+      readonly name = 'write-then-register';
+      calls = 0;
+      feedback = '';
+      async chat(messages: ChatMessage[]): Promise<string> {
+        this.calls++;
+        if (this.calls === 2) this.feedback = messages.at(-1)?.content ?? '';
+        return JSON.stringify({ thoughts: 'update the inherited test', done: this.calls >= 2, actions: [
+          { tool: 'write_file', args: { path: inherited, content: 'assert 19 == 19\n', ...(this.calls >= 2 ? { contractBasis: basis } : {}) } },
+          ...(this.calls >= 2 ? [{ tool: 'write_file', args: { path: 'src/x.py', content: 'x = 1\n' } }] : []),
+        ] });
+      }
+    }
+
+    it('is refused before any permission or write, with the reason the gate gave', async () => {
+      recorded.length = 0;
+      const asked: unknown[][] = [];
+      const llm = new WriteThenRegisterLLM();
+      const refusedCtx = gatedCtx(asked);
+      const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 3 })).run({ step: baseStep, tools: [writeFileTool], ctx: refusedCtx });
+
+      expect(llm.feedback).toContain(refusal);
+      expect(result.toolCalls[0]).toMatchObject({ tool: 'write_file', ok: false, error: refusal, code: 'contract_basis_refused' });
+      // The first reply reached neither the user nor the disk; the second, with its basis, reached both.
+      expect(refusedCtx.requestPermission.mock.calls.filter(([request]) => request.target?.includes(inherited))).toHaveLength(1);
+      expect(await ws.readFile(inherited)).toBe('assert 19 == 19\n');
+      expect(result.success, result.error).toBe(true);
+      // Recorded once, after the write, against what it left: the refused reply left nothing behind.
+      expect(recorded).toEqual(['assert 19 == 19\n']);
+    });
+
+    // Codex audit SD-02: a registration written before the write outlived a refusal and covered the
+    // path for whatever changed it next.
+    it('records no basis for a write the user denied or the tool failed', async () => {
+      recorded.length = 0;
+      const denied = gatedCtx([]);
+      denied.requestPermission.mockImplementation(async () => ({ approved: false }) as never);
+      await new StepExecutor(withFixtureExecutionRequest({ llm: new WriteThenRegisterLLM(), maxRounds: 2 })).run({
+        step: baseStep, tools: [writeFileTool], ctx: denied });
+      expect(recorded).toEqual([]);
+
+      const failing: Tool = { ...writeFileTool, run: async () => ({ ok: false, error: 'disk full' }) } as Tool;
+      const llm = new WriteThenRegisterLLM();
+      llm.calls = 1;
+      await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({ step: baseStep, tools: [failing], ctx: gatedCtx([]) });
+      expect(recorded).toEqual([]);
+    });
+
+    it('hands the gate the basis and the target of every write, and only of writes', async () => {
+      const asked: unknown[][] = [];
+      await new StepExecutor(withFixtureExecutionRequest({ llm: new WriteThenRegisterLLM(), maxRounds: 3 })).run({
+        step: baseStep, tools: [writeFileTool, readFileTool], ctx: gatedCtx(asked) });
+      expect(asked).toEqual([[inherited, undefined], [inherited, basis], ['src/x.py', undefined]]);
+      // The judge reads what the write would do, not only what it cites.
+      expect(proposed.slice(-2)).toEqual(['write_file', 'x = 1\n']);
+    });
+  });
+
+  it('says nothing about inherited tests when a Step inherits none', async () => {
+    const llm = new CapturingLLM();
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({ step: baseStep, tools: [writeFileTool], ctx });
+    expect(llm.lastUser).not.toContain(tFor('en').prompts.executorInheritedTests('', '').split('\n')[0]!);
   });
 
   it('tells a contract-change hop that its baseline run waits for the change to land', async () => {

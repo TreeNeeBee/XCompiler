@@ -743,6 +743,33 @@ describe('runTestsTool / runPythonTool summary', () => {
     ]);
   });
 
+  it('appends the inherited tests Runtime resolves at run time to the gate', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    let seenArgs: string[] = [];
+    const resolved: string[] = [];
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests(args = []) {
+          seenArgs = args;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S004',
+      language: 'python',
+      testGateArgs: ['tests/unit/test_cli_p2.py'],
+      inheritedGateTests: async () => [...resolved],
+    };
+    await ws.writeFile('tests/unit/test_cli_p2.py', 'def test_new():\n    assert True\n');
+    resolved.push('tests/unit/test_cli.py');
+
+    expect((await runTestsTool.run({}, fakeCtx)).ok).toBe(true);
+    expect(seenArgs).toEqual(['tests/unit/test_cli_p2.py', 'tests/unit/test_cli.py']);
+  });
+
   it('does not let explicit TypeScript selectors replace the Runtime-owned gate', async () => {
     const { runTestsTool } = await import('../src/tools/sandbox.js');
     let seenArgs: string[] = [];

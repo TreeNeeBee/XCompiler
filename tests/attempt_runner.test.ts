@@ -1,3 +1,4 @@
+import { singlePhaseRepository } from './support/domain_objects.js';
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { describe, expect, it } from 'vitest';
 import { stageAssessment } from './support/quality.js';
@@ -1000,7 +1001,7 @@ function contractRunner(workspace: Workspace): DomainAttemptRunner {
         revparse: async () => 'a'.repeat(40),
       }),
     },
-    sandbox: {}, router: {}, repository: { list: async () => [] }, audit: { event: async () => {} },
+    sandbox: {}, router: {}, repository: singlePhaseRepository(), audit: { event: async () => {} },
     plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-attempt-contract-wiki'),
   } as never), 'typescript');
   (runner as unknown as { recordTicketRevision: () => Promise<void> }).recordTicketRevision = async () => {};
@@ -1072,7 +1073,7 @@ describe('a CODE Step that delivers the entry point', () => {
         launched.push(argv);
         return { exitCode: 1, stdout: '', stderr: BROKEN, timedOut: false, durationMs: 1 };
       } },
-      router: {}, repository: { list: async () => [] }, audit: { event: async () => {} },
+      router: {}, repository: singlePhaseRepository(), audit: { event: async () => {} },
       plugins: { size: 0 }, debugWiki: new FileDebugWiki('/tmp/xcompiler-entry-launch-wiki'),
     } as never), 'python');
     const internals = runner as unknown as Record<string, unknown>;

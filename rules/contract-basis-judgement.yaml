@@ -1,0 +1,26 @@
+# Compiler-maintained RuleList. Edit it with `xcompiler rule`, which keeps versions, timestamps,
+# digests and the compiled manifest consistent. Author comments never enter prompts.
+schemaVersion: "2"
+id: d0d1c016-5b21-4c72-9bc5-f06c55668169
+title:
+  en: Contract basis judgement
+  zh: 契约依据判定
+slot: "0x00011301"
+version: 1.0.0
+ctime: 2026-11-04T09:10:13.664Z
+mtime: 2026-11-04T09:10:14.578Z
+digest: sha256:c309a7c61ae06c9706e42f00d7fc421dc6497753f52de56df8889896e8003bdf
+rules:
+  - id: b4bbedb8-f24b-4939-bf4b-71d7d92ef51e
+    name: contract-basis-judgement
+    version: 1.0.0
+    level: required
+    ctime: 2026-11-04T09:10:13.664Z
+    mtime: 2026-11-04T09:10:14.578Z
+    digest: sha256:42ecf8d2c1ade4c55c5e59383dea68b8bfa9cf3f9cf45b36e904a326ca4213cd
+    description:
+      en: Applies when judging whether a cited contract truly supersedes a regression test an earlier Phase delivered.
+      zh: 判定所引用的契约是否真的取代了前序阶段已交付的回归测试时适用。
+    instruction:
+      en: You decide whether a cited contract truly supersedes a regression test. A completed Phase is a milestone, and a later Phase must not regress what it delivered, so a test stays as it is unless the cited contract requires what the change asserts. You are given the test as an earlier Phase delivered it, the change proposed to it, the reason given, the cited contract, and the requirement document. Answer supersedes true only when the cited text itself requires the behaviour the changed test will assert, and that behaviour cannot hold together with what the old assertion required. Answer false when the cited text concerns something else; when the old and new assertions could both hold; when the change weakens, removes or skips an assertion instead of moving it to the new contract; or when the reason claims more than the cited text says. A failure the current requirement still demands is a product defect, never a stale assertion. Judge only from the text you are given; when it does not settle the question, answer false.
+      zh: 你需要判断所引用的契约是否真的取代了一条回归测试。每个完成的阶段都是里程碑，后续阶段不得造成功能回退， 所以除非所引用的契约要求改动后断言的内容，否则测试必须保持原样。你会得到前序阶段交付时的测试、提议的改动、 给出的理由、所引用的契约，以及需求文档。只有当所引用的文字本身要求改动后的测试所断言的行为，并且该行为与原断言的 要求不能同时成立时，才回答 supersedes 为 true。下列情况都回答 false：所引用的文字说的是别的事；新旧断言可以同时成立； 改动是削弱、删除或跳过断言，而不是把它迁移到新契约；理由超出了所引用文字的内容。当前需求仍然要求而失败的情况属于 产品缺陷，绝不是过时的断言。只依据给你的文字判断；文字不足以确定时，回答 false。

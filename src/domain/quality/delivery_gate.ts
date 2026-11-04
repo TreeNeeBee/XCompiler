@@ -205,7 +205,36 @@ export const DELIVERY_GATE_FINDING_TARGETS = [
   'high-level-design',
   'detailed-design',
   'code',
+  'unit-test',
+  'integration-test',
+  'module-test',
+  'functional-test',
 ] as const;
+export type DeliveryGateFindingTarget = typeof DELIVERY_GATE_FINDING_TARGETS[number];
+
+/**
+ * The Step type each absolute target names; `current-step` and `paired-source` are relative to the
+ * reporting Step. Every router reads this one table: three routers each spelled the mapping as a
+ * chain whose last branch was CODE, so a target added to the enum would have reached CODE silently.
+ */
+export const FINDING_TARGET_STEP_TYPE = {
+  'requirement-analysis': 'REQUIREMENT_ANALYSIS',
+  'high-level-design': 'HIGH_LEVEL_DESIGN',
+  'detailed-design': 'DETAILED_DESIGN',
+  code: 'CODE',
+  'unit-test': 'UNIT_TEST',
+  'integration-test': 'INTEGRATION_TEST',
+  'module-test': 'MODULE_TEST',
+  'functional-test': 'FUNCTIONAL_TEST',
+} as const satisfies Record<Exclude<DeliveryGateFindingTarget, 'current-step' | 'paired-source'>, string>;
+
+export type AbsoluteFindingTarget = keyof typeof FINDING_TARGET_STEP_TYPE;
+
+/** The absolute target naming a Step type. */
+export function findingTargetForStepType(type: (typeof FINDING_TARGET_STEP_TYPE)[AbsoluteFindingTarget]): AbsoluteFindingTarget {
+  return (Object.keys(FINDING_TARGET_STEP_TYPE) as AbsoluteFindingTarget[])
+    .find((target) => FINDING_TARGET_STEP_TYPE[target] === type)!;
+}
 
 /**
  * One independently actionable problem discovered by a gate.

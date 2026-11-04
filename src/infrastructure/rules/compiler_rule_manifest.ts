@@ -184,4 +184,11 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
     slot: 0x00011300,
     digest: 'sha256:fb746e3517d9a9bea7bf5408355100f4906f3047b51f16485e203ca8668cdfb1',
   }),
+  Object.freeze({
+    relativePath: 'contract-basis-judgement.yaml',
+    listId: 'd0d1c016-5b21-4c72-9bc5-f06c55668169',
+    listVersion: '1.0.0',
+    slot: 0x00011301,
+    digest: 'sha256:c309a7c61ae06c9706e42f00d7fc421dc6497753f52de56df8889896e8003bdf',
+  }),
 ]);

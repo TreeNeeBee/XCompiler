@@ -243,6 +243,8 @@ const messages: Messages = {
     finding: '问题',
     setAside: '运行产物的去向',
     setAsideNote: (directory) => `本次门禁运行留在工作区的文件已移到 \`${directory}\`（git 忽略；不再需要时请自行删除）：`,
+    contractBases: '对前序阶段已交付测试的改动',
+    contractBasesNote: '下列每处改动都以所引用的契约为依据。未列出的测试保持前序阶段交付时的内容。',
   },
   system: {
     preflightNoProvider: (pools) => `LLM preflight failed: 模型池 [${pools}] 没有可用的 provider，且没有任何 ollama 服务器可达。请检查 config.yaml 的 base_url / 启动 ollama 服务后重试。`,
@@ -426,6 +428,7 @@ const messages: Messages = {
     optIntent: '计划意图：greenfield | feature | refactor | self',
     optBaselinePlan: '已有基线 phasePlan.json 路径（默认 <workspace>/phasePlan.json）',
     optProjectFile: 'XXX.xc 工程文件路径（默认 <workspace>/<name>.xc）',
+    optChangeRequest: '描述契约变更的 YAML 文件，作用于进行中的 Phase，在恢复工作前开单',
     optDebugWikiPath: 'debug wiki 根目录路径（默认 <XCompiler path>/.xcompiler/debug-wiki）',
     optRecordReplay: '外部交互模式：off、record、replay、auto 或 refresh',
     optRecordReplayPath: '工作区内的 record/replay fixture 相对目录',
@@ -721,6 +724,39 @@ const messages: Messages = {
       noFileDiff: 'apply_patch 没有找到可应用的文件差异。每个文件都需要 "--- a/<path>" 和 "+++ b/<path>" 头，每个块头都必须带行号范围，' +
         '例如 "@@ -12,7 +12,9 @@"；不带行号的块头（如 "@@ name" 或单独的 "@@"）不会被读取。请为块头写上行号范围，或改用 replace_in_file 并给出当前文件的原文。',
     },
+    contractBasis: {
+      required: (paths, documents) =>
+        `${paths} 是前序阶段已交付的回归测试，已交付的阶段不得发生功能回退。` +
+        '只有本阶段已接受的契约取代了它时才能修改，并且要在同一次调用里写明依据。' +
+        'args.contractBasis 的格式为 {"reason":"<哪条断言、为何过时>","document":"<路径>","quote":"<逐字原文>"}，' +
+        '或 {"reason":"...","changeRequest":"<已接受契约变更的 ticketId>"}。' +
+        `本 Step 可引用的文档（以本 Ticket 开始前的版本为准）：\n${documents}\n` +
+        '如果没有契约取代这条断言，就不要改这个测试：这个失败属于产品缺陷，交给其负责方处理。',
+      malformed: (documents) =>
+        'args.contractBasis 不可用：reason 不能为空，并且只能二选一：document 加 quote，或 changeRequest。' +
+        'args.contractBasis 的格式为 {"reason":"<哪条断言、为何过时>","document":"<路径>","quote":"<逐字原文>"}，' +
+        '或 {"reason":"...","changeRequest":"<已接受契约变更的 ticketId>"}。' +
+        `本 Step 可引用的文档：\n${documents}`,
+      documentNotCitable: (document, documents) =>
+        `这一层级的测试不能引用 ${document}：测试只能以本层级或更上层的契约为依据。` +
+        `请引用下列文档之一，或一个 changeRequest：\n${documents}`,
+      quoteTooShort: (minimum) =>
+        `引用太短，无法确定是哪条契约条款。请逐字引用完整条款，至少 ${minimum} 个字符。`,
+      quoteNotFound: (document) =>
+        `${document} 在本 Ticket 开始之前的版本里没有这段文字。请读取该文档并逐字引用条款；` +
+        '本 Ticket 自己写入的文字还不是已接受的契约，不能作为依据。',
+      changeRequestNotAccepted: (changeRequest) =>
+        `${changeRequest} 不是本阶段已接受的契约变更。请引用已接受契约变更列表中的 ticketId，或引用文档条款。`,
+      changeRequestNotCovering: (paths, documents) =>
+        `该 CR 的受影响文件里没有 ${paths}，不能作为修改它的依据。请改为引用要求这项改动的条款，可引用的文档：\n${documents}`,
+      notSuperseded: (path, reason) =>
+        `所引用的契约没有取代 ${path}：${reason} 请保持这条断言不变：如果产品通不过，那是产品缺陷，交给其负责方处理。` +
+        '只有条款确实要求改动后所断言的内容时才能引用它。',
+      judgementUnavailable: '无法确认这项改动符合其契约，因此被拒绝。请保持该测试为前序阶段交付时的内容，并把发现的问题作为 finding 报告给其负责方。',
+      unregisteredChange: (paths) =>
+        `${paths} 在本 Ticket 中被改动，但没有登记契约依据。已交付的阶段不得发生功能回退：` +
+        '请按契约要求改写这些文件，并在写入时带上 args.contractBasis，或者恢复前序阶段交付时的内容。',
+    },
     addDependency: {
       description: '向依赖清单追加或更新依赖并重建沙盒。TypeScript packages 支持 name@version；测试/构建工具应设置 dev=true。',
     },
@@ -813,6 +849,16 @@ const messages: Messages = {
     auditCommandOk: (name) => `${name} 通过`,
     auditCommandFailed: (name, exitCode, timedOut) =>
       `${name} 失败（exit=${exitCode}${timedOut ? '，超时' : ''}）`,
+    auditTestsFailedForOwner: (owner, count, total) => `测试失败：${total} 个失败用例中有 ${count} 个归属 ${owner}`,
+    userChangeRequestUnreadable: (path, detail) => `无法读取变更请求 ${path}：${detail}`,
+    userChangeRequestMalformed: (detail) => `变更请求不合法：${detail}`,
+    userChangeRequestPhaseNotOpen: (phase, state) => `拒绝变更请求：Phase ${phase} 当前为 ${state}，只有进行中的 Phase 才能接收`,
+    userChangeRequestArtifactMissing: (paths) => `拒绝变更请求：以下受影响产物不存在：${paths}`,
+    userChangeRequestArtifactNotOwned: (paths, step) => `拒绝变更请求：从 ${step} 起没有 Step 拥有 ${paths}；请把 target 提前到拥有它们的 Step，或从列表中去掉`,
+    userChangeRequestIdConflict: (id, ticket) => `拒绝变更请求：id ${id} 已以 ${ticket} 接收且内容不同；请为这次变更换一个新的 id`,
+    userChangeRequestValid: (id, step) => `变更请求 ${id} 校验通过，目标为 ${step}`,
+    userChangeRequestAlreadyAccepted: (id, ticket) => `变更请求 ${id} 已接收为 ${ticket}，不再新开`,
+    userChangeRequestAccepted: (id, ticket, step) => `变更请求 ${id} 已接收为 ${ticket}，从 ${step} 开始`,
     phaseRecovered: (phase) => `已从规范的 Project 状态恢复 ${phase}`,
     iterationPrepared: (completed, next) => `迭代 ${completed} 已通过；已准备 ${next}`,
     ticketRouted: (creator, ticket, assignee) => `${creator} 创建了 ${ticket} → PM → ${assignee}`,
@@ -1028,6 +1074,16 @@ ${opts.phasePlan}
     executorSkillBlock: (hints: string[]) =>
       `\n\n## 已激活 Agent Skills\n${hints.join('\n\n')}`,
     executorUserPromptOutro: '现在按协议返回第一轮 JSON。',
+    executorInheritedTests: (paths, documents) =>
+      '## 继承的回归测试\n' +
+      '以下测试由前序 Phase 中与本 Step 同层级的 Step 留下，现由本 Step 负责保持其与当前契约一致：\n' +
+      `${paths}\n` +
+      '每个完成的 Phase 都是一个里程碑，本 Phase 不得造成功能回退。只有本 Phase 已接受的契约取代了某条断言时才能更新它；' +
+      '当前契约仍要求而失败的，属于产品缺陷，交给其负责方处理，不得放宽断言。\n' +
+      '每次写入这些测试都必须带 args.contractBasis：' +
+      '{"reason":"<哪条断言、为何过时>","document":"<路径>","quote":"<逐字原文>"}，' +
+      '或 {"reason":"...","changeRequest":"<已接受契约变更的 ticketId>"}。没有有效依据的写入会被拒绝。\n' +
+      `本 Step 可引用的文档（以本 Ticket 开始前的版本为准）：\n${documents}`,
     executorFeedbackHeader: '本轮工具结果：',
     executorFeedbackProtocolRejected: (diagnostic) =>
       '上一条回复未通过完整 JSON 校验；该回复中的动作、权限请求和自动验证均未执行。' +

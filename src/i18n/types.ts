@@ -54,6 +54,8 @@ export interface Messages {
     finding: string;
     setAside: string;
     setAsideNote: (directory: string) => string;
+    contractBases: string;
+    contractBasesNote: string;
   };
   system: {
     preflightNoProvider: (pools: string) => string;
@@ -189,6 +191,7 @@ export interface Messages {
     optIntent: string;
     optBaselinePlan: string;
     optProjectFile: string;
+    optChangeRequest: string;
     optDebugWikiPath: string;
     optRecordReplay: string;
     optRecordReplayPath: string;
@@ -417,6 +420,19 @@ export interface Messages {
     };
     installDeps: { description: string };
     applyPatch: { description: string; noFileDiff: string };
+    /** Why a write to a test an earlier Phase delivered was refused, and what makes it acceptable. */
+    contractBasis: {
+      required: (paths: string, documents: string) => string;
+      malformed: (documents: string) => string;
+      documentNotCitable: (document: string, documents: string) => string;
+      quoteTooShort: (minimum: number) => string;
+      quoteNotFound: (document: string) => string;
+      changeRequestNotAccepted: (changeRequest: string) => string;
+      changeRequestNotCovering: (paths: string, documents: string) => string;
+      notSuperseded: (path: string, reason: string) => string;
+      judgementUnavailable: string;
+      unregisteredChange: (paths: string) => string;
+    };
     addDependency: { description: string };
   };
   /** Comments XCompiler writes into the generated project's own files: a deliverable, in the user's language. */
@@ -486,6 +502,16 @@ export interface Messages {
     auditScriptMissing: (name: string) => string;
     auditCommandOk: (name: string) => string;
     auditCommandFailed: (name: string, exitCode: number, timedOut: boolean) => string;
+    auditTestsFailedForOwner: (owner: string, count: number, total: number) => string;
+    userChangeRequestUnreadable: (path: string, detail: string) => string;
+    userChangeRequestMalformed: (detail: string) => string;
+    userChangeRequestPhaseNotOpen: (phase: string, state: string) => string;
+    userChangeRequestArtifactMissing: (paths: string) => string;
+    userChangeRequestArtifactNotOwned: (paths: string, step: string) => string;
+    userChangeRequestIdConflict: (id: string, ticket: string) => string;
+    userChangeRequestValid: (id: string, step: string) => string;
+    userChangeRequestAlreadyAccepted: (id: string, ticket: string) => string;
+    userChangeRequestAccepted: (id: string, ticket: string, step: string) => string;
     phaseRecovered: (phase: string) => string;
     iterationPrepared: (completed: string, next: string) => string;
     ticketRouted: (creator: string, ticket: string, assignee: string) => string;
@@ -568,6 +594,8 @@ export interface Messages {
     executorStepBlock: (stepSystemPrompt: string) => string;
     executorSkillBlock: (hints: string[]) => string;
     executorUserPromptOutro: string;
+    /** Earlier Phases' tests this Step inherited, rendered beside its writable paths. */
+    executorInheritedTests: (paths: string, documents: string) => string;
     executorFeedbackHeader: string;
     executorFeedbackProtocolRejected: (diagnostic: string) => string;
     /** What the executor tells the model after a turn, beyond the fixed lines above. */

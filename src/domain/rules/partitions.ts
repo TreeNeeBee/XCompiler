@@ -41,6 +41,7 @@ export const RULE_PARTITIONS: Readonly<Record<WorkId, readonly OpenRuleSegment[]
   'plan.phase': BUILDING,
   'plan.decompose': BUILDING,
   'judge.scenario': Object.freeze([]),
+  'judge.contract-basis': Object.freeze([]),
   'manage.project': BUILDING,
   // A translation renders the user's words faithfully; no product or debug Rule may steer it.
   'text.translate': Object.freeze([]),
@@ -68,7 +69,8 @@ export const RULE_SELECTION_POLICY: Readonly<Record<WorkId, readonly RunnableRul
   'code.implement': ANY_STRATEGY, 'verify.unit': ANY_STRATEGY, 'verify.integration': ANY_STRATEGY,
   'verify.module': ANY_STRATEGY, 'verify.functional': ANY_STRATEGY, 'repair.debug': ANY_STRATEGY,
   'change.apply': ANY_STRATEGY, 'plan.clarify': ANY_STRATEGY, 'plan.phase': ANY_STRATEGY,
-  'plan.decompose': ANY_STRATEGY, 'judge.scenario': Object.freeze(['bound-only'] as const), 'manage.project': ANY_STRATEGY,
+  'plan.decompose': ANY_STRATEGY, 'judge.scenario': Object.freeze(['bound-only'] as const),
+  'judge.contract-basis': Object.freeze(['bound-only'] as const), 'manage.project': ANY_STRATEGY,
   'text.translate': Object.freeze(['bound-only'] as const),
 });
 

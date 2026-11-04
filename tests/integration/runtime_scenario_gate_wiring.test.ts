@@ -13,15 +13,22 @@ import { buildPlan } from '../../src/agents/planner.js';
 import type { AuditEvent } from '../../src/audit/audit.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import type { ProjectOrchestratorOptions } from '../../src/application/project_management/orchestrator.js';
-import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
+import { materializeProjectExtension, materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
+import { rebaseDraftPlanPhases } from '../../src/domain/planning/compiler.js';
+import { reviseObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
+import { PhaseSchema, type PhaseState } from '../../src/domain/phases/phase.js';
+import { ProjectSchema } from '../../src/domain/projects/project.js';
+import { TicketSchema, appendTicketContractBases, type WorkTicket } from '../../src/domain/tickets/ticket.js';
 import { deliveryDocsForIteration, phaseDocForIteration, testPlanDocForIteration } from '../../src/domain/planning/document_contract.js';
-import { type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
+import { PlanSchema, type Phase, type Step } from '../../src/domain/planning/execution_plan.js';
 import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import { FilePlanStore } from '../../src/infrastructure/planning/file_plan_store.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
 import { acceptedContractChanges } from '../../src/application/execution/accepted_contract_changes.js';
-import { runExecute } from '../../src/runtime/run.js';
+import { ContractBasisJudgementError } from '../../src/application/execution/contract_basis_judge.js';
+import { runRunCommand } from '../../src/runtime/commands.js';
+import { runExecute, type ExecuteOptions } from '../../src/runtime/run.js';
 import { silentRuntimeIO } from '../../src/runtime/io.js';
 import { createSandbox } from '../../src/sandbox/factory.js';
 import type { ExecResult, Sandbox } from '../../src/sandbox/types.js';
@@ -117,22 +124,29 @@ async function endpoint(output: string, finishReason = 'stop', status = 200) {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, calls, probes };
 }
 
-async function fixture(url: string, overrideUrl?: string) {
+async function fixture(url: string, overrideUrl?: string, iteration: 'P1' | 'P2' = 'P1') {
   const container = new ProjectContainer(path.join(root, 'project'));
   const workspace = container.canonical().workspace;
   await workspace.ensure('.');
-  const plan = runtimePlan();
+  const first = runtimePlan('P1');
   const repository = new DomainObjectRepository(container.state);
   await repository.load();
   const graph = materializeProjectGraph({
-    draft: plan, topic: 'Deliver the accepted utility.', projectName: 'scenario-gate-wiring',
+    draft: first, topic: 'Deliver the accepted utility.', projectName: 'scenario-gate-wiring',
   });
   await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+  // A second Phase extends the closed first one, as an incremental build does.
+  const plan = iteration === 'P1' ? first : await extendWithSecondPhase(repository, graph);
   const pm = graph.actors.find(actor => actor.id === graph.project.pmActorId)!;
   if (overrideUrl) await repository.update(reviseActor(pm, { modelPool: 'assigned-management' }));
   const originalTickets = (await repository.list({ objectType: 'ticket' })).map(ticket => ticket.id).sort();
-  const planPath = container.control.abs('plan.P1.json');
+  const planPath = container.control.abs(`plan.${iteration}.json`);
   await new FilePlanStore().savePlan(planPath, plan);
+  if (iteration === 'P2') {
+    for (const relative of new Set(first.steps.flatMap(step => step.outputs))) {
+      await workspace.writeFile(relative, relative.endsWith('.py') ? 'print("Fixture utility output")\n' : 'Accepted utility deliverable.\n');
+    }
+  }
   const entrypoint = [
     'import argparse', '', 'def main():',
     '    parser = argparse.ArgumentParser(description="Fixture utility")',
@@ -168,9 +182,9 @@ async function fixture(url: string, overrideUrl?: string) {
     runTests: vi.fn(async () => ({ ...success })), installDeps: vi.fn(async () => ({ ...success })),
   };
   vi.mocked(createSandbox).mockReturnValue(sandbox);
-  return { container, sandbox, originalTickets, pm,
-    run: () => runExecute({ workspace: container.root, planPath, configPath, permissionMode: 'auto',
-      debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'), io: silentRuntimeIO, recordReplayMode: 'off' }),
+  return { container, sandbox, originalTickets, pm, planPath, configPath,
+    run: (options: Partial<ExecuteOptions> = {}) => runExecute({ workspace: container.root, planPath, configPath, permissionMode: 'auto',
+      debugWikiPath: path.join(root, 'configured-installation', 'debug-wiki'), io: silentRuntimeIO, recordReplayMode: 'off', ...options }),
     events: async () => (await container.state.readFile('audit/audit.jsonl')).split('\n')
       .filter(line => line.trim()).map(line => JSON.parse(line) as AuditEvent),
   };
@@ -202,6 +216,67 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
     expect(events.some(event => event.messageId === 'llm.business_protocol_result')).toBe(true);
     expect(events.some(event => event.messageId === 'domain.phase_delivery_gate_evaluated')).toBe(true);
     expect(events.some(event => event.messageId === 'domain.phase_delivery_gate_unjudged')).toBe(false);
+  });
+
+  // A P2 gate failed 39 tests; the P1 assertions among them had no owner in P2, and the gate routed
+  // every failure to CODE. A test only the earlier Phase declares now reaches this Phase's Step of its level.
+  it('routes a failing test only an earlier Phase declares to this Phase\'s Step of its level', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'The utility produced the accepted result.', planConflict: NO_CONFLICT }));
+    const current = await fixture(server.url, undefined, 'P2');
+    // What this Phase changed in a delivered test stays in the delivered project's own record.
+    const repository = new DomainObjectRepository(current.container.state);
+    await repository.load();
+    const project = (await repository.findProject())!;
+    const phase = await repository.read(project.phaseIds.at(-1)!);
+    const ticket = (await repository.list({ objectType: 'ticket', projectId: project.id }))
+      .find((object) => object.objectType === 'ticket' && object.phaseId === phase.id)!;
+    if (ticket.objectType !== 'ticket' || phase.objectType !== 'phase') throw new Error('Expected a P2 Ticket and Phase');
+    const registered = appendTicketContractBases(ticket, [{ path: 'tests/test_module_p1.py', reason: 'The header assertion is stale.',
+      citation: { kind: 'document', document: 'docs/iterations/P2/01-requirement-analysis.md', quote: '表头为 19 列且前 16 列与 P1 一致', revision: 'a'.repeat(40) },
+      contentHash: `sha256:${'a'.repeat(64)}`, attempt: 1, stepId: phase.stepIds[0]!, recordedAt: new Date().toISOString() }]);
+    await repository.update(TicketSchema.parse({ ...registered, ...reviseObjectEnvelope(registered) }), registered.state);
+    vi.mocked(current.sandbox.runTests).mockResolvedValue({ exitCode: 1, stderr: '', timedOut: false, durationMs: 1, stdout: [
+      '=========================== short test summary info ============================',
+      'FAILED tests/test_module_p1.py::test_contract - AssertionError: assert 19 == 16',
+      '========================= 1 failed, 4 passed in 0.10s ==========================',
+    ].join('\n') });
+    await current.run();
+    expect(controlled.gates).toHaveLength(1);
+    expect(controlled.gates[0]!.findings).toEqual([expect.objectContaining({ code: 'delivery_check_failed:tests:high-level-design',
+      target: 'high-level-design', affectedArtifacts: ['tests/test_module_p1.py'] })]);
+    const report = await current.container.canonical().workspace.readFile('docs/delivery/P2-delivery-gate.md');
+    expect(report).toContain('`tests/test_module_p1.py`');
+    expect(report).toContain('表头为 19 列且前 16 列与 P1 一致');
+  });
+
+  const judgement = { test: 'tests/test_functional_acceptance.py', reason: 'Failed inputs may keep warnings.',
+    citedContract: 'The header has nineteen columns.', proposedChange: '{"tool":"replace_in_file"}',
+    testAsDelivered: 'assert warnings == []', requirements: 'The header has nineteen columns.' };
+  const judged = async (output: string) => {
+    const server = await endpoint(output);
+    const current = await fixture(server.url);
+    let answer: Promise<unknown> = Promise.resolve();
+    controlled.workflow.mockImplementation(async (options: ProjectOrchestratorOptions, phaseId: string) => {
+      answer = options.judgeContractBasis!(judgement).then((value) => value, (error: unknown) => error);
+      await answer;
+      return { phaseId, totalSteps: 8, executedSteps: 8, failedStepId: 'BOUNDARY', failureReason: 'Controlled stop.' };
+    });
+    await current.run();
+    return { server, current, answer: await answer };
+  };
+
+  it('judges a contract basis through the real Rule-bound request, as the Project Manager', async () => {
+    const { server, current, answer } = await judged('{"supersedes":false,"reason":"The clause is about columns, not warnings."}');
+    expect(answer).toEqual({ supersedes: false, reason: 'The clause is about columns, not warnings.' });
+    const sent = server.calls[0]!.input.messages.map(message => message.content).join('\n');
+    expect(sent).toContain('You decide whether a cited contract truly supersedes a regression test.');
+    expect(sent).toContain('assert warnings == []');
+    expect((await current.events()).find(event => event.messageId === 'llm.contract_basis_judgement')?.data)
+      .toMatchObject({ test: judgement.test, verdict: { supersedes: false }, owner: { kind: 'contract-basis-judgement', work: 'judge.contract-basis', role: 'project-manager' } });
+  });
+
+  it('reports an unusable contract basis judgement as no verdict at all', async () => {
+    expect((await judged('{"ok":true}')).answer).toBeInstanceOf(ContractBasisJudgementError);
   });
 
   it('shows the judge a produced file that is not text as unreadable, never as its bytes', async () => {
@@ -357,9 +432,114 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
   });
 });
 
-function runtimePlan() {
-  const iterationId = 'P1';
-  const baseline = (kind: string) => `tests/test_${kind}_p1.py`;
+// Two contradictory design sections pass every gate, so a person has to name the change: it goes
+// in through the run that continues the Phase, and nothing has moved until the file is sound.
+describe('Runtime run carrying a person\'s change request', () => {
+  const request = (overrides: Record<string, unknown> = {}) => YAML.stringify({
+    id: 'failed-file-discards-warnings', target: 'high-level-design',
+    summary: 'A file that fails to parse contributes no warnings.', expected: 'A failed file yields an error row and nothing else.',
+    evidence: ['Two appendices disagree about what a failed file leaves behind.'],
+    affectedArtifacts: [phaseDocForIteration('HIGH_LEVEL_DESIGN', 'P2')!, 'src/main.py'], ...overrides,
+  });
+  async function phaseInProgress(url: string, state: PhaseState = 'in_progress') {
+    const current = await fixture(url, undefined, 'P2');
+    const repository = new DomainObjectRepository(current.container.state);
+    await repository.load();
+    const project = (await repository.findProject())!;
+    const phase = await repository.read(project.phaseIds.at(-1)!);
+    if (phase.objectType !== 'phase') throw new Error('Expected the P2 Phase');
+    await repository.update(PhaseSchema.parse({ ...phase, ...reviseObjectEnvelope(phase), state }), state);
+    const file = path.join(root, 'change.yaml');
+    await fs.writeFile(file, request());
+    const requests = async () => {
+      const fresh = new DomainObjectRepository(current.container.state);
+      await fresh.load();
+      return (await fresh.list({ objectType: 'ticket' })).filter((ticket) => ticket.objectType === 'ticket' && ticket.type === 'change-request');
+    };
+    return { ...current, file, requests };
+  }
+  const stopAt = (seen: unknown[], requests: () => Promise<unknown[]>) => {
+    controlled.workflow.mockImplementation(async (_options: ProjectOrchestratorOptions, phaseId: string) => {
+      seen.push(...await requests());
+      return { phaseId, totalSteps: 8, executedSteps: 8, failedStepId: 'RESUME-BOUNDARY', failureReason: 'Controlled stop at resume.' };
+    });
+  };
+
+  it('opens the change before the Phase resumes, once across runs, and records what was accepted', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await phaseInProgress(server.url);
+    const seen: unknown[] = [];
+    stopAt(seen, current.requests);
+
+    const said: string[] = [];
+    await current.run({ changeRequestPath: current.file, io: { ...silentRuntimeIO, emit: (event) => { if (event.type === 'log') said.push(event.message); } } });
+    expect(seen).toHaveLength(1);
+    expect(said.join('\n')).toContain((seen[0] as { name: string }).name);
+    const accepted = (await current.events()).filter((event) => event.messageId === 'domain.user_change_request_accepted');
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]!.data).toMatchObject({ requestId: 'failed-file-discards-warnings', digest: expect.stringMatching(/^[0-9a-f]{64}$/u) });
+
+    await current.run({ changeRequestPath: current.file });
+    expect(await current.requests()).toHaveLength(1);
+    expect((await current.events()).filter((event) => event.messageId === 'domain.user_change_request_accepted')).toHaveLength(1);
+    expect(controlled.workflow).toHaveBeenCalledTimes(2);
+  });
+
+  it('checks the file on a dry run and opens nothing', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await phaseInProgress(server.url);
+    expect(await current.run({ changeRequestPath: current.file, dryRun: true })).toMatchObject({ status: 'dry-run' });
+    expect(await current.requests()).toEqual([]);
+
+    await fs.writeFile(current.file, request({ target: 'unit-test' }));
+    expect(await current.run({ changeRequestPath: current.file, dryRun: true })).toMatchObject({ status: 'error', exitCode: 7 });
+  });
+
+  it.each([
+    ['cannot be read', async (file: string) => { await fs.rm(file); }, 'in_progress', 'unreadable'],
+    ['is not a change request', async (file: string) => { await fs.writeFile(file, 'id: [unterminated'); }, 'in_progress', 'malformed'],
+    ['targets a Phase that is not open', async () => {}, 'created', 'phase-not-open'],
+    ['names a file nothing owns', async (file: string) => { await fs.writeFile(file, request({ affectedArtifacts: ['docs/notes.md'] })); }, 'in_progress', 'artifact-not-owned'],
+  ] as const)('stops before any Step or model when the file %s', async (_name, spoil, state, problem) => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await phaseInProgress(server.url, state);
+    await spoil(current.file);
+
+    expect(await current.run({ changeRequestPath: current.file })).toMatchObject({ status: 'error', exitCode: 7 });
+    expect(controlled.workflow).not.toHaveBeenCalled();
+    expect(server.calls).toEqual([]);
+    expect(current.sandbox.build).not.toHaveBeenCalled();
+    expect(await current.requests()).toEqual([]);
+    const end = (await current.events()).filter((event) => event.kind === 'session.end').at(-1);
+    expect(end?.data).toMatchObject({ status: 'error', stage: 'change-request', problem });
+  });
+
+  it('reads a relative path from where the command was typed, not from where the process started', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await phaseInProgress(server.url);
+    expect(await runRunCommand({ workspace: current.container.root, planArg: current.planPath, configPath: current.configPath,
+      io: silentRuntimeIO, recordReplayMode: 'off', dryRun: true, cwd: root, changeRequestPath: 'change.yaml' })).toMatchObject({ status: 'dry-run' });
+  });
+});
+
+async function extendWithSecondPhase(repository: DomainObjectRepository, graph: ReturnType<typeof materializeProjectGraph>) {
+  const close = <T extends { state: string }>(object: T) => ({ ...object, ...reviseObjectEnvelope(object as never), state: 'closed' });
+  const predecessorPhase = PhaseSchema.parse(close(graph.phases[0]!));
+  await repository.update(predecessorPhase, predecessorPhase.state);
+  const epic = graph.tickets.find(ticket => ticket.type === 'epic' && ticket.phaseId === predecessorPhase.id)!;
+  const predecessorEpic = TicketSchema.parse(close(epic)) as WorkTicket;
+  await repository.update(predecessorEpic, predecessorEpic.state);
+  const project = ProjectSchema.parse(close(graph.project));
+  await repository.update(project, project.state);
+  const draft = PlanSchema.parse(rebaseDraftPlanPhases(runtimePlan('P2'), graph.phases.map(phase => phase.name)));
+  const extension = materializeProjectExtension({ draft, topic: 'Extend the utility.', projectName: project.name, project,
+    projectPlan: graph.projectPlan, predecessorPhase, predecessorEpic, actors: graph.actors, managementPlan: graph.managementPlan });
+  await new ProjectGraphPersistenceService(repository).persistExtension(extension);
+  return draft;
+}
+
+function runtimePlan(iterationId: 'P1' | 'P2' = 'P1') {
+  const baseline = (kind: string) => `tests/test_${kind}_${iterationId.toLowerCase()}.py`;
   const doc = (phase: Phase) => phaseDocForIteration(phase, iterationId)!;
   const testPlan = (phase: Phase) => testPlanDocForIteration(phase, iterationId)!;
   const specifications: Array<{ phase: Phase; outputs: string[]; inputs?: string[] }> = [

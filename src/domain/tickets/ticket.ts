@@ -94,6 +94,37 @@ export const TicketCommitSchema = z.object({
 
 export type TicketCommit = z.infer<typeof TicketCommitSchema>;
 
+/**
+ * The contract that allows a change to a test an earlier Phase delivered.
+ *
+ * A completed Phase is a milestone, and a later Phase must not regress it: its tests change only
+ * where a contract this Phase accepted superseded them. Kept on the Ticket, append-only like its
+ * commits, because the live path that checks a delivery must not read the audit trail. An entry is
+ * written after the change happened, so a refused or failed write leaves no authority behind.
+ */
+export const TicketContractBasisSchema = z.object({
+  /** The inherited test the change applies to. */
+  path: z.string().min(1),
+  reason: z.string().min(1),
+  citation: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('document'),
+      document: z.string().min(1),
+      quote: z.string().min(1),
+      /** The revision the quote was found in: what stood before this Ticket began. */
+      revision: GitRevisionSchema,
+    }).strict(),
+    z.object({ kind: z.literal('change-request'), ticketId: ObjectIdSchema }).strict(),
+  ]),
+  /** What the write left on disk: the basis covers this content, not the path for every later change. */
+  contentHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  attempt: z.number().int().nonnegative(),
+  stepId: ObjectIdSchema,
+  recordedAt: z.string().datetime({ offset: true }),
+}).strict();
+
+export type TicketContractBasis = z.infer<typeof TicketContractBasisSchema>;
+
 export const TICKET_PRIORITY_MIN = 0;
 export const TICKET_PRIORITY_MAX = 255;
 export const TICKET_PRIORITY = {
@@ -197,6 +228,7 @@ const TicketBaseSchema = ObjectEnvelopeSchema.extend({
    */
   baselineRevision: GitRevisionSchema.optional(),
   commits: z.array(TicketCommitSchema).default([]),
+  contractBases: z.array(TicketContractBasisSchema).default([]),
   attempts: z.number().int().nonnegative().default(0),
   maxAttempts: z.number().int().positive().default(3),
   state: z.enum(TICKET_STATES),
@@ -516,6 +548,16 @@ export function appendTicketCommit<T extends Ticket>(ticket: T, commit: TicketCo
     ...ticket,
     baselineRevision: ticket.baselineRevision ?? (commit.kind === 'baseline' ? commit.revision : undefined),
     commits: [...ticket.commits, commit],
+  }) as T;
+}
+
+/** A retry that repeats a registration adds nothing: the ledger holds each change once. */
+export function appendTicketContractBases<T extends Ticket>(ticket: T, bases: readonly TicketContractBasis[]): T {
+  const claim = ({ path, reason, citation, contentHash }: TicketContractBasis) => JSON.stringify({ path, reason, citation, contentHash });
+  const seen = new Set(ticket.contractBases.map(claim));
+  return TicketSchema.parse({
+    ...ticket,
+    contractBases: [...ticket.contractBases, ...bases.filter((basis) => !seen.has(claim(basis)))],
   }) as T;
 }
 

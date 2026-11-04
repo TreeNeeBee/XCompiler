@@ -1,9 +1,12 @@
 import {
+  V_MODEL_TEST_PHASES,
   V_MODEL_TEST_TO_SOURCE_PHASE,
   type Language,
+  type Phase,
   type Step,
   type VModelTestPhase,
 } from '../planning/execution_plan.js';
+import { phaseDocForIteration } from '../planning/document_contract.js';
 import { getLanguageContract } from '../planning/language_contract.js';
 
 export function isExecutableTestPath(path: string, language: Language): boolean {
@@ -48,7 +51,7 @@ export function pairedSourceSteps(steps: Step[], testStep: Step): Step[] {
 
 /** Executable baseline tests authored and owned by a left-side V-model Step. */
 export function developmentBaselineTestAssetPaths(
-  sourceStep: Step,
+  sourceStep: { readonly outputs: readonly string[] },
   language: Language,
 ): string[] {
   return [...new Set(
@@ -88,10 +91,8 @@ export function pairedTestAssetPaths(
  * to the paired source Step.
  */
 export function verificationSupplementRoot(step: Pick<Step, 'id' | 'iterationId' | 'phase'>): string {
-  const iteration = (step.iterationId ?? 'P1').toLowerCase().replace(/[^a-z0-9_-]+/gu, '-');
-  const phase = step.phase.toLowerCase().replaceAll('_', '-');
   const id = step.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-');
-  return `${VERIFICATION_SUPPLEMENT_DIR}/${iteration}/${phase}/${id}/`;
+  return `${supplementLevelRoot(step.iterationId ?? 'P1', step.phase)}${id}/`;
 }
 
 /** The one place the supplement namespace is spelled. */
@@ -108,6 +109,97 @@ export const VERIFICATION_SUPPLEMENT_DIR = 'tests/verification';
  */
 export function verificationSupplementUpwardPrefix(root: string): string {
   return '../'.repeat(root.replace(/\/+$/u, '').split('/').length);
+}
+
+/** A Step of some Phase, as far as test ownership needs it. */
+export interface TestAssetOwnerStep {
+  /** The Phase's iteration name, such as `P1`. */
+  readonly iteration: string;
+  readonly phase: Phase;
+  readonly outputs: readonly string[];
+}
+
+/**
+ * Test assets an earlier Phase left that the Step of the same level in this Phase now owns.
+ *
+ * Each Phase's tests stay in the suite as regression, so a later Phase that deliberately changes a
+ * contract leaves earlier assertions stale. They used to belong to nobody in the later Phase: every
+ * Step of a live P2 declined the change as not its file, and the run stopped on the same failure.
+ * A development Step inherits the executable baselines its earlier counterparts authored; a
+ * verification Step inherits its level's earlier supplement roots.
+ */
+export function inheritedTestAssets(
+  phase: Phase,
+  earlier: readonly TestAssetOwnerStep[],
+  language: Language,
+): string[] {
+  if ((V_MODEL_TEST_PHASES as readonly string[]).includes(phase)) return inheritedSupplementRoots(phase, earlier);
+  return [...new Set(earlier.filter((step) => step.phase === phase)
+    .flatMap((step) => developmentBaselineTestAssetPaths(step, language)))];
+}
+
+const CONTRACT_LEVELS = ['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN'] as const satisfies readonly Phase[];
+
+/**
+ * The documents that may justify changing a test at this level: its paired level and those above.
+ *
+ * A test may only be moved by a contract at least as close to the user as itself. What a user can
+ * observe is asserted at the functional level, and only a requirement may change that; a design
+ * written in the same Phase cannot talk its way out of a behaviour the requirement still demands.
+ */
+export function contractBasisDocuments(phase: Phase, iterationId: string): string[] {
+  const source = (V_MODEL_TEST_PHASES as readonly Phase[]).includes(phase)
+    ? V_MODEL_TEST_TO_SOURCE_PHASE[phase as VModelTestPhase]
+    : phase;
+  const depth = CONTRACT_LEVELS.indexOf(source as (typeof CONTRACT_LEVELS)[number]);
+  const levels = depth < 0 ? CONTRACT_LEVELS : CONTRACT_LEVELS.slice(0, depth + 1);
+  return levels.flatMap((level) => phaseDocForIteration(level, iterationId) ?? []);
+}
+
+/**
+ * Whether a change to an inherited test at this level also needs a judge to confirm the citation.
+ * A check of the citation proves it is real, not that it applies, and the functional level is what
+ * a user observes: a true sentence about columns must not relax an assertion about warnings.
+ */
+export function requiresContractBasisJudgement(phase: Phase): boolean {
+  return phase === 'REQUIREMENT_ANALYSIS' || phase === 'FUNCTIONAL_TEST';
+}
+
+/** The supplement roots a verification level's earlier Phases left, one per earlier iteration. */
+export function inheritedSupplementRoots(phase: Phase, earlier: readonly TestAssetOwnerStep[]): string[] {
+  return [...new Set(earlier.filter((step) => step.phase === phase)
+    .map((step) => supplementLevelRoot(step.iteration, phase)))];
+}
+
+/**
+ * The Step type that owns a test file in this Phase: a supplement's level from its path, otherwise
+ * the Step whose outputs declare it, in this Phase or inherited from an earlier one. Undefined when
+ * no Step declares it.
+ */
+export function testAssetOwnerPhase(
+  path: string,
+  current: readonly Pick<TestAssetOwnerStep, 'phase' | 'outputs'>[],
+  earlier: readonly TestAssetOwnerStep[],
+): Phase | undefined {
+  const normalized = normalizePath(path);
+  const supplement = new RegExp(`^${VERIFICATION_SUPPLEMENT_DIR}/[^/]+/([^/]+)/`, 'u').exec(normalized);
+  if (supplement) {
+    return (V_MODEL_TEST_PHASES as readonly Phase[]).find((phase) => phaseSegment(phase) === supplement[1]);
+  }
+  const declares = (step: Pick<TestAssetOwnerStep, 'outputs'>) => step.outputs.some((output) => normalizePath(output) === normalized);
+  return current.find(declares)?.phase ?? earlier.find(declares)?.phase;
+}
+
+function supplementLevelRoot(iteration: string, phase: Phase): string {
+  return `${VERIFICATION_SUPPLEMENT_DIR}/${iterationSegment(iteration)}/${phaseSegment(phase)}/`;
+}
+
+function iterationSegment(iteration: string): string {
+  return iteration.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-');
+}
+
+function phaseSegment(phase: string): string {
+  return phase.toLowerCase().replaceAll('_', '-');
 }
 
 function normalizePath(path: string): string {

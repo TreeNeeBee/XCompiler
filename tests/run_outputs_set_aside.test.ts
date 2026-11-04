@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.j
 import { GitService } from '../src/workspace/git.js';
 import { moveIntoRuntimeTemp, workingChanges } from '../src/workspace/runtime_temp.js';
 import { Workspace } from '../src/workspace/workspace.js';
+import { singlePhaseRepository } from './support/domain_objects.js';
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 
 /**
@@ -58,7 +60,8 @@ describe('an attempt whose run wrote outside its scope', () => {
     const runner = new DomainAttemptRunner(withFixtureExecutionRequests({
       workspace, git,
       sandbox: { kind: 'subprocess', runProgram: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }) },
-      router: {}, repository: { list: async () => [] },
+      router: {},
+      repository: singlePhaseRepository(),
       audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } },
       plugins: { size: 0 }, debugWiki: new FileDebugWiki(path.join(workspace.root, '.wiki')),
     } as never), 'python');
@@ -101,6 +104,78 @@ describe('an attempt whose run wrote outside its scope', () => {
     expect(events).toContainEqual(expect.objectContaining({
       messageId: 'domain.run_outputs_set_aside', paths: ['artifacts/signals.xlsx'],
     }));
+  });
+
+  // A P2 CODE Step owns the P1 unit tests it inherited: updating one to the accepted contract is its
+  // own work, committed with it, not a stray output set aside. Without a registered basis the same
+  // change does not deliver: the write gate cannot see a change made by a program the Step ran.
+  // An older registration of the same path is the third case: a basis covers what its write left, so
+  // it cannot answer for whatever changed the file afterwards, while a retry of the same change can.
+  const UPDATED = 'def test_header():\n    assert 19 == 19\n';
+  const hashOf = (content: string) => `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  it.each([
+    ['commits an inherited earlier-Phase test the Step updated under a registered basis', [{ path: 'tests/unit/test_cli.py', contentHash: hashOf(UPDATED) }], true],
+    ['fails the attempt when an inherited test changed with no basis registered', [], false],
+    ['fails the attempt when the registered basis covers other content of that test', [{ path: 'tests/unit/test_cli.py', contentHash: hashOf('assert True\n') }], false],
+  ] as Array<[string, Array<{ path: string; contentHash: string }>, boolean]>)('%s', async (_name, bases, delivers) => {
+    const step: Step = {
+      id: 'S004', iterationId: 'P1', phase: 'CODE', title: 'CODE', description: 'CODE', systemPrompt: 'CODE',
+      tools: ['write_file'], inputs: [], outputs: ['src/parser.py'], dependsOn: [], acceptance: 'Passes.', maxAttempts: 3,
+    };
+    const events: Array<Record<string, unknown>> = [];
+    const runner = new DomainAttemptRunner(withFixtureExecutionRequests({
+      workspace, git,
+      sandbox: { kind: 'subprocess', runProgram: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }) },
+      router: {},
+      // A one-Phase Project: nothing earlier for this Step to inherit.
+      repository: { list: async () => [], read: async (id: string) => ({
+        'phase-id': { objectType: 'phase', id, name: 'P2', projectId: 'project-id', stepIds: [] },
+        'p1-id': { objectType: 'phase', id, name: 'P1', projectId: 'project-id', stepIds: ['p1-code'] },
+        'p1-code': { objectType: 'step', id, type: 'CODE', outputs: ['src/parser.py', 'tests/unit/test_cli.py'] },
+        'story-id': { objectType: 'ticket', id, contractBases: bases },
+      } as Record<string, unknown>)[id] ?? { objectType: 'project', id, name: 'parser', phaseIds: ['p1-id', 'phase-id'] } },
+      audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } },
+      plugins: { size: 0 }, debugWiki: new FileDebugWiki(path.join(workspace.root, '.wiki')),
+    } as never), 'python');
+    const internals = runner as unknown as Record<string, unknown>;
+    internals.recordTicketRevision = async () => {};
+    internals.assembleContext = async () => ({ assembled: { text: '', debugWikiMatches: [] }, debugBrief: undefined });
+    internals.rejectInvalidProjectContract = async () => undefined;
+    internals.recordAssessment = async (_step: unknown, value: unknown) => ({ ...(value as object), passed: true });
+    internals.failAttempt = async (_scope: unknown, _baseline: string, _input: unknown, failure: Record<string, unknown>) =>
+      ({ ok: false, changedFiles: [], wikiEntryIds: [], testOutcomes: [], ...failure });
+    internals.buildEnvironment = async () => ({
+      baselineGateExecution: { mode: 'not-applicable', reason: 'fixture' },
+      verificationScope: { testArgs: [], inheritedFromTicket: false },
+      tools: [], context: {}, snippets: [], hints: [],
+      executor: { run: async () => {
+        await workspace.writeFile('src/parser.py', 'def run():\n    return 1\n');
+        // What the product wrote when the Step ran it: outside every path this Step may write.
+        await workspace.writeFile('tests/unit/test_cli.py', UPDATED);
+        return {
+          success: true, rounds: 1, toolCalls: [],
+          qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {}, tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 }, evidence: ['ran'], gaps: [] },
+          metrics: { rounds: 1, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 0, progressRatio: 1, healthScore: 1, providers: [] },
+        };
+      } },
+    });
+    const outcome = await runner.run({
+      plan: { language: 'python', requirementDigest: 'Parse input.', phaseId: 'P1',
+        implementationPhases: [{ id: 'P1', title: 'Parser', objective: 'Parse input.', status: 'current', scope: ['parser'], deliverables: [], dependsOn: [] }], steps: [step] },
+      executionStep: step, mode: 'normal',
+      domainStep: { ...step, name: 'P1-S004', type: 'CODE', projectId: 'project-id', phaseId: 'phase-id', attempts: 1, agent: 'Developer' },
+      ticket: { id: 'story-id', type: 'story', logIds: [], commits: [], source: { correlationId: 'correlation-id' } },
+    } as unknown as AttemptInput) as { ok: boolean };
+
+    if (!delivers) {
+      expect(outcome).toMatchObject({ ok: false, failure: { category: 'quality', code: 'inherited_test_change_unregistered',
+        details: { paths: ['tests/unit/test_cli.py'] } } });
+      return;
+    }
+    expect(outcome, JSON.stringify(outcome)).toMatchObject({ ok: true });
+    const committed = await simpleGit(workspace.root).raw(['show', '--name-only', '--format=', 'HEAD']);
+    expect(committed).toContain('tests/unit/test_cli.py');
+    expect(events.some((event) => event.messageId === 'domain.run_outputs_set_aside')).toBe(false);
   });
 });
 

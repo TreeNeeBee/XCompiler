@@ -103,6 +103,7 @@ export async function runRunCommand(opts: RuntimeRunCommandOptions): Promise<Exe
     workspace: container.root,
     planPath,
     projectCommand: 'run',
+    ...(opts.changeRequestPath ? { changeRequestPath: path.resolve(cwd, opts.changeRequestPath) } : {}),
   });
 }
 

@@ -248,6 +248,8 @@ const messages: Messages = {
     finding: 'Finding',
     setAside: 'Run outputs set aside',
     setAsideNote: (directory) => `What this gate run left in the working copy was moved to \`${directory}\` (ignored by git; delete it when no longer needed):`,
+    contractBases: 'Changes to tests earlier Phases delivered',
+    contractBasesNote: 'Each change below rests on the contract cited for it. Tests not listed here are as those Phases delivered them.',
   },
   system: {
     preflightNoProvider: (pools) => `LLM preflight failed: model pools [${pools}] have no usable provider and no ollama server is reachable. Check base_url in config.yaml, or start the ollama service, then retry.`,
@@ -432,6 +434,7 @@ const messages: Messages = {
     optIntent: 'plan intent: greenfield | feature | refactor | self',
     optBaselinePlan: 'existing baseline phasePlan.json path (default <workspace>/phasePlan.json)',
     optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
+    optChangeRequest: 'YAML file with a contract change for the Phase in progress; it is opened before work resumes',
     optDebugWikiPath: 'debug wiki root directory path (default <XCompiler path>/.xcompiler/debug-wiki)',
     optRecordReplay: 'external interaction mode: off, record, replay, auto, or refresh',
     optRecordReplayPath: 'workspace-relative record/replay fixture directory',
@@ -731,6 +734,42 @@ const messages: Messages = {
         'hunk header must carry its line ranges, for example "@@ -12,7 +12,9 @@"; a header without them, such as "@@ name" or a bare ' +
         '"@@", is not read. Write the hunk headers with line ranges, or use replace_in_file with the exact current text.',
     },
+    contractBasis: {
+      required: (paths, documents) =>
+        `${paths} is a regression test an earlier Phase delivered, and a delivered Phase must not regress. ` +
+        'Change it only where a contract this Phase accepted superseded it, and say which in the same call. ' +
+        'args.contractBasis must be {"reason":"<which assertion, and why it is stale>","document":"<path>","quote":"<verbatim text>"} ' +
+        'or {"reason":"...","changeRequest":"<ticketId of an accepted contract change>"}. ' +
+        `Documents this Step may cite, as they stood before this Ticket began:\n${documents}\n` +
+        'If no contract supersedes the assertion, leave the test as it is: the failure is a product defect for its owner.',
+      malformed: (documents) =>
+        'args.contractBasis is not usable: give a non-empty reason and exactly one of document with quote, or changeRequest. ' +
+        'args.contractBasis must be {"reason":"<which assertion, and why it is stale>","document":"<path>","quote":"<verbatim text>"} ' +
+        'or {"reason":"...","changeRequest":"<ticketId of an accepted contract change>"}. ' +
+        `Documents this Step may cite:\n${documents}`,
+      documentNotCitable: (document, documents) =>
+        `${document} cannot be cited for a test at this level; a test may only rest on a contract at its own level or above. ` +
+        `Cite one of these, or a changeRequest:\n${documents}`,
+      quoteTooShort: (minimum) =>
+        `The quote is too short to identify a contract clause. Quote the whole clause verbatim, at least ${minimum} characters.`,
+      quoteNotFound: (document) =>
+        `That text is not in ${document} as it stood before this Ticket began. Read the document and quote the clause verbatim; ` +
+        'text written by this Ticket is not yet an accepted contract and cannot be cited.',
+      changeRequestNotAccepted: (changeRequest) =>
+        `${changeRequest} is not an accepted contract change of this Phase. Cite the ticketId of one listed under ` +
+        'accepted contract changes, or a document clause.',
+      changeRequestNotCovering: (paths, documents) =>
+        `That Change Request does not name ${paths} among its affected artifacts, so it is no basis for changing it. ` +
+        `Cite the clause that requires the change instead, from:\n${documents}`,
+      notSuperseded: (path, reason) =>
+        `The cited contract does not supersede ${path}: ${reason} Leave the assertion as it is: if the product fails it, ` +
+        'that is a product defect for its owner. Cite a clause only if it truly requires what the change asserts.',
+      judgementUnavailable: 'This change could not be confirmed against its contract, so it is refused. Leave the test as an ' +
+        'earlier Phase delivered it, and report what you found as a finding for its owner.',
+      unregisteredChange: (paths) =>
+        `${paths} changed in this Ticket with no contract basis registered. A delivered Phase must not regress: rewrite each of them ` +
+        'to what its contract requires, with args.contractBasis on the write, or restore what the earlier Phase delivered.',
+    },
     addDependency: {
       description: 'Adds or updates dependencies in the dependency manifest and rebuilds the sandbox. TypeScript packages accept name@version; set dev=true for test and build tools.',
     },
@@ -825,6 +864,16 @@ const messages: Messages = {
     auditCommandOk: (name) => `${name} ok`,
     auditCommandFailed: (name, exitCode, timedOut) =>
       `${name} failed (exit=${exitCode}${timedOut ? ', timeout' : ''})`,
+    auditTestsFailedForOwner: (owner, count, total) => `tests failed: ${count} of ${total} failing case(s) belong to ${owner}`,
+    userChangeRequestUnreadable: (path, detail) => `change request ${path} cannot be read: ${detail}`,
+    userChangeRequestMalformed: (detail) => `change request is not valid: ${detail}`,
+    userChangeRequestPhaseNotOpen: (phase, state) => `change request refused: Phase ${phase} is ${state}, and only a Phase in progress can take one`,
+    userChangeRequestArtifactMissing: (paths) => `change request refused: these affected artifacts do not exist: ${paths}`,
+    userChangeRequestArtifactNotOwned: (paths, step) => `change request refused: no Step from ${step} onward owns ${paths}; target the earlier Step that does, or leave them out`,
+    userChangeRequestIdConflict: (id, ticket) => `change request refused: id ${id} was already accepted as ${ticket} with different content; give this change a new id`,
+    userChangeRequestValid: (id, step) => `change request ${id} is valid and targets ${step}`,
+    userChangeRequestAlreadyAccepted: (id, ticket) => `change request ${id} is already accepted as ${ticket}; nothing new is opened`,
+    userChangeRequestAccepted: (id, ticket, step) => `change request ${id} accepted as ${ticket}, starting at ${step}`,
     phaseRecovered: (phase) => `recovered ${phase} from the canonical Project state`,
     iterationPrepared: (completed, next) => `iteration ${completed} passed; prepared ${next}`,
     ticketRouted: (creator, ticket, assignee) => `${creator} created ${ticket} → PM → ${assignee}`,
@@ -1042,6 +1091,17 @@ Return strict JSON StepPlan for the current phase only.`,
     executorSkillBlock: (hints: string[]) =>
       `\n\n## Active Agent Skills\n${hints.join('\n\n')}`,
     executorUserPromptOutro: 'Now return the first round of JSON per the protocol.',
+    executorInheritedTests: (paths, documents) =>
+      '## inherited regression tests\n' +
+      'Earlier Phases left these tests at this Step\'s level; they are this Step\'s to keep current:\n' +
+      `${paths}\n` +
+      'A completed Phase is a milestone, and this Phase must not regress what it delivered. Update an assertion only where a ' +
+      'contract this Phase accepted superseded it; a failure the current contract still requires is a product defect for its ' +
+      'owner, not an assertion to relax.\n' +
+      'Every write to one of these tests must carry args.contractBasis: ' +
+      '{"reason":"<which assertion, and why it is stale>","document":"<path>","quote":"<verbatim text>"} ' +
+      'or {"reason":"...","changeRequest":"<ticketId of an accepted contract change>"}. A write without a valid basis is refused.\n' +
+      `Documents this Step may cite, as they stood before this Ticket began:\n${documents}`,
     executorFeedbackHeader: 'Tool results this round:',
     executorFeedbackProtocolRejected: (diagnostic) =>
       'Your previous reply failed full-response JSON validation. No action, permission request or automatic verification from that reply was executed. ' +

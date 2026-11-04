@@ -37,6 +37,10 @@ export const ScenarioJudgementOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('scenario-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
   actorId: ObjectId, role: z.literal('project-manager'), roleVersion: Text, work: z.literal('judge.scenario'),
 }).strict();
+export const ContractBasisJudgementOwnerSchema = ModelPoolBindingSchema.extend({
+  kind: z.literal('contract-basis-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
+  actorId: ObjectId, role: z.literal('project-manager'), roleVersion: Text, work: z.literal('judge.contract-basis'),
+}).strict();
 export const PlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('planning-operation'), operationId: UUID,
   operation: z.enum(['clarification', 'phase-plan', 'phase-decomposition']),
@@ -60,8 +64,8 @@ export const ProjectPlanningOperationOwnerSchema = ModelPoolBindingSchema.extend
 }).strict();
 export const StepExecutionOwnerSchema = ExecutionRequestScopeSchema.extend({ kind: z.literal('step-execution') }).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
-  ScenarioJudgementOwnerSchema, PlanningOperationOwnerSchema, ProjectPlanningOperationOwnerSchema, StepExecutionOwnerSchema,
-  TextTranslationOwnerSchema,
+  ScenarioJudgementOwnerSchema, ContractBasisJudgementOwnerSchema, PlanningOperationOwnerSchema,
+  ProjectPlanningOperationOwnerSchema, StepExecutionOwnerSchema, TextTranslationOwnerSchema,
 ]);
 export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
 export type PlanningOperationOwner = z.infer<typeof PlanningOperationOwnerSchema>;
@@ -351,7 +355,8 @@ export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInp
       ownerMatches = input.owner.kind === 'planning-operation' || input.owner.kind === 'project-planning-operation';
       break;
   }
-  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'step-execution'
+  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'contract-basis-judgement'
+    || input.owner.kind === 'step-execution'
     || input.owner.kind === 'text-translation' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion
     || ruleEvidenceDigest(input.outputProtocol) !== ruleEvidenceDigest(protocol)) {

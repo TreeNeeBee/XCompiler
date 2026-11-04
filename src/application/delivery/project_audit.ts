@@ -9,6 +9,7 @@ import { deliveryDocsForIteration, deliveryDocsForProjectType, phaseDocForIterat
 import { t } from '../../i18n/index.js';
 import { detectNetworkApiFailureInExec } from '../execution/network_failure.js';
 import {
+  findingTargetForStepType,
   type DeliveryGateFinding,
   type DeliveryGateScenario,
   type ScenarioOutcomeJudge,
@@ -17,6 +18,7 @@ import {
   type ScenarioRepairTarget,
   type ScenarioArtifactSnapshot,
 } from '../../domain/quality/delivery_gate.js';
+import { testAssetOwnerPhase, type TestAssetOwnerStep } from '../../domain/quality/test_assets.js';
 
 export interface ProjectAuditCheck {
   name: string;
@@ -68,6 +70,7 @@ export async function runProjectAudit(opts: {
   sandbox: Sandbox;
   plan: Plan;
   profile: LanguageProfile;
+  earlierTestOwners?: readonly TestAssetOwnerStep[];
   scenarios?: readonly DeliveryGateScenario[];
   runLiveScenario?: <T>(operation: () => Promise<T>) => Promise<T>;
   judgeScenarioOutcome?: ScenarioOutcomeJudge;
@@ -92,6 +95,8 @@ async function runQualityAudit(opts: {
   sandbox: Sandbox;
   plan: Plan;
   profile: LanguageProfile;
+  /** The Steps of earlier Phases, whose regression tests this Phase's Steps inherit by level. */
+  earlierTestOwners?: readonly TestAssetOwnerStep[];
   scope: 'project' | 'iteration';
   iterationId?: string;
   scenarios?: readonly DeliveryGateScenario[];
@@ -110,7 +115,7 @@ async function runQualityAudit(opts: {
     ),
   );
   checks.push(await checkTestFiles(opts.ws));
-  checks.push(await runTestAudit(opts.sandbox));
+  checks.push(...await runTestAudit(opts.sandbox, opts.plan, opts.profile, opts.earlierTestOwners ?? []));
   checks.push(await runEntrypointAudit(opts.ws, opts.sandbox, opts.profile));
 
   const scenarios = opts.scenarios ?? [];
@@ -212,9 +217,127 @@ async function checkTestFiles(ws: Workspace): Promise<ProjectAuditCheck> {
   };
 }
 
-async function runTestAudit(sandbox: Sandbox): Promise<ProjectAuditCheck> {
+/**
+ * One failing check per owner of the failing tests, each naming every case of every owner.
+ *
+ * The check used to carry the last twenty lines of output and route everything to CODE. A live P2
+ * gate failed 39 cases; the tail showed one, a stale P1 supplement, so every Step judged that one
+ * and nobody saw nine failures from a product defect. The gate cannot tell an assertion an accepted
+ * contract change made stale from a product defect, and one defect fails cases at several levels:
+ * the owner, who can change the test, decides, and sees what failed elsewhere. Without a complete
+ * per-case verdict the single check stays as it was, and says why.
+ */
+async function runTestAudit(
+  sandbox: Sandbox,
+  plan: Pick<Plan, 'steps'>,
+  profile: Pick<LanguageProfile, 'id'>,
+  earlier: readonly TestAssetOwnerStep[],
+): Promise<ProjectAuditCheck[]> {
   const result = await sandbox.runTests([], { timeoutMs: 120_000 });
-  return toExecCheck('tests', result, 'error');
+  const check = toExecCheck('tests', result, 'error');
+  // A timeout ends the run before any summary can be its verdict.
+  if (check.ok || profile.id !== 'python' || result.timedOut) return [check];
+  const summary = pytestSummary(result.stdout);
+  if (!summary.complete) {
+    return [{ ...check, detail: [`Per-case failures unavailable: ${summary.reason}.`, check.detail].filter(Boolean).join('\n') }];
+  }
+  const current = plan.steps.map((step) => ({ phase: step.phase, outputs: step.outputs }));
+  const groups = new Map<DeliveryGateFinding['target'], FailingTestCase[]>();
+  for (const failing of summary.cases) {
+    const owner = testAssetOwnerPhase(failing.file, current, earlier);
+    const target = owner ? findingTargetForStepType(owner) : 'code';
+    groups.set(target, [...(groups.get(target) ?? []), failing]);
+  }
+  const listed = (cases: readonly FailingTestCase[]) =>
+    cases.map((failing) => failing.message ? `${failing.id} - ${failing.message}` : failing.id);
+  const tail = tailText(result.stderr || result.stdout);
+  // A diagnosis of the output, not a verdict on its cases: kept beside them, never in place of them.
+  const network = detectNetworkApiFailureInExec(result);
+  return [...groups].map(([target, owned]) => {
+    const name = `tests:${target}`;
+    const elsewhere = [...groups].filter(([other]) => other !== target)
+      .map(([other, cases]) => `failing cases owned by ${other}:\n${listed(cases).join('\n')}`);
+    return {
+      name,
+      severity: 'error',
+      ok: false,
+      summary: network ? `${name} failed: ${network.message}` : t().execute.auditTestsFailedForOwner(target, owned.length, summary.cases.length),
+      detail: listed(owned).join('\n'),
+      finding: {
+        category: 'product-defect',
+        code: `delivery_check_failed:${name}`,
+        summary: `${owned.length} of ${summary.cases.length} failing delivery tests belong to ${target}; the gate has not ` +
+          'classified them. Update each assertion an accepted contract change made stale; report every other failure ' +
+          'as a product-defect finding for its owner, naming its case ids. One defect can fail cases owned elsewhere too.',
+        evidence: [...listed(owned), ...elsewhere, ...(network ? [network.evidence] : []), ...(tail ? [`output tail:\n${tail}`] : [])],
+        target,
+        affectedArtifacts: target === 'code'
+          ? ['src/', ...new Set(owned.map((failing) => failing.file))]
+          : [...new Set(owned.map((failing) => failing.file))],
+        dependencyPackages: [],
+      },
+    } satisfies ProjectAuditCheck;
+  });
+}
+
+interface FailingTestCase {
+  readonly id: string;
+  readonly file: string;
+  readonly message?: string;
+}
+
+type PytestSummary =
+  | { readonly complete: true; readonly cases: readonly FailingTestCase[] }
+  | { readonly complete: false; readonly reason: string };
+
+/**
+ * The cases pytest's short test summary names, checked against its final tally.
+ *
+ * Read from the end of the report, because a test's own output is replayed earlier in it: a live-shaped
+ * test that printed a summary header and `1 passed` was taken for the summary, the empty case list
+ * agreed with its tally, and the failing run left no failing check at all. An empty list is never a
+ * verdict on a run that failed; the caller then keeps the check the exit code already decided. A
+ * node id keeps its parameter brackets, spaces and all, so the id ends at the first ` - ` outside them.
+ */
+function pytestSummary(stdout: string): PytestSummary {
+  const lines = stdout.split(/\r?\n/u);
+  const tallyAt = lastIndexOf(lines, (line) => PYTEST_TALLY.test(line));
+  if (tallyAt < 0) return { complete: false, reason: 'pytest printed no final tally' };
+  const start = lastIndexOf(lines.slice(0, tallyAt), (line) => /^=+ short test summary info =+$/u.test(line.trim()));
+  if (start < 0) return { complete: false, reason: 'pytest printed no short test summary' };
+  const cases = new Map<string, FailingTestCase>();
+  for (const line of lines.slice(start + 1, tallyAt)) {
+    const entry = /^(?:FAILED|ERROR) (.+)$/u.exec(line.trimEnd());
+    if (!entry) continue;
+    const { id, message } = splitNodeId(entry[1]!);
+    cases.set(id, { id, file: id.split('::')[0]!, ...(message ? { message } : {}) });
+  }
+  const counted = [...lines[tallyAt]!.matchAll(/\b(\d+) (failed|errors?)\b/gu)].reduce((sum, match) => sum + Number(match[1]), 0);
+  if (cases.size === 0 || counted !== cases.size) {
+    return { complete: false, reason: `the summary names ${cases.size} case(s) but the tally reports ${counted}` };
+  }
+  return { complete: true, cases: [...cases.values()] };
+}
+
+function lastIndexOf(lines: readonly string[], matches: (line: string) => boolean): number {
+  for (let index = lines.length - 1; index >= 0; index--) if (matches(lines[index]!)) return index;
+  return -1;
+}
+
+/** pytest's last line: counts by outcome, then how long the run took. */
+const PYTEST_TALLY = /\b\d+ (?:failed|passed|errors?|skipped|xfailed|xpassed|warnings?)\b.* in \d+(?:\.\d+)?s\b/u;
+
+function splitNodeId(entry: string): { id: string; message?: string } {
+  let depth = 0;
+  for (let index = 0; index < entry.length; index++) {
+    const char = entry[index];
+    if (char === '[') depth++;
+    else if (char === ']') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && entry.startsWith(' - ', index)) {
+      return { id: entry.slice(0, index), message: entry.slice(index + 3).trim() };
+    }
+  }
+  return { id: entry.trim() };
 }
 
 async function runEntrypointAudit(

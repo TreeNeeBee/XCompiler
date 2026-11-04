@@ -1,0 +1,24 @@
+# dbc2excel-5 P2: failed files must not leave warnings (findings D1, T1, C1).
+# xcompiler run -w <dbc2excel-5> --change-request <this file>
+id: failed-file-discards-warnings
+target: high-level-design
+summary: >-
+  失败文件既不产生信号行也不产生警告行：删除把这条规则改成"实现自由度"的设计裁定，恢复被放宽的模块测试，
+  修正 process_files 共享警告缓冲的缺陷。
+expected: >-
+  任一输入文件读取或解析失败时，该文件在 process_files 返回值中只有一条 ErrorRecord，不贡献信号行和警告记录，
+  samples/broken_p2.dbc 的返回值为 rows=[]、errors 恰一条、warnings=[]；其他成功文件的信号行和警告记录不受影响；
+  设计文档只保留这一种说法。
+evidence:
+  - 需求 B-3（docs/02-requirement-analysis-p2.md、docs/iterations/P2/01-requirement-analysis.md）规定失败文件不产生信号行，也不产生警告行。
+  - docs/03-high-level-design-p2.md 有两个"附录 A"。前一个要求失败文件的警告缓冲整体丢弃，后一个称是否保留属于实现自由度，两者矛盾。
+  - docs/iterations/P2/02-high-level-design.md 的"附录 A：错误与警告分流的补充裁定"重复了实现自由度的说法。
+  - tests/modules/test_cli_wiring.py::test_process_files_broken_file_yields_error_and_no_rows 不再断言 warnings == []，放宽为只检查警告归属。
+  - src/main.py 的 process_files 把循环外共享的 warnings 传给 parse_dbc，解析失败时已收集的警告留在返回值中。
+  - docs/iterations/P2/03-detailed-design.md 的局部警告缓冲和 docs/iterations/P2/tests/module-test-plan.md 的 M005 都要求隔离，与需求一致。
+affectedArtifacts:
+  - docs/03-high-level-design-p2.md
+  - docs/iterations/P2/02-high-level-design.md
+  - tests/modules/test_cli_wiring.py
+  - src/main.py
+  - tests/unit/test_cli_exit_codes.py

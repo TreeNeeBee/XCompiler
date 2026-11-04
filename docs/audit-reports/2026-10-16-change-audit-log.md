@@ -3129,3 +3129,173 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **记录，未改**：
 - 交付物中的坏文件警告泄漏与高层设计中两个互相矛盾的"附录 A"仍在，需要后续 run 由 CODE 修复产品代码，并清理设计文档；交付门禁没有发现同名、互相矛盾的附录。
 - `recoveryProbeActionFingerprints` 只按 `工具:路径:offset` 记录已读窗口，不含修改代次；文件修改后再读同一 offset 的新内容，仍被当作重复读取拒绝（本次 S004、S002 都出现）。
+
+### 前序 Phase 测试资产的继承与阶段测试检查的逐例证据（2026-11-03，用户决定，D-68）
+
+**用户要求**：审计 dbc2excel-5 P2 run 后，用户对 X-1 选择"按层级继承"，对 X-2 选择"结构化失败列表"，路由方式选择"新增四个 target 值"。Codex 审计 [2026-11-03-dbc2excel-p2-codex-audit-report.md](2026-11-03-dbc2excel-p2-codex-audit-report.md) 复核未提交改动后，用户对 F-01 选择"负责方分类、完整列表可见"，对 F-03 回答"code 阶段只验证增量和变更的测试用例，测试阶段执行完整的测试"。
+
+**核对**：
+- run B 的阶段门禁 39 例失败。在 `e2a6d40` 导出副本中完整运行 pytest：19 例断言 16 列、11 例按二元组解包 `process_files`，这 30 例都是 P2 契约演进；9 例工作表多出「警告」，均为坏文件场景，来自 `src/main.py` 的警告泄漏。
+- `project_audit.ts` 的 `toExecCheck('tests')` 只取 stdout 末尾 20 行，并固定 `target: 'code'`。PM intake、`attempt_result_processor`、`attempt_runner` 三处把 target 映射到 Step 类型的写法都是以 CODE 结尾的条件链。
+- 可写范围只读当前计划的 Step 产出，看不到 P1 Step 声明的测试。
+
+**处理**：
+- 领域层（`src/domain/quality/test_assets.ts`）：
+  - `inheritedTestAssets`：开发 Step 继承前序同类型 Step 的可执行基线，验证 Step 继承 `tests/verification/<iter>/<level>/`；
+  - `testAssetOwnerPhase`：补充测试按路径定层级，其余按当前或前序 Step 的声明，未声明返回空。
+- 应用层：
+  - `earlierPhaseTestOwners` 从仓库读取当前 Phase 之前各 Phase 的 Step；
+  - 可写范围的三个计算函数都接收继承资产，CR 与 Enhancement 的归属判断认继承资产；
+  - attempt_runner 把继承资产写入 `ToolContext.inheritedTestAssets`，并提供 `inheritedGateTests`：验证 Step 返回源层级的前序基线与本层级的前序补充根目录（存在者），开发 Step 返回本次工作区改动中属于继承资产的可执行测试；
+  - `run_tests` 在门禁参数后追加 `inheritedGateTests()` 的结果；
+  - 执行器的 `currentStepAffectedArtifacts` 认继承资产（F-02）。
+- 阶段门禁（`project_audit.ts`）：
+  - Python 项目读取 pytest 的 short test summary 段：用例 ID 截到括号外的第一个 ` - `，与末行的 failed/error 计数核对。没有摘要段、没有计数、或计数不符时，保留单个 `tests` 检查，并在 detail 中写明原因（F-04）；
+  - 证据完整时按负责方拆为 `tests:<target>` 检查。每组 finding 列出本组全部用例和其他各组的用例；summary 写明门禁未分类，由负责方逐例判断：被已接受契约淘汰的断言自行更新，其余作为 product-defect 报给负责方（F-01）。类别仍为 `product-defect`，因为它只选择 Bug 路径，下游据此按测试失败处理；
+  - 其他语言保持原有单检查。
+- 路由：`DELIVERY_GATE_FINDING_TARGETS` 新增四个验证层级，`FINDING_TARGET_STEP_TYPE` 一张表供三处路由读取。
+- 项目约束：在 Phase 与 V 模型不变量中新增两条，分别规定继承与阶段测试检查。
+
+**测试与证伪**：
+- 新增 `tests/inherited_test_assets.test.ts`（17 例）：
+  - 继承范围、负责方解析、可写范围与 CR 归属；
+  - 真实仓库中 P1 关闭后扩展 P2，`earlierPhaseTestOwners` 的结果；
+  - PM intake 把五个 target 路由到对应 Step；
+  - P2 CODE 真实 attempt 交给执行器的 `inheritedTestAssets`、`allowedWrites`，以及 `inheritedGateTests` 在改动前后的结果；
+  - P2 UNIT_TEST 的完整层级。
+- 其他新增：
+  - 项目审计 5 例：按负责方拆分、其他组用例可见、只读摘要段且保留含 ` - ` 的参数化 ID、计数不符时整体路由并写明原因、TypeScript 保持单检查；
+  - 工具层 1 例：`run_tests` 追加继承测试；
+  - 执行器 1 例：CR 只涉及继承测试时拒绝 downstream-owned；
+  - 结果处理器 2 例：验证层级 target 的路由；
+  - 运行产物隔离 1 例：常规模式下更新的继承测试被提交，不被移走；
+  - Runtime 门禁接线 1 例：P2 run 中只由 P1 声明的失败测试被路由到 P2 同层 Step。
+- 原样本：用 dbc2excel P2 交付物的真实 pytest 输出、`plan.P1.json` 与 `plan.P2.json` 调用新门禁，39 例全部识别，分为 6 组：概要设计 12、CODE 12、详细设计 4、需求分析 4、功能测试 6、集成测试 1。
+- 证伪 20 处，均有用例失败，已逐字节恢复。首轮有 3 处未被杀死（常规模式可写范围、开发 Step 跑全部继承测试、括号配平），补强测试后全部失败。
+- 测试替身：`run_outputs_set_aside.test.ts` 的仓库桩补上 `read`（单 Phase 项目），因为 attempt 现在会读取所在 Phase 的项目。
+
+**重跑前缺口检查**（用户："先别提交，验证下最新的改动，在跑之前看看还有哪些缺口"；选择 G1、G2、G4）：
+- 先在真实 dbc2excel-5 仓库上核对：`earlierPhaseTestOwners` 读到 P1 八个 Step 的产出，继承解析结果正确。旧的 BUG-P2-004（resolved，`delivery_check_failed:tests`）因失败身份精确匹配，不会与新的 `…:tests:<owner>` 混淆，门禁通过时由对账关闭。
+- G1（`corrective_workflow_service.failureConfinedToSupplement`）：只认路径含本 Step id 的补充目录，是继承概念漏改的决策点。现在同时认本层级继承的前序补充根目录（领域函数 `inheritedSupplementRoots`），失败全部落在其中时留在验证 Step。
+- G2（`attempt_runner.inheritedGateTests`）：开发 Step 原来只看 `git status`；失败尝试的候选会提交保留，下一次尝试就看不到。现在取本 Ticket 在本 Step 的首次 baseline 提交，用 `git diff --name-only` 加工作区状态判断。第一次尝试没有 baseline 记录，行为不变。
+- G4：执行轮次请求的 ctx 新增可选 `inheritedTestAssets`。有继承资产时，提示在可写路径之后渲染 `prompts.executorInheritedTests`（中英文），说明这些测试由本 Step 保持与当前契约一致，过时断言由本 Step 更新，当前契约仍要求而失败的属于产品缺陷。P1 提示不变。
+- 测试：新增 G1 两例（继承补充失败留在 S006，P2 基线失败交给 S003，均用 P1 关闭后扩展 P2 的真实仓库）、G2 两例（后续尝试计入已提交的改动；首次尝试只看工作区）、G4 三例（中英文提示各一例，无继承时不输出）。
+- 证伪 6 处，均有用例失败，已逐字节恢复：G1 调用点、G1 匹配条件、G2 基线、G2 已提交改动、G4 执行器 payload、G4 渲染。
+- 未做：G3（阶段门禁测试 Bug 携带失败用例作为验证合同）会改动模型可见的 finding schema、失败身份与复发语义，也与"开发阶段只跑增量与变更"的规则冲突，用户未选。G5（验证失败交接文字的用例列表不含继承测试）只影响展示。
+
+**门禁**：`npm run typecheck`、`npm run lint`（均按退出码确认）、`git diff --check`、`rule check`（26 个列表、85 条 Rule）通过；`vitest --project core` 2170 例、`--project integration --project e2e` 1636 例全部通过；补上 G1、G2、G4 后复跑：core 2177 例、integration 与 e2e 1636 例全部通过，typecheck、lint、diff check、rule check 均为退出码 0。
+
+**记录，未改**：
+- 一个产品缺陷在多个层级失败时，各负责方可能分别向 CODE 报告，CODE 会收到多个 finding；目前依赖各组证据中的完整用例列表来关联。
+- 结构化列表只覆盖 pytest；TypeScript 等其他运行器仍为整体检查。
+- 交付门禁只检查 README/quickstart 存在，不检查内容是否与当前 Phase 一致（U1）。
+
+### 阶段里程碑不回退：继承测试的改动必须登记契约依据（2026-11-04，用户决定，D-69）
+
+**用户要求**："按方案2来，改动必须登记契约依据，每个阶段完成都是一个millstone，下一阶段的任务不应该引起功能回退，这个是必须严禁的情况"；依据形式、分层规则、校验深度"都按推荐"。
+
+**核对**：
+- D-68 让 P2 能写 P1 的可执行测试，但除提示文字外没有硬约束。
+- 上一轮 run 中，S002 在同一张 Ticket 里加设计附录、放宽测试，附录是它唯一的依据；被放宽的是 P2 测试，但同样的做法现在可用于 P1 测试。
+- `Ticket.commits` 记录了每次尝试的 baseline；`phaseDocForIteration` 是 run.ts 判定冻结需求所用的文档定位；`acceptedContractChanges` 已给出本阶段已接受的 CR，提示中带 `ticketId`。
+- 工具参数校验不拒绝未知字段，修改的重复判定键包含 args，所以依据放在 args 里，模型补上依据后重试不会被当作重复修改。
+
+**处理**：
+- 领域层：
+  - `TicketContractBasisSchema` 与 `Ticket.contractBases`，只追加；`appendTicketContractBases` 对相同的路径、理由、引用去重；
+  - `contractBasisDocuments(phase, iterationId)`：验证层级映射到配对的开发层级，取该层级及以上的正式文档。
+- `src/application/execution/contract_basis.ts`：`resolveContractBasis` 返回带类型的结果（`missing`、`malformed`、`document-not-citable`、`quote-too-short`、`quote-not-found`、`change-request-not-accepted`），文字只用于展示。引用折叠空白后比较，短于 8 个非空白字符视为不足以定位条款。
+- 执行器：在工具派发点、权限询问之前调用 `ctx.contractBasisGate.check`。被拒时不询问用户、不执行工具，结果按普通失败处理（`contract_basis_refused`），计数、审计、未解决失败的逻辑不必另写。
+- attempt_runner：
+  - `contractBasisGate` 只在存在继承资产时构造，目标路径先归一化；
+  - 文档内容用 `git show <ticket 基线>:<doc>` 读取，不读工作区；
+  - 登记通过后立即写入 Ticket，并发出 `domain.contract_basis_registered`；
+  - `ticketChangedFiles` 统一计算本 Ticket 的改动（含删除，`--no-renames`、`core.quotePath=false`），门禁选择和交付前复核用同一份结果；
+  - 交付前复核：改过的继承资产缺登记时以 `inherited_test_change_unregistered` 判尝试失败。
+- 提示：继承回归测试一节增加里程碑规则、`args.contractBasis` 格式和本 Step 可引用的文档，中英文；P1 的提示与 payload 不变。
+- 报告：`renderDeliveryGateReport` 增加"对前序阶段已交付测试的改动"一节，run.ts 汇总本阶段所有 Ticket 的登记。
+
+**测试与证伪**：
+- 新增 `tests/contract_basis.test.ts`：8 个层级的可引用文档；解析器的接受与各类拒绝。
+- `tests/inherited_test_assets.test.ts` 新增真实 git、真实仓库的用例：引用基线条款通过且重试只留一条；引用本 Ticket 写入的文字被拒；路径含 `..` 仍被识别；无关写入不受影响；需求层级不能引用设计。
+- 执行器 2 例：被拒写入不询问、不落盘，补上依据后成功；检查门只收到写操作及其依据。
+- `tests/run_outputs_set_aside.test.ts`：已登记时提交；未登记时以类型码失败。
+- Runtime 门禁接线：报告包含登记的路径与引用。
+- 新增 1 例：第一个 Phase 的 attempt 不带可引用文档和检查门，请求与提示保持不变。
+- 证伪 24 处，均有用例失败，已逐字节恢复。其中交付前复核两处首轮显示"未抓到"，原因是 `$name` 把用例标题截断，`-t` 没选中；手动确认用例有效后，改为完整标题并重新证伪。删除了一条未调用被测函数的无效测试。
+- 全量运行时 3 例真实失败：`attempt_runner`、`verification_supplement_ownership` 的仓库替身没有 `read`，交付前复核需要读取阶段所属项目。真实仓库不受影响；新增共用替身 `singlePhaseRepository`。
+- 真实工程：在 dbc2excel-5 当前提交上用真实 P2 文档验证 6 种情况，结果见 [2026-11-04-p2-stage-delivery-report.md](2026-11-04-p2-stage-delivery-report.md) 第 4 节。
+
+**门禁**：typecheck、lint（均按退出码确认）、`git diff --check`、`rule check` 通过；`vitest --project core` 2209 例、`--project integration --project e2e` 1636 例全部通过。integration 与 e2e 在 D-69 源码定稿后运行，此后只改了测试替身和一条 core 用例。
+
+**记录，未改**：
+- 确定性校验只能证明引用真实、层级合规，不能证明它确实推翻了原断言（用户选择 3A）。已知实例：dbc2excel-5 的概要设计里已有"失败文件的警告是否保留属于实现自由度"，S002 引用它放宽模块测试可以通过；功能层级不受影响。
+- 登记在写入前落盘，被回滚的尝试也会留下记录，账本表示"曾声明的依据"。
+- 没有阶段级的对账：门禁不把"自里程碑以来改过的继承测试"与账本逐一核对，依赖每次交付的复核。
+
+### Codex 阶段交付审计的处理（2026-11-04，用户决定，D-70）
+
+**用户要求**：审阅 [2026-11-04-p2-stage-delivery-codex-audit-report.md](2026-11-04-p2-stage-delivery-codex-audit-report.md) 后，"都按建议"：修 SD-01、SD-02，功能层增加语义校验，收紧 CR 依据。
+
+**复现**（均在修改前）：
+- SD-01：真实 pytest 退出码 1，`runProjectAudit` 返回 `ok=true, errors=0`，测试检查消失。解析器取第一个形似摘要的行，再取第一个含计数的行，空用例列表与 0 失败相等，`complete` 成立，分组返回空数组。
+- SD-02：真实 git 差异下，账本为空时返回未登记；账本有同路径的不相干记录时返回空列表。
+- 同层无关条款：功能测试引用 19 列条款、理由写"允许失败输入产生警告"，通过。D-69 报告称功能层级"拦得住"放宽，这个说法过头，已更正。
+- 无关 CR：`更名 CLI 帮助标题` 的 CR 放宽警告断言，通过。
+
+**处理**：
+- `project_audit.ts`：计数行从末尾取，且必须带耗时；摘要标题取计数行之前最后一个；用例列表为空或与计数不符都不算完整，保留退出码已判定的失败检查；超时不拆分。网络诊断原先在拆分时丢失，现在放进 summary 和 evidence。没有因网络命中而退回单检查：这个检测是宽泛的文本匹配，退回会让真实失败失去逐例路由。
+- 登记时机：`ContractBasisGate.check` 只做判定，返回 `{ record }`；执行器在写入成功后调用。被拒、被用户拒绝、工具失败的写入都不留登记，这些声明仍保留在工具调用审计里。
+- 登记内容：`contentHash` 记录写入后的文件内容；交付复核比对路径加当前内容哈希。文件内容回到某次已登记的状态时算已覆盖，所以正常重试可以沿用。
+- CR：`resolveContractBasis` 要求 CR 的 `contractDelta.affectedArtifacts` 覆盖目标，否则返回 `change-request-not-covering`，并提示改用文档条款。CR 修改过的需求文档仍可引用。
+- 语义判定：
+  - `requiresContractBasisJudgement` 限定 `REQUIREMENT_ANALYSIS`、`FUNCTIONAL_TEST`；
+  - `judge.contract-basis` 由 PM 执行，走 Rule 绑定的业务请求，判定规则在新 Rule（经 `rule create-list`、`check`、`promote` 写入）；缺少该 Rule 时不发请求；
+  - 判定材料：测试路径、前序阶段交付时的测试内容、提议的改动（不含依据字段）、理由、所引用的契约、需求文档；
+  - 判否、未配置判定、判定内容无效都拒绝写入；模型服务故障原样抛出，按基础设施失败处理；
+  - 判定读取逻辑抽为 `adoptedJudgementText`，与场景判定共用。
+
+**测试与证伪**：
+- 项目审计：真实反例、空用例列表、伪摘要加 `1 passed`、无摘要、超时、最后一个摘要优先、计数行按耗时识别、网络诊断随分组保留。
+- 执行器：被拒、用户拒绝、工具失败都不留登记；提议内容交给检查门。
+- 运行产物隔离：登记覆盖另一份内容时，同一路径仍判未登记。
+- 真实 git 与真实仓库：判否拒绝并核对判定材料；判是放行；未配置或判定无效都拒绝；模型服务故障原样抛出；功能层级以下不调用判定。
+- 真实 run 门禁接线：判定经 Rule 绑定请求发出，审计记录归属与结论；无效回复不算判定。Rule 缺失时不发请求。
+- 证伪 21 处，均有用例失败，已逐字节恢复。首轮 SD-01 的两处核心保护未被杀死（摘要取第一个、空列表算完整），补测试后杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`（27 个列表、86 条 Rule）、`npm run build` 退出码均为 0；core 2229 例通过；integration 与 e2e 1638 例中 1637 例通过。失败的 1 例发现 `scripts/package.sh` 漏了新 Rule 列表，修复后只重跑了该文件（15 例通过）。
+
+**记录，未改**：
+- 模块、集成、单元层级没有语义判定，引用真实但无关的条款仍可通过。
+- 前一张 Ticket 写入并进入基线的文字仍可被后一张 Ticket 引用（D1 属于这种情况）。
+- P2 自有测试不受继承规则保护（T1）。
+- 每次功能层写入都多一次模型调用，同一改动被拒后重试会再次判定。
+- 用户没有提交 CR 的入口：`external-usage` 为预留，`evolve`、`append` 要求项目已关闭。D1、T1 暂无法以 CR 进入 P2。
+
+### 用户提交 Change Request 的入口（2026-11-04，用户决定，D-71）
+
+**用户要求**："D1、T1 走 CR，先把验证收尾"；"选 A，先出设计给我确认"；"确认，开始写"。
+
+**确认的设计**：`xcompiler run --change-request <文件>`。YAML，字段 `id/target/summary/expected/evidence/affectedArtifacts`，未知字段报错；`target` 限 `SCENARIO_REPAIR_TARGETS`；只接收进行中的 Phase；run 开始时校验，不合法时在任何模型调用之前退出；`--dry-run` 只校验；同 id 同内容跳过，同 id 不同内容报错；审计记录内容摘要。
+
+**相对设计的修正**：设计写的是受影响产物必须属于目标 Step。但 CR 的产物列表是全链路的，各跳只取自己拥有的部分，C1 在 `src/main.py`，属于 CODE。按原写法，用户选定的"一条 CR 处理 D1、T1、C1"做不到。改为目标及其后续 Step 拥有，校验复用各跳的 `ownedAffectedArtifacts`，两处不会判断不一致。
+
+**处理**：
+- `user_change_request.ts`：schema、YAML 解析、内容摘要（字段和列表顺序、注释不影响摘要）、带类型的 `UserChangeRequestError`。
+- `ProjectManagerIntakeService.checkUserChangeRequest`：校验，不写任何对象；先判归属再判存在，范围外的路径不探测文件系统。
+- `ProjectManagerIntakeService.acceptUserChangeRequest`：经 `routeContractChange` 开单，`sourceExternalId` 为 `user-change-request:<阶段>:<id>@<摘要>`。
+- `run.ts`：校验在 dry-run 分支之前，失败走退出码 7；接收在 `engine.run` 之前，审计 `domain.user_change_request_accepted`。`commands.ts` 按命令行 cwd 解析相对路径。`xcompiler run` 和 `xcompiler_run` 都有该选项。
+- `external-usage` 保持预留，未改动。
+
+**测试与证伪**：
+- `tests/user_change_request.test.ts`：真实两阶段仓库，所有 Step 已关闭时，从目标传播到 FUNCTIONAL_TEST，恢复时调度到目标 Step；重复接收、id 冲突、Phase 状态、产物归属和存在性。
+- `runtime_scenario_gate_wiring.test.ts`：真实 run 路径，开单早于恢复、跨 run 只开一次、dry-run 不开单、四种坏文件在 Step 和模型之前停止、相对路径。
+- `tests/e2e/change_request_cli.test.ts`：真实 CLI 进程，两个入口都能把选项传到 run。
+- 证伪 28 处，首轮 27 处被杀死。幸存的是 `registerGateBatch` 调用：`routeContractChange` 已注册，这个调用对单张 Ticket 没有作用，已删除。`recoverUnadvancedPhase` 的 Phase 必为 closed，校验已拒绝，为此写的 `phaseId` 覆盖也删除。
+- 离线验证：真实 CLI 对 dbc2excel-5 状态副本 dry-run，[CR 草案](2026-11-04-dbc2excel-5-p2-change-request.yaml)校验通过，退出码 0，未开单；同一副本上已有不同内容的同 id CR 时，退出码 7。在副本上接收该草案：新开 `CR-P2-011`，重复接收时跳过，恢复到 `P2-S002`，传播 7 个 Step。原工程未改动。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`（27 个列表、86 条 Rule）、`npm run build` 退出码均为 0；core 2250 例通过；integration+e2e 1647 例通过，按退出码判定。
+
+**记录，未改**：
+- 根目录 README、quickstart 没有 Step 拥有（U1），列入 CR 会被 `artifact-not-owned` 拒绝。
+- CR 真实传播和这条入口尚未用真实模型跑过。

@@ -8,6 +8,7 @@ import type { Plan, Step } from '../src/domain/planning/execution_plan.js';
 import { verificationSupplementRoot } from '../src/domain/quality/test_assets.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 import { Workspace } from '../src/workspace/workspace.js';
+import { singlePhaseRepository } from './support/domain_objects.js';
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 
 /**
@@ -57,7 +58,7 @@ describe('a verification attempt with an invalid supplement of its own', () => {
       workspace,
       git: { ensureRepo: async () => {}, raw: () => ({ status: async () => ({ isClean: () => true, files: [] }), revparse: async () => 'a'.repeat(40) }) },
       sandbox: { kind: 'subprocess' },
-      router: {}, repository: { list: async () => [] }, audit: { event: async () => {} },
+      router: {}, repository: singlePhaseRepository(), audit: { event: async () => {} },
       plugins: { size: 0 }, debugWiki: new FileDebugWiki(path.join(workspace.root, '.wiki')),
     } as never), 'python');
     const internals = runner as unknown as Record<string, unknown>;

@@ -39,3 +39,16 @@ export function withField<T extends object, K extends keyof T>(value: T, key: K)
   if (value[key] === undefined || value[key] === null) throw new Error(`Expected ${String(key)} to be present`);
   return value as T & { [P in K]-?: NonNullable<T[P]> };
 }
+
+/** A repository stub for a project of one Phase: an attempt reads it to find what earlier Phases left. */
+export function singlePhaseRepository() {
+  let phaseId: string | undefined;
+  return {
+    list: async () => [],
+    read: async (id: string) => {
+      if (id === 'project-id') return { objectType: 'project', id, name: 'fixture', phaseIds: [phaseId] };
+      phaseId = id;
+      return { objectType: 'phase', id, name: 'P1', projectId: 'project-id', stepIds: [] };
+    },
+  };
+}

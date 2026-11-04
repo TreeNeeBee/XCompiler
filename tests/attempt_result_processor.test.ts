@@ -398,6 +398,41 @@ describe('corrective routing evidence', () => {
     expect(registered).toEqual([['bug-1', 'bug-2']]);
   });
 
+  // The table every router reads: a target naming a verification level used to fall through to CODE.
+  it.each([
+    ['unit-test', 'UNIT_TEST'],
+    ['integration-test', 'INTEGRATION_TEST'],
+  ] as const)('routes a %s finding to the %s Step', async (target, type) => {
+    const { AttemptResultProcessor } = await import(
+      '../src/application/project_management/attempt_result_processor.js');
+    const routed: Array<Record<string, unknown>> = [];
+    const processor = new AttemptResultProcessor({
+      repository: { read: async () => undefined, list: async () => [], commit: async () => {} },
+      controller: {
+        routeQualityGap: async (input: Record<string, unknown>) => {
+          routed.push(input);
+          return { id: 'enhancement-id', type: 'enhancement', source: { correlationId: 'correlation-id' } };
+        },
+      },
+      tickets: { ownerActorId: async () => 'actor-id', registerGateBatch: async () => [] },
+      audit: { event: async () => {} },
+      onTransition: async () => {},
+    } as never);
+    const code = { id: 'code-id', name: 'P2-S004', type: 'CODE', projectId: 'project-id' } as Step;
+    const owner = { id: 'owner-id', name: 'P2-S00X', type, projectId: 'project-id' } as Step;
+    await processor.process({
+      phase: { id: 'phase-id' } as never,
+      work: { step: code, ticket: { id: 'bug-id', name: 'BUG-P2-004', type: 'bug', source: { correlationId: 'correlation-id' } } } as never,
+      steps: [code, owner],
+      result: { ok: false, changedFiles: [], wikiEntryIds: [], testOutcomes: [], gateFindings: [{
+        category: 'test-incomplete', code: 'p1_supplement_assertion_stale', summary: 'A P1 supplement still expects sixteen columns.',
+        evidence: ['assert 19 == 16'], target, affectedArtifacts: [], dependencyPackages: [],
+      }] },
+    });
+    expect(routed).toHaveLength(1);
+    expect(routed[0]).toMatchObject({ targetStepId: owner.id });
+  });
+
   it('routes an upstream manifest gap found during Bug repair and links it back to that Bug', async () => {
     const { AttemptResultProcessor } = await import(
       '../src/application/project_management/attempt_result_processor.js');

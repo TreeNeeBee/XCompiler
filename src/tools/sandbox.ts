@@ -252,7 +252,10 @@ export const runTestsTool: Tool<
       : requestedArgs;
     // Runtime owns the exact paired selectors. S005-S008 add only their isolated supplement root;
     // neighbouring undeclared tests remain an incomplete-suite Enhancement instead of leaking in.
-    const gateArgs = await appendVerificationSupplements(ctx, ctx.testGateArgs ?? []);
+    const gateArgs = [...new Set([
+      ...await appendVerificationSupplements(ctx, ctx.testGateArgs ?? []),
+      ...await ctx.inheritedGateTests?.() ?? [],
+    ])];
     // A selector naming a file the Step has not written yet describes a run that cannot pass, and
     // the runner reports it as a usage error — `file or directory not found`, which reads as a
     // broken environment rather than as unfinished work. A live CODE Step spent all ten of its

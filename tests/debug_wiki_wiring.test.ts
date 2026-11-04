@@ -78,6 +78,18 @@ describe('Debug Wiki through an attempt', () => {
     expect(bug.debugWikiResolutionEntryIds).toEqual([]);
   });
 
+  // Nothing earlier to protect: a first Phase's requests stay exactly as they were.
+  it('gives a first-Phase attempt no contract basis surface', async () => {
+    const setup = await fixture();
+    const execute = vi.spyOn(StepExecutor.prototype, 'run').mockResolvedValue(failedExecution());
+    await setup.runner.initialize();
+    await setup.runner.run(setup.input);
+    const { ctx } = execute.mock.calls[0]![0];
+    expect(ctx.inheritedTestAssets).toEqual([]);
+    expect(ctx.contractBasisDocuments).toBeUndefined();
+    expect(ctx.contractBasisGate).toBeUndefined();
+  });
+
   it('delivers retrieved knowledge to the role and persists its use and failed repair feedback', async () => {
     const setup = await fixture();
     const seed = new FileDebugWiki(setup.installationWiki, setup.wikiOptions);

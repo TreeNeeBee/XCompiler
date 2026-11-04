@@ -225,6 +225,7 @@ program
   .option('--dry-run', t().cli.optDryRun, false)
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
+  .option('--change-request <file>', t().cli.optChangeRequest)
   .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .option('--record-replay <mode>', t().cli.optRecordReplay, parseRecordReplayMode)
   .option('--record-replay-path <dir>', t().cli.optRecordReplayPath)
@@ -239,6 +240,7 @@ program
       dryRun: !!opts.dryRun,
       force: !!opts.force,
       projectFilePath: opts.projectFile,
+      changeRequestPath: opts.changeRequest,
       debugWikiPath: opts.debugWikiPath,
       recordReplayMode: opts.recordReplay,
       recordReplayPath: opts.recordReplayPath,
