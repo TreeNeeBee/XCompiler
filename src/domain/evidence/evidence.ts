@@ -30,6 +30,8 @@ export const ChangelistSchema = ObjectEnvelopeSchema.extend({
   commit: z.string().min(1).optional(),
   summary: z.string().min(1),
   verification: z.array(z.string().min(1)).default([]),
+  /** The build that made this change: what it shows about a repair holds only for that build. */
+  toolchainBuildId: z.string().min(1).optional(),
 }).strict();
 
 export type Changelist = z.infer<typeof ChangelistSchema>;

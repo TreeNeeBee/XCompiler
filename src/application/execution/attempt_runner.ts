@@ -62,6 +62,7 @@ import {
   type TicketContractBasis,
   type TicketWorkspaceBinding,
 } from '../../domain/tickets/ticket.js';
+import { testSelectorPath } from '../../domain/tickets/failure_identity.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import { QualityAssessmentService } from './quality_assessment_service.js';
 import type { QualityAssessment } from '../../domain/quality/quality.js';
@@ -1263,7 +1264,9 @@ export class DomainAttemptRunner {
   /**
    * The earlier Phases' tests the gate runs, resolved when run_tests runs. A test Step runs its level
    * complete — the source level's earlier baselines and its own earlier supplements; a development
-   * Step runs only the inherited tests it has changed in this attempt, beside its own baselines.
+   * Step runs, beside its own baselines, the inherited tests it has changed in this attempt and those
+   * the Bug it repairs names. Without the latter its gate passes while the Bug stands, and a live
+   * Step took that pass as the repair.
    */
   private inheritedGateTests(
     scope: ExecutionScope,
@@ -1283,7 +1286,10 @@ export class DomainAttemptRunner {
       return () => existing(level);
     }
     const owned = inheritedTestAssets(type, earlier, language);
-    return async () => existing((await this.ticketChangedFiles(scope, input, attemptBaseline))
+    const reported = input.ticket.type === 'bug'
+      ? input.ticket.verificationContract.testSelectors.map(testSelectorPath)
+      : [];
+    return async () => existing([...new Set([...reported, ...await this.ticketChangedFiles(scope, input, attemptBaseline)])]
       .filter((file) => isAllowedWrite(file, owned) && isExecutableTestPath(file, language)));
   }
 

@@ -1,10 +1,11 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PLAN_VERSION, type Plan } from '../src/domain/planning/execution_plan.js';
 import type { ObjectId } from '../src/domain/identity/object_id.js';
 import { objectsOf, type TicketOf } from './support/domain_objects.js';
+import { ChangelistSchema } from '../src/domain/evidence/evidence.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../src/application/project_management/orchestrator.js';
 import type { AttemptInput, AttemptResult } from '../src/application/execution/attempt_runner.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
@@ -22,6 +23,12 @@ import { AuditPersistenceError } from '../src/audit/errors.js';
 import { classifyFailure } from '../src/application/execution/failure_classification.js';
 import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { setLocale } from '../src/i18n/index.js';
+
+const build = vi.hoisted(() => ({ id: undefined as string | undefined }));
+vi.mock('../src/application/identity/build_identity.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/application/identity/build_identity.js')>();
+  return { ...actual, xcompilerBuildId: () => build.id ?? actual.xcompilerBuildId() };
+});
 
 describe('ProjectOrchestrator', () => {
   it('parks a storage interruption without a Bug, merge or provider retry', async () => {
@@ -297,6 +304,46 @@ describe('ProjectOrchestrator', () => {
       const bugs = (await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }))
         .filter((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug');
       expect(bugs.map((bug) => bug.objectType === 'ticket' && bug.state)).toEqual(['resolved']);
+    });
+
+    // A live Bug stopped here because of a compiler defect. The defect was fixed, and the same record
+    // stopped the fixed build too: the stop's own advice, correct it and run again, could not work.
+    it.each([
+      ['another build', () => { build.id = 'rebuilt'; }, async () => {}],
+      ['no recorded build', () => {}, async (repository: DomainObjectRepository, projectId: ObjectId) => {
+        for (const changelist of objectsOf(await repository.list({ objectType: 'changelist', projectId }), 'changelist')) {
+          const { toolchainBuildId: _build, ...unattributed } = changelist;
+          await repository.update(ChangelistSchema.parse({ ...unattributed, ...reviseObjectEnvelope(changelist) }));
+        }
+      }],
+    ] as const)('does not hold an unchanged repair by %s against this build', async (_name, rebuild, age) => {
+      const setup = await fixture();
+      const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+      const calls: string[] = [];
+      const run = (changed: string[], gates: boolean[]) => new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, {
+          initialize: async () => undefined,
+          run: async (input: AttemptInput): Promise<AttemptResult> => {
+            calls.push(`${input.domainStep.name}:${input.mode}`);
+            const attempt = await passingAttempt(setup.repository, input.domainStep);
+            return input.domainStep.id === code.id && input.mode === 'debug' ? { ...attempt, changedFiles: changed } : attempt;
+          },
+        }),
+        finalGate: async () => gates.shift()
+          ? { ok: true, evidence: ['scenario passed'], findings: [] }
+          : { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] },
+      }, setup.plan).run(setup.graph.phases[0]!.id);
+
+      try {
+        expect((await run([], [false, false])).stop).toMatchObject({ code: 'unchanged_repair_recurred' });
+        rebuild();
+        await age(setup.repository, setup.graph.project.id);
+        const resumed = await run(['src/main.py'], [false, true]);
+        expect(resumed.stop).toBeUndefined();
+        expect(calls.filter((call) => call === `${code.name}:debug`)).toHaveLength(2);
+      } finally {
+        build.id = undefined;
+      }
     });
 
     // A live repair chain for a delivery-gate Bug was contradicted and interrupted, so its solution was

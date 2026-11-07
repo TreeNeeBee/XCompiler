@@ -9,6 +9,7 @@ import {
   type BugVerificationContract,
   type FailureIdentity,
 } from '../../domain/tickets/ticket.js';
+import { testSelectorPath } from '../../domain/tickets/failure_identity.js';
 
 export function buildBugFailureContracts(input: {
   failedStep: Step;
@@ -104,22 +105,15 @@ export function passedTestSelectors(step: Step, outcomes: readonly TestOutcome[]
 }
 
 function selectorCoveredBy(executed: string, required: string): boolean {
-  const executionPath = selectorPath(executed);
-  const requiredPath = selectorPath(required);
+  // A file-level run proves every selected case in that file, so this compares the file portion.
+  const executionPath = testSelectorPath(executed);
+  const requiredPath = testSelectorPath(required);
   return executionPath === requiredPath ||
     requiredPath.startsWith(`${executionPath.replace(/\/$/u, '')}/`);
 }
 
-function selectorPath(value: string): string {
-  const normalized = normalizePath(value);
-  // Pytest renders `file::suite::case`; Vitest/Jest render `file > suite > case`.
-  // A successful file-level invocation proves every selected case in that file, so comparison is
-  // performed on the runner-independent file portion rather than on presentation syntax.
-  return normalized.split('::', 1)[0]!.split(/\s+>\s+/u, 1)[0]!;
-}
-
 function hasExecutableTestPath(selector: string): boolean {
-  return /\.(?:py|[cm]?[jt]sx?)$/iu.test(selectorPath(selector));
+  return /\.(?:py|[cm]?[jt]sx?)$/iu.test(testSelectorPath(selector));
 }
 
 function replayableTestSelectors(selectors: readonly string[]): string[] {

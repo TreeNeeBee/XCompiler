@@ -1,5 +1,6 @@
 import { createObjectEnvelope, reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
+import { xcompilerBuildId } from '../identity/build_identity.js';
 import {
   STEP_TYPE_ORDER,
   stepDependsOn,
@@ -906,6 +907,7 @@ export class TicketWorkflow {
       commit: input.commit,
       summary: input.summary,
       verification: input.verification ?? [],
+      toolchainBuildId: xcompilerBuildId(),
     });
     const initiator = await this.processingActor(ticket);
     const built = await this.traces.build(ticket, [{
@@ -1193,8 +1195,10 @@ export class TicketWorkflow {
     // every time: the role is handed the same inputs and reaches the same conclusion. A live Phase
     // gate reopened one Bug six times this way, raising its attempt limit with each reopening, until
     // the user stopped the run. Refused before anything is written, so the Bug stays as it was.
+    // Only this build's repair says so: another build's, or one that names none, is no evidence of
+    // what this one will conclude, and counting it would stop a Bug for good once its cause is fixed.
     const lastRepair = await this.lastChangelistOn(waiting, input.targetStep.id);
-    if (lastRepair && lastRepair.entries.length === 0) {
+    if (lastRepair && lastRepair.entries.length === 0 && lastRepair.toolchainBuildId === xcompilerBuildId()) {
       throw new UnchangedRepairRecurrenceError({
         ticketName: waiting.name,
         targetStepName: input.targetStep.name,

@@ -79,6 +79,11 @@ function normalizeSelector(value: string): string {
   return normalized.replace(/\bpytest-\d+\b/gu, 'pytest-<run>');
 }
 
+/** The test file a selector names. Pytest renders `file::suite::case`; Vitest/Jest `file > suite > case`. */
+export function testSelectorPath(value: string): string {
+  return normalizePath(value).split('::', 1)[0]!.split(/\s+>\s+/u, 1)[0]!;
+}
+
 function normalizePath(value: string): string {
   return value.trim().replace(/\\/gu, '/').replace(/^\.\//u, '');
 }

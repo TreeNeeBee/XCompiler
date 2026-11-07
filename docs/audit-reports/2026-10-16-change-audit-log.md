@@ -3311,3 +3311,26 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **测试与证伪**：`tests/executor.test.ts` 用真实失败路径新增四例，修复前 `stays with the Step to repair` 失败。证伪 5 处（三个调用点各一处、定义丢继承目录、`every` 改 `some`），全部被杀死。
 
 **门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2254 例通过；integration+e2e 1647 例通过，按退出码判定。修复尚未经真实 run 验证。
+
+### 修复 Step 看不到它要修的失败（2026-11-04，真实 run 发现，D-73、D-74）
+
+**发现**：`c0f554f` 续跑后，集成层打通，模块层 197 例中 10 例失败，都是 P1 模块基线的 16 列断言。`BUG-P2-008` 路由到 `P2-S002`。这个 Step 的计划写对了（要改 3 个继承测试），但 `run_tests` 只跑 5 个 P2 模块测试，全绿后它改口称不必改写，空修复结束。4 分钟后 `P2-S007` 复现同样失败，`repair_recurred_unchanged` 停止 run。
+
+**根因**：
+- D-73：开发 Step 只运行“本 Ticket 改过的”继承测试。Bug 指向的用例没改过，就不在集合里，Step 看到的绿灯与 Bug 无关。Bug 已带精确选择器，但修复路径没用。这是 F-03 复核和阶段报告里记为 G3 的缺口，在 Step 级 Bug 上出现了。
+- D-74：`reopenResolvedForRecurrence` 不看构建。修好 D-73 后，旧的空修复记录仍会拦下这张 Bug。
+
+**处理**：
+- `attempt_runner.ts`：`inheritedGateTests` 对 Bug 加入选择器指向、归本 Step 所有的继承文件。按文件而不是用例选择，修改时重命名用例不会变成“找不到用例”。
+- `failure_identity.ts`：`testSelectorPath` 取代 `bug_verification.ts` 的私有实现。
+- `evidence.ts`、`ticket_workflow.ts`：`Changelist.toolchainBuildId`，只比较当前构建。
+
+**测试与证伪**：
+- D-73：真实 git 仓库夹具，只放行本 Step 拥有且仍存在的文件，修复前失败；证伪 4 处，全部被杀死。
+- D-74：`ProjectOrchestrator` 跑完整停止和续跑，覆盖换构建和无构建标记两种情况，修复前都失败；同构建的既有用例继续保护；证伪 4 处，全部被杀死。
+
+**离线验证**：在真实状态副本上，`BUG-P2-008` 可重开，选择器映射到 `P2-S002` 继承的测试文件。修复尚未经真实 run 验证。
+
+**记录，未改**：
+- 阶段门禁 Bug 仍不带选择器（G3 其余部分）。
+- `run_tests` 的结构化 `failedTests` 来自 `buildDebugBrief`，被 `MAX_FAILED_TESTS = 8` 截断。这个上限本是给模型看的摘要用的，却影响 Bug 选择器和 `failuresConfinedToOwnSupplements` 的判断：`BUG-P2-008` 实际 10 例失败，只带 8 个选择器，少了 2 个文件。放开会改变失败身份和复发判断，本次不动。对续跑的影响是可能多一轮 Bug。

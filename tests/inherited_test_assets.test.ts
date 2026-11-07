@@ -150,6 +150,26 @@ describe('the inherited tests an attempt\'s gate runs', () => {
     expect(await ctx!.inheritedGateTests!()).toEqual(['tests/unit/test_cli.py']);
   });
 
+  // A live design Step diagnosed three stale inherited tests, ran a gate that left them out, saw it
+  // pass, and closed the Bug unchanged. The failure came straight back from the verification Step.
+  it('runs the inherited tests the Bug it repairs names, before it has touched them, and no others', async () => {
+    const setup = await secondPhaseAttempt({ bugSelectors: ['tests/unit/test_cli.py::test_header', 'tests/unit/test_cli_p2.py::test_new',
+      'tests/modules/test_cli_contract.py::test_another_level'] });
+    let ctx: ToolContext | undefined;
+    vi.spyOn(StepExecutor.prototype, 'run').mockImplementation(async (input) => {
+      ctx = input.ctx;
+      throw new Error('Stop once the executor has its context.');
+    });
+    await setup.workspace.writeFile('tests/unit/test_cli.py', 'def test_header():\n    assert 16 == 19\n');
+    await setup.workspace.writeFile('tests/modules/test_cli_contract.py', 'def test_another_level():\n    assert False\n');
+    await setup.runner.initialize();
+    await setup.runner.run(setup.input);
+
+    expect(await ctx!.inheritedGateTests!()).toEqual(['tests/unit/test_cli.py']);
+    await fs.rm(setup.workspace.abs('tests/unit/test_cli.py'));
+    expect(await ctx!.inheritedGateTests!()).toEqual([]);
+  });
+
   // G2: a failed attempt's candidate is committed and kept, so the next attempt's working tree no
   // longer shows the inherited test it changed; the Ticket's first baseline still does.
   it.each([
@@ -357,7 +377,7 @@ describe('a verification failure confined to inherited supplements', () => {
 });
 
 /** A P1 Phase closed and extended by P2, as an incremental build leaves it, with a Bug at P2 CODE. */
-async function secondPhaseAttempt(options: { realGit?: boolean; judgeContractBasis?: ContractBasisJudge } = {}) {
+async function secondPhaseAttempt(options: { realGit?: boolean; judgeContractBasis?: ContractBasisJudge; bugSelectors?: string[] } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-inherited-gate-'));
   const container = new ProjectContainer(path.join(root, 'project'));
   const workspace = container.canonical().workspace;
@@ -386,7 +406,7 @@ async function secondPhaseAttempt(options: { realGit?: boolean; judgeContractBas
     failedStep: unit, targetStep: coding, verificationStep: unit, kind: 'test-failure', severity: 'high',
     message: 'AssertionError: assert 19 == 16', summary: 'A stale P1 header assertion.', category: 'test',
     code: 'test_command_failed', retryable: true, switchProvider: false, correlationId: createObjectId(),
-    ...bugContracts(unit, coding, unit, { category: 'test', code: 'test_command_failed', testSelectors: ['tests/unit/test_cli_p2.py'] }),
+    ...bugContracts(unit, coding, unit, { category: 'test', code: 'test_command_failed', testSelectors: options.bugSelectors ?? ['tests/unit/test_cli_p2.py'] }),
   });
   const projection = projectExecutionPlan(draft, extension.phases[0]!, steps);
   const changed: string[] = [];

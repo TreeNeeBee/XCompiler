@@ -122,8 +122,8 @@ only authority that changes Ticket state.
 - Each Phase's tests remain in the suite as regression. A Step inherits, and may update, the
   executable test assets its same-level Steps of earlier Phases left: a development Step the baselines
   its earlier counterparts authored, a verification Step its level's earlier supplement roots. Its
-  delivery gate runs the inherited tests it changed (development Steps) or its level's complete set
-  (verification Steps). Ownership judgements — writable scope, Change Request applicability, gate
+  delivery gate runs the inherited tests it changed or the Bug it repairs names (development Steps)
+  or its level's complete set (verification Steps). Ownership judgements — writable scope, Change Request applicability, gate
   routing, and whether a verification failure is confined to the Step's own supplements — read the
   same inherited set, and the Step's prompt names what it inherited.
 - A completed Phase is a milestone, and a later Phase must not regress it. Its tests that stay
