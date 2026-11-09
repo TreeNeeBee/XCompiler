@@ -249,6 +249,44 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
+  // dbc2excel-6 P2: the planner named its requirement analysis docs/p2-01-requirement-analysis.md and
+  // calibration added the canonical path beside it. The Step had two requirement documents; the model
+  // wrote and cited its own name, and the contract checks accept only the canonical one.
+  it('folds a later Phase\'s iteration-named copies of canonical documents into its canonical paths', () => {
+    const raw = [
+      { id: 'S009', phase: 'REQUIREMENT_ANALYSIS', iterationId: 'P2', title: 'requirements', description: 'd', systemPrompt: 'x'.repeat(30),
+        inputs: ['docs/topic.md'],
+        outputs: ['docs/p2-01-requirement-analysis.md', 'docs/p2-tests/functional-test-plan.md', 'docs/p2-columns.md'],
+        acceptance: 'docs/p2-01-requirement-analysis.md 明确列出规则；docs/p2-tests/functional-test-plan.md 覆盖每条；P1 的 docs/01-requirement-analysis.md 保持不变。',
+        subTasks: [{ id: 'S009-1', title: 'rules', description: 'Write docs/p2-01-requirement-analysis.md.', outputs: ['docs/p2-01-requirement-analysis.md'] }] },
+      { id: 'S010', phase: 'HIGH_LEVEL_DESIGN', iterationId: 'P2', title: 'design', description: 'Read docs/p2-01-requirement-analysis.md first.', systemPrompt: 'x'.repeat(30),
+        inputs: ['docs/p2-01-requirement-analysis.md'],
+        outputs: ['docs/03-high-level-design-p2.md', 'docs/p2-reports/design-review.md'], acceptance: 'a' },
+    ] as unknown as Step[];
+
+    const [requirements, design] = calibrateDocPaths(raw, 'application');
+
+    expect(requirements!.outputs).toEqual([
+      'docs/iterations/P2/01-requirement-analysis.md',
+      'docs/iterations/P2/tests/functional-test-plan.md',
+      'docs/p2-columns.md',
+    ]);
+    // The text names the documents the Step writes; P1's document is still P1's.
+    expect(requirements!.acceptance).toBe('docs/iterations/P2/01-requirement-analysis.md 明确列出规则；' +
+      'docs/iterations/P2/tests/functional-test-plan.md 覆盖每条；P1 的 docs/01-requirement-analysis.md 保持不变。');
+    expect(requirements!.subTasks).toEqual([{ id: 'S009-1', title: 'rules',
+      description: 'Write docs/iterations/P2/01-requirement-analysis.md.', outputs: ['docs/iterations/P2/01-requirement-analysis.md'] }]);
+    expect(design!.inputs).toEqual(['docs/iterations/P2/01-requirement-analysis.md']);
+    expect(design!.description).toBe('Read docs/iterations/P2/01-requirement-analysis.md first.');
+    // A number that does not match still names the same document; a document with no canonical
+    // counterpart keeps its name.
+    expect(design!.outputs).toEqual([
+      'docs/iterations/P2/02-high-level-design.md',
+      'docs/p2-reports/design-review.md',
+      'docs/iterations/P2/tests/module-test-plan.md',
+    ]);
+  });
+
   it('normalizes and guarantees the canonical topic input for requirement analysis', () => {
     const raw = [
       {

@@ -187,8 +187,8 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
   Object.freeze({
     relativePath: 'contract-basis-judgement.yaml',
     listId: 'd0d1c016-5b21-4c72-9bc5-f06c55668169',
-    listVersion: '1.1.0',
+    listVersion: '1.2.0',
     slot: 0x00011301,
-    digest: 'sha256:0eb4e01f388bb13bc1cce30936e6d000d2640ba5d8682cb32fee82b638a99b1d',
+    digest: 'sha256:3f1ac15a5848224f4c0e173f92069de42b23632ea1847f4ee77664735d5f8e0b',
   }),
 ]);

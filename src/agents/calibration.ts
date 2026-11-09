@@ -209,15 +209,31 @@ function canonicalTestPlanAlias(path: string): string | undefined {
  *  - 若有 Step 把 docs/topic.md 列为 outputs，则移除（topic.md 仅由 xcompiler build 写入）。
  */
 export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'application'): Step[] {
-  const remap = (p: string): string => DOC_PATH_ALIASES[p] ?? canonicalTestPlanAlias(p) ?? p;
+  const remap = (p: string): string =>
+    DOC_PATH_ALIASES[p] ?? canonicalTestPlanAlias(p) ?? canonicalPhaseDocAlias(p) ?? p;
   const dropTopic = (p: string): boolean => p !== DOC_NAMES.topic;
-  return steps.map((s) => {
+  // Paths a plan named for a canonical document under another name, per iteration. The Step text says
+  // where to write as much as `outputs` does, so a name corrected in one has to be corrected in the other.
+  const renamed = new Map<string, Map<string, string>>();
+  const calibrated = steps.map((s) => {
     const iterationId = s.iterationId ?? 'P1';
-    let inputs = dedup((s.inputs ?? []).map((p) => iterationScopedInput(remap(p), s.phase, iterationId)));
+    const corrections = renamed.get(iterationId) ?? new Map<string, string>();
+    renamed.set(iterationId, corrections);
+    const rename = (p: string, scoped: (path: string) => string): string => {
+      const next = iterationQualifiedDoc(p, iterationId) ?? scoped(remap(p));
+      // Only a name that is no canonical document is a misnaming. A canonical root path scoped to this
+      // iteration stays as written in text, where it may deliberately mean the earlier Phase's copy.
+      if (next !== p && !isCanonicalDocPath(p)) corrections.set(p, next);
+      return next;
+    };
+    let inputs = dedup((s.inputs ?? []).map((p) => rename(p, (path) => iterationScopedInput(path, s.phase, iterationId))));
     if (s.phase === 'REQUIREMENT_ANALYSIS' && !inputs.includes(DOC_NAMES.topic)) {
       inputs = [DOC_NAMES.topic, ...inputs];
     }
-    let outputs = dedup((s.outputs ?? []).map((p) => iterationScopedDoc(remap(p), s.phase, iterationId)).filter(dropTopic));
+    let outputs = dedup((s.outputs ?? []).map((p) => rename(p, (path) => iterationScopedDoc(path, s.phase, iterationId))).filter(dropTopic));
+    const subTasks = s.subTasks?.map((task) => renameSubtaskOutputs(task, (path) =>
+      rename(path, (canonical) => iterationScopedDoc(canonical, s.phase, iterationId))));
+    if (subTasks) s = { ...s, subTasks };
     outputs = outputs.filter((out) => {
       const ownerPhase = testPlanOwnerPhase(out, iterationId);
       return !ownerPhase || ownerPhase === s.phase;
@@ -244,6 +260,99 @@ export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'app
     }
     return { ...s, inputs, outputs };
   });
+  return calibrated.map((step) => renameInStepText(step, renamed.get(step.iterationId ?? 'P1') ?? new Map()));
+}
+
+const PHASE_DOC_KINDS: Readonly<Record<string, Step['phase']>> = {
+  'requirement-analysis': 'REQUIREMENT_ANALYSIS',
+  'high-level-design': 'HIGH_LEVEL_DESIGN',
+  'detailed-design': 'DETAILED_DESIGN',
+  'unit-test': 'UNIT_TEST',
+  'integration-test': 'INTEGRATION_TEST',
+  'module-test': 'MODULE_TEST',
+  'functional-test': 'FUNCTIONAL_TEST',
+};
+
+const TEST_PLAN_PHASES: Readonly<Record<string, Step['phase']>> = {
+  [DOC_NAMES.functionalTestPlan]: 'FUNCTIONAL_TEST',
+  [DOC_NAMES.integrationTestPlan]: 'INTEGRATION_TEST',
+  [DOC_NAMES.moduleTestPlan]: 'MODULE_TEST',
+  [DOC_NAMES.unitTestPlan]: 'UNIT_TEST',
+};
+
+const CANONICAL_DOC_PATHS: ReadonlySet<string> = new Set(Object.values(DOC_NAMES));
+
+function isCanonicalDocPath(path: string): boolean {
+  return CANONICAL_DOC_PATHS.has(path) || path.startsWith('docs/iterations/');
+}
+
+/** A Phase document whatever its number prefix (`docs/02-requirement-analysis.md`): its canonical path. */
+function canonicalPhaseDocAlias(path: string): string | undefined {
+  const match = path.replace(/\\/g, '/').match(/^docs\/(?:\d{1,2}[-_])?([a-z]+(?:[-_][a-z]+)*)\.md$/iu);
+  const phase = match ? PHASE_DOC_KINDS[match[1]!.toLowerCase().replace(/_/gu, '-')] : undefined;
+  return phase ? PHASE_DOC[phase] : undefined;
+}
+
+/**
+ * A later Phase's copy of a canonical document named with its iteration — `docs/p2-01-requirement-analysis.md`,
+ * `docs/02-requirement-analysis-p2.md`, `docs/p2-tests/functional-test-plan.md` — as that iteration's canonical path.
+ *
+ * Left alone, such a name stood beside the canonical path calibration adds, so the Step had two documents
+ * for one: the model wrote and cited the one it named, and the contract checks accept only the canonical one.
+ */
+function iterationQualifiedDoc(path: string, iterationId: string): string | undefined {
+  if (iterationId === 'P1') return undefined;
+  const token = iterationId.toLowerCase();
+  const stripped = path.split('/').map((segment) => {
+    if (segment.toLowerCase() === token) return '';
+    return segment
+      .replace(new RegExp(`^${token}[-_]`, 'iu'), '')
+      .replace(new RegExp(`[-_]${token}(?=\\.md$|$)`, 'iu'), '');
+  }).filter((segment) => segment.length > 0).join('/');
+  if (stripped === path) return undefined;
+  const canonical = DOC_PATH_ALIASES[stripped] ?? canonicalTestPlanAlias(stripped) ?? canonicalPhaseDocAlias(stripped)
+    ?? (CANONICAL_DOC_PATHS.has(stripped) ? stripped : undefined);
+  if (!canonical) return undefined;
+  const phase = Object.entries(PHASE_DOC).find(([, doc]) => doc === canonical)?.[0] as Step['phase'] | undefined;
+  if (phase) return phaseDocForIteration(phase, iterationId);
+  const testPhase = TEST_PLAN_PHASES[canonical];
+  if (testPhase) return testPlanDocForIteration(testPhase, iterationId);
+  return promotedUserDocs('library', iterationId).find((doc) => doc.target === canonical)?.source;
+}
+
+function renameSubtaskOutputs(task: StepSubtask, rename: (path: string) => string): StepSubtask {
+  return {
+    ...task,
+    ...(task.outputs ? { outputs: dedup(task.outputs.map(rename)) } : {}),
+    ...(task.subTasks ? { subTasks: task.subTasks.map((child) => renameSubtaskOutputs(child, rename)) } : {}),
+  };
+}
+
+/** Rewrites every mention of a corrected document name in the Step's own text. */
+function renameInStepText(step: Step, corrections: ReadonlyMap<string, string>): Step {
+  if (corrections.size === 0) return step;
+  // Raw planner Steps reach here before their text is backfilled, so a missing field stays missing.
+  const rewrite = <T,>(text: T): T => typeof text !== 'string' ? text : [...corrections].reduce((current, [from, to]) =>
+    current.replace(new RegExp(`(?<![\\w./-])${escapeRegExp(from)}(?![\\w/-])`, 'gu'), to), text as string) as T;
+  const rewriteTask = (task: StepSubtask): StepSubtask => ({
+    ...task,
+    title: rewrite(task.title),
+    description: rewrite(task.description),
+    ...(task.acceptance !== undefined ? { acceptance: rewrite(task.acceptance) } : {}),
+    ...(task.subTasks ? { subTasks: task.subTasks.map(rewriteTask) } : {}),
+  });
+  return {
+    ...step,
+    title: rewrite(step.title),
+    description: rewrite(step.description),
+    systemPrompt: rewrite(step.systemPrompt),
+    acceptance: rewrite(step.acceptance),
+    ...(step.subTasks ? { subTasks: step.subTasks.map(rewriteTask) } : {}),
+  };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 /**

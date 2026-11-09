@@ -135,7 +135,12 @@ only authority that changes Ticket state.
   The writes one turn makes to a test are judged together and stand or fall together; their basis is
   registered only once every one of them has run, against what they made together. A change is judged
   against the test as the Phase that owns it delivered it, read at that Phase's recorded delivered
-  revision, and on evidence sent whole or not at all.
+  revision, and on evidence sent whole or not at all. Content the delivered test does not contain is
+  not what the milestone protects: a change to it is accepted when every delivered assertion stays in
+  force and the new content is consistent with the cited contract.
+- A plan names each canonical document once. An iteration-named copy of a canonical document
+  (`docs/p2-01-requirement-analysis.md`, `docs/02-requirement-analysis-p2.md`, `docs/p2-tests/…`) is folded
+  into that iteration's canonical path, in outputs, inputs and the Step's own text.
 - A Bug repaired at the Step its contract names for verification is proven by that repair's own
   gate and closes there, even with no Step after it; the work parked behind it then closes the Step.
 - A delivered Phase is a release: its delivered revision is recorded on the Phase and tagged in the
