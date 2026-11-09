@@ -17,7 +17,7 @@ import { AuditPersistenceError } from '../src/audit/errors.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Step } from '../src/domain/planning/execution_plan.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
-import type { Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
+import type { ContractBasisGate, Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
 import { applyPatchTool } from '../src/tools/patch.js';
@@ -5936,6 +5936,64 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.error).toContain('low-quality Debugger response');
     expect(r.rounds).toBe(2);
     expect(r.metrics.repeatedTurns).toBe(2);
+  });
+
+  // A live repair spent its reads, then had a basis refused with "read the document and quote it word
+  // for word". The next read was rejected as one probe too many, so it could only quote from memory,
+  // and the same refusal came back until the attempt ran out of rounds.
+  describe('after a refused contract basis', () => {
+    const document = 'docs/iterations/P2/02-high-level-design.md';
+    const refused: ContractBasisGate = { check: async () => ({ error: 'Quote the clause word for word.' }) };
+    const write = { tool: 'write_file', args: { path: 'tests/test_old.py', content: 'x = 1\n',
+      contractBasis: { reason: 'stale', document, quote: 'from memory' } } };
+    const script = (turns: Array<{ actions: unknown[]; done: boolean }>) => {
+      const refusals: string[] = [];
+      const llm: LLMClient = { name: 'basis-reader', chat: async (_messages, options) => {
+        const text = JSON.stringify({ thoughts: 'next', bugResolutionPlan: 'Quote the clause.', ...(turns.shift() ?? { actions: [], done: true }) });
+        try {
+          await options?.validate?.(text);
+        } catch (error) {
+          refusals.push((error as { reason?: string }).reason ?? (error as Error).message);
+          return JSON.stringify({ thoughts: 'stop', bugResolutionPlan: 'Quote the clause.', actions: [], done: true });
+        }
+        return text;
+      } };
+      return { llm, refusals };
+    };
+    const run = async (llm: LLMClient) => {
+      await ws.writeFile('src/x.py', 'x = 1\n');
+      await ws.writeFile('tests/test_old.py', 'x = 0\n');
+      await ws.writeFile(document, 'The clause.\n');
+      await ws.writeFile('docs/other.md', 'Not citable.\n');
+      return new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 6 })).run({
+        step: { ...baseStep, tools: ['read_file', 'write_file'] }, work: 'repair.debug', tools: [readFileTool, writeFileTool],
+        ctx: { ...ctx, allowedWrites: ['tests/test_old.py', 'src/x.py'], inheritedTestAssets: ['tests/test_old.py'],
+          contractBasisDocuments: [document], contractBasisGate: refused },
+        debugContext: { reason: 'tests failed', failureLog: 'src/x.py(1,1): error', repairRequired: true },
+      });
+    };
+    const spentProbes = { actions: [{ tool: 'read_file', args: { path: 'src/x.py' } }], done: false };
+
+    it('lets the Step read a document it may cite', async () => {
+      const { llm, refusals } = script([spentProbes, { actions: [write], done: false },
+        { actions: [{ tool: 'read_file', args: { path: document } }], done: false }]);
+      await run(llm);
+      expect(refusals).toEqual([]);
+    });
+
+    it('keeps refusing any other read', async () => {
+      const { llm, refusals } = script([spentProbes, { actions: [write], done: false },
+        { actions: [{ tool: 'read_file', args: { path: 'src/x.py' } }], done: false }]);
+      await run(llm);
+      expect(refusals).toEqual(['debugger-repeated-probe']);
+    });
+
+    it('allows one read for each refusal, not reads from then on', async () => {
+      const read = { actions: [{ tool: 'read_file', args: { path: document } }], done: false };
+      const { llm, refusals } = script([spentProbes, { actions: [write], done: false }, read, read]);
+      await run(llm);
+      expect(refusals).toEqual(['debugger-repeated-probe']);
+    });
   });
 
   it('retains tool feedback and recovers in the same attempt after one low-quality rejection', async () => {

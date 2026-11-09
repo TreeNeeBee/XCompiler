@@ -99,6 +99,7 @@ export const ExecutionTurnPayloadSchema = z.object({
     completionQuality: z.boolean(), debuggerRecovery: z.boolean(), enforceRecoveryContract: z.boolean(),
     requireBugResolutionPlanBeforeAction: z.boolean(), allowNovelReadOnlyProbes: z.boolean(),
     seenProbeFingerprints: z.array(z.string()), baselineExecutionDeferred: z.boolean(),
+    basisDocumentReads: z.array(z.string()).default([]),
   }).strict(),
 }).strict();
 export type ExecutionTurnPayload = z.infer<typeof ExecutionTurnPayloadSchema>;

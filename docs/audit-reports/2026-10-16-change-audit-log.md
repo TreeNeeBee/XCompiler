@@ -3334,3 +3334,18 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **记录，未改**：
 - 阶段门禁 Bug 仍不带选择器（G3 其余部分）。
 - `run_tests` 的结构化 `failedTests` 来自 `buildDebugBrief`，被 `MAX_FAILED_TESTS = 8` 截断。这个上限本是给模型看的摘要用的，却影响 Bug 选择器和 `failuresConfinedToOwnSupplements` 的判断：`BUG-P2-008` 实际 10 例失败，只带 8 个选择器，少了 2 个文件。放开会改变失败身份和复发判断，本次不动。对续跑的影响是可能多一轮 Bug。
+
+### 依据被拒后读不到要引用的文档（2026-11-07，真实 run 发现，D-75）
+
+**发现**：`ee5a08a` 续跑时，`P2-S002` 需要逐字引用设计条款。它先引用了 `docs/03-high-level-design-p2.md`，被层级规则拒绝；再把同一句话的文档名换成可引用的迭代文档，因原文措辞不同被拒绝；想读文档时被恢复模式拒绝。第一次尝试因此耗尽轮次。第二次尝试预算重置后才通过。
+
+**根因**：`contract_basis_refused` 不产生 mutation generation，探查预算不恢复。两条规则都对，叠加后模型无法获得它被要求提供的原文。
+
+**处理**：`executor.ts` 记录上一轮是否有依据被拒，把 `ctx.contractBasisDocuments` 作为 `basisDocumentReads` 传给回合校验；校验只放行全部读取这些文档的回合。下一轮结束后额度清除。
+
+**测试与证伪**：`tests/executor.test.ts` 新增三例：可读可引用文档、其他读取仍拒绝、每次被拒只给一轮。修复前第 1、3 例失败。证伪 4 处，全部被杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2260 例通过；integration+e2e 1647 例通过，按退出码判定。此前两次运行分别有 2+21 例和 15 例失败，`pmset` 显示期间机器休眠，失败用例耗时约 520 秒或 970 秒，含 `Maximum call stack size exceeded`。用 `caffeinate -ims` 防止休眠后全部通过，该错误不再出现。修复尚未经真实 run 验证。
+
+**记录，未改**：
+- 这个项目的迭代文档写着与 `docs/03-high-level-design-p2.md` 冲突时以后者为准，而 D-69 只认迭代规范文档。同层的 Step 产出文档能否引用，是待定的设计问题。

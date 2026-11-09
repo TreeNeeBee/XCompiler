@@ -424,6 +424,9 @@ export class StepExecutor {
       ? resolveDirectRepairProbeRoundBudget(inp.debugContext)
       : 0;
     let readOnlyRecoveryRounds = 0;
+    // A refused basis asks for a clause word for word, so the turn after it may read a citable
+    // document whatever the probe budget says; otherwise the only quote left is one from memory.
+    let basisRefusedLastRound = false;
     const directRepairProbeRoundsByGeneration = new Map<number, number>();
     const recoveryProbeFingerprints = new Set<string>();
     const advisoryFailureTools = new Set(this.opts.advisoryFailureTools ?? []);
@@ -520,6 +523,7 @@ export class StepExecutor {
             completionQuality: validateCompletionQuality, debuggerRecovery: validateDebuggerRecovery,
             enforceRecoveryContract, requireBugResolutionPlanBeforeAction: bugResolutionPlanRequired && !bugResolutionPlan?.trim(),
             allowNovelReadOnlyProbes: (readOnlyRecoveryMode && !directRepairMode) || allowNovelDirectRepairProbe,
+            basisDocumentReads: basisRefusedLastRound ? inp.ctx.contractBasisDocuments ?? [] : [],
             seenProbeFingerprints: [...recoveryProbeFingerprints], baselineExecutionDeferred: inp.baselineTestExecution === 'defer',
           },
         });
@@ -1301,6 +1305,7 @@ export class StepExecutor {
           break;
         }
       }
+      basisRefusedLastRound = turnResults.some((result) => result.code === 'contract_basis_refused');
       if (deferredPreVerificationActions.length > 0 && !testGateFailure) {
         turnResults.push({
           tool: 'verification_order',
@@ -2582,6 +2587,7 @@ export function validateExecutionTurnResponse(text: string, payload: ExecutionTu
       requireBugResolutionPlanBeforeAction: flags.requireBugResolutionPlanBeforeAction,
       allowNovelReadOnlyProbes: flags.allowNovelReadOnlyProbes,
       seenProbeFingerprints: new Set(flags.seenProbeFingerprints),
+      basisDocumentReads: new Set(flags.basisDocumentReads),
     });
   }
   return turn;
@@ -2626,6 +2632,7 @@ function validateDebuggerRecoveryTurn(
     requireBugResolutionPlanBeforeAction?: boolean;
     allowNovelReadOnlyProbes?: boolean;
     seenProbeFingerprints?: ReadonlySet<string>;
+    basisDocumentReads?: ReadonlySet<string>;
   } = {},
 ): void {
   const turn = parseTurn(text);
@@ -2676,6 +2683,8 @@ function validateDebuggerRecoveryTurn(
     );
   }
   if (allowedActions.every(isReadOnlyOrProbeAction)) {
+    if (allowedActions.every((action) => action.tool === 'read_file' && typeof action.args.path === 'string' &&
+      options.basisDocumentReads?.has(normalizeRelPath(action.args.path)))) return;
     const fingerprints = allowedActions.flatMap(recoveryProbeActionFingerprints);
     if (
       options.allowNovelReadOnlyProbes &&

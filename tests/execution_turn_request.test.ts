@@ -62,7 +62,7 @@ function payload(): ExecutionTurnPayload {
       argsSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } }],
     validation: { completionQuality: false, debuggerRecovery: false, enforceRecoveryContract: false,
       requireBugResolutionPlanBeforeAction: false, allowNovelReadOnlyProbes: false,
-      seenProbeFingerprints: [], baselineExecutionDeferred: false },
+      seenProbeFingerprints: [], baselineExecutionDeferred: false, basisDocumentReads: [] },
   };
 }
 
