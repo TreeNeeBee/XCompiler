@@ -117,7 +117,15 @@ describe('an attempt whose run wrote outside its scope', () => {
     ['commits an inherited earlier-Phase test the Step updated under a registered basis', [{ path: 'tests/unit/test_cli.py', contentHash: hashOf(UPDATED) }], true],
     ['fails the attempt when an inherited test changed with no basis registered', [], false],
     ['fails the attempt when the registered basis covers other content of that test', [{ path: 'tests/unit/test_cli.py', contentHash: hashOf('assert True\n') }], false],
-  ] as Array<[string, Array<{ path: string; contentHash: string }>, boolean]>)('%s', async (_name, bases, delivers) => {
+    // A live Change Request hop began before a Bug of the same Phase updated an inherited test under
+    // a basis; measured from its own base, that change looked like its own, with nothing registered.
+    ['commits a change another Ticket of this Phase registered for this content', [], true,
+      { phase: [{ path: 'tests/unit/test_cli.py', contentHash: hashOf(UPDATED) }] }],
+    ['fails the attempt when only a Ticket of another Phase registered it', [], false,
+      { elsewhere: [{ path: 'tests/unit/test_cli.py', contentHash: hashOf(UPDATED) }] }],
+    ['fails the attempt when another Ticket registered other content of that test', [], false,
+      { phase: [{ path: 'tests/unit/test_cli.py', contentHash: hashOf('assert True\n') }] }],
+  ] as Array<[string, Array<{ path: string; contentHash: string }>, boolean, { phase?: unknown[]; elsewhere?: unknown[] }?]>)('%s', async (_name, bases, delivers, others = {}) => {
     const step: Step = {
       id: 'S004', iterationId: 'P1', phase: 'CODE', title: 'CODE', description: 'CODE', systemPrompt: 'CODE',
       tools: ['write_file'], inputs: [], outputs: ['src/parser.py'], dependsOn: [], acceptance: 'Passes.', maxAttempts: 3,
@@ -128,7 +136,10 @@ describe('an attempt whose run wrote outside its scope', () => {
       sandbox: { kind: 'subprocess', runProgram: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 }) },
       router: {},
       // A one-Phase Project: nothing earlier for this Step to inherit.
-      repository: { list: async () => [], read: async (id: string) => ({
+      repository: { list: async () => [
+        { objectType: 'ticket', id: 'bug-id', phaseId: 'phase-id', contractBases: others.phase ?? [] },
+        { objectType: 'ticket', id: 'earlier-id', phaseId: 'p1-id', contractBases: others.elsewhere ?? [] },
+      ], read: async (id: string) => ({
         'phase-id': { objectType: 'phase', id, name: 'P2', projectId: 'project-id', stepIds: [] },
         'p1-id': { objectType: 'phase', id, name: 'P1', projectId: 'project-id', stepIds: ['p1-code'] },
         'p1-code': { objectType: 'step', id, type: 'CODE', outputs: ['src/parser.py', 'tests/unit/test_cli.py'] },

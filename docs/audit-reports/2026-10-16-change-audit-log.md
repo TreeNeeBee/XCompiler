@@ -3349,3 +3349,22 @@ P1 包资源问题仍延后；不启用外部付费模型。
 
 **记录，未改**：
 - 这个项目的迭代文档写着与 `docs/03-high-level-design-p2.md` 冲突时以后者为准，而 D-69 只认迭代规范文档。同层的 Step 产出文档能否引用，是待定的设计问题。
+
+### 语义判定首次真实运行，以及跨 Ticket 的依据复核（2026-11-09，真实 run 发现，D-76）
+
+**语义判定**：功能层 `P2-S001` 修改 `tests/test_functional_acceptance.py` 时，`judge.contract-basis` 第一次用真实模型运行，共 6 次判定，3 次放行、3 次拒绝。最终合入的改动是表头追加 3 列 J1939、列数断言 16 改 19、注释同步，没有删除或放宽断言。观察到的问题（未改）：
+- 判定逐条评估单次写入，材料是 P1 交付时的测试和这一条修改，看不到当前文件状态。同一轮的 4 处联动修改中，只做改名和只改文档字符串的两条被拒，新增常量的那条通过，文件一度因引用未定义名称无法收集（pytest 退出码 2）。模型最终换了写法才通过。
+- 拒绝信息写着“保持这条断言不变”，对不涉及断言的修改有误导性。
+
+**D-76 发现**：`P2-S006` 的 CR 跳被交付复核拒绝，指向 `BUG-P2-007` 改过的 P1 集成补充测试。主干内容哈希 `d62cdbe1c95c` 与 `BUG-P2-007` 的最后一条登记一致，CR 跳自己的账本里没有这条。失败路由到 `P2-S003`，它没有写权限，只能空修复，`repair_recurred_unchanged` 停止 run。
+
+**根因**：`unregisteredInheritedChanges` 只查当前 Ticket 的 `contractBases`，而 `ticketChangedFiles` 从 Ticket 基线算起，会包含基线之后其他 Ticket 合入的改动。这正是之前列为待处理的“没有阶段级账本对账”。
+
+**处理**：复核时把本阶段所有 Ticket 的登记一起纳入，仍按路径加内容哈希匹配。
+
+**测试与证伪**：`tests/run_outputs_set_aside.test.ts` 新增三例：本阶段其他 Ticket 登记了当前内容时交付；只有其他阶段登记时失败；其他 Ticket 登记的是另一份内容时失败。修复前第一例失败。证伪 3 处，全部被杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2263 例通过；integration+e2e 1647 例通过，在 `caffeinate -ims` 下运行。修复尚未经真实 run 验证。
+
+**记录，未改**：
+- 验证 Step 上的 `inherited_test_change_unregistered` 被路由到配对的开发 Step，后者没有补充测试的写权限，无法修复。

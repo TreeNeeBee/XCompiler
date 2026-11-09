@@ -1413,8 +1413,13 @@ export class DomainAttemptRunner {
     if (changed.length === 0) return [];
     const current = await this.options.repository.read(input.ticket.id);
     if (current.objectType !== 'ticket') throw new Error(`Object ${input.ticket.id} is not a Ticket`);
-    // The path alone is not enough: an earlier registration must not cover what changed the file since.
-    const registered = new Set(current.contractBases.map((basis) => `${basis.path}\0${basis.contentHash}`));
+    // A Ticket whose base predates another Ticket's merge counts that change as its own, so what any
+    // Ticket of this Phase registered counts too. The path alone is still not enough: a registration
+    // covers the content its write left, never whatever changed the file since.
+    const phaseTickets = (await this.options.repository.list({ objectType: 'ticket', projectId: input.domainStep.projectId }))
+      .filter((object): object is Ticket => object.objectType === 'ticket' && object.phaseId === input.domainStep.phaseId);
+    const registered = new Set([current, ...phaseTickets].flatMap((ticket) =>
+      ticket.contractBases.map((basis) => `${basis.path}\0${basis.contentHash}`)));
     const covered = await Promise.all(changed.map(async (file) => registered.has(`${file}\0${await fileContentHash(scope, file)}`)));
     return changed.filter((_file, index) => !covered[index]);
   }
