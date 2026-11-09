@@ -78,14 +78,25 @@ export class AttemptResultProcessor {
       const affected = correctivePropagationStepIds(
         steps, work.step, affectedArtifacts, project.language,
       );
-      if (affected.length === 0) {
-        return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
-      }
       const solution = correctiveSolution(work, result.solutionPlan, result.changedFiles, result.commit);
+      // Nothing downstream to verify: right when the Bug is this Step's to prove and this attempt
+      // proved it, and a stop only otherwise.
+      const sourceChange = {
+        summary: result.solutionPlan ?? `Corrected ${work.ticket.name} in ${work.step.name}.`,
+        entries: result.changes ?? changelistEntries(result.changedFiles),
+        commit: result.commit,
+        verification: result.assessment.evidence,
+      };
+      if (affected.length === 0) {
+        const closed = await this.options.controller.closeCorrectiveProvenAtOwnStep({
+          work, qualityAssessmentId: result.assessment.id, solution, sourceChange, testOutcomes: result.testOutcomes,
+        });
+        if (!closed) return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
+      }
       const parentTicket = work.ticket.parentTicketId
         ? await this.options.repository.read(work.ticket.parentTicketId)
         : undefined;
-      const request = await this.options.controller.propagateCorrectiveChange({
+      const request = affected.length === 0 ? undefined : await this.options.controller.propagateCorrectiveChange({
         work,
         qualityAssessmentId: result.assessment.id,
         solution,
@@ -106,12 +117,7 @@ export class AttemptResultProcessor {
         parentChangeRequestId: parentTicket?.objectType === 'ticket' && parentTicket.type === 'change-request'
           ? parentTicket.id
           : undefined,
-        sourceChange: {
-          summary: result.solutionPlan ?? `Corrected ${work.ticket.name} in ${work.step.name}.`,
-          entries: result.changes ?? changelistEntries(result.changedFiles),
-          commit: result.commit,
-          verification: result.assessment.evidence,
-        },
+        sourceChange,
       });
       // No Change Request means the repair had nowhere to propagate: the Change Request it was
       // raised inside re-applies that Step itself and carries the repair onward. The corrective

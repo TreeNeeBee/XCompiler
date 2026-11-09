@@ -773,6 +773,49 @@ describe('ProjectOrchestrator', () => {
     );
   });
 
+  // A live P2 functional Step repaired its own supplement. The Bug's contract names that very Step for
+  // verification and its repair ran that Step's gate, but with no Step after it to verify, the run
+  // stopped with "no downstream verification path" instead of closing what it had just proven.
+  it.each([
+    ['closes a Bug its own verification Step repaired, with no Step after it to propagate to', true],
+    ['still stops when that repair did not run the case the Bug names', false],
+  ] as const)('%s', async (_name, replays) => {
+    const setup = await fixture();
+    const integrated: string[] = [];
+    let failed = false;
+    const runner = {
+      initialize: async () => undefined,
+      run: async (input: AttemptInput): Promise<AttemptResult> => {
+        const supplement = `tests/verification/p1/functional-test/${input.domainStep.id}/test_risks.py`;
+        if (input.domainStep.type === 'FUNCTIONAL_TEST' && input.mode === 'normal' && !failed) {
+          failed = true;
+          return { ok: false, reason: 'the supplement cannot be collected', failureLog: `ERROR ${supplement}`,
+            changedFiles: [], wikiEntryIds: [], testOutcomes: [failedTestOutcome(input.domainStep, [supplement])] };
+        }
+        const result = await passingAttempt(setup.repository, input.domainStep);
+        return input.domainStep.type === 'FUNCTIONAL_TEST' && input.mode === 'debug'
+          ? { ...result, changedFiles: [supplement], testOutcomes: [passedTestOutcome(input.domainStep, [replays ? supplement : 'tests/other.py'])] }
+          : result;
+      },
+    };
+    const engine = new ProjectOrchestrator({
+      ...options(setup.workspace, setup.repository, runner),
+      integrateTicket: async (ticketId) => { integrated.push(ticketId); return { status: 'merged' }; },
+    }, setup.plan);
+
+    const result = await engine.run(setup.graph.phases[0]!.id);
+    const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+      .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+    if (!replays) {
+      expect(result.stop).toMatchObject({ code: 'no_downstream_verification' });
+      expect(bugs.map((bug) => bug.state)).not.toContain('closed');
+      return;
+    }
+    expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+    expect(bugs.map((bug) => [bug.state, bug.solution?.status, bug.verificationRecords.length])).toEqual([['closed', 'verified', 1]]);
+    expect(integrated).toContain(bugs[0]!.id);
+  });
+
   it('does not call the merge boundary for a CR attempt that missed the original Bug replay', async () => {
     const setup = await fixture();
     const integratedTicketIds: string[] = [];

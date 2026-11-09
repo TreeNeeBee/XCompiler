@@ -3451,3 +3451,17 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **测试与证伪**：命名规则单元测试；真实 git 上创建、列出、幂等与重新交付；引擎交付后调用与失败审计；真实 run 路径接线测试确认标签打在规范仓库、为附注标签。证伪 8 处，全部由断言失败杀死。
 
 **门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2292 例通过；integration+e2e 1648 例通过，在 `caffeinate -ims` 下运行。
+
+### 验证 Step 修好自己的 Bug 后无处验证（2026-11-09，真实 run 发现，D-85）
+
+**发现**：用 `4493b78` 续跑前做了离线检查（调度、收敛保护、D-77 识别、D-80 交付内容、D-81 材料大小、修复后的测试与场景预演，均符合预期）。续跑中，`P2-S008` 在收集错误后留下修复（D-77），判定放行，依据按组登记（D-79），门禁在 06:09:09 通过。随后以 `BUG-P2-011 has no downstream verification path` 停止。
+
+**根因**：纠正修复通过后，`AttemptResultProcessor` 按改动文件计算下游复验 Step，为空即停止。`BUG-P2-011` 的验证 Step 就是修复它的 `P2-S008`（D-72/D-82 让验证 Step 修自己的补充测试），而 S008 是最后一个 Step。修复本身已在该 Step 的门禁上被证明，却没有路径把这个证明用于关闭 Bug。离线检查只模拟了调度和识别，没有覆盖修复通过后的处理，因此未能提前发现。
+
+**处理**：`CorrectiveWorkflowService.closeCorrectiveProvenAtOwnStep`：Bug 的验证合同指向本 Step、本 Step 是验证 Step、本轮测试结果满足合同、没有以该 Bug 为源的 CR 链时，交付 Step、记录改动和方案、经 `closeBugsProvenAt` 关闭 Bug；Step 不在此关闭，由排在 Bug 后面的 Story 或 CR 恢复后关闭。条件不满足时不改状态，处理器仍以 `no_downstream_verification` 停止。下游为空时不再调用传播。
+
+**测试与证伪**：引擎测试复现原停止（同一报错文本）；修复后 Bug 关闭、方案为已验证、合入；修复尝试未运行 Bug 点名的用例时仍停止且不关闭。证伪 4 处，全部被杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2294 例通过；integration+e2e 1648 例通过，在 `caffeinate -ims` 下运行。
+
+**真实状态核对**：`BUG-P2-011` 的验证 Step 即目标 `P2-S008`；选择器为该补充测试文件的用例，S008 门禁运行整个继承补充目录可覆盖；无以其为源的 CR 链；排在其后的是 `CR-CR-043`。

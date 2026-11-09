@@ -136,6 +136,8 @@ only authority that changes Ticket state.
   registered only once every one of them has run, against what they made together. A change is judged
   against the test as the Phase that owns it delivered it, read at that Phase's recorded delivered
   revision, and on evidence sent whole or not at all.
+- A Bug repaired at the Step its contract names for verification is proven by that repair's own
+  gate and closes there, even with no Step after it; the work parked behind it then closes the Step.
 - A delivered Phase is a release: its delivered revision is recorded on the Phase and tagged in the
   generated project's local repository as an annotated `v<n>.0.0` (the n-th Phase; a later delivery of
   it takes the next patch). Tags are never pushed, and a failed tag is recorded without undoing the

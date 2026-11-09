@@ -28,6 +28,7 @@ import { normalizeGitPath } from '../execution/v_model_policy.js';
 import {
   buildBugFailureContracts,
   bugVerificationProven,
+  bugVerificationSatisfied,
 } from './bug_verification.js';
 
 export class CorrectiveWorkflowService {
@@ -332,6 +333,50 @@ export class CorrectiveWorkflowService {
     });
     await this.state.checkpoint(source, `Quality gap routed to ${reopenedTarget.name} through ${enhancement.name}`);
     return enhancement;
+  }
+
+  /**
+   * Closes a Bug whose contract names this very Step for verification and that this Step repaired:
+   * the attempt that repaired it ran this Step's gate, so it is proven here and there is no chain to
+   * open. A live P2 functional Step repaired its own inherited supplement, and with no Step after it
+   * the run stopped on "no downstream verification path" instead. Answers false, changing nothing,
+   * when the Bug is not this Step's to prove, the attempt did not prove it, or a chain still carries it.
+   */
+  async closeCorrectiveProvenAtOwnStep(input: {
+    work: ScheduledWork;
+    qualityAssessmentId: ObjectId;
+    solution: TicketSolution;
+    sourceChange: { summary: string; entries: Changelist['entries']; commit?: string; verification: string[] };
+    testOutcomes: readonly TestOutcome[];
+  }): Promise<boolean> {
+    const bug = input.work.ticket;
+    if (bug.type !== 'bug' || bug.verificationContract.verificationStepId !== input.work.step.id) return false;
+    let step = await this.state.requireStep(input.work.step.id);
+    if (!isVerificationStep(step) || !bugVerificationSatisfied(bug, step, input.testOutcomes)) return false;
+    const openChain = (await this.tickets.list()).some((ticket) => ticket.type === 'change-request' &&
+      ticket.sourceTicketIds.includes(bug.id) && ticket.state !== 'closed' && ticket.state !== 'cancelled');
+    if (openChain) return false;
+    await this.state.requirePassingQualityAssessment(step, input.qualityAssessmentId);
+    step = await this.state.attachQuality(step, input.qualityAssessmentId);
+    if (step.state === 'pending' || step.state === 'reopened' || step.state === 'created') {
+      step = await this.state.transitionStep(step, 'in_progress');
+    }
+    if (step.state === 'in_progress') step = await this.state.transitionStep(step, 'delivered');
+    await this.tickets.recordChange({
+      ticketId: bug.id,
+      stepId: step.id,
+      summary: input.sourceChange.summary,
+      entries: input.sourceChange.entries,
+      commit: input.sourceChange.commit,
+      verification: input.sourceChange.verification,
+      verificationAssessmentId: input.qualityAssessmentId,
+    });
+    await this.tickets.setSolution(bug.id, { ...input.solution, status: 'proposed' });
+    await this.tickets.closeBugsProvenAt(step.projectId, step, input.testOutcomes, input.sourceChange.verification);
+    // The Step stays delivered, as after any repair: the work parked behind the Bug, the Story or the
+    // Change Request that found it, resumes and closes the Step through its own gate.
+    await this.state.checkpoint(step, `${bug.name} repaired and proven at its own gate`);
+    return true;
   }
 
   async propagateCorrectiveChange(input: {

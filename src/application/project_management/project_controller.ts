@@ -568,6 +568,12 @@ export class ProjectController {
     return this.corrective.propagateCorrectiveChange(input);
   }
 
+  async closeCorrectiveProvenAtOwnStep(
+    input: Parameters<CorrectiveWorkflowService['closeCorrectiveProvenAtOwnStep']>[0],
+  ): Promise<boolean> {
+    return this.corrective.closeCorrectiveProvenAtOwnStep(input);
+  }
+
   async completeChangeRequestStep(input: {
     work: ScheduledWork;
     qualityAssessmentId: ObjectId;
