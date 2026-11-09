@@ -451,3 +451,27 @@ describe('topoSort', () => {
     expect(() => topoSort(plan.steps)).toThrow();
   });
 });
+
+// Delivery now promotes a later Phase's README to the root, and new plans ask for it. A plan made before
+// that still has to load: lint keeps requiring only the documents it always required.
+describe('a later Phase\'s delivery documents', () => {
+  const p2Plan = async (outputs: string[]) => {
+    const { iterationPlan } = await import('./support/two_phase_plan.js');
+    const plan = iterationPlan('P2');
+    plan.steps = plan.steps.map((step) => step.phase === 'FUNCTIONAL_TEST' ? { ...step, outputs } : step);
+    return plan;
+  };
+  const delivery = (issues: ReturnType<typeof lintPlan>) =>
+    issues.filter((issue) => issue.message.startsWith('FUNCTIONAL_TEST step outputs must include'));
+
+  it('does not require the README that delivery promotes', async () => {
+    const plan = await p2Plan(['docs/iterations/P2/08-functional-test.md', 'docs/iterations/P2/quickstart.md']);
+    expect(delivery(lintPlan(plan))).toEqual([]);
+  });
+
+  it('still requires the documents it always required', async () => {
+    const plan = await p2Plan(['docs/iterations/P2/08-functional-test.md']);
+    expect(delivery(lintPlan(plan)).map((issue) => issue.message))
+      .toEqual(['FUNCTIONAL_TEST step outputs must include docs/iterations/P2/quickstart.md']);
+  });
+});

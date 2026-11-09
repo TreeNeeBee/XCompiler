@@ -33,6 +33,7 @@ import { silentRuntimeIO } from '../../src/runtime/io.js';
 import { createSandbox } from '../../src/sandbox/factory.js';
 import type { ExecResult, Sandbox } from '../../src/sandbox/types.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
+import type { ObjectId } from '../../src/domain/identity/object_id.js';
 
 type FinalGate = Awaited<ReturnType<NonNullable<ProjectOrchestratorOptions['finalGate']>>>;
 const controlled = vi.hoisted(() => ({ workflow: vi.fn(), gates: [] as FinalGate[] }));
@@ -449,6 +450,48 @@ describe('Runtime run tagging a delivered Phase', () => {
     const git = simpleGit(current.container.canonical().workspace.root);
     expect((await git.raw(['rev-parse', 'v1.0.0^{commit}'])).trim()).toBe(released!.head);
     expect((await git.raw(['cat-file', '-t', 'v1.0.0'])).trim()).toBe('tag');
+  });
+});
+
+// dbc2excel-5: the development report was written after the release was tagged, and nothing said what a
+// delivery released. Runtime gives delivery a way to write the report and to read what a commit holds, and
+// prints the release read back from the records and the repository.
+describe('Runtime run reporting a delivered Phase', () => {
+  it('writes the report through delivery and prints what the release holds', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await fixture(server.url);
+    const lines: string[] = [];
+    const io = { ...silentRuntimeIO, emit: (event: { type: string; message?: string }) => {
+      if (event.type === 'log' && event.message) lines.push(event.message);
+    } };
+    let released: string[] = [];
+    controlled.workflow.mockImplementation(async (options: ProjectOrchestratorOptions, runPhaseId: string) => {
+      // The workflow boundary hands over the registered Phase id as a string.
+      const phaseId = runPhaseId as ObjectId;
+      const reportPath = await options.writeDeliveryReport!({ phaseId, finalDelivery: true });
+      const revision = await options.commitCanonicalArtifact!(phaseId, 'publish delivery documents');
+      released = await options.releaseFiles!(revision);
+      await options.tagDeliveredPhase!({ projectName: 'signals', phaseName: 'P1', phaseNumber: 1, revision });
+      // Through the repository Runtime handed over, as the orchestrator records it on delivery.
+      const phase = await options.repository.read(phaseId);
+      if (phase.objectType !== 'phase') throw new Error('Expected the Phase');
+      await options.repository.update(PhaseSchema.parse({ ...phase, ...reviseObjectEnvelope(phase), deliveredRevision: revision }), phase.state);
+      expect(reportPath).toBe('docs/project-development-report.md');
+      return { phaseId, totalSteps: 8, executedSteps: 1, projectDelivered: true };
+    });
+
+    const result = await current.run({ io: io as never });
+
+    expect(result).toMatchObject({ status: 'ok', reportPath: 'docs/project-development-report.md' });
+    expect(released).toContain('docs/project-development-report.md');
+    const listing = lines.find((line) => line.includes('v1.0.0'));
+    expect(listing, lines.join('\n')).toBeDefined();
+    expect(listing).toContain('docs/project-development-report.md');
+    expect(listing).toMatch(/Project delivery|整体项目清单/u);
+    expect(listing).toContain('src/');
+    // Written while delivering, so the report states the delivery it travels in.
+    expect(await current.container.canonical().workspace.readFile('docs/project-development-report.md'))
+      .toContain('| P1 | delivered |');
   });
 });
 

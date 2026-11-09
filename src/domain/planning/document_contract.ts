@@ -100,9 +100,35 @@ export function phaseDocForIteration(phase: Phase, iterationId = 'P1'): string |
 export function deliveryDocsForIteration(projectType: ProjectType, iterationId = 'P1'): readonly string[] {
   if (iterationId === 'P1') return deliveryDocsForProjectType(projectType);
   return [
-    `docs/iterations/${iterationId}/08-functional-test.md`,
+    deliveryDocForIteration(iterationId),
     `docs/iterations/${iterationId}/quickstart.md`,
     ...(projectType === 'library' || projectType === 'mixed' ? [`docs/iterations/${iterationId}/api-guide.md`] : []),
+  ];
+}
+
+/** The document a Phase's delivery file manifest is published into: that Phase's own functional-test document. */
+export function deliveryDocForIteration(iterationId = 'P1'): string {
+  return iterationId === 'P1' ? DOC_NAMES.delivery : `docs/iterations/${iterationId}/08-functional-test.md`;
+}
+
+/**
+ * The user documents a later Phase writes under its own directory and that its delivery copies to the project root.
+ *
+ * A later Phase cannot write the root copies while it works, because they still describe what the earlier Phase
+ * delivered. Once it delivers, the root is the project's front page and has to describe what was just released.
+ * P1 writes the root copies directly, so it promotes nothing.
+ */
+export function promotedUserDocs(
+  projectType: ProjectType,
+  iterationId = 'P1',
+): ReadonlyArray<{ source: string; target: string }> {
+  if (iterationId === 'P1') return [];
+  return [
+    { source: `docs/iterations/${iterationId}/README.md`, target: DOC_NAMES.readme },
+    { source: `docs/iterations/${iterationId}/quickstart.md`, target: DOC_NAMES.quickstart },
+    ...(projectType === 'library' || projectType === 'mixed'
+      ? [{ source: `docs/iterations/${iterationId}/api-guide.md`, target: DOC_NAMES.apiGuide }]
+      : []),
   ];
 }
 

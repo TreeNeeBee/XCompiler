@@ -32,6 +32,8 @@
 | 2026-11-04 | [2026-11-04-p2-stage-delivery-codex-audit-report.md](2026-11-04-p2-stage-delivery-codex-audit-report.md) | 独立审计 | Codex | D-68、D-69 复核，失败测试导致门禁误放行、旧契约登记复用、历史 Ticket 兼容性及 F-01～F-04 状态 |
 | 2026-11-09 | [2026-11-09-p2-rerun-change-report.md](2026-11-09-p2-rerun-change-report.md) | 变更说明 | CC | D-70～D-78：P2 重跑中发现的问题与修复、影响分析、待审计问题 |
 | 2026-11-09 | [2026-11-09-p2-rerun-codex-audit-report.md](2026-11-09-p2-rerun-codex-audit-report.md) | 独立审计 | Codex | D-70～D-78：整组判定后的中间状态登记、交付版本来源、判定材料截断；432 项定向测试及业务主线/候选验证 |
+| 2026-11-09 | [2026-11-09-dbc2excel-5-p2-final-audit.md](2026-11-09-dbc2excel-5-p2-final-audit.md) | 业务验证审计 | CC | dbc2excel-5 P2 交付终审（`v2.0.0`）：业务行为逐项实测、文档阐述问题 F-1～F-4、D-79～D-86 改动质量与后续建议 |
+| 2026-11-10 | [2026-11-10-d79-d87-change-report.md](2026-11-10-d79-d87-change-report.md) | 变更说明 | CC | D-79～D-87：RR-01～RR-03 处理、发布标签、真实续跑发现的 D-85/D-86、交付收尾 D-87；影响分析、已知问题与审计重点 |
 
 ## 约定
 

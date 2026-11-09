@@ -236,6 +236,19 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
+  // dbc2excel-5 P2: delivery promotes a later Phase's user documents to the root, so a plan made from now on
+  // asks that Phase's functional test to write its README beside the quickstart it already delivered.
+  it('asks a later Phase to write the README its delivery promotes to the root', () => {
+    const raw = [
+      { id: 'S009', phase: 'FUNCTIONAL_TEST', iterationId: 'P2', title: 'd', description: 'd', systemPrompt: 'x'.repeat(30), outputs: [] },
+    ] as unknown as Step[];
+    expect(calibrateDocPaths(raw, 'application')[0]!.outputs).toEqual([
+      'docs/iterations/P2/08-functional-test.md',
+      'docs/iterations/P2/quickstart.md',
+      'docs/iterations/P2/README.md',
+    ]);
+  });
+
   it('normalizes and guarantees the canonical topic input for requirement analysis', () => {
     const raw = [
       {

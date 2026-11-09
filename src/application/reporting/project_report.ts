@@ -16,11 +16,23 @@ import { RECORD_REPLAY_CHANNELS } from '../record_replay/types.js';
 
 export const PROJECT_DEVELOPMENT_REPORT_PATH = 'docs/project-development-report.md';
 
+/** Where a Phase's development report is written: the project report on the final delivery, a per-Phase one before. */
+export function developmentReportPath(phaseName: string | undefined, finalDelivery: boolean): string {
+  return finalDelivery || !phaseName ? PROJECT_DEVELOPMENT_REPORT_PATH : `docs/project-development-report.${phaseName}.md`;
+}
+
 export async function generateProjectDevelopmentReport(input: {
   workspace: Workspace;
   plan: Plan;
   projectAudit?: ProjectAuditResult;
   finalDelivery: boolean;
+  /**
+   * Written while the Phase is being delivered, so the report travels in the release it describes: every Step is
+   * closed and the delivery gate has passed, and only the closing transitions remain. The Phase being delivered —
+   * and, for the final delivery, the project — are reported as delivered rather than as the states they are
+   * about to leave.
+   */
+  delivering?: boolean;
   repository: DomainObjectRepositoryPort;
   /** External-interaction evidence: fixture mode and per-channel replay/live accounting. */
   recordReplay?: RecordReplayEvidence;
@@ -65,7 +77,9 @@ export async function generateProjectDevelopmentReport(input: {
   });
   const allQualityPassed = qualityRows.length === reportPhases.length * 8 &&
     qualityRows.every((row) => row.assessment?.passed);
+  const beingDelivered = (phase: Phase) => input.delivering === true && phase.id === currentPhase?.id;
   const allPhaseDeliveriesClosed = reportPhases.length > 0 && reportPhases.every((phase) => {
+    if (beingDelivered(phase)) return true;
     const phaseTickets = reportTickets.filter((ticket) => ticket.phaseId === phase.id);
     const epic = phaseTickets.find((ticket) => ticket.id === phase.epicTicketId);
     const delivery = phaseTickets.find(
@@ -84,7 +98,7 @@ export async function generateProjectDevelopmentReport(input: {
     allPhaseDeliveriesClosed &&
     auditPassed &&
     unresolvedCorrective.length === 0 &&
-    (!input.finalDelivery || project.state === 'closed');
+    (!input.finalDelivery || project.state === 'closed' || input.delivering === true);
   const verdict = deliveryPassed
     ? input.finalDelivery ? 'DELIVERED' : 'ITERATION PASSED'
     : 'NOT READY';
@@ -115,7 +129,7 @@ export async function generateProjectDevelopmentReport(input: {
     '| Iteration | State | Objective | Verification gate |',
     '| --- | --- | --- | --- |',
     ...phases.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })).map((phase) =>
-      `| ${phase.name} | ${phase.state} | ${escapeTable(phase.objective)} | ${escapeTable(phase.verificationGate.join('; '))} |`
+      `| ${phase.name} | ${beingDelivered(phase) ? 'delivered' : phase.state} | ${escapeTable(phase.objective)} | ${escapeTable(phase.verificationGate.join('; '))} |`
     ),
     '',
     '## Stage Quality',
@@ -177,9 +191,7 @@ export async function generateProjectDevelopmentReport(input: {
       : '- Delivery remains blocked by an incomplete Phase/Step, open corrective Ticket, failed quality assessment, PM state, or project audit.',
     '',
   ];
-  const reportPath = input.finalDelivery || !currentPhase
-    ? PROJECT_DEVELOPMENT_REPORT_PATH
-    : `docs/project-development-report.${currentPhase.name}.md`;
+  const reportPath = developmentReportPath(currentPhase?.name, input.finalDelivery);
   await input.workspace.writeFile(reportPath, `${lines.join('\n')}\n`);
   const subject = input.finalDelivery || !currentPhase
     ? { id: project.id, objectType: 'project' as const }

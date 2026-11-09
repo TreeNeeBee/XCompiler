@@ -51,6 +51,7 @@ import { judgeRuntimeScenarioOutcome } from './scenario_outcome.js';
 import {
   generateProjectDevelopmentReport,
 } from '../application/reporting/project_report.js';
+import { collectDeliveryListing, renderDeliveryListing } from '../application/reporting/delivery_listing.js';
 import { refreshProjectMemory } from '../application/context/project_memory.js';
 import { updateProjectFile } from '../infrastructure/project/project_manifest.js';
 import type { Language, PlanIntent } from '../domain/planning/execution_plan.js';
@@ -664,6 +665,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       pending: await repositoryGit.pendingChanges(),
     }),
     tagDeliveredPhase: (release) => tagPhaseRelease(repositoryGit, release),
+    // Written inside delivery, before its commit, so the report is part of the release it describes.
+    writeDeliveryReport: async ({ finalDelivery }) => {
+      const reportPath = await generateProjectDevelopmentReport({
+        workspace: ws,
+        plan,
+        projectAudit: finalProjectAudit,
+        finalDelivery,
+        delivering: true,
+        repository: domainRepository,
+        recordReplay: recordReplay.evidence(),
+      });
+      await audit.event('project.report.generated', `generated ${reportPath}`, {
+        messageId: 'execute.project_report_generated',
+        reportPath,
+        finalDelivery,
+      });
+      return reportPath;
+    },
+    releaseFiles: (revision) => repositoryGit.filesAt(revision),
     commitCanonicalArtifact: async (stepId, summary) => {
       const revision = await git.snapshot(stepId, 0, summary);
       await canonicalFileTree.rescan(revision);
@@ -958,28 +978,22 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       });
     }
     const projectPlan = phaseAdvance?.nextPlan ?? plan;
-    const reportPath = iterationDelivered
-      ? await generateProjectDevelopmentReport({
-          workspace: ws,
-          plan,
-          projectAudit: finalProjectAudit,
-          finalDelivery: !phaseAdvance?.nextPlan,
-          repository: domainRepository,
-          recordReplay: recordReplay.evidence(),
-        })
-      : undefined;
-    if (reportPath) {
-      await audit.event('project.report.generated', `generated ${reportPath}`, {
-        messageId: 'execute.project_report_generated',
-        reportPath,
-        finalDelivery: !phaseAdvance?.nextPlan,
-        completedPhaseId: phaseAdvance?.completedPhaseId,
-      });
-    }
     if (phaseAdvance?.nextPlan) {
       await runtimeLog(io, 'success', t().execute.iterationPrepared(phaseAdvance.completedPhaseId, phaseAdvance.nextPlan.phaseId));
     }
     await runtimeLog(io, 'success', t().execute.runAllDone(r.executedSteps, r.totalSteps));
+    // Read back from the records and the repository: what was released, not what the run meant to release.
+    const listing = await collectDeliveryListing({
+      repository: domainRepository,
+      phaseId: r.phaseId,
+      projectType: plan.projectType ?? 'application',
+      projectDelivered: r.projectDelivered === true,
+      gate: (finalProjectAudit?.checks ?? []).map((check) => ({ name: check.name, ok: check.ok, summary: check.summary })),
+      releaseTags: () => repositoryGit.releaseTags(),
+      filesAt: (revision) => repositoryGit.filesAt(revision),
+    });
+    await runtimeLog(io, 'raw', renderDeliveryListing(listing, t().deliveryListing).join('\n'));
+    const reportPath = listing.phase.documents.find((document) => document.kind === 'report')?.path;
     await audit.end({
       status: (finalProjectAudit?.warnings ?? 0) > 0 ? 'warn' : 'ok',
       executedSteps: r.executedSteps,

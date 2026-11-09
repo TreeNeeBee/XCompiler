@@ -793,7 +793,7 @@ const messages: Messages = {
     ],
     fileManifest: {
       heading: '## File manifest',
-      intro: (scannedAt) => `Generated from the project file tree${scannedAt ? ` (reconciled ${scannedAt})` : ''}. ` +
+      intro: (scannedAt) => `The files this delivery releases: what the release commit holds${scannedAt ? ` (reconciled ${scannedAt})` : ''}. ` +
         'Do not edit by hand — this region is replaced on every delivery.',
       count: (files) => `${files} files. Size and timestamps are generated data and are recorded on the project ` +
         'file tree rather than here: writing this section changes them for the document that carries it.',
@@ -885,6 +885,17 @@ const messages: Messages = {
     phaseRecovered: (phase) => `recovered ${phase} from the canonical Project state`,
     iterationPrepared: (completed, next) => `iteration ${completed} passed; prepared ${next}`,
     ticketRouted: (creator, ticket, assignee) => `${creator} created ${ticket} → PM → ${assignee}`,
+  },
+  deliveryListing: {
+    phaseHeading: (phase) => `${phase} delivery`,
+    projectHeading: 'Project delivery',
+    release: (tag, revision) => `Release: ${tag ?? '(untagged)'} (commit ${revision})`,
+    noRevision: 'Release: no delivered revision was recorded',
+    documents: 'Documents:',
+    documentKind: { readme: 'README', quickstart: 'Quickstart', apiGuide: 'API guide', delivery: 'Delivery document (with file manifest)', report: 'Development report' },
+    gate: 'Delivery gate:',
+    files: (count) => `Released files (${count}):`,
+    rootGroup: '(root)',
   },
   runStop: {
     gateWithoutRoutableFindings: () => 'Phase delivery gate failed without routable findings',

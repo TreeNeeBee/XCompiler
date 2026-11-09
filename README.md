@@ -79,7 +79,8 @@ V-model behavior:
 - A Phase closes only when all eight Steps, Step stories, corrective Tickets, KPI assessments, and the delivery story are closed. The Project closes only after every dependency-ready Phase closes.
 - Completed-phase debug must provide a real patch/rewrite or successful verification evidence.
 - Network/API failures are treated as real gates: if the project API fails, the run must repair or switch API instead of hiding the failure.
-- Quality assessments, changelists, checkpoints, reports, logs, and audit events are first-class registered objects. Delivery writes `docs/project-development-report.md` and links its Report object back to the owning Phase or Project.
+- Quality assessments, changelists, checkpoints, reports, logs, and audit events are first-class registered objects. Delivery writes the development report (`docs/project-development-report.<Phase>.md`, and `docs/project-development-report.md` on the final delivery) into the release it describes and links its Report object back to the owning Phase or Project.
+- A delivered Phase's release holds its own user documents: a later Phase's `docs/iterations/<Phase>/README.md` and `quickstart.md` are copied to the root, the file manifest in that Phase's delivery document lists exactly the files the release commit holds, and the run prints what was released — and, once every Phase is delivered, the whole project.
 
 ---
 

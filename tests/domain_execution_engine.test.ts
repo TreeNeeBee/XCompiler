@@ -391,6 +391,44 @@ describe('ProjectOrchestrator', () => {
         : { messageId: 'domain.phase_release_tagged', tag: 'v1.0.0', revision: head, created: true }));
     });
 
+    // dbc2excel-5: each Phase's development report was written after its release was tagged, so no release
+    // held its own report. Delivery writes it first; the revision recorded and tagged is the one holding it.
+    it('writes the development report into the revision it records on the Phase and tags', async () => {
+      const setup = await fixture();
+      const revisions = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)];
+      let head = 0;
+      let pending = false;
+      const order: string[] = [];
+      const tagged: string[] = [];
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        canonicalRevisionState: async () => ({ head: revisions[head]!, pending: pending ? ['docs/project-development-report.md'] : [] }),
+        writeDeliveryReport: async ({ finalDelivery }) => {
+          order.push(`report:${finalDelivery}`);
+          pending = true;
+          return 'docs/project-development-report.md';
+        },
+        commitCanonicalArtifact: async (_stepId, summary) => {
+          order.push(`commit:${summary}`);
+          pending = false;
+          head += 1;
+          return revisions[head]!;
+        },
+        tagDeliveredPhase: async (release) => {
+          tagged.push(release.revision);
+          return { name: 'v1.0.0', created: true };
+        },
+        finalGate: async () => ({ ok: true, evidence: ['scenario passes'] }),
+      }, setup.plan);
+      const result = await engine.run(setup.graph.phases[0]!.id);
+
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(order).toEqual(['report:true', 'commit:publish delivery documents', 'commit:publish delivery file manifest']);
+      const phase = await setup.repository.read(setup.graph.phases[0]!.id);
+      expect(phase.objectType === 'phase' && phase.deliveredRevision).toBe(revisions[2]);
+      expect(tagged).toEqual([revisions[2]]);
+    });
+
     it('closes it on the passing gate even when nothing upstream marked its solution verified', async () => {
       const setup = await fixture();
       let gateRuns = 0;

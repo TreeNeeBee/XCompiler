@@ -328,6 +328,35 @@ describe('project quality audit', () => {
     expect(result.checks.some((check) => check.name === 'doc:docs/iterations/P2/08-functional-test.md')).toBe(true);
   });
 
+  // dbc2excel-5 P2: the delivery gate checked the root README and quickstart, which still described P1,
+  // so the P2 gate passed on what P1 had written. The Phase being delivered owns its delivery documents.
+  it('checks the delivering Phase\'s documents at its delivery gate, not the root copies', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
+    const ws = new Workspace(root);
+    await writeBaseDeliveryDocs(ws);
+    await ws.writeFile('src/main.ts', 'export function main() {}\n');
+    await ws.writeFile('tests/main.test.ts', 'import { describe, it, expect } from "vitest";\n');
+    await ws.writeFile('package.json', JSON.stringify({
+      name: 'audit-app',
+      type: 'module',
+      scripts: { test: 'vitest run', build: 'tsc -p tsconfig.json', lint: 'eslint .' },
+    }, null, 2));
+
+    const result = await runProjectAudit({
+      ws,
+      sandbox: new FakeSandbox({ exec: okResult({ stdout: 'usage: app\n' }), runTests: okResult() }),
+      plan: { ...tsPlan(), phaseId: 'P2' },
+      profile: getLanguageProfile('typescript'),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.checks.some((check) => check.name === 'readme')).toBe(false);
+    expect(result.checks.filter((check) => !check.ok).map((check) => check.name)).toEqual(expect.arrayContaining([
+      'doc:docs/iterations/P2/08-functional-test.md',
+      'doc:docs/iterations/P2/quickstart.md',
+    ]));
+  });
+
   // From the dbc2excel P2 gate: 39 failures, of which the twenty-line tail showed only the last, a
   // stale P1 supplement. Routed to CODE on that tail, nine failures from a product defect and thirty
   // stale P1 assertions owned by other levels were never seen by anyone.

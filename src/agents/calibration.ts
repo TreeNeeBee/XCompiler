@@ -16,6 +16,7 @@ import {
   PHASE_DOC,
   deliveryDocsForIteration,
   phaseDocForIteration,
+  promotedUserDocs,
   testPlanDocForIteration,
 } from '../domain/planning/document_contract.js';
 import { architectureImplementationPaths, pathCoveredByOutputs } from '../domain/planning/architecture_policy.js';
@@ -232,7 +233,12 @@ export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'app
       outputs = [...outputs, testPlanDoc];
     }
     if (s.phase === 'FUNCTIONAL_TEST') {
-      const requiredDocs = [...deliveryDocsForIteration(projectType, iterationId)];
+      // A later Phase also writes the user documents its delivery promotes to the root. Plan lint does not
+      // require them, so plans made before this was added still load.
+      const requiredDocs = [...new Set([
+        ...deliveryDocsForIteration(projectType, iterationId),
+        ...promotedUserDocs(projectType, iterationId).map((doc) => doc.source),
+      ])];
       outputs = [...requiredDocs, ...outputs.filter((out) => !requiredDocs.includes(out))];
       return { ...s, inputs, outputs, acceptance: withOutcomeAssertionRequirement(s.acceptance) };
     }

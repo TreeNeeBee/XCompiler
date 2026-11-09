@@ -2,7 +2,7 @@ import type { FileTreeEntry } from '../../domain/workspace/file_tree.js';
 import { getLocale, tFor } from '../../i18n/index.js';
 
 /**
- * The delivered file manifest: what the project consists of, as the filesystem had it at delivery.
+ * The delivered file manifest: the files the release holds.
  *
  * The section is generated, never authored. A Step asked to write this by hand would restate what
  * it believed it had produced, which is the one thing the manifest exists to check — and it would
@@ -27,7 +27,7 @@ export const FILE_MANIFEST_END = '<!-- xcompiler:file-manifest:end -->';
  * file-tree object, which is reconciled again after the manifest commit.
  */
 export function renderFileManifest(
-  entries: readonly FileTreeEntry[],
+  entries: readonly Pick<FileTreeEntry, 'path' | 'type'>[],
   options: { scannedAt?: string } = {},
 ): string {
   const files = entries.filter((entry) => entry.type !== 'directory');

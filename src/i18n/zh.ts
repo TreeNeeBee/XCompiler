@@ -779,7 +779,7 @@ const messages: Messages = {
     ],
     fileManifest: {
       heading: '## 文件清单',
-      intro: (scannedAt) => `由工程文件树生成${scannedAt ? `（核对于 ${scannedAt}）` : ''}。请勿手工编辑：每次交付都会替换这一区域。`,
+      intro: (scannedAt) => `列出本次交付发布的文件，即发布提交中包含的文件${scannedAt ? `（核对于 ${scannedAt}）` : ''}。请勿手工编辑：每次交付都会替换这一区域。`,
       count: (files) => `共 ${files} 个文件。大小和时间戳属于生成数据，记录在工程文件树中而不写在这里：写入本节会改变承载它的文档本身的这些数据。`,
       path: '路径',
       type: '类型',
@@ -869,6 +869,17 @@ const messages: Messages = {
     phaseRecovered: (phase) => `已从规范的 Project 状态恢复 ${phase}`,
     iterationPrepared: (completed, next) => `迭代 ${completed} 已通过；已准备 ${next}`,
     ticketRouted: (creator, ticket, assignee) => `${creator} 创建了 ${ticket} → PM → ${assignee}`,
+  },
+  deliveryListing: {
+    phaseHeading: (phase) => `阶段 ${phase} 交付清单`,
+    projectHeading: '整体项目清单',
+    release: (tag, revision) => `发布：${tag ?? '（无标签）'}（提交 ${revision}）`,
+    noRevision: '发布：没有记录交付修订',
+    documents: '交付文档：',
+    documentKind: { readme: 'README', quickstart: '快速上手', apiGuide: 'API 指南', delivery: '交付文档（含文件清单）', report: '开发报告' },
+    gate: '交付门禁：',
+    files: (count) => `发布文件（共 ${count} 个）：`,
+    rootGroup: '（根目录）',
   },
   runStop: {
     gateWithoutRoutableFindings: () => 'Phase 交付门禁未通过，且没有可派发的问题',

@@ -2,7 +2,7 @@ import type { PhaseRelease } from './phase_release_tag.js';
 import type { Plan } from '../../domain/planning/execution_plan.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import { renderFileManifest, upsertFileManifest } from '../workspace/file_manifest.js';
-import { DOC_NAMES } from '../../domain/planning/document_contract.js';
+import { deliveryDocForIteration, promotedUserDocs } from '../../domain/planning/document_contract.js';
 import { createObjectId, type ObjectId } from '../../domain/identity/object_id.js';
 import type { Phase } from '../../domain/phases/phase.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
@@ -103,6 +103,15 @@ export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, '
   /** Commits a Runtime-authored delivery artifact before its revision is indexed. */
   commitCanonicalArtifact?: (stepId: ObjectId, summary: string) => Promise<string>;
   /**
+   * Writes the development report of the Phase being delivered and returns its path.
+   *
+   * Called before the delivery commit, so the report is part of the release it describes rather than a file
+   * left behind after the release was tagged.
+   */
+  writeDeliveryReport?: (input: { phaseId: ObjectId; finalDelivery: boolean }) => Promise<string | undefined>;
+  /** The files a commit holds: what the delivered manifest lists, since it is what a release contains. */
+  releaseFiles?: (revision: string) => Promise<string[]>;
+  /**
    * What the canonical working copy currently is, for checking the delivered manifest against it.
    *
    * Read through a supplied probe rather than a Git service so the application layer keeps stating
@@ -157,7 +166,7 @@ export class ProjectOrchestrator {
 
   constructor(private readonly options: ProjectOrchestratorOptions, private readonly draft: Plan) {
     this.scheduler = new ProjectController(options.repository, {
-      onStepsClosed: (phaseId) => this.publishFileManifest(phaseId),
+      onStepsClosed: (phaseId) => this.publishDelivery(phaseId),
       // After the manifest commit: the delivered tree, which later Phases' tests are judged against.
       deliveredRevision: async () => (await this.options.canonicalRevisionState?.())?.head,
     });
@@ -245,26 +254,111 @@ export class ProjectOrchestrator {
     }
   }
 
-  private async publishFileManifest(phaseId: ObjectId): Promise<void> {
+  /**
+   * Assembles what a Phase delivers: the user documents a later Phase promotes to the root, the development
+   * report, and the manifest of the files the release holds.
+   *
+   * Runs once every Step is closed and before delivery is, so all of it is part of the delivered revision —
+   * the one recorded on the Phase and tagged — rather than edits made to a release after it was cut.
+   */
+  private async publishDelivery(phaseId: ObjectId): Promise<void> {
     const phase = await this.options.repository.read(phaseId);
     if (phase.objectType !== 'phase') return;
+    await this.promoteUserDocs(phase);
+    await this.writeDeliveryReport(phase);
     const plans = await this.options.repository.list({
       objectType: 'project-management-plan',
       projectId: phase.projectId,
     });
     const plan = plans.find((object) => object.objectType === 'project-management-plan');
     if (plan?.objectType === 'project-management-plan' && plan.fileTree?.publishManifestOnDelivery === false) {
+      await this.commitPendingDelivery(phase.id, 'publish delivery documents');
       return;
     }
+    await this.publishFileManifest(phaseId);
+  }
+
+  /** Copies a later Phase's user documents over the root copies, which still describe an earlier Phase. */
+  private async promoteUserDocs(phase: Phase): Promise<void> {
+    const promoted: Array<{ source: string; target: string }> = [];
+    const missing: string[] = [];
+    for (const doc of promotedUserDocs(this.draft.projectType ?? 'application', phase.name)) {
+      const text = await this.options.workspace.readFile(doc.source).catch(() => undefined);
+      if (text === undefined) {
+        missing.push(doc.source);
+        continue;
+      }
+      await this.options.workspace.writeFile(doc.target, text);
+      promoted.push(doc);
+    }
+    const context = { projectId: phase.projectId, phaseId: phase.id };
+    if (promoted.length > 0) {
+      await this.options.audit.event('note', `promoted ${phase.name} user documents to the project root`, {
+        messageId: 'domain.user_docs_promoted', ...context, promoted,
+      });
+    }
+    // A plan made before the Phase was asked for these never produced them. The root copy then keeps
+    // describing an earlier Phase, which is recorded rather than failing a delivery that passed its gates.
+    if (missing.length > 0) {
+      await this.options.audit.event('note', `${phase.name} did not write ${missing.join(', ')}; the root copy was kept`, {
+        messageId: 'domain.user_doc_promotion_skipped', ...context, missing,
+      });
+    }
+  }
+
+  private async writeDeliveryReport(phase: Phase): Promise<void> {
+    if (!this.options.writeDeliveryReport) return;
+    const project = await this.options.repository.read(phase.projectId);
+    const others = project.objectType === 'project'
+      ? await Promise.all(project.phaseIds.filter((id) => id !== phase.id).map((id) => this.options.repository.read(id)))
+      : [];
+    const finalDelivery = others.every((other) => other.objectType === 'phase' && other.state === 'closed');
+    const context = { projectId: phase.projectId, phaseId: phase.id, finalDelivery };
+    try {
+      const reportPath = await this.options.writeDeliveryReport({ phaseId: phase.id, finalDelivery });
+      if (reportPath) {
+        await this.options.audit.event('note', `wrote the ${phase.name} development report ${reportPath}`, {
+          messageId: 'domain.delivery_report_written', ...context, reportPath,
+        });
+      }
+    } catch (error) {
+      // The delivery stands on its gates, not on its report, so a report that cannot be written is recorded.
+      await this.options.audit.event('note', `could not write the ${phase.name} development report: ${(error as Error).message}`, {
+        messageId: 'domain.delivery_report_failed', ...context, error: (error as Error).message,
+      });
+    }
+  }
+
+  /** Commits what delivery wrote, if anything; the revision the canonical copy then stands on. */
+  private async commitPendingDelivery(phaseId: ObjectId, summary: string): Promise<string | undefined> {
+    if (!this.options.commitCanonicalArtifact) return undefined;
+    const state = await this.options.canonicalRevisionState?.();
+    if (state && state.pending.length === 0) return state.head;
+    return this.options.commitCanonicalArtifact(phaseId, summary);
+  }
+
+  private async publishFileManifest(phaseId: ObjectId): Promise<void> {
+    const phase = await this.options.repository.read(phaseId);
+    if (phase.objectType !== 'phase') return;
     const tree = await resolveFileTreeService(
       this.options.repository,
       phase.projectId,
       this.options.workspace.root,
     );
-    await tree.rescan();
-    const document = await this.options.workspace.readFile(DOC_NAMES.delivery).catch(() => '');
-    const section = renderFileManifest(await tree.entries(), { scannedAt: new Date().toISOString() });
-    await this.options.workspace.writeFile(DOC_NAMES.delivery, upsertFileManifest(document, section));
+    const deliveryDoc = deliveryDocForIteration(phase.name);
+    // The manifest lists what the release holds, so whatever delivery has written is committed first and
+    // the list read from that commit. The project file tree also indexes ignored runtime output — gate
+    // scratch directories, test caches — which no checkout of the release contains.
+    const documented = await this.commitPendingDelivery(phase.id, 'publish delivery documents');
+    await tree.rescan(documented);
+    const files = documented && this.options.releaseFiles
+      ? [...new Set([...await this.options.releaseFiles(documented), deliveryDoc])]
+      : (await tree.entries()).filter((entry) => entry.type !== 'directory').map((entry) => entry.path);
+    const document = await this.options.workspace.readFile(deliveryDoc).catch(() => '');
+    const section = renderFileManifest(files.map((file) => ({ path: file, type: 'file' })), {
+      scannedAt: new Date().toISOString(),
+    });
+    await this.options.workspace.writeFile(deliveryDoc, upsertFileManifest(document, section));
     const finalRevision = this.options.commitCanonicalArtifact
       ? await this.options.commitCanonicalArtifact(phase.id, 'publish delivery file manifest')
       : undefined;
@@ -272,10 +366,12 @@ export class ProjectOrchestrator {
     // indexed revision and the canonical working copy cannot diverge at the delivery boundary.
     await tree.rescan(finalRevision);
     await this.verifyManifestProvenance(phase.projectId, phaseId, tree, finalRevision);
-    await this.options.audit.event('note', `published the file manifest into ${DOC_NAMES.delivery}`, {
+    await this.options.audit.event('note', `published the file manifest into ${deliveryDoc}`, {
       messageId: 'domain.file_manifest_published',
       projectId: phase.projectId,
       phaseId,
+      document: deliveryDoc,
+      files: files.length,
     });
   }
 

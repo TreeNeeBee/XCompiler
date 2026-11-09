@@ -519,6 +519,19 @@ export interface Messages {
     ticketRouted: (creator: string, ticket: string, assignee: string) => string;
   };
 
+  /** What a delivery released, printed when a Phase delivers and again for the whole project at the end. */
+  deliveryListing: {
+    phaseHeading: (phase: string) => string;
+    projectHeading: string;
+    release: (tag: string | undefined, revision: string) => string;
+    noRevision: string;
+    documents: string;
+    documentKind: { readme: string; quickstart: string; apiGuide: string; delivery: string; report: string };
+    gate: string;
+    files: (count: number) => string;
+    rootGroup: string;
+  };
+
   // ───────── why a run stopped: records render these in English, the terminal in the user's language ─────────
   runStop: {
     gateWithoutRoutableFindings: () => string;

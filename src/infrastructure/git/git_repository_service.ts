@@ -229,6 +229,12 @@ export class GitRepositoryService {
     return (await this.git.revparse([ref])).trim();
   }
 
+  /** The files a commit holds: what anyone checking it out receives, ignored and untracked paths excluded. */
+  async filesAt(revision: string): Promise<string[]> {
+    const raw = await this.git.raw(['-c', 'core.quotePath=false', 'ls-tree', '-r', '--name-only', '-z', revision]);
+    return raw.split('\0').filter((entry) => entry.length > 0);
+  }
+
   async readCommit(ref: string): Promise<GitCommitRecord> {
     const raw = await this.git.raw(['show', '-s', '--format=%H%n%P%n%B', ref]);
     const [revision = '', parents = '', ...message] = raw.replace(/\r\n/gu, '\n').split('\n');

@@ -302,6 +302,43 @@ describe('domain plan compiler', () => {
     expect(content).toContain('Verdict: **NOT READY**');
   });
 
+  // Written inside delivery, so the release holds its own report: every Step is closed and the gate has
+  // passed, while the Phase and its delivery Ticket are about to close. The report states the delivery.
+  it.each([
+    [true, 'ITERATION PASSED', '| P1 | delivered |'],
+    [false, 'NOT READY', '| P1 | in_progress |'],
+  ] as const)('reports the Phase being delivered as delivered only while delivering (%s)', async (delivering, verdict, row) => {
+    const draft = samplePlan();
+    const graph = materializeProjectGraph({ draft, topic: 'Build reports.', projectName: 'report' });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-report-'));
+    const workspace = new Workspace(root);
+    const repository = new DomainObjectRepository(workspace);
+    await repository.load();
+    await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+    const p1 = graph.phases.find((phase) => phase.name === 'P1')!;
+    for (const step of graph.steps.filter((candidate) => candidate.phaseId === p1.id)) {
+      const assessment = QualityAssessmentSchema.parse({
+        ...createObjectEnvelope({ name: `${step.name}-quality`, objectType: 'quality-assessment', projectId: graph.project.id }),
+        subject: { id: step.id, objectType: 'step' },
+        observations: [], score: 1, passed: true, gaps: [], evidence: ['verified'],
+      });
+      await repository.commit([assessment, StepSchema.parse({ ...step, ...reviseObjectEnvelope(step), state: 'closed', qualityAssessmentId: assessment.id })]);
+    }
+    for (const ticket of graph.tickets.filter((candidate) => candidate.phaseId === p1.id &&
+      candidate.id !== p1.epicTicketId && !(candidate.type === 'story' && candidate.workKind === 'delivery'))) {
+      await repository.update(TicketSchema.parse({ ...ticket, ...reviseObjectEnvelope(ticket), state: 'closed' }), 'closed');
+    }
+    await repository.update(PhaseSchema.parse({ ...p1, ...reviseObjectEnvelope(p1), state: 'in_progress' }), 'in_progress');
+
+    const report = await generateProjectDevelopmentReport({
+      workspace, plan: draft, finalDelivery: false, delivering, repository,
+      projectAudit: { ok: true, warnings: 0, errors: 0, checks: [] },
+    });
+    const content = await workspace.readFile(report);
+    expect(content).toContain(`Verdict: **${verdict}**`);
+    expect(content).toContain(row);
+  });
+
   it('appends rebased Phases without replacing the canonical Project identity', async () => {
     const originalDraft = samplePlan();
     originalDraft.implementationPhases = [originalDraft.implementationPhases[0]!];

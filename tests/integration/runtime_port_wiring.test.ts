@@ -18,7 +18,7 @@ import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/ph
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
 import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
 import { RoleRegistry } from '../../src/application/project_management/role_registry.js';
-import * as projectReports from '../../src/application/reporting/project_report.js';
+import * as deliveryListings from '../../src/application/reporting/delivery_listing.js';
 import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { createObjectId } from '../../src/domain/identity/object_id.js';
 import {
@@ -321,7 +321,7 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
         exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution });
       const run = vi.spyOn(ProjectOrchestrator.prototype, 'run').mockImplementation(async phaseId => ({ phaseId, totalSteps: 8, executedSteps: 8 }));
       const stop = new Error('Stop after retained next-Phase preparation.');
-      const report = vi.spyOn(projectReports, 'generateProjectDevelopmentReport').mockRejectedValue(stop);
+      const report = vi.spyOn(deliveryListings, 'collectDeliveryListing').mockRejectedValue(stop);
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
       const configPath = await writeConfig(root, url);
       if (mode === 'prompt-translation') {
@@ -424,8 +424,8 @@ describe('Runtime preserves the Phase checkpoint across orchestration outcomes',
         executedSteps: outcome === 'complete' ? 8 : 3,
         ...(outcome === 'failed' ? { failedStepId: 'S004', failureReason: 'Controlled workflow failure.' } : {}),
       }));
-      const stop = new Error('Stop at report generation after the checkpoint boundary.');
-      const report = vi.spyOn(projectReports, 'generateProjectDevelopmentReport').mockRejectedValue(stop);
+      const stop = new Error('Stop at the delivery listing after the checkpoint boundary.');
+      const report = vi.spyOn(deliveryListings, 'collectDeliveryListing').mockRejectedValue(stop);
 
       const result = await runExecute({
         workspace: container.root, planPath: phasePlanPath, configPath: await writeConfig(root),

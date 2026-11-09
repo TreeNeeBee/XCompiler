@@ -111,7 +111,9 @@ async function runQualityAudit(opts: {
     ...await checkDocumentationBundle(
       opts.ws,
       opts.plan.projectType ?? 'application',
-      opts.scope === 'iteration' ? opts.iterationId : undefined,
+      // The Phase being delivered owns its delivery documents. Checking the root copies passed every later
+      // Phase on what the first one had written.
+      opts.scope === 'iteration' ? opts.iterationId : opts.plan.phaseId,
     ),
   );
   checks.push(await checkTestFiles(opts.ws));

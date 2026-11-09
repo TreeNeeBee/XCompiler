@@ -142,6 +142,11 @@ only authority that changes Ticket state.
   generated project's local repository as an annotated `v<n>.0.0` (the n-th Phase; a later delivery of
   it takes the next patch). Tags are never pushed, and a failed tag is recorded without undoing the
   delivery.
+- The delivered revision holds everything the delivery produced, assembled once every Step is closed and
+  before delivery is: a later Phase's user documents copied over the root copies, the development report,
+  and the file manifest written into that Phase's own delivery document. The manifest lists the files the
+  release commit holds, never ignored runtime output. The delivery gate checks the delivering Phase's
+  documents, not the root copies an earlier Phase wrote.
   A basis is registered only after its write succeeds, against the content that write left, so
   delivery can recheck every inherited test the Ticket changed by path and content, against what any
   Ticket of the Phase registered. The Phase delivery
