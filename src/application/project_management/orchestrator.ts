@@ -1,3 +1,4 @@
+import type { PhaseRelease } from './phase_release_tag.js';
 import type { Plan } from '../../domain/planning/execution_plan.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import { renderFileManifest, upsertFileManifest } from '../workspace/file_manifest.js';
@@ -90,6 +91,8 @@ export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, '
    * obtained.
    */
   canonicalRevisionState?: () => Promise<{ head: string; pending: string[] }>;
+  /** Tags a delivered Phase as a release in the generated project's repository. */
+  tagDeliveredPhase?: (release: PhaseRelease) => Promise<{ name: string; created: boolean }>;
   onTransition?: (event: {
     event: 'phase_started' | 'step_started' | 'ticket_started' | 'ticket_routed' | 'step_delivered' | 'phase_delivered' | 'project_delivered';
     projectId: ObjectId;
@@ -136,6 +139,8 @@ export class ProjectOrchestrator {
   constructor(private readonly options: ProjectOrchestratorOptions, private readonly draft: Plan) {
     this.scheduler = new ProjectController(options.repository, {
       onStepsClosed: (phaseId) => this.publishFileManifest(phaseId),
+      // After the manifest commit: the delivered tree, which later Phases' tests are judged against.
+      deliveredRevision: async () => (await this.options.canonicalRevisionState?.())?.head,
     });
     this.runner = options.attemptRunner ?? new DomainAttemptRunner(options, draft.language);
     this.tickets = new TicketRegistrationService(options.repository);
@@ -171,6 +176,30 @@ export class ProjectOrchestrator {
    * Failure propagates. The manifest is a delivery artifact by the same rule as the documents
    * beside it, and a Phase that could not produce one has not delivered what it claims.
    */
+  /**
+   * A delivered Phase is a release, tagged at the revision it delivered. The delivery already stands
+   * by then, so a tag that cannot be made is recorded rather than undoing it.
+   */
+  private async tagRelease(phaseId: ObjectId): Promise<void> {
+    if (!this.options.tagDeliveredPhase) return;
+    const phase = await this.options.repository.read(phaseId);
+    if (phase.objectType !== 'phase' || !phase.deliveredRevision) return;
+    const project = await this.options.repository.read(phase.projectId);
+    if (project.objectType !== 'project') return;
+    const release = { projectName: project.name, phaseName: phase.name, phaseNumber: project.phaseIds.indexOf(phase.id) + 1, revision: phase.deliveredRevision };
+    const context = { projectId: phase.projectId, phaseId: phase.id, revision: release.revision };
+    try {
+      const tag = await this.options.tagDeliveredPhase(release);
+      await this.options.audit.event('note', `tagged the ${phase.name} delivery as ${tag.name}`, {
+        messageId: 'domain.phase_release_tagged', ...context, tag: tag.name, created: tag.created,
+      });
+    } catch (error) {
+      await this.options.audit.event('note', `could not tag the ${phase.name} delivery: ${(error as Error).message}`, {
+        messageId: 'domain.phase_release_tag_failed', ...context, error: (error as Error).message,
+      });
+    }
+  }
+
   private async publishFileManifest(phaseId: ObjectId): Promise<void> {
     const phase = await this.options.repository.read(phaseId);
     if (phase.objectType !== 'phase') return;
@@ -480,6 +509,7 @@ export class ProjectOrchestrator {
         }
         try {
           const completion = await this.scheduler.completePhase(phase.id);
+          await this.tagRelease(phase.id);
           await this.transition({
             event: 'phase_delivered',
             projectId: phase.projectId,

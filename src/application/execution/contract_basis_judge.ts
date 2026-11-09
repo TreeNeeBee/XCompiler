@@ -6,7 +6,7 @@ import { adoptedJudgementText } from './scenario_outcome_judge.js';
 
 export const CONTRACT_BASIS_CONTEXT = 'contract-basis-judgement' as const;
 export const CONTRACT_BASIS_RULE = Object.freeze({ ruleId: 'b4bbedb8-f24b-4939-bf4b-71d7d92ef51e' });
-export const CONTRACT_BASIS_TEMPLATE_VERSION = 'contract-basis/1' as const;
+export const CONTRACT_BASIS_TEMPLATE_VERSION = 'contract-basis/2' as const;
 const PROTOCOL_TRANSFORMATIONS: JsonOutputProtocol['transformations'] = ['json-fence', 'trailing-comma', 'raw-string-control', 'escape-insertion'];
 Object.freeze(PROTOCOL_TRANSFORMATIONS);
 export const CONTRACT_BASIS_PROTOCOL: JsonOutputProtocol = Object.freeze({
@@ -16,9 +16,15 @@ export const CONTRACT_BASIS_PROTOCOL: JsonOutputProtocol = Object.freeze({
 const OUTPUT_TEMPLATE = 'Answer with JSON only: {"supersedes": boolean, "reason": string}. ' +
   'Keep `reason` to one sentence naming the assertion and what the cited contract does or does not say about it.';
 
-const MAX_TEST_CHARS = 8_000;
-const MAX_CHANGE_CHARS = 8_000;
-const MAX_REQUIREMENT_CHARS = 16_000;
+/**
+ * How much of each piece of evidence a judgement carries, whole or not at all. A cut at 8,000
+ * characters showed the judge part of live tests of 9,783 and 8,889, and could drop whole writes off
+ * the end of a change; deciding on part of the evidence is not judging it. Sized so the worst case
+ * stays well inside the judging model's window: code runs three to four characters a token, Chinese
+ * requirement text about one.
+ */
+export const CONTRACT_BASIS_LIMITS = Object.freeze({ test: 32_000, change: 24_000, requirements: 32_000 });
+export type ContractBasisEvidencePart = keyof typeof CONTRACT_BASIS_LIMITS;
 
 const PayloadSchema = z.object({
   schemaVersion: z.literal(1), kind: z.literal(CONTRACT_BASIS_CONTEXT),
@@ -26,6 +32,9 @@ const PayloadSchema = z.object({
   test: z.string().min(1),
   /** What an earlier Phase delivered; absent for a file that did not exist then. */
   testAsDelivered: z.string().optional(),
+  /** The test as it is before this change, with what earlier turns already changed. */
+  testBeforeChange: z.string().optional(),
+  /** Every change this turn makes to the test, applied together and in order to `testBeforeChange`. */
   proposedChange: z.string().min(1),
   reason: z.string().min(1),
   citedContract: z.string().min(1),
@@ -41,13 +50,29 @@ export interface ContractBasisJudgement {
 /** Whether what a Step cited truly supersedes the test it is changing. */
 export type ContractBasisJudge = (input: ContractBasisJudgementInput, signal?: AbortSignal) => Promise<ContractBasisJudgement>;
 
+/** The first piece of evidence too large to carry whole, if any. */
+export function oversizedContractBasisEvidence(input: ContractBasisJudgementInput): ContractBasisEvidencePart | undefined {
+  if (input.proposedChange.length > CONTRACT_BASIS_LIMITS.change) return 'change';
+  if ([input.testAsDelivered, input.testBeforeChange].some((text) => (text?.length ?? 0) > CONTRACT_BASIS_LIMITS.test)) return 'test';
+  if ((input.requirements?.length ?? 0) > CONTRACT_BASIS_LIMITS.requirements) return 'requirements';
+  return undefined;
+}
+
+/** Evidence too large to carry whole: a judgement on part of it is never asked for. */
+export class ContractBasisEvidenceTooLargeError extends Error {
+  readonly code = 'contract_basis_evidence_too_large';
+  constructor(readonly part: ContractBasisEvidencePart) {
+    super(`Contract basis judgement evidence is too large to send whole: ${part}`);
+    this.name = 'ContractBasisEvidenceTooLargeError';
+  }
+}
+
 /** Evidence only; the bound Rule owns the rubric. */
 export function buildContractBasisMessages(input: ContractBasisJudgementInput): readonly ChatMessage[] {
+  const oversized = oversizedContractBasisEvidence(input);
+  if (oversized) throw new ContractBasisEvidenceTooLargeError(oversized);
   const payload = PayloadSchema.parse({
     schemaVersion: 1, kind: CONTRACT_BASIS_CONTEXT, templateVersion: CONTRACT_BASIS_TEMPLATE_VERSION, ...input,
-    proposedChange: truncate(input.proposedChange, MAX_CHANGE_CHARS),
-    ...(input.testAsDelivered !== undefined ? { testAsDelivered: truncate(input.testAsDelivered, MAX_TEST_CHARS) } : {}),
-    ...(input.requirements !== undefined ? { requirements: truncate(input.requirements, MAX_REQUIREMENT_CHARS) } : {}),
   });
   return Object.freeze([
     Object.freeze({ role: 'system' as const, content: OUTPUT_TEMPLATE }),
@@ -79,8 +104,4 @@ function parseVerdict(answer: string | undefined): ContractBasisJudgement | unde
   } catch {
     return undefined;
   }
-}
-
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max)}\n…(truncated)`;
 }

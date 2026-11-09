@@ -1,3 +1,4 @@
+import type { ReleaseTag } from '../../application/project_management/phase_release_tag.js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isRuntimeArtifactPath, restoreRuntimeIgnoreRules } from '../../workspace/git.js';
@@ -139,6 +140,19 @@ export class GitRepositoryService {
 
   async head(): Promise<string> {
     return (await this.git.revparse(['HEAD'])).trim();
+  }
+
+  /** Every tag, at the commit it names: an annotated tag is peeled to the commit it points at. */
+  async releaseTags(): Promise<ReleaseTag[]> {
+    const listing = await this.git.raw(['for-each-ref', 'refs/tags', '--format=%(refname:strip=2)%00%(*objectname)%00%(objectname)']);
+    return listing.split('\n').filter(Boolean).map((line) => {
+      const [name = '', peeled = '', object = ''] = line.split('\0');
+      return { name, revision: peeled || object };
+    });
+  }
+
+  async createAnnotatedTag(name: string, revision: string, message: string): Promise<void> {
+    await this.git.raw(['tag', '--annotate', name, revision, '--message', message]);
   }
 
   async isClean(): Promise<boolean> {

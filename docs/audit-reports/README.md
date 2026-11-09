@@ -30,6 +30,8 @@
 | 2026-11-03 | [2026-11-03-dbc2excel-p2-codex-audit-report.md](2026-11-03-dbc2excel-p2-codex-audit-report.md) | 独立审计 | Codex | dbc2excel-5 P2 的 39 项失败与跨阶段修复审查，F-01～F-04 |
 | 2026-11-04 | [2026-11-04-p2-stage-delivery-report.md](2026-11-04-p2-stage-delivery-report.md) | 阶段性交付报告 | CC | D-66～D-69：里程碑不回退规则、验证证据、dbc2excel-5 业务现状、剩余风险与审计重点 |
 | 2026-11-04 | [2026-11-04-p2-stage-delivery-codex-audit-report.md](2026-11-04-p2-stage-delivery-codex-audit-report.md) | 独立审计 | Codex | D-68、D-69 复核，失败测试导致门禁误放行、旧契约登记复用、历史 Ticket 兼容性及 F-01～F-04 状态 |
+| 2026-11-09 | [2026-11-09-p2-rerun-change-report.md](2026-11-09-p2-rerun-change-report.md) | 变更说明 | CC | D-70～D-78：P2 重跑中发现的问题与修复、影响分析、待审计问题 |
+| 2026-11-09 | [2026-11-09-p2-rerun-codex-audit-report.md](2026-11-09-p2-rerun-codex-audit-report.md) | 独立审计 | Codex | D-70～D-78：整组判定后的中间状态登记、交付版本来源、判定材料截断；432 项定向测试及业务主线/候选验证 |
 
 ## 约定
 

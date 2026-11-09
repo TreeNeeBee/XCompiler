@@ -637,6 +637,79 @@ describe('runTestsTool / runPythonTool summary', () => {
     });
   });
 
+  // A live P2 left an inherited supplement that could not be imported. pytest names such a file on an
+  // ERROR line, not FAILED, so the run reported no failing test, and the Step that owns the file was
+  // handed off before every attempt, never given the chance to repair it.
+  it('names a test file that cannot be collected among the failures', async () => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    const file = 'tests/verification/p1/functional-test/s008/test_risks.py';
+    const fakeCtx: ToolContext = {
+      ws,
+      sandbox: {
+        async runTests() {
+          return { exitCode: 2, timedOut: false, stderr: '', stdout: [
+            'collected 29 items / 1 error', '',
+            `_ ERROR collecting ${file} _`,
+            `${file}:58: in <module>`,
+            '    SIGNAL_HEADER = P1_SIGNAL_HEADER + J1939_HEADER',
+            "E   NameError: name 'P1_SIGNAL_HEADER' is not defined",
+            '=========================== short test summary info ============================',
+            `ERROR ${file} - NameError: name 'P1_SIGNAL_HEADER' is not defined`,
+            '!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!',
+            '=============================== 1 error in 0.07s ===============================',
+          ].join('\n') };
+        },
+        async runProgram() { throw new Error('not used'); },
+        async installDeps() { throw new Error('not used'); },
+      } as never,
+      allowedWrites: [],
+      stepId: 'S008',
+      language: 'python',
+    };
+    const r = await runTestsTool.run({ args: [file] }, fakeCtx);
+    expect(r.ok).toBe(false);
+    expect(r.data).toMatchObject({ failedTests: [file] });
+  });
+
+  const runWith = async (language: 'python' | 'typescript', stdout: string) => {
+    const { runTestsTool } = await import('../src/tools/sandbox.js');
+    return runTestsTool.run({}, { ws, allowedWrites: [], stepId: 'S008', language,
+      sandbox: { async runTests() { return { exitCode: 1, timedOut: false, stderr: '', stdout }; },
+        async runProgram() { throw new Error('not used'); }, async installDeps() { throw new Error('not used'); } } as never });
+  };
+
+  // The brief shows eight failing tests for reading, and the structured list had the same cut. A live
+  // Bug carried eight selectors for ten failures, and a ninth case in a baseline would have read as a
+  // failure confined to the Step's own supplements.
+  it('names every failing test, not only as many as a brief shows', async () => {
+    const cases = Array.from({ length: 10 }, (_, index) => `tests/verification/p1/unit-test/s005/test_s.py::test_${index}`);
+    const r = await runWith('python', [...cases.map((id) => `FAILED ${id} - AssertionError`), '10 failed in 0.20s'].join('\n'));
+    expect((r.data as { failedTests: string[] }).failedTests).toEqual(cases);
+  });
+
+  it('names a TypeScript test file that cannot be imported among the failures', async () => {
+    const r = await runWith('typescript', [
+      ' ❯ tests/broken.test.ts (0 test)', '⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯',
+      ' FAIL  tests/broken.test.ts [ tests/broken.test.ts ]',
+      "Error: Cannot find module '../src/missing' imported from /work/tests/broken.test.ts",
+      ' Test Files  1 failed | 1 passed (2)', '      Tests  1 passed (1)',
+    ].join('\n'));
+    expect(r.data).toMatchObject({ failedTests: ['tests/broken.test.ts'] });
+  });
+
+  // A module that is not installed is a dependency for whoever owns the manifest, as it was before
+  // collection errors were counted: named as the file's own failure, it kept a Step that cannot add
+  // a dependency repairing a test it could not fix.
+  it('leaves a test file that fails on a missing module out of the failures', async () => {
+    const file = 'tests/verification/p1/functional-test/s008/test_risks.py';
+    const r = await runWith('python', [
+      `_ ERROR collecting ${file} _`, "E   ModuleNotFoundError: No module named 'openpyxl'",
+      '=========================== short test summary info ============================',
+      `ERROR ${file} - ModuleNotFoundError: No module named 'openpyxl'`, '1 error in 0.07s',
+    ].join('\n'));
+    expect((r.data as { failedTests: string[] }).failedTests).toEqual([]);
+  });
+
   it('keeps summary terse on success (no stdout flood)', async () => {
     const { runTestsTool } = await import('../src/tools/sandbox.js');
     const fakeCtx: ToolContext = {

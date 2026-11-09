@@ -132,8 +132,17 @@ only authority that changes Ticket state.
   (a functional test can only cite the requirement), or an accepted Change Request. The clause must
   predate the Ticket, so a Step cannot cite what it just wrote, and a Change Request must name the
   test among its affected artifacts. Writes without a basis are refused before any permission prompt.
+  The writes one turn makes to a test are judged together and stand or fall together; their basis is
+  registered only once every one of them has run, against what they made together. A change is judged
+  against the test as the Phase that owns it delivered it, read at that Phase's recorded delivered
+  revision, and on evidence sent whole or not at all.
+- A delivered Phase is a release: its delivered revision is recorded on the Phase and tagged in the
+  generated project's local repository as an annotated `v<n>.0.0` (the n-th Phase; a later delivery of
+  it takes the next patch). Tags are never pushed, and a failed tag is recorded without undoing the
+  delivery.
   A basis is registered only after its write succeeds, against the content that write left, so
-  delivery can recheck every inherited test the Ticket changed by path and content. The Phase delivery
+  delivery can recheck every inherited test the Ticket changed by path and content, against what any
+  Ticket of the Phase registered. The Phase delivery
   gate report lists every registration.
 - Those checks prove a citation is real and at the right level, at every level, and no more. At the
   functional level, what a user observes, a judge also decides whether the citation truly supersedes

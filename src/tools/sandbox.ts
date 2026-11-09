@@ -8,7 +8,7 @@ import { isCoverageArgument, normalizeTypeScriptTestArgs } from '../sandbox/test
 import { resolveTypeScriptProgramCommand } from '../sandbox/program_args.js';
 import { resolveWorkspacePath } from './path_guard.js';
 import { isExecutableTestPath } from '../domain/quality/test_assets.js';
-import { buildDebugBrief } from '../application/execution/debug_brief.js';
+import { failingTestsIn } from '../application/execution/debug_brief.js';
 
 /** 截取多行文本最后 N 行，用于在 ToolResult.summary 里给 LLM 直接看的失败上下文。
  * 仅在失败时调用——成功路径上 stdout 通常很长且无价值，没必要塞回 prompt。 */
@@ -312,9 +312,7 @@ export const runTestsTool: Tool<
     const coverage = readable ? await readPytestCoverage(readable.abs) : undefined;
     const successEvidence = ctx.language === 'typescript' ? extractVitestEvidence(r.stdout)
       : coverage ? [`coverage lines=${coverage.lines}%${coverage.branches === undefined ? '' : ` branches=${coverage.branches}%`}`] : [];
-    const failedTests = failed
-      ? buildDebugBrief({ failureLog: `${r.stderr}\n${r.stdout}` }).failedTests
-      : [];
+    const failedTests = failed ? failingTestsIn(`${r.stderr}\n${r.stdout}`) : [];
     const withoutVerdict = runner === 'pytest' && !r.timedOut ? pytestRunWithoutVerdict(base, r.exitCode) : undefined;
     return {
       ok: passed,

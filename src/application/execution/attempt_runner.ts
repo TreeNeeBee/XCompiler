@@ -32,10 +32,12 @@ import {
 } from './execution_context.js';
 import { earlierPhaseTestOwners } from './earlier_phase_test_owners.js';
 import {
-  contractBasisDocuments, inheritedTestAssets, isExecutableTestPath, requiresContractBasisJudgement, type TestAssetOwnerStep,
+  contractBasisDocuments, deliveringIteration, inheritedTestAssets, isExecutableTestPath, requiresContractBasisJudgement,
+  type TestAssetOwnerStep,
 } from '../../domain/quality/test_assets.js';
+import type { Phase } from '../../domain/phases/phase.js';
 import { resolveContractBasis, type ContractBasisResolution, type ContractBasisSources } from './contract_basis.js';
-import { ContractBasisJudgementError, type ContractBasisJudge } from './contract_basis_judge.js';
+import { ContractBasisJudgementError, oversizedContractBasisEvidence, type ContractBasisJudge } from './contract_basis_judge.js';
 import {
   renderInvalidSupplementRepair,
   TestPhaseValidator,
@@ -83,6 +85,8 @@ import {
   resolveWriteChunkBytes,
   isAllowedWrite,
   type ContractBasisGate,
+  type ContractBasisProposal,
+  type ContractBasisVerdict,
   type ToolContext,
   type ToolExecutionReporter,
   type ToolPermissionRequester,
@@ -1331,27 +1335,64 @@ export class DomainAttemptRunner {
           contract: [delta?.summary, ...(delta?.after ?? [])].filter(Boolean).join('\n') };
       })),
     };
+    const text = tFor(getPromptLocale()).tools.contractBasis;
     return {
-      check: async (targets, basis, proposal) => {
+      checkTurn: async (proposals) => {
         // Normalized first: a path that walks back into an inherited test is that test.
-        const touched = targets.map((target) => path.posix.normalize(target)).filter((target) => isAllowedWrite(target, inherited));
-        if (touched.length === 0) return undefined;
-        const resolved = await resolveContractBasis(basis, touched, sources);
-        if (!resolved.ok) return { error: resolved.error };
-        if (requiresContractBasisJudgement(step.type)) {
-          const refusal = await this.judgeContractBasis(sources, touched, resolved, proposal);
-          if (refusal) return refusal;
-        }
-        return {
-          record: async () => {
+        const writes = proposals.map((proposal) => {
+          const touched = (proposal?.targets ?? []).map((target) => path.posix.normalize(target))
+            .filter((target) => isAllowedWrite(target, inherited));
+          return proposal && touched.length > 0 ? { proposal, touched } : undefined;
+        });
+        // The citation itself is checked write by write: each one names its own clause.
+        const resolutions = await Promise.all(writes.map((write) => write && resolveContractBasis(write.proposal.basis, write.touched, sources)));
+        // Writes that share a test become one change, so one test is never left half rewritten; a
+        // write touching two tests joins what was written to each, in the order the turn wrote it.
+        let groups: number[][] = [];
+        writes.forEach((write, index) => {
+          if (!write) return;
+          const linked = groups.filter((members) => members.some((member) => writes[member]!.touched.some((file) => write.touched.includes(file))));
+          groups = [...groups.filter((members) => !linked.includes(members)), [...linked.flat(), index].sort((left, right) => left - right)];
+        });
+        const verdicts: (ContractBasisVerdict | undefined)[] = proposals.map(() => undefined);
+        for (const group of groups) {
+          const refused = group.map((index) => resolutions[index]!).find((resolution) => !resolution.ok);
+          if (refused && !refused.ok) {
+            for (const index of group) {
+              const own = resolutions[index]!;
+              verdicts[index] = { error: own.ok ? text.refusedWithChange(writes[index]!.touched.join(', '), refused.error) : own.error };
+            }
+            continue;
+          }
+          const accepted = group.map((index) => ({ index, ...writes[index]!, resolved: resolutions[index] as Extract<ContractBasisResolution, { ok: true }> }));
+          if (requiresContractBasisJudgement(step.type)) {
+            const refusal = await this.judgeContractBasis(scope, sources, accepted, (test) => this.readAsDelivered(scope, input, earlier, test));
+            if (refusal) {
+              for (const index of group) verdicts[index] = refusal;
+              continue;
+            }
+          }
+          // The judge approved what the writes make together, so only that result carries the basis:
+          // registered write by write, what a turn left when a later write failed carried it too.
+          const outstanding = new Set(accepted.map(({ index }) => index));
+          const registerGroup = async () => {
             const recordedAt = new Date().toISOString();
-            await this.recordContractBases(input, (await Promise.all(touched.map(async (file) => {
+            await this.recordContractBases(input, (await Promise.all(accepted.flatMap(({ touched, resolved }) => touched.map(async (file) => {
               const contentHash = await fileContentHash(scope, file);
               return contentHash ? [{ path: file, reason: resolved.reason, citation: resolved.citation, contentHash,
                 attempt: step.attempts, stepId: step.id, recordedAt }] : [];
-            }))).flat());
-          },
-        };
+            })))).flat());
+          };
+          for (const { index } of accepted) {
+            verdicts[index] = {
+              record: async () => {
+                if (!outstanding.delete(index) || outstanding.size > 0) return;
+                await registerGroup();
+              },
+            };
+          }
+        }
+        return verdicts;
       },
     };
   }
@@ -1362,22 +1403,36 @@ export class DomainAttemptRunner {
    * behaviour. A provider that failed is thrown on, because that is an outage, not a verdict.
    */
   private async judgeContractBasis(
+    scope: ExecutionScope,
     sources: ContractBasisSources,
-    touched: readonly string[],
-    resolved: Extract<ContractBasisResolution, { ok: true }>,
-    proposal: { tool: string; args: Record<string, unknown> },
+    writes: readonly { proposal: ContractBasisProposal; touched: readonly string[]; resolved: Extract<ContractBasisResolution, { ok: true }> }[],
+    readAsDelivered: (test: string) => Promise<string | undefined>,
   ): Promise<{ error: string } | undefined> {
     const text = tFor(getPromptLocale()).tools.contractBasis;
     const { judgeContractBasis } = this.options;
     if (!judgeContractBasis) return { error: text.judgementUnavailable };
-    const { contractBasis: _basis, ...change } = proposal.args;
+    const changes = writes.map(({ proposal }) => {
+      const { contractBasis: _basis, ...change } = proposal.args;
+      return { tool: proposal.tool, ...change };
+    });
+    const distinct = (values: readonly string[]) => [...new Set(values)].join('\n');
     const requirements = sources.documents[0] ? await sources.readAtBase(sources.documents[0]) : undefined;
-    for (const test of touched) {
-      const testAsDelivered = await sources.readAtBase(test);
-      const verdict = await judgeContractBasis({
-        test, reason: resolved.reason, citedContract: resolved.citedContract, proposedChange: JSON.stringify({ tool: proposal.tool, ...change }),
-        ...(testAsDelivered !== undefined ? { testAsDelivered } : {}), ...(requirements !== undefined ? { requirements } : {}),
-      }, this.options.abortSignal).catch((error: unknown) => {
+    for (const test of [...new Set(writes.flatMap(({ touched }) => touched))]) {
+      const testAsDelivered = await readAsDelivered(test);
+      // What earlier turns already changed: without it, a rename after the assertion had moved read as a
+      // rename that moved nothing.
+      const testBeforeChange = await scope.workspace.readFile(test).catch(() => undefined);
+      const judgement = {
+        test, reason: distinct(writes.map(({ resolved }) => resolved.reason)),
+        citedContract: distinct(writes.map(({ resolved }) => resolved.citedContract)),
+        proposedChange: JSON.stringify(changes),
+        ...(testAsDelivered !== undefined ? { testAsDelivered } : {}),
+        ...(testBeforeChange !== undefined ? { testBeforeChange } : {}),
+        ...(requirements !== undefined ? { requirements } : {}),
+      };
+      const oversized = oversizedContractBasisEvidence(judgement);
+      if (oversized) return { error: text.evidenceTooLarge(test, oversized) };
+      const verdict = await judgeContractBasis(judgement, this.options.abortSignal).catch((error: unknown) => {
         if (error instanceof ContractBasisJudgementError) return undefined;
         throw error;
       });
@@ -1385,6 +1440,34 @@ export class DomainAttemptRunner {
       if (!verdict.supersedes) return { error: text.notSuperseded(test, verdict.reason) };
     }
     return undefined;
+  }
+
+  /**
+   * The test as the earlier Phase that owns it delivered it. Read at this Ticket's base it held what
+   * later Tickets had made of it, so a relaxed assertion read as the delivered one. A Phase delivered
+   * before deliveries were recorded falls back to where the next Phase began: the common ancestor of
+   * the baselines its Tickets started from. Absent rather than guessed when neither is known.
+   */
+  private async readAsDelivered(scope: ExecutionScope, input: AttemptInput, earlier: readonly TestAssetOwnerStep[], test: string): Promise<string | undefined> {
+    const iteration = deliveringIteration(test, earlier);
+    if (!iteration) return undefined;
+    const project = await this.options.repository.read(input.domainStep.projectId);
+    if (project.objectType !== 'project') return undefined;
+    const phases = (await Promise.all(project.phaseIds.map((id) => this.options.repository.read(id))))
+      .filter((object): object is Phase => object.objectType === 'phase');
+    const owner = phases.findIndex((phase) => phase.name === iteration);
+    if (owner < 0) return undefined;
+    let revision = phases[owner]!.deliveredRevision;
+    const next = phases[owner + 1];
+    if (!revision && next) {
+      const baselines = [...new Set((await this.options.repository.list({ objectType: 'ticket', projectId: project.id }))
+        .filter((object): object is Ticket => object.objectType === 'ticket' && object.phaseId === next.id)
+        .flatMap((ticket) => ticket.commits.filter((commit) => commit.kind === 'baseline').map((commit) => commit.revision)))];
+      revision = baselines.length > 1
+        ? (await scope.git.raw().raw(['merge-base', '--octopus', ...baselines]).catch(() => '')).trim() || undefined
+        : baselines[0];
+    }
+    return revision ? scope.git.raw().raw(['show', `${revision}:${test}`]).catch(() => undefined) : undefined;
   }
 
   private async recordContractBases(input: AttemptInput, bases: readonly TicketContractBasis[]): Promise<void> {

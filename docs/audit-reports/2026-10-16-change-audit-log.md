@@ -3368,3 +3368,86 @@ P1 包资源问题仍延后；不启用外部付费模型。
 
 **记录，未改**：
 - 验证 Step 上的 `inherited_test_change_unregistered` 被路由到配对的开发 Step，后者没有补充测试的写权限，无法修复。
+
+### 收集错误与整轮判定（2026-11-09，真实 run 发现，用户决定，D-77、D-78）
+
+**发现**：`4683d05` 续跑，D-76 生效，8 个 Step 都交付了 CR 跳。`P2-S008` 修复自己继承的 P1 功能补充测试时，一轮联动修改中改名被拒、使用新名字的那条通过，文件第 58 行引用未定义的 `P1_SIGNAL_HEADER`。失败尝试的修改按设计保留，此后每次尝试 pytest 都以退出码 2 结束，执行器立刻交接，`BUG-P2-011` 被收敛保护停止。
+
+**用户问题与决定**：用户问是否需要重建工作区或回退到 P1 重做 P2。CC 的分析是：问题多数是编译器新功能第一次真实串起来时暴露的缺陷，换工作区仍会遇到；XCompiler 不支持回退到 P1 交付点。建议先在现有工作区收尾，之后用最终编译器在新目录从头完整验收一次。用户："按你的建议来，判定粒度选 A"。
+
+**D-77 根因与处理**：`extractFailedTests` 只认 `FAILED`，pytest 的收集失败是 `ERROR <文件>`，解析为空，`failuresConfinedToOwnSupplements` 判为否。解析现在把 `ERROR <文件>` 和 `_ ERROR collecting <文件> _` 计入失败列表。
+
+**D-78 根因与处理**：判定接口逐条调用，材料只有 P1 交付版本和单条修改。改为 `checkTurn`：执行器在一轮动作开始前把全部写入交给检查；引文、层级、CR 覆盖仍逐条校验；同一测试的写入合并成一份提议判定一次，材料加入修改前的当前内容；任何一条被拒（引文或判定），该测试本轮全部不写，其余写入不受影响。判定 Rule 用 `rule update --file`（`XC_RULES_LOCAL` 指向会话临时目录）、`rule check`、`rule promote` 升级到 1.1.0。
+
+**测试与证伪**：
+- D-77：`tests/tools.test.ts` 用真实收集错误输出驱动 `run_tests`，修复前失败。
+- D-78：`tests/inherited_test_assets.test.ts` 用真实 git 仓库和真实 attempt runner：同一测试的两条写入只判定一次、看到当前内容和全部修改；判定拒绝时全部拒绝；一条引文不成立时兄弟写入一并拒绝且不调用判定；不同文件互不牵连。`tests/executor.test.ts` 验证执行器每轮只问一次，并按位置使用结果。
+- 证伪 8 处，全部被杀死；其中收集错误一处首次变异写坏语法，改用不破坏语法的变异重做后由断言失败杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`（27 个列表、86 条 Rule）、`npm run build` 退出码均为 0；core 2269 例通过；integration+e2e 1647 例通过，在 `caffeinate -ims` 下运行。修复尚未经真实 run 验证。
+
+**记录，未改**：
+- 写入前判定全部放行后，若某条写入在执行时失败（如 `replace_in_file` 找不到原文），同一测试的其余写入仍会执行，部分写入仍可能出现。
+- 判定模型（`management` 池的 deepseek flash）出现过理由与结论相反的情况。
+
+### D-77、D-78 的补查（2026-11-09，用户要求）
+
+**用户要求**："先看看还有哪些地方没考虑到的，当前变更有没有对其他功能产生影响，再生成一份变更说明，我找gpt审计下"。
+
+**补查发现并修复**：
+- 分组：一条写入同时改两个测试时只并入第一个组，经它相连的另一组若被拒，相连写入仍会写入。改为合并所有相连的组，按动作顺序排列。
+- Vitest：导入失败报整文件 `FAIL tests/x.test.ts [ tests/x.test.ts ]`，用真实 Vitest 4.1.10 复现，原先解析为空。已补上。
+- 缺依赖：D-77 初版把缺模块的收集失败也算作文件失败，验证 Step 会留下来白耗轮次。分类为 `import_error`、`dependency_error` 时不计入。
+
+**影响核对**：用 HEAD 版解析与当前版对比四类输出，分类全部不变，变化只在失败列表。阶段门禁使用 `project_audit` 自己的解析，不受影响。解析的其他调用方为重试策略、失败签名、已验证 Bug 知识库、校准。
+
+**测试与证伪**：三处各先写测试并确认失败后再改；证伪 4 处，抽查确认是断言失败而非编译错误。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2272 例通过；integration+e2e 1647 例通过，在 `caffeinate -ims` 下运行。
+
+**变更说明**：[2026-11-09-p2-rerun-change-report.md](2026-11-09-p2-rerun-change-report.md)。
+
+### Codex 重跑审计的处理（2026-11-09，用户决定，D-79～D-83）
+
+**用户要求**：审阅 [2026-11-09-p2-rerun-codex-audit-report.md](2026-11-09-p2-rerun-codex-audit-report.md) 后，"都按推荐，两项旧问题也一起修"。
+
+**核实**：三项都成立。RR-02 修复前查明 P1 的 Phase、交付 Story、阶段评估都没有记录交付提交。RR-03 已在真实 run 中发生：`test_functional_acceptance.py` 9,783 字符、`test_s008_functional_risks.py` 8,889 字符、`test_models_contract.py` 8,932 字符，都超过原 8,000 字符上限。
+
+**处理**：
+- D-79（RR-01）：`checkTurn` 为每个获准的组记录未完成的写入，最后一条完成时才按最终内容登记全组；执行器改为工具执行成功即调用 `record`。
+- D-80（RR-02）：`PhaseSchema.deliveredRevision`；`ProjectController.completePhase` 在 `onStepsClosed` 之后经新钩子 `deliveredRevision` 读取，随“已交付”状态写入；`ProjectOrchestrator` 提供 `canonicalRevisionState().head`。`readAsDelivered` 用 `deliveringIteration` 找到测试所属阶段，读其交付修订；未记录时退回到下一阶段 Ticket 基线的 `git merge-base --octopus`。需求文档仍从 Ticket 基线读取。
+- D-81（RR-03）：`CONTRACT_BASIS_LIMITS`、`oversizedContractBasisEvidence`、`ContractBasisEvidenceTooLargeError`；删除截断。
+- D-82：`failureConfinedToSupplement` 接收失败本身，`inherited_test_change_unregistered` 按 `details.paths` 判断归属。
+- D-83：`failingTestsIn` 返回完整列表，`run_tests` 使用它；摘要上限不变。
+
+**测试与证伪**：
+- RR-01：真实 git 加真实 attempt runner，组内部分完成不登记、全部完成登记最终哈希；真实 StepExecutor 加真实依据检查，第二条写入失败时没有登记且交付复核拦下；内容未变的写入仍完成组。
+- RR-02：引擎交付记录修订；三步历史下判定看到的是 P1 内容（从 Phase 读取、从下一阶段基线退回两种情况），`testBeforeChange` 为当前内容。
+- RR-03：真实消息构造函数整份发送 9,000 字符以上的内容、相同前缀不同尾部可区分；超限拒绝且不调用判定；构造函数超限抛错。
+- 路由、失败列表各有复现测试。
+- 证伪 13 处，全部由断言失败杀死。其中“超限仍判定”一处首次因测试替身返回 `undefined` 以 TypeError 失败，改为正常返回后重做，由断言失败杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2284 例通过；integration+e2e 1647 例通过，在 `caffeinate -ims` 下运行。第一次运行有 2 例 core 失败：两条旧测试默认 Ticket 基线就是交付版本，与 D-80 矛盾；改为在夹具里记录 P1 交付修订后通过。同次运行的 `git diff --check` 报 `contract_basis_judge.ts` 末尾多一个空行，已修正。
+
+**离线验证**：dbc2excel-5 的 76 个 P2 基线共同祖先为 `79142d9`，在 P1 交付清单提交 `5ba0229` 之后，二者之间没有测试改动，该版本功能测试为 `== 16`。
+
+**记录，未改**：
+- 判定通过后若某条写入执行失败，文件仍会停在中间状态（不再带有登记，交付复核会拦下）。
+- 判定模型质量、同层产出文档能否引用、G3 其余部分、CR 重走成本、U1 仍未处理。
+
+### 阶段交付打发布标签（2026-11-09，用户决定，D-84）
+
+**用户要求**："现在P1阶段交付有回档点了吗？在每个阶段结束交付后打一个tag"；"tag是 git tag，项目上在每个版本发布时都会打一个tag"；命名选 A。
+
+**现状**：dbc2excel-5 的仓库没有任何标签，P1 交付也没有结构化记录。P1 最后一个提交是 `5ba0229`（发布交付清单）。
+
+**处理**：
+- `phase_release_tag.ts`：`phaseReleaseTag` 决定名称（`v<n>.0.x`，同一提交已打则复用，否则修订号加一，形似但不匹配的标签不计）；`tagPhaseRelease` 创建附注标签，信息为英文记录。
+- `GitRepositoryService.releaseTags`（附注标签取其指向的提交）与 `createAnnotatedTag`。
+- `ProjectOrchestrator.tagRelease`：`completePhase` 成功后，用 Phase 的 `deliveredRevision` 和在 Project 中的序号调用；成功审计 `domain.phase_release_tagged`，失败审计 `domain.phase_release_tag_failed`，不撤销交付。
+- `run.ts` 传入 `tagPhaseRelease(repositoryGit, …)`。
+- dbc2excel-5：在 `5ba0229` 手动补打附注标签 `v1.0.0`，信息注明是交付后根据交付清单提交补打的；未改该工程的 XCompiler 状态。
+
+**测试与证伪**：命名规则单元测试；真实 git 上创建、列出、幂等与重新交付；引擎交付后调用与失败审计；真实 run 路径接线测试确认标签打在规范仓库、为附注标签。证伪 8 处，全部由断言失败杀死。
+
+**门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2292 例通过；integration+e2e 1648 例通过，在 `caffeinate -ims` 下运行。

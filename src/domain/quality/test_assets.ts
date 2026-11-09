@@ -205,3 +205,14 @@ function phaseSegment(phase: string): string {
 function normalizePath(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\/+/u, '');
 }
+
+/**
+ * The earlier Phase whose delivery a test belongs to: the latest one that declared it, or whose
+ * supplement root holds it. Its delivered revision is what a change to the test is judged against.
+ */
+export function deliveringIteration(path: string, earlier: readonly TestAssetOwnerStep[]): string | undefined {
+  const file = path.replace(/\\/gu, '/').replace(/^\.\//u, '');
+  return [...earlier].reverse().find((owner) =>
+    owner.outputs.some((output) => output.replace(/^\.\//u, '') === file) ||
+    ((V_MODEL_TEST_PHASES as readonly string[]).includes(owner.phase) && file.startsWith(supplementLevelRoot(owner.iteration, owner.phase))))?.iteration;
+}

@@ -34,6 +34,7 @@ import {
 import { runProjectAudit } from '../application/delivery/project_audit.js';
 import { earlierPhaseTestOwners } from '../application/execution/earlier_phase_test_owners.js';
 import { createObjectId } from '../domain/identity/object_id.js';
+import { tagPhaseRelease } from '../application/project_management/phase_release_tag.js';
 import {
   ProjectManagerIntakeService, type UserChangeRequestInput,
 } from '../application/project_management/project_manager_intake.js';
@@ -662,6 +663,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       head: await repositoryGit.head(),
       pending: await repositoryGit.pendingChanges(),
     }),
+    tagDeliveredPhase: (release) => tagPhaseRelease(repositoryGit, release),
     commitCanonicalArtifact: async (stepId, summary) => {
       const revision = await git.snapshot(stepId, 0, summary);
       await canonicalFileTree.rescan(revision);

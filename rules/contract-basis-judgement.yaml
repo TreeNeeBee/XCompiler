@@ -6,21 +6,21 @@ title:
   en: Contract basis judgement
   zh: 契约依据判定
 slot: "0x00011301"
-version: 1.0.0
+version: 1.1.0
 ctime: 2026-11-04T09:10:13.664Z
-mtime: 2026-11-04T09:10:14.578Z
-digest: sha256:c309a7c61ae06c9706e42f00d7fc421dc6497753f52de56df8889896e8003bdf
+mtime: 2026-11-09T04:47:29.700Z
+digest: sha256:0eb4e01f388bb13bc1cce30936e6d000d2640ba5d8682cb32fee82b638a99b1d
 rules:
   - id: b4bbedb8-f24b-4939-bf4b-71d7d92ef51e
     name: contract-basis-judgement
-    version: 1.0.0
+    version: 1.1.0
     level: required
     ctime: 2026-11-04T09:10:13.664Z
-    mtime: 2026-11-04T09:10:14.578Z
-    digest: sha256:42ecf8d2c1ade4c55c5e59383dea68b8bfa9cf3f9cf45b36e904a326ca4213cd
+    mtime: 2026-11-09T04:47:29.700Z
+    digest: sha256:87280171c0200208d3ee192cd866ffe7c176e94a0b194ace347811e6d5cee37e
     description:
       en: Applies when judging whether a cited contract truly supersedes a regression test an earlier Phase delivered.
       zh: 判定所引用的契约是否真的取代了前序阶段已交付的回归测试时适用。
     instruction:
-      en: You decide whether a cited contract truly supersedes a regression test. A completed Phase is a milestone, and a later Phase must not regress what it delivered, so a test stays as it is unless the cited contract requires what the change asserts. You are given the test as an earlier Phase delivered it, the change proposed to it, the reason given, the cited contract, and the requirement document. Answer supersedes true only when the cited text itself requires the behaviour the changed test will assert, and that behaviour cannot hold together with what the old assertion required. Answer false when the cited text concerns something else; when the old and new assertions could both hold; when the change weakens, removes or skips an assertion instead of moving it to the new contract; or when the reason claims more than the cited text says. A failure the current requirement still demands is a product defect, never a stale assertion. Judge only from the text you are given; when it does not settle the question, answer false.
-      zh: 你需要判断所引用的契约是否真的取代了一条回归测试。每个完成的阶段都是里程碑，后续阶段不得造成功能回退， 所以除非所引用的契约要求改动后断言的内容，否则测试必须保持原样。你会得到前序阶段交付时的测试、提议的改动、 给出的理由、所引用的契约，以及需求文档。只有当所引用的文字本身要求改动后的测试所断言的行为，并且该行为与原断言的 要求不能同时成立时，才回答 supersedes 为 true。下列情况都回答 false：所引用的文字说的是别的事；新旧断言可以同时成立； 改动是削弱、删除或跳过断言，而不是把它迁移到新契约；理由超出了所引用文字的内容。当前需求仍然要求而失败的情况属于 产品缺陷，绝不是过时的断言。只依据给你的文字判断；文字不足以确定时，回答 false。
+      en: "You decide whether a cited contract truly supersedes a regression test. A completed Phase is a milestone, and a later Phase must not regress what it delivered, so a test stays as it is unless the cited contract requires what the change asserts. You are given the test as an earlier Phase delivered it, the test as it is before this change, every change this turn makes to it (applied together, in order, to the test as it is before this change), the reasons given, the cited contracts, and the requirement document. Judge those changes as one: compare the test as it will be after all of them with the test as delivered. A rename, restructuring or comment that carries an assertion to the new contract is part of that move, not a claim of its own. Answer supersedes true only when the cited text itself requires the behaviour the changed test will assert, and that behaviour cannot hold together with what the old assertion required. Answer false when the cited text concerns something else; when the old and new assertions could both hold; when the change weakens, removes or skips an assertion instead of moving it to the new contract; or when the reason claims more than the cited text says. A failure the current requirement still demands is a product defect, never a stale assertion. Judge only from the text you are given; when it does not settle the question, answer false."
+      zh: 你需要判断所引用的契约是否真的取代了一条回归测试。每个完成的阶段都是里程碑，后续阶段不得造成功能回退，所以除非所引用的契约要求改动后断言的内容，否则测试必须保持原样。你会得到前序阶段交付时的测试、本次改动前的测试、这一轮对它的全部改动（按顺序一起作用于本次改动前的测试）、给出的理由、所引用的契约，以及需求文档。请把这些改动当作一项改动来判断：用全部改动完成后的测试，对比前序阶段交付时的测试。为把断言迁移到新契约而做的改名、结构调整或注释，是这次迁移的一部分，不单独构成主张。只有当所引用的文字本身要求改动后的测试所断言的行为，并且该行为与原断言的要求不能同时成立时，才回答 supersedes 为 true。下列情况都回答 false：所引用的文字说的是别的事；新旧断言可以同时成立；改动是削弱、删除或跳过断言，而不是把它迁移到新契约；理由超出了所引用文字的内容。当前需求仍然要求而失败的情况属于产品缺陷，绝不是过时的断言。只依据给你的文字判断；文字不足以确定时，回答 false。

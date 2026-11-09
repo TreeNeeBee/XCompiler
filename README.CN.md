@@ -47,6 +47,7 @@ XCompiler 把 Phase 迭代模型和 V 模型结合起来。Planner 先生成总�
 V 模型行为：
 
 - 每个 Phase 固定包含八个领域 Step：需求分析、概要设计、详细设计、编码、单元测试、集成测试、系统测试、验收测试。
+- 交付的 Phase 就是一次版本发布：交付修订记录在 Phase 上，并在生成工程的本地 Git 仓库打附注标签。第 n 个 Phase 为 `v<n>.0.0`，阶段重新打开后再次交付时递增修订号（`v<n>.0.1`……）。标签不会推送；它回档的是交付的代码，不包括 XCompiler 自身的工程状态。
 - Planner JSON 是不可变的执行规格，不再保存运行状态。Runtime 将其编译为领域对象，只有这些对象持有生命周期状态。每个对象都带同一套 envelope —— UUIDv7 `id`、`objectType`、`projectId`、`revision` 和时间戳 —— 并统一经对象注册表提交：Project、ProjectPlan/PhasePlan、Phase、Step、Ticket、ActorRegistration、TicketAssignment、TicketTraceEvent、ProjectManagementPlan、Decision、Risk、InteractionRequest、KPI、QualityAssessment、Changelist、Checkpoint、Deliverable、Report、Log、AuditEvent 和 DomainEvent。
 - 需求分析、概要设计、详细设计、编码会同步生成对应的验收、系统、集成、单元测试计划和可执行用例。
 - `HIGH_LEVEL_DESIGN` 定义系统级接口、外部 API、第三方库选型和依赖确认。

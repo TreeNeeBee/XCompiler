@@ -348,6 +348,49 @@ describe('ProjectOrchestrator', () => {
 
     // A live repair chain for a delivery-gate Bug was contradicted and interrupted, so its solution was
     // never marked verified; the next gate passed and closing the Bug threw, ending the run on success.
+    // Codex RR-02: what a Phase delivered was never recorded, so a later Phase judged changes to its
+    // tests against whatever a later Ticket had made of them.
+    it('records the revision a delivered Phase left on the Phase', async () => {
+      const setup = await fixture();
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        canonicalRevisionState: async () => ({ head: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', pending: [] }),
+        finalGate: async () => ({ ok: true, evidence: ['scenario passes'] }),
+      }, setup.plan);
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      const phase = await setup.repository.read(setup.graph.phases[0]!.id);
+      expect(phase.objectType === 'phase' && phase.deliveredRevision).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678');
+    });
+
+    // Projects tag each version they release; a delivered Phase is one.
+    it.each([
+      ['tags the delivery as a release of the Phase', false],
+      ['still delivers, and records why, when the tag cannot be made', true],
+    ] as const)('%s', async (_name, fails) => {
+      const setup = await fixture();
+      const head = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+      const tagged: unknown[] = [];
+      const events: Array<Record<string, unknown>> = [];
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        canonicalRevisionState: async () => ({ head, pending: [] }),
+        tagDeliveredPhase: async (release) => {
+          tagged.push(release);
+          if (fails) throw new Error('tag already exists');
+          return { name: 'v1.0.0', created: true };
+        },
+        audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } } as never,
+        finalGate: async () => ({ ok: true, evidence: ['scenario passes'] }),
+      }, setup.plan);
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(tagged).toEqual([{ projectName: setup.graph.project.name, phaseName: setup.graph.phases[0]!.name, phaseNumber: 1, revision: head }]);
+      expect(events).toContainEqual(expect.objectContaining(fails
+        ? { messageId: 'domain.phase_release_tag_failed', revision: head, error: 'tag already exists' }
+        : { messageId: 'domain.phase_release_tagged', tag: 'v1.0.0', revision: head, created: true }));
+    });
+
     it('closes it on the passing gate even when nothing upstream marked its solution verified', async () => {
       const setup = await fixture();
       let gateRuns = 0;

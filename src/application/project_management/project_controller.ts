@@ -64,7 +64,11 @@ export class ProjectController {
      * ChangeSet has merged, so nothing more will be written, and delivery has not closed, so what
      * this produces is part of the delivered record rather than a change made to it afterwards.
      */
-    private readonly hooks: { onStepsClosed?: (phaseId: ObjectId) => Promise<void> } = {},
+    private readonly hooks: {
+      onStepsClosed?: (phaseId: ObjectId) => Promise<void>;
+      /** The revision the Phase delivers, read once its last delivery artifact is committed. */
+      deliveredRevision?: (phaseId: ObjectId) => Promise<string | undefined>;
+    } = {},
   ) {
     this.tickets = new TicketWorkflow(repository);
     this.registration = new TicketRegistrationService(repository);
@@ -653,6 +657,7 @@ export class ProjectController {
       throw new Error(`Cannot deliver ${phase.name}: incomplete Stories [${incompleteStories.map((ticket) => ticket.name).join(', ')}]`);
     }
     await this.hooks.onStepsClosed?.(phase.id);
+    const deliveredRevision = await this.hooks.deliveredRevision?.(phase.id);
     let delivery = phaseTickets.find(
       (ticket): ticket is WorkTicket =>
         ticket.phaseId === phase.id && ticket.type === 'story' && ticket.workKind === 'delivery',
@@ -665,7 +670,7 @@ export class ProjectController {
     await this.saveTicketTransitionPath(delivery, ['in_progress', 'resolved', 'closed']);
     epic = (await this.registration.routeAndAssign(epic.id)).ticket as WorkTicket;
     await this.saveTicketTransitionPath(epic, ['in_progress', 'resolved', 'closed']);
-    phase = await this.savePhaseTransition(phase, 'delivered');
+    phase = await this.savePhaseTransition(deliveredRevision ? { ...phase, deliveredRevision } : phase, 'delivered');
     await this.savePhaseTransition(phase, 'closed');
     let project = await this.requireProject(phase.projectId);
     const phases = await Promise.all(project.phaseIds.map((id) => this.requirePhase(id)));

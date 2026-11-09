@@ -17,7 +17,7 @@ import { AuditPersistenceError } from '../src/audit/errors.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import type { Step } from '../src/domain/planning/execution_plan.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
-import type { ContractBasisGate, Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
+import type { ContractBasisGate, ContractBasisProposal, Tool, ToolContext, ToolExecutionEvent, ToolFailureCode } from '../src/tools/types.js';
 import { readFileTool, writeFileTool } from '../src/tools/fs.js';
 import { replaceInFileTool } from '../src/tools/edit.js';
 import { applyPatchTool } from '../src/tools/patch.js';
@@ -3312,12 +3312,14 @@ describe('StepExecutor system prompt assembly', () => {
     const refusal = 'No contract basis: cite one.';
     const gatedCtx = (asked: unknown[][]) => ({ ...ctx, allowedWrites: [...ctx.allowedWrites, inherited],
       requestPermission: vi.fn(async (_request: { target?: string }) => ({ approved: true })),
-      contractBasisGate: { check: async (targets: readonly string[], given: unknown, proposal: { tool: string; args: Record<string, unknown> }) => {
+      contractBasisGate: { checkTurn: async (proposals: readonly (ContractBasisProposal | undefined)[]) => proposals.map((proposal) => {
+        if (!proposal) return undefined;
+        const { targets, basis: given } = proposal;
         asked.push([...targets, given]);
         proposed.push(proposal.tool, proposal.args.content);
         if (!targets.includes(inherited)) return undefined;
         return given === undefined ? { error: refusal } : { record: async () => { recorded.push(await ws.readFile(inherited)); } };
-      } } });
+      }) } });
     const recorded: string[] = [];
     const proposed: unknown[] = [];
     class WriteThenRegisterLLM implements LLMClient {
@@ -5938,12 +5940,37 @@ describe('StepExecutor system prompt assembly', () => {
     expect(r.metrics.repeatedTurns).toBe(2);
   });
 
+  // Option A: the executor hands a turn's writes over at once, so writes to one test are judged as one
+  // change, and then follows each write's own answer.
+  it('asks the contract basis gate once per turn, and writes only what it allowed', async () => {
+    const asked: Array<Array<string | undefined>> = [];
+    const gate: ContractBasisGate = { checkTurn: async (proposals) => {
+      asked.push(proposals.map((proposal) => proposal?.targets.join(',')));
+      return proposals.map((proposal) => proposal?.targets.includes('tests/refused.py') ? { error: 'Refused.' } : undefined);
+    } };
+    let turns = 0;
+    const llm: LLMClient = { name: 'two-writes', chat: async () => JSON.stringify(turns++ === 0
+      ? { thoughts: 'write both', actions: [
+        { tool: 'read_file', args: { path: 'src/x.py' } },
+        { tool: 'write_file', args: { path: 'tests/refused.py', content: 'refused\n' } },
+        { tool: 'write_file', args: { path: 'src/allowed.py', content: 'allowed\n' } }], done: false }
+      : { thoughts: 'stop', actions: [], done: true }) };
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
+      step: { ...baseStep, tools: ['read_file', 'write_file'], outputs: ['src/allowed.py'] }, tools: [readFileTool, writeFileTool],
+      ctx: { ...ctx, allowedWrites: ['tests/refused.py', 'src/allowed.py', 'src/x.py'], contractBasisGate: gate },
+    });
+    expect(asked[0]).toEqual([undefined, 'tests/refused.py', 'src/allowed.py']);
+    expect(await ws.exists('tests/refused.py')).toBe(false);
+    expect(await ws.readFile('src/allowed.py')).toBe('allowed\n');
+  });
+
   // A live repair spent its reads, then had a basis refused with "read the document and quote it word
   // for word". The next read was rejected as one probe too many, so it could only quote from memory,
   // and the same refusal came back until the attempt ran out of rounds.
   describe('after a refused contract basis', () => {
     const document = 'docs/iterations/P2/02-high-level-design.md';
-    const refused: ContractBasisGate = { check: async () => ({ error: 'Quote the clause word for word.' }) };
+    const refused: ContractBasisGate = { checkTurn: async (proposals) => proposals.map((proposal) => proposal && { error: 'Quote the clause word for word.' }) };
     const write = { tool: 'write_file', args: { path: 'tests/test_old.py', content: 'x = 1\n',
       contractBasis: { reason: 'stale', document, quote: 'from memory' } } };
     const script = (turns: Array<{ actions: unknown[]; done: boolean }>) => {

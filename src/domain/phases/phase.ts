@@ -45,6 +45,11 @@ export const PhaseSchema = ObjectEnvelopeSchema.extend({
   verificationGate: z.array(z.string().min(1)).min(1),
   /** Phase-level integrated delivery and live-scenario acceptance contract. */
   deliveryGate: DeliveryGateSchema.optional(),
+  /**
+   * The revision the Phase delivered: the milestone a later Phase's tests are judged against. Absent
+   * for a Phase delivered before it was recorded, and for one not delivered yet.
+   */
+  deliveredRevision: z.string().regex(/^[0-9a-f]{7,40}$/u, 'Git revision must be a hexadecimal commit id').optional(),
 }).strict().superRefine((phase, ctx) => {
   if (['in_progress', 'delivered', 'reopened', 'closed'].includes(phase.state) && phase.stepIds.length === 0) {
     ctx.addIssue({

@@ -750,8 +750,15 @@ const messages: Messages = {
       changeRequestNotCovering: (paths, documents) =>
         `该 CR 的受影响文件里没有 ${paths}，不能作为修改它的依据。请改为引用要求这项改动的条款，可引用的文档：\n${documents}`,
       notSuperseded: (path, reason) =>
-        `所引用的契约没有取代 ${path}：${reason} 请保持这条断言不变：如果产品通不过，那是产品缺陷，交给其负责方处理。` +
-        '只有条款确实要求改动后所断言的内容时才能引用它。',
+        `所引用的契约没有取代 ${path}：${reason} 这一轮对它的改动都没有写入。` +
+        '如果确有条款要求这项改动，请在同一轮里提交全部改动并引用该条款；否则保持测试不变：当前契约仍然要求而失败的情况属于产品缺陷，交给其负责方处理。',
+      evidenceTooLarge: (path, part) => part === 'change'
+        ? `这一轮对 ${path} 的改动太大，无法整体判定，因此被拒绝，而不是只按其中一部分判定。` +
+          '请把改动分到多轮：每一轮都会以当时的测试内容为起点判定。'
+        : `${path} 对应的${part === 'test' ? '测试' : '需求文档'}太大，无法整体判定，因此改动被拒绝。` +
+          '分多轮也无济于事：请保持测试不变，并把发现的问题作为 finding 交给其负责方。',
+      refusedWithChange: (path, reason) =>
+        `没有写入：这一轮对 ${path} 的另一处改动被拒绝，同一个测试要么整体修改，要么不改。${reason}`,
       judgementUnavailable: '无法确认这项改动符合其契约，因此被拒绝。请保持该测试为前序阶段交付时的内容，并把发现的问题作为 finding 报告给其负责方。',
       unregisteredChange: (paths) =>
         `${paths} 在本 Ticket 中被改动，但没有登记契约依据。已交付的阶段不得发生功能回退：` +

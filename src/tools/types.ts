@@ -158,11 +158,24 @@ export interface ToolContext {
 
 /** Stable identifiers for failures other modules must recognise without reading the message. */
 /** Whether a write to inherited tests may proceed, and how to record it once it has. */
+/** `record` is called once the write ran; a judged group registers only after every one of its writes has. */
 export type ContractBasisVerdict = { error: string } | { record: () => Promise<void> };
 
+export interface ContractBasisProposal {
+  targets: readonly string[];
+  basis: unknown;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
 export interface ContractBasisGate {
-  /** Undefined when the write touches no inherited test. A refusal says what the Step has to change. */
-  check(targets: readonly string[], basis: unknown, proposal: { tool: string; args: Record<string, unknown> }): Promise<ContractBasisVerdict | undefined>;
+  /**
+   * A turn's writes, answered in the same order; undefined for a write that touches no inherited test,
+   * and for a slot given none. Writes to one test are judged together and stand or fall together:
+   * judged one at a time, a rename refused beside an accepted use of the new name left a test that
+   * could not even be collected. A refusal says what the Step has to change.
+   */
+  checkTurn(proposals: readonly (ContractBasisProposal | undefined)[]): Promise<(ContractBasisVerdict | undefined)[]>;
 }
 
 export type ToolFailureCode =

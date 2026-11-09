@@ -180,13 +180,32 @@ function choosePrimarySignals(root: ExtractedSignals, latest?: ExtractedSignals)
   return root.category !== 'unknown' ? root : latest;
 }
 
+/**
+ * Every failing test a log names. A brief shows at most MAX_FAILED_TESTS for reading; a decision made
+ * on the list, such as which selectors a repair must replay or whether a failure is all the Step's
+ * own, needs all of them, and a ninth case in a baseline used to be cut from both.
+ */
+export function failingTestsIn(failureLog: string): string[] {
+  const raw = failureLog.trim();
+  const sections = splitFailureSections(raw);
+  const root = extractSignals(sections.root || raw, false);
+  const latest = sections.latest ? extractSignals(sections.latest, false) : undefined;
+  return dedup([...root.failedTests, ...(latest?.failedTests ?? [])]);
+}
+
 function extractSignals(text: string, missingOutputs: boolean): ExtractedSignals {
   const lines = normalizedLines(text);
-  const failedTests = extractFailedTests(text);
+  const failingCases = extractFailedTests(text);
   const files = extractFiles(text);
   const toolFailures = extractToolFailures(lines);
   const statusCodes = extractStatusCodes(text);
-  const category = classify(text, lines, failedTests, toolFailures, missingOutputs);
+  const category = classify(text, lines, failingCases, toolFailures, missingOutputs);
+  // A module that is not installed stays a dependency question, as it was before uncollected files
+  // counted: named as the file's own failure, it kept a Step that cannot add a dependency repairing
+  // a test it could not fix.
+  const failedTests = category === 'import_error' || category === 'dependency_error'
+    ? failingCases
+    : dedup([...failingCases, ...extractUncollectedTestFiles(text)]);
   return {
     category,
     primaryError: findPrimaryError(text, lines, category, failedTests, toolFailures),
@@ -482,6 +501,22 @@ function extractFailedTests(text: string): string[] {
     for (const match of text.matchAll(pattern)) push(match[1]);
   }
   return dedup(out);
+}
+
+/**
+ * Test files that failed whole, before any case ran: pytest reports them as ERROR, never FAILED, and
+ * Vitest as a suite-level FAIL with the file in brackets. Without them such a run named no failure,
+ * and the Step owning the file was handed off before it could repair it.
+ */
+function extractUncollectedTestFiles(text: string): string[] {
+  const out: string[] = [];
+  for (const pattern of [
+    /(?:^|\n)(?:ERROR[ \t]+|_+ ERROR collecting )([^\s]+(?:\.py|\.ts|\.tsx|\.js|\.jsx)(?:::[^\s]+)?)/gu,
+    /(?:^|\n)[ \t]*FAIL[ \t]+([^\s]+(?:\.ts|\.tsx|\.js|\.jsx))[ \t]+\[[^\]\n]*\][ \t]*(?=\n|$)/gu,
+  ]) {
+    for (const match of text.matchAll(pattern)) out.push(oneLine(match[1] ?? ''));
+  }
+  return dedup(out.filter(Boolean));
 }
 
 function extractFiles(text: string): string[] {

@@ -193,7 +193,7 @@ export class CorrectiveWorkflowService {
     let target = input.targetStepId
       ? await this.state.requireStep(input.targetStepId)
       : isVerificationStep(failed)
-        ? failureConfinedToSupplement(failed, input.testOutcomes ?? [],
+        ? failureConfinedToSupplement(failed, input.failure, input.testOutcomes ?? [],
           inheritedSupplementRoots(failed.type, await earlierPhaseTestOwners(this.repository, failed.phaseId)))
           ? failed
           : await this.state.requireStep(failed.pairedStepId)
@@ -1019,19 +1019,29 @@ function nextPropagationStepId(
  */
 function failureConfinedToSupplement(
   step: Step,
+  failure: AttemptFailure,
   outcomes: readonly TestOutcome[],
   inheritedRoots: readonly string[] = [],
 ): boolean {
+  // An unregistered change names the files changed. When they are all this Step's supplements, only
+  // this Step may write them: routed to its source, the repair could change nothing, and a live P2
+  // stopped on the recurrence that followed.
+  if (failure.code === 'inherited_test_change_unregistered') {
+    const paths = Array.isArray(failure.details?.paths) ? failure.details.paths.filter((value): value is string => typeof value === 'string') : [];
+    return paths.length > 0 && paths.every((path) => ownedSupplement(step, path, inheritedRoots));
+  }
   const failing = outcomes
     .filter((outcome) => outcome.status === 'failed' || outcome.status === 'timed_out')
     .flatMap((outcome) => outcome.failedTests);
-  if (failing.length === 0) return false;
-  // Matched by directory and Step id rather than by rebuilding the exact root: the path is composed
-  // from the execution Step while routing holds the domain Step, and the two agreeing on an id is a
-  // property of the current wiring, not something this decision should depend on.
-  const owned = `${VERIFICATION_SUPPLEMENT_DIR}/`;
-  return failing.every((test) => {
-    const path = normalizeGitPath(test);
-    return (path.startsWith(owned) && path.includes(step.id)) || inheritedRoots.some((root) => path.startsWith(root));
-  });
+  return failing.length > 0 && failing.every((test) => ownedSupplement(step, test, inheritedRoots));
+}
+
+/**
+ * Matched by directory and Step id rather than by rebuilding the exact root: the path is composed
+ * from the execution Step while routing holds the domain Step, and the two agreeing on an id is a
+ * property of the current wiring, not something this decision should depend on.
+ */
+function ownedSupplement(step: Step, test: string, inheritedRoots: readonly string[]): boolean {
+  const path = normalizeGitPath(test);
+  return (path.startsWith(`${VERIFICATION_SUPPLEMENT_DIR}/`) && path.includes(step.id)) || inheritedRoots.some((root) => path.startsWith(root));
 }

@@ -432,6 +432,26 @@ describe('Runtime run connects the Phase gate to retained scenario judgement', (
   });
 });
 
+// A delivered Phase is a release: Runtime hands the orchestrator a way to tag it in the very repository
+// the run works on, at the revision delivered.
+describe('Runtime run tagging a delivered Phase', () => {
+  it('tags it in the canonical repository, as an annotated release tag', async () => {
+    const server = await endpoint(JSON.stringify({ ok: true, reason: 'unused', planConflict: NO_CONFLICT }));
+    const current = await fixture(server.url);
+    let released: { head: string; tag: { name: string; created: boolean } } | undefined;
+    controlled.workflow.mockImplementation(async (options: ProjectOrchestratorOptions, phaseId: string) => {
+      const { head } = await options.canonicalRevisionState!();
+      released = { head, tag: await options.tagDeliveredPhase!({ projectName: 'signals', phaseName: 'P1', phaseNumber: 1, revision: head }) };
+      return { phaseId, totalSteps: 8, executedSteps: 8, failedStepId: 'TAG-BOUNDARY', failureReason: 'Controlled stop after tagging.' };
+    });
+    await current.run();
+    expect(released?.tag).toEqual({ name: 'v1.0.0', created: true });
+    const git = simpleGit(current.container.canonical().workspace.root);
+    expect((await git.raw(['rev-parse', 'v1.0.0^{commit}'])).trim()).toBe(released!.head);
+    expect((await git.raw(['cat-file', '-t', 'v1.0.0'])).trim()).toBe('tag');
+  });
+});
+
 // Two contradictory design sections pass every gate, so a person has to name the change: it goes
 // in through the run that continues the Phase, and nothing has moved until the file is sound.
 describe('Runtime run carrying a person\'s change request', () => {

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StepExecutor } from '../src/agents/executor.js';
 import { AuditLogger } from '../src/audit/audit.js';
 import { DomainAttemptRunner, type AttemptRunnerOptions } from '../src/application/execution/attempt_runner.js';
-import { ContractBasisJudgementError, type ContractBasisJudge } from '../src/application/execution/contract_basis_judge.js';
+import { buildContractBasisMessages, ContractBasisEvidenceTooLargeError, ContractBasisJudgementError, type ContractBasisJudge } from '../src/application/execution/contract_basis_judge.js';
 import { projectExecutionPlan } from '../src/application/execution/execution_adapter.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
 import { materializeProjectExtension } from '../src/application/planning/project_graph_persistence_service.js';
@@ -20,6 +20,11 @@ import { GitService } from '../src/workspace/git.js';
 import { tFor } from '../src/i18n/index.js';
 import { PluginHost } from '../src/plugins/host.js';
 import type { ContractBasisGate, ToolContext } from '../src/tools/types.js';
+
+/** One write, as a turn of its own. */
+async function checkOne(gate: ContractBasisGate, targets: readonly string[], basis: unknown, proposal: { tool: string; args: Record<string, unknown> }) {
+  return (await gate.checkTurn([{ targets, basis, tool: proposal.tool, args: proposal.args }]))[0];
+}
 import { ProjectContainer } from '../src/workspace/project_container.js';
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { iterationPlan, twoPhasePlan } from './support/two_phase_plan.js';
@@ -125,6 +130,26 @@ describe('a Phase gate finding aimed at a verification level', () => {
   });
 });
 
+// A live P2 integration Step changed its inherited P1 supplement with no basis on record. The finding
+// was routed to detailed design, which may not write that file, so its repair changed nothing and the
+// run stopped on the recurrence.
+describe('an unregistered change to an inherited test, found at a verification Step', () => {
+  it.each([
+    ['stays with the Step when the file is a supplement it inherited', 'tests/verification/p1/integration-test/01a18432/test_supplement.py', 'INTEGRATION_TEST'],
+    ['goes to the paired Step when the file is that Step\'s baseline', 'tests/integration/test_pipeline_integration.py', 'DETAILED_DESIGN'],
+  ] as const)('%s', async (_name, file, owner) => {
+    const setup = await secondPhaseAttempt();
+    const integration = setup.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
+    const bug = await new CorrectiveWorkflowService(setup.repository).routeFailure({
+      creatorActorId: setup.testEngineerId, failedStepId: integration.id, message: 'unregistered', summary: 'unregistered',
+      failure: { kind: 'execution', category: 'quality', code: 'inherited_test_change_unregistered', message: 'unregistered',
+        retryable: true, switchProvider: false, details: { paths: [file] } },
+      correlationId: createObjectId(), bugKind: 'test-failure',
+    });
+    expect(setup.steps.find((step) => step.id === bug.failure.targetStepId)?.type).toBe(owner);
+  });
+});
+
 // Codex audit F-03: a Step could change an inherited test and deliver without running it. A CODE
 // Step now runs the inherited tests it changed beside its own; a test Step runs its level complete.
 describe('the inherited tests an attempt\'s gate runs', () => {
@@ -220,6 +245,13 @@ describe('the contract basis gate of a real attempt', () => {
     return setup;
   };
   const FUNCTIONAL = 'tests/test_functional_acceptance.py';
+  /** What a real delivery records: the earlier Phase delivered the test at this revision. */
+  const recordDelivery = async (setup: Awaited<ReturnType<typeof seeded>>, revision: string) => {
+    const project = (await setup.repository.findProject())!;
+    const p1 = await setup.repository.read(project.phaseIds[0]!);
+    if (p1.objectType !== 'phase') throw new Error('Expected P1');
+    await setup.repository.update(PhaseSchema.parse({ ...p1, ...reviseObjectEnvelope(p1), deliveredRevision: revision }), p1.state);
+  };
   /** The gate of the P2 requirement Step, whose inherited tests are the ones a user observes. */
   const functionalGate = async (setup: Awaited<ReturnType<typeof seeded>>) => {
     const requirement = setup.steps.find((step) => step.type === 'REQUIREMENT_ANALYSIS')!;
@@ -238,10 +270,10 @@ describe('the contract basis gate of a real attempt', () => {
     const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: false, reason: 'The clause is about columns, not warnings.' }));
     const setup = await seeded(judge);
     await setup.workspace.writeFile(FUNCTIONAL, 'def test_broken():\n    assert warnings == []\n');
-    await setup.realGit!.snapshot('seed', 1, 'delivered functional test');
+    await recordDelivery(setup, await setup.realGit!.snapshot('seed', 1, 'delivered functional test'));
     const gate = await functionalGate(setup);
 
-    expect(await gate.check([FUNCTIONAL], relaxing.args.contractBasis, relaxing))
+    expect(await checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing))
       .toEqual({ error: tFor('en').tools.contractBasis.notSuperseded(FUNCTIONAL, 'The clause is about columns, not warnings.') });
     expect(judge).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ test: FUNCTIONAL, citedContract: CLAUSE, reason: 'Failed inputs may keep warnings.',
       testAsDelivered: 'def test_broken():\n    assert warnings == []\n', requirements: expect.stringContaining(CLAUSE) }), undefined);
@@ -254,7 +286,7 @@ describe('the contract basis gate of a real attempt', () => {
   it('lets a functional change through when the judge confirms its citation', async () => {
     const setup = await seeded(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
     const gate = await functionalGate(setup);
-    expect(await gate.check([FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ record: expect.any(Function) });
+    expect(await checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ record: expect.any(Function) });
   });
 
   it.each([
@@ -263,21 +295,225 @@ describe('the contract basis gate of a real attempt', () => {
   ])('refuses a functional change when %s', async (_name, judge) => {
     const setup = await seeded(judge);
     const gate = await functionalGate(setup);
-    expect(await gate.check([FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ error: tFor('en').tools.contractBasis.judgementUnavailable });
+    expect(await checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ error: tFor('en').tools.contractBasis.judgementUnavailable });
   });
 
   it('does not take a provider outage for a verdict', async () => {
     const outage = new Error('provider unavailable');
     const setup = await seeded(async () => { throw outage; });
     const gate = await functionalGate(setup);
-    await expect(gate.check([FUNCTIONAL], relaxing.args.contractBasis, relaxing)).rejects.toBe(outage);
+    await expect(checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).rejects.toBe(outage);
+  });
+
+  // A live functional Step sent four edits of one test in a turn. Judged one at a time, the rename was
+  // refused while the line using the new name was written, and the test could no longer be collected.
+  describe('writes a turn makes to one test', () => {
+    const DELIVERED = 'HEADER = [16]\n\ndef test_header():\n    assert len(HEADER) == 16\n';
+    const AFTER_EARLIER_TURN = 'HEADER = [16]\n\ndef test_header():\n    assert len(HEADER) == 19\n';
+    const basis = { reason: 'The header has nineteen columns.', document: REQUIREMENT, quote: CLAUSE };
+    const rename = { targets: [FUNCTIONAL], basis, tool: 'replace_in_file', args: { path: FUNCTIONAL, find: 'HEADER = [16]', replace: 'P1_HEADER = [16]', contractBasis: basis } };
+    const extend = { targets: [FUNCTIONAL], basis, tool: 'replace_in_file', args: { path: FUNCTIONAL, find: 'def test_header', replace: 'HEADER = P1_HEADER + [3]\n\ndef test_header', contractBasis: basis } };
+    const delivered = async (judge: ContractBasisJudge) => {
+      const setup = await seeded(judge);
+      await setup.workspace.writeFile(FUNCTIONAL, DELIVERED);
+      await recordDelivery(setup, await setup.realGit!.snapshot('seed', 1, 'delivered functional test'));
+      await setup.workspace.writeFile(FUNCTIONAL, AFTER_EARLIER_TURN);
+      return { setup, gate: await functionalGate(setup) };
+    };
+
+    it('are judged once, together, against the test as it is now', async () => {
+      const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+      const { gate } = await delivered(judge);
+      expect(await gate.checkTurn([rename, undefined, extend])).toEqual([{ record: expect.any(Function) }, undefined, { record: expect.any(Function) }]);
+      expect(judge).toHaveBeenCalledOnce();
+      const [judged] = judge.mock.calls[0]!;
+      expect(judged).toMatchObject({ test: FUNCTIONAL, testAsDelivered: DELIVERED, testBeforeChange: AFTER_EARLIER_TURN });
+      expect(JSON.parse(judged.proposedChange)).toEqual([
+        { tool: 'replace_in_file', path: FUNCTIONAL, find: 'HEADER = [16]', replace: 'P1_HEADER = [16]' },
+        { tool: 'replace_in_file', path: FUNCTIONAL, find: 'def test_header', replace: 'HEADER = P1_HEADER + [3]\n\ndef test_header' },
+      ]);
+    });
+
+    // Codex RR-01: the judge approved what the writes make together, so only that result may carry the
+    // basis. Registered write by write, a skeleton left by a turn whose second write failed carried it.
+    it('register what they made together, and only once every one of them was written', async () => {
+      const { setup, gate } = await delivered(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+      const [first, second] = await gate.checkTurn([rename, extend]) as Array<{ record: () => Promise<void> }>;
+      const ledgerNow = async () => {
+        const ticket = await setup.repository.read(setup.input.ticket.id);
+        return ticket.objectType === 'ticket' ? ticket.contractBases : [];
+      };
+      await setup.workspace.writeFile(FUNCTIONAL, 'P1_HEADER = [16]\n');
+      await first!.record();
+      expect(await ledgerNow()).toEqual([]);
+      const final = 'P1_HEADER = [16]\nHEADER = P1_HEADER + [3]\n';
+      await setup.workspace.writeFile(FUNCTIONAL, final);
+      await second!.record();
+      const hash = `sha256:${createHash('sha256').update(final).digest('hex')}`;
+      expect((await ledgerNow()).map((basis) => [basis.path, basis.contentHash])).toEqual([[FUNCTIONAL, hash], [FUNCTIONAL, hash]]);
+    });
+
+    it('still register when a write of the turn finds the test already as it wanted it, through the real executor', async () => {
+      const { setup, gate } = await delivered(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+      const final = 'HEADER = [16] + [3]\n\ndef test_header():\n    assert len(HEADER) == 19\n';
+      const write = { tool: 'write_file', args: { path: FUNCTIONAL, content: final, contractBasis: basis } };
+      let turns = 0;
+      const llm = { name: 'write-twice', chat: async () => JSON.stringify(turns++ === 0
+        ? { thoughts: 'rewrite the test', actions: [write, write], done: false }
+        : { thoughts: 'stop', actions: [], done: true }) };
+      const { writeFileTool } = await import('../src/tools/fs.js');
+      const { withFixtureExecutionRequest } = await import('./support/execution_request_fixture.js');
+      const requirement = setup.steps.find((step) => step.type === 'REQUIREMENT_ANALYSIS')!;
+      const step = setup.projection.byDomainStepId.get(requirement.id)!;
+      await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
+        step: { ...step, tools: ['write_file'] }, tools: [writeFileTool],
+        ctx: { ws: setup.workspace, sandbox: undefined as never, allowedWrites: [FUNCTIONAL], stepId: step.id, contractBasisGate: gate },
+      });
+      const ticket = await setup.repository.read(setup.input.ticket.id);
+      const hash = `sha256:${createHash('sha256').update(final).digest('hex')}`;
+      expect(ticket.objectType === 'ticket' && ticket.contractBases.map((entry) => entry.contentHash)).toEqual([hash, hash]);
+    });
+
+    it('leave nothing registered when a later write of the turn fails, through the real executor', async () => {
+      const { setup, gate } = await delivered(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+      const skeleton = { tool: 'write_file', args: { path: FUNCTIONAL, content: 'def test_header():\n    pass\n', contractBasis: basis } };
+      const missing = { tool: 'replace_in_file', args: { path: FUNCTIONAL, find: 'text this file does not contain',
+        replace: '    assert len(HEADER) == 19\n', contractBasis: basis } };
+      let turns = 0;
+      const llm = { name: 'skeleton-then-fail', chat: async () => JSON.stringify(turns++ === 0
+        ? { thoughts: 'rewrite the test', actions: [skeleton, missing], done: false }
+        : { thoughts: 'stop', actions: [], done: true }) };
+      const { writeFileTool } = await import('../src/tools/fs.js');
+      const { replaceInFileTool } = await import('../src/tools/edit.js');
+      const { withFixtureExecutionRequest } = await import('./support/execution_request_fixture.js');
+      const requirement = setup.steps.find((step) => step.type === 'REQUIREMENT_ANALYSIS')!;
+      const step = setup.projection.byDomainStepId.get(requirement.id)!;
+      await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 2 })).run({
+        step: { ...step, tools: ['write_file', 'replace_in_file'] }, tools: [writeFileTool, replaceInFileTool],
+        ctx: { ws: setup.workspace, sandbox: undefined as never, allowedWrites: [FUNCTIONAL], stepId: step.id, contractBasisGate: gate },
+      });
+      expect(await setup.workspace.readFile(FUNCTIONAL)).toBe('def test_header():\n    pass\n');
+      const ticket = await setup.repository.read(setup.input.ticket.id);
+      expect(ticket.objectType === 'ticket' && ticket.contractBases).toEqual([]);
+      const internals = setup.runner as unknown as { unregisteredInheritedChanges: (...args: unknown[]) => Promise<string[]> };
+      const base = (await setup.realGit!.raw().revparse(['HEAD'])).trim();
+      expect(await internals.unregisteredInheritedChanges({ workspace: setup.workspace, git: setup.realGit },
+        { ...setup.input, domainStep: requirement, executionStep: step }, base)).toEqual([FUNCTIONAL]);
+    });
+
+    // Codex RR-03: evidence was cut at 8,000 characters, and the live functional tests run to 9,783 and
+    // 8,889, so the judge read only part of them; a long change lost whole writes off its end.
+    it('reach the judge whole, however much longer than the old 8,000-character cut', () => {
+      const prefix = 'x = 1\n'.repeat(1_500);
+      const sent = (tail: string) => buildContractBasisMessages({ test: FUNCTIONAL, reason: 'r', citedContract: CLAUSE,
+        testAsDelivered: `${'# delivered\n'.repeat(800)}assert len(HEADER) == 16\n`, testBeforeChange: `${'# now\n'.repeat(1_600)}HEADER = [16]\n`,
+        proposedChange: JSON.stringify([{ tool: 'write_file', content: `${prefix}${tail}` }]) }).map((message) => message.content).join('\n');
+      const first = sent('assert len(HEADER) == 19');
+      expect(first).toContain('assert len(HEADER) == 19');
+      expect(first).toContain('assert len(HEADER) == 16');
+      expect(first).toContain('HEADER = [16]');
+      expect(first).not.toBe(sent('assert True'));
+    });
+
+    it('cannot be sent in part: a message too large to carry whole is not built', () => {
+      expect(() => buildContractBasisMessages({ test: FUNCTIONAL, reason: 'r', citedContract: CLAUSE,
+        proposedChange: 'x'.repeat(100_000) })).toThrow(ContractBasisEvidenceTooLargeError);
+    });
+
+    it('are refused, with no judge asked, when the change is too large to show whole', async () => {
+      const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'Would approve anything.' }));
+      const { gate } = await delivered(judge);
+      const huge = { ...extend, args: { ...extend.args, replace: 'x = 1\n'.repeat(5_000) } };
+      expect(await gate.checkTurn([rename, huge])).toEqual([0, 1].map(() => ({ error: tFor('en').tools.contractBasis.evidenceTooLarge(FUNCTIONAL, 'change') })));
+      expect(judge).not.toHaveBeenCalled();
+    });
+
+    // Codex RR-02: "as delivered" was read at this Ticket's base, which holds what later Tickets made of
+    // the test. A P1 assertion relaxed by an earlier P2 Ticket then read as the delivered one.
+    describe('as delivered', () => {
+      const LATER = 'HEADER = [16]\n\ndef test_header():\n    assert len(HEADER) >= 16\n';
+      const history = async (judge: ContractBasisJudge, record: 'phase' | 'next-phase-baseline') => {
+        const setup = await seeded(judge);
+        await setup.workspace.writeFile(FUNCTIONAL, DELIVERED);
+        const deliveredAt = await setup.realGit!.snapshot('seed', 1, 'P1 delivered');
+        const project = (await setup.repository.findProject())!;
+        const p1 = await setup.repository.read(project.phaseIds[0]!);
+        if (p1.objectType !== 'phase') throw new Error('Expected P1');
+        if (record === 'phase') {
+          await setup.repository.update(PhaseSchema.parse({ ...p1, ...reviseObjectEnvelope(p1), deliveredRevision: deliveredAt }), p1.state);
+        } else {
+          // A Phase delivered before deliveries were recorded: the next Phase began from what it left.
+          const ticket = await setup.repository.read(setup.input.ticket.id);
+          if (ticket.objectType !== 'ticket') throw new Error('Expected the P2 Ticket');
+          await setup.repository.update(TicketSchema.parse({ ...ticket, ...reviseObjectEnvelope(ticket), commits: [...ticket.commits,
+            { revision: deliveredAt, kind: 'baseline', attempt: 0, stepId: setup.input.domainStep.id, summary: 'P2 starts', recordedAt: new Date().toISOString() }] }), ticket.state);
+        }
+        await setup.workspace.writeFile(FUNCTIONAL, LATER);
+        await setup.realGit!.snapshot('seed', 2, 'an earlier P2 Ticket relaxed it');
+        await setup.workspace.writeFile(FUNCTIONAL, AFTER_EARLIER_TURN);
+        return { setup, gate: await functionalGate(setup) };
+      };
+
+      it.each(['phase', 'next-phase-baseline'] as const)('is what the earlier Phase delivered, read from its %s', async (record) => {
+        const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+        const { gate } = await history(judge, record);
+        await gate.checkTurn([rename, extend]);
+        expect(judge.mock.calls[0]![0]).toMatchObject({ testAsDelivered: DELIVERED, testBeforeChange: AFTER_EARLIER_TURN });
+      });
+    });
+
+    it('are all refused when the judge refuses their change', async () => {
+      const { gate } = await delivered(async () => ({ supersedes: false, reason: 'Nothing moves the assertion.' }));
+      const refusal = { error: tFor('en').tools.contractBasis.notSuperseded(FUNCTIONAL, 'Nothing moves the assertion.') };
+      expect(await gate.checkTurn([rename, extend])).toEqual([refusal, refusal]);
+    });
+
+    it('are all refused, with no judge asked, when one of them cites a clause that is not there', async () => {
+      const judge = vi.fn<ContractBasisJudge>();
+      const { gate } = await delivered(judge);
+      const invented = { ...extend, basis: { ...basis, quote: 'a sentence no document contains' } };
+      const [own, sibling] = await gate.checkTurn([invented, rename]);
+      expect(own).toEqual({ error: expect.stringContaining('docs/iterations/P2/01-requirement-analysis.md') });
+      expect(sibling).toEqual({ error: tFor('en').tools.contractBasis.refusedWithChange(FUNCTIONAL, (own as { error: string }).error) });
+      expect(judge).not.toHaveBeenCalled();
+    });
+  });
+
+  // A write that touches two tests joins their changes into one: refusing either refuses all three.
+  it('treats writes linked through a write that touches both tests as one change', async () => {
+    const setup = await seeded();
+    const unit = setup.steps.find((step) => step.type === 'UNIT_TEST')!;
+    const internals = setup.runner as unknown as { contractBasisGate: (...args: unknown[]) => ContractBasisGate };
+    const gate = internals.contractBasisGate({ workspace: setup.workspace, git: setup.realGit },
+      { ...setup.input, domainStep: unit, executionStep: setup.projection.byDomainStepId.get(unit.id)! },
+      await earlierPhaseTestOwners(setup.repository, setup.phaseId), (await setup.realGit!.raw().revparse(['HEAD'])).trim());
+    const basis = { reason: 'Nineteen columns.', document: REQUIREMENT, quote: CLAUSE };
+    const first = 'tests/verification/p1/unit-test/s005/test_a.py';
+    const second = 'tests/verification/p1/unit-test/s005/test_b.py';
+    const verdicts = await gate.checkTurn([
+      { targets: [first], basis, tool: 'write_file', args: {} },
+      { targets: [second], basis: undefined, tool: 'write_file', args: {} },
+      { targets: [first, second], basis, tool: 'apply_patch', args: {} },
+    ]);
+    expect(verdicts.every((verdict) => verdict !== undefined && 'error' in verdict)).toBe(true);
+  });
+
+  it('keeps a refused inherited test from holding back a write to anything else in the turn', async () => {
+    const setup = await seeded();
+    const gate = await gateOf(setup);
+    const [refused, product] = await gate.checkTurn([
+      { targets: [INHERITED], basis: undefined, tool: 'write_file', args: {} },
+      { targets: ['src/main.py'], basis: undefined, tool: 'write_file', args: {} },
+    ]);
+    expect(refused).toEqual({ error: expect.any(String) });
+    expect(product).toBeUndefined();
   });
 
   it('asks no judge below the functional level', async () => {
     const judge = vi.fn<ContractBasisJudge>();
     const setup = await seeded(judge);
     const gate = await gateOf(setup);
-    expect(await gate.check([INHERITED], { reason: 'Stale.', document: REQUIREMENT, quote: CLAUSE }, { tool: 'write_file', args: {} }))
+    expect(await checkOne(gate, [INHERITED], { reason: 'Stale.', document: REQUIREMENT, quote: CLAUSE }, { tool: 'write_file', args: {} }))
       .toEqual({ record: expect.any(Function) });
     expect(judge).not.toHaveBeenCalled();
   });
@@ -305,7 +541,7 @@ describe('the contract basis gate of a real attempt', () => {
     const basis = { reason: 'The header assertion expects sixteen columns.', document: REQUIREMENT, quote: CLAUSE };
 
     expect(citable).toEqual([REQUIREMENT, DESIGN, 'docs/iterations/P2/03-detailed-design.md']);
-    const verdict = await gate.check([INHERITED], basis, { tool: 'write_file', args: {} });
+    const verdict = await checkOne(gate, [INHERITED], basis, { tool: 'write_file', args: {} });
     if (!verdict || !('record' in verdict)) throw new Error('Expected the write to be allowed');
     expect(await ledger(setup)).toEqual([]);
     await setup.workspace.writeFile(INHERITED, 'def test_header():\n    assert 19 == 19\n');
@@ -325,7 +561,7 @@ describe('the contract basis gate of a real attempt', () => {
     const invented = '失败文件的警告是否保留属于实现自由度，保留时必须归属该文件';
     await setup.workspace.writeFile(DESIGN, `# P2 design\n\n- ${invented}\n`);
 
-    expect(await gate.check([INHERITED], { reason: 'Warnings may stay.', document: DESIGN, quote: invented }, { tool: 'write_file', args: {} }))
+    expect(await checkOne(gate, [INHERITED], { reason: 'Warnings may stay.', document: DESIGN, quote: invented }, { tool: 'write_file', args: {} }))
       .toEqual({ error: tFor('en').tools.contractBasis.quoteNotFound(DESIGN) });
     expect(await ledger(setup)).toEqual([]);
   });
@@ -333,13 +569,13 @@ describe('the contract basis gate of a real attempt', () => {
   it('recognises an inherited test behind a path that walks back into it', async () => {
     const setup = await seeded();
     const gate = await gateOf(setup);
-    expect(await gate.check(['tests/unit/../unit/test_cli.py'], undefined, { tool: 'write_file', args: {} })).toEqual({ error: expect.any(String) });
+    expect(await checkOne(gate, ['tests/unit/../unit/test_cli.py'], undefined, { tool: 'write_file', args: {} })).toEqual({ error: expect.any(String) });
   });
 
   it('leaves a write to anything but an inherited test alone', async () => {
     const setup = await seeded();
     const gate = await gateOf(setup);
-    expect(await gate.check(['tests/unit/test_cli_p2.py', 'src/main.py'], undefined, { tool: 'write_file', args: {} })).toBeUndefined();
+    expect(await checkOne(gate, ['tests/unit/test_cli_p2.py', 'src/main.py'], undefined, { tool: 'write_file', args: {} })).toBeUndefined();
     expect(await ledger(setup)).toEqual([]);
   });
 
@@ -351,7 +587,7 @@ describe('the contract basis gate of a real attempt', () => {
       { ...setup.input, domainStep: requirement, executionStep: setup.projection.byDomainStepId.get(requirement.id)! },
       await earlierPhaseTestOwners(setup.repository, setup.phaseId), 'a'.repeat(40));
 
-    expect(await gate.check(['tests/test_functional_acceptance.py'], { reason: 'x', document: DESIGN, quote: 'process_files returns three values.' }, { tool: 'write_file', args: {} }))
+    expect(await checkOne(gate, ['tests/test_functional_acceptance.py'], { reason: 'x', document: DESIGN, quote: 'process_files returns three values.' }, { tool: 'write_file', args: {} }))
       .toEqual({ error: tFor('en').tools.contractBasis.documentNotCitable(DESIGN, `- ${REQUIREMENT}`) });
   });
 });

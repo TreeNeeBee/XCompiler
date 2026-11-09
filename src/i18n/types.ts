@@ -430,6 +430,8 @@ export interface Messages {
       changeRequestNotAccepted: (changeRequest: string) => string;
       changeRequestNotCovering: (paths: string, documents: string) => string;
       notSuperseded: (path: string, reason: string) => string;
+      refusedWithChange: (path: string, reason: string) => string;
+      evidenceTooLarge: (path: string, part: 'change' | 'test' | 'requirements') => string;
       judgementUnavailable: string;
       unregisteredChange: (paths: string) => string;
     };

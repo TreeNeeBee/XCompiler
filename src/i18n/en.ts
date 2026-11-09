@@ -762,8 +762,16 @@ const messages: Messages = {
         `That Change Request does not name ${paths} among its affected artifacts, so it is no basis for changing it. ` +
         `Cite the clause that requires the change instead, from:\n${documents}`,
       notSuperseded: (path, reason) =>
-        `The cited contract does not supersede ${path}: ${reason} Leave the assertion as it is: if the product fails it, ` +
-        'that is a product defect for its owner. Cite a clause only if it truly requires what the change asserts.',
+        `The cited contract does not supersede ${path}: ${reason} None of this turn's changes to it were written. ` +
+        'If a clause truly requires the change, propose all of it in one turn citing that clause; otherwise leave the test as it is: ' +
+        'a failure the current contract still demands is a product defect for its owner.',
+      evidenceTooLarge: (path, part) => part === 'change'
+        ? `This turn's changes to ${path} are too large to judge whole, so they are refused rather than judged on part of them. ` +
+          'Spread the change over smaller turns: each turn is judged against the test as it is then.'
+        : `The ${part === 'test' ? 'test' : 'requirement document'} behind ${path} is too large to judge whole, so the change is refused. ` +
+          'Smaller turns will not help: leave the test as it is and report what you found as a finding for its owner.',
+      refusedWithChange: (path, reason) =>
+        `Not written: another change to ${path} in this turn was refused, and one test is changed whole or not at all. ${reason}`,
       judgementUnavailable: 'This change could not be confirmed against its contract, so it is refused. Leave the test as an ' +
         'earlier Phase delivered it, and report what you found as a finding for its owner.',
       unregisteredChange: (paths) =>

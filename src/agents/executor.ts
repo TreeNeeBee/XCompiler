@@ -1009,7 +1009,14 @@ export class StepExecutor {
       for (const item of normalizedActions.invalid) {
         calls.push({ tool: item.result.tool, ok: false, error: item.result.error });
       }
-      for (const a of actions) {
+      // Before any write runs: what this turn does to an inherited test is judged as one change.
+      const basisVerdicts = inp.ctx.contractBasisGate
+        ? await inp.ctx.contractBasisGate.checkTurn(actions.map((action) =>
+          isOutputMutationTool(action.tool) && toolMap.has(action.tool)
+            ? { targets: actionTargetPaths(action.tool, action.args), basis: action.args.contractBasis, tool: action.tool, args: action.args }
+            : undefined))
+        : [];
+      for (const [actionIndex, a] of actions.entries()) {
         if (
           a.tool === 'run_tests' &&
           baselineTestVerifiedMutationGeneration === mutationGeneration
@@ -1090,9 +1097,7 @@ export class StepExecutor {
         }
         // Before any permission prompt: a write no contract allows should not reach the user. It is
         // answered as a failed call, so every later count and record treats it as one.
-        const basisVerdict = isOutputMutationTool(a.tool)
-          ? await inp.ctx.contractBasisGate?.check(actionTargetPaths(a.tool, a.args), a.args.contractBasis, a)
-          : undefined;
+        const basisVerdict = basisVerdicts[actionIndex];
         const basisRefusal = basisVerdict && 'error' in basisVerdict ? basisVerdict : undefined;
         const callId = randomUUID();
         const permission = buildPermissionRequest(a.tool, a.args, inp.step.id, inp.ctx.language, stepLabel);
@@ -1178,7 +1183,9 @@ export class StepExecutor {
         updateUnresolvedToolFailures(unresolvedToolFailures, a, r, advisoryFailureTools, advisoryFailureRules);
         const successfulMutation = didPerformSuccessfulMutation(a, r);
         // Only now: a basis covers a change that happened, never a write refused or denied on the way.
-        if (successfulMutation && basisVerdict && 'record' in basisVerdict) await basisVerdict.record();
+        // Every write of a judged group has to run for the group to count, including one that found
+        // the file already as wanted; the gate registers only once all of them have.
+        if (r.ok && basisVerdict && 'record' in basisVerdict) await basisVerdict.record();
         if (successfulMutation) {
           const hadPendingVerification = mutationGeneration > verifiedMutationGeneration;
           const baselineWasVerified = baselineTestVerifiedMutationGeneration === mutationGeneration;
