@@ -3546,3 +3546,28 @@ P1 包资源问题仍延后；不启用外部付费模型。
 - lint、`git diff --check`、`npm run build`、`rule check` 退出码均为 0。
 - core 2317 例、integration+e2e 1655 例通过（`caffeinate -ims`，分组运行）。
 - 首次 typecheck 因新增运行层测试中的 `ObjectId` 类型报错。改为显式类型转换后 typecheck 退出码为 0，该测试文件 26 例重跑通过。
+
+### 交付在关闭 Phase 时被拒，且被拒的写入覆盖了已登记的修订（2026-11-10，新目录完整验收发现，D-88）
+
+**发现**：用 `e1fd0d9` 打包产物在 `xc-verify/dbc2excel-6` 从头验收，P1 走通了 8 个 Step（CODE 一次重试；MODULE_TEST 发现 CODE 未实现模块契约里的名字，由 HIGH_LEVEL_DESIGN 修复并沿 S003～S008 传播），阶段门禁通过，然后在交付时以 `phase P1 revision must advance from 4 to 5, not 4` 停止。
+
+**根因**：
+1. **D-87 回归**：非最终交付时，开发报告在交付钩子里把自己挂到 Phase 上（`reportIds`），Phase 修订号前进一步。`completePhase` 在钩子之前读过 Phase，之后仍用这份副本写 `delivered`，被注册表拒绝。D-87 的测试没有覆盖这一点：引擎测试的报告桩不写领域对象，集成测试直接调用 `publishDelivery`，离线回放也没经过 `completePhase`。
+2. **交付中断后无法续上**：失败前，交付工单和史诗已经关闭。续跑时 `completePhase` 再次关闭它们，报 `closed -> in_progress` 非法转换。
+3. **既有的仓库缺陷**：`DomainObjectRepository.commitObjects` 先写 `objects/<type>/<id>/r<n>.json`，再由注册表校验。代码注释假设“校验失败时注册表仍指向旧文件”，但过时副本携带的修订号正好等于已登记的修订号，所以写的就是已登记的那个文件。结果：注册表记录 r4 为 `in_progress`（带报告），磁盘上的 r4 却是被拒绝的 `delivered`；同一进程的缓存也是被拒绝的内容；重新加载时 `read` 不校验内容哈希，照样读到它。
+
+**处理**：
+- `completePhase` 在交付钩子之后重新读取 Phase。
+- `completePhase` 对已关闭的交付工单和史诗跳过关闭。
+- `ObjectRegistry.planBatch` 抽出原 `commitBatch` 的逐条校验，`commitBatch` 与新增的 `assertBatch` 共用它。仓库先组装整批注册操作，用 `assertBatch` 预检，通过后才写文件、更新缓存，最后 `commitBatch`。
+
+**测试与证伪**：
+- 引擎测试：钩子里用真实报告生成器按非最终交付生成报告，阶段能关闭且报告挂上。去掉重新读取后，报出与真实运行相同的错误。
+- 控制器测试：交付工单和史诗已关闭时，`completePhase` 能完成。去掉跳过后，报 `closed -> in_progress`。
+- 仓库集成测试（真实文件）：过时副本写入被拒后，已登记文件、同实例读取、重新加载都保持原样。去掉预检后，已登记文件被覆盖。
+
+**dbc2excel-6 的状态**：Phase P1 的 `r4.json` 被覆盖。按 r3 加上报告挂接（修订号 4、注册表记录的 `updatedAt`、报告 id）可以重建原内容，内容哈希与注册表一致（`sha256:8344a91d…`）。重建之后，交付工单与史诗已关闭、Phase 为 `in_progress`。在副本上恢复后用新代码空跑剩余路径（真实编排器、真实报告生成器、真实提交与标签，只有场景判定换成桩）：P1 交付，打出 `v1.0.0`，下一阶段 P2 就绪，终端打印本阶段交付清单。
+
+**记录，未改**：仓库 `read` 不校验内容哈希，这类损坏在读取时不会报错。
+
+**门禁**：typecheck、lint、`git diff --check`、`npm run build`、`rule check` 退出码均为 0；core 2319 例通过，integration+e2e 1656 例通过，在 `caffeinate -ims` 下分组运行。

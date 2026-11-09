@@ -663,6 +663,9 @@ export class ProjectController {
       throw new Error(`Cannot deliver ${phase.name}: incomplete Stories [${incompleteStories.map((ticket) => ticket.name).join(', ')}]`);
     }
     await this.hooks.onStepsClosed?.(phase.id);
+    // What delivery assembled may have written the Phase: the development report links itself to it.
+    // Transitioning the copy read before that is rejected by the registry, one revision behind.
+    phase = await this.requirePhase(phaseId);
     const deliveredRevision = await this.hooks.deliveredRevision?.(phase.id);
     let delivery = phaseTickets.find(
       (ticket): ticket is WorkTicket =>
@@ -672,10 +675,16 @@ export class ProjectController {
       (ticket): ticket is WorkTicket => ticket.id === phase.epicTicketId && ticket.type === 'epic',
     );
     if (!delivery || !epic) throw new Error(`Phase ${phase.name} delivery Ticket graph is incomplete`);
-    delivery = (await this.registration.routeAndAssign(delivery.id)).ticket as WorkTicket;
-    await this.saveTicketTransitionPath(delivery, ['in_progress', 'resolved', 'closed']);
-    epic = (await this.registration.routeAndAssign(epic.id)).ticket as WorkTicket;
-    await this.saveTicketTransitionPath(epic, ['in_progress', 'resolved', 'closed']);
+    // A delivery interrupted after closing these, and before the Phase, resumes here: what is already
+    // closed stays closed, and only what remains is done.
+    if (delivery.state !== 'closed') {
+      delivery = (await this.registration.routeAndAssign(delivery.id)).ticket as WorkTicket;
+      await this.saveTicketTransitionPath(delivery, ['in_progress', 'resolved', 'closed']);
+    }
+    if (epic.state !== 'closed') {
+      epic = (await this.registration.routeAndAssign(epic.id)).ticket as WorkTicket;
+      await this.saveTicketTransitionPath(epic, ['in_progress', 'resolved', 'closed']);
+    }
     phase = await this.savePhaseTransition(deliveredRevision ? { ...phase, deliveredRevision } : phase, 'delivered');
     await this.savePhaseTransition(phase, 'closed');
     let project = await this.requireProject(phase.projectId);

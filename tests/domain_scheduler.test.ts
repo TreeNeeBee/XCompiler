@@ -11,7 +11,7 @@ import { ProjectController, type ScheduledWork } from '../src/application/projec
 import { workModeFor } from '../src/application/project_management/work_scheduler.js';
 import { TicketRegistrationService } from '../src/application/project_management/ticket_registration_service.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
-import { createObjectEnvelope } from '../src/domain/objects/object_envelope.js';
+import { createObjectEnvelope, reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketSchema } from '../src/domain/tickets/ticket.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
@@ -378,6 +378,30 @@ describe('PM WorkScheduler', () => {
     expect(seen[0]!.closedSteps).toBe(8);
     // And delivery is still open, so the manifest is part of the delivered record.
     expect(seen[0]!.deliveryState).not.toBe('closed');
+  });
+
+  // dbc2excel-6 P1: delivery closed its delivery Ticket and Epic, then failed writing the Phase. Every
+  // later attempt tried to close those Tickets again, and closed -> in_progress is not a transition.
+  it('resumes a delivery interrupted after its delivery Ticket and Epic were closed', async () => {
+    const fixture = await setup();
+    for (let index = 0; index < 8; index += 1) await deliverPassing(fixture, await startNext(fixture));
+    const phase = asObject(await fixture.repository.read(fixture.graph.phases[0]!.id), 'phase');
+    const assessment = await new QualityAssessmentService(fixture.repository).assessPhase({
+      phase,
+      passed: true,
+      evidence: ['deliverables complete', 'integrated tests pass', 'live scenario passes'],
+    });
+    await fixture.controller.attachPhaseQuality(phase.id, assessment.id);
+    const tickets = await new TicketWorkflow(fixture.repository).list();
+    for (const ticket of tickets.filter((candidate) => candidate.phaseId === phase.id &&
+      (candidate.id === phase.epicTicketId || (candidate.type === 'story' && candidate.workKind === 'delivery')))) {
+      await fixture.repository.update(TicketSchema.parse({ ...ticket, ...reviseObjectEnvelope(ticket), state: 'closed' }), 'closed');
+    }
+
+    const result = await fixture.controller.completePhase(phase.id);
+
+    expect(result.projectDelivered).toBe(true);
+    expect(asObject(await fixture.repository.read(phase.id), 'phase').state).toBe('closed');
   });
 
   // A repair queued on a downstream Step is often the one thing able to clear the upstream Step

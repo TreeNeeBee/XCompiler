@@ -303,6 +303,8 @@ claims of unchanged meaning. Concrete supported cases and their proofs still nee
   the branch and the conflicting files.
 - Canonical state is persisted through repository ports and domain commits. PM caches are rebuildable
   projections and cannot become a second source of truth.
+- A write the registry would refuse writes nothing: every object revision file is written only after its
+  batch has passed the registry's checks, so a stale copy can never replace a registered revision.
 - Raw audit records are append-only and complete except for required secret redaction. Derived
   summaries may index and link to raw records, but must not replace, truncate, or rewrite them.
 - Debug Wiki operation logs are local append-only runtime data. Packaged system and agent knowledge

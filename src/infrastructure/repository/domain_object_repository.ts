@@ -109,6 +109,7 @@ export class DomainObjectRepository implements DomainObjectRepositoryPort {
     mode: 'register' | 'update';
   }[]): Promise<void> {
     const commit = async () => {
+      const writes: Array<{ objectRef: string; content: string; parsed: PersistedDomainObject }> = [];
       const registryOperations: RegistryBatchOperation[] = [];
       for (const operation of operations) {
         const parsed = PersistedDomainObjectSchema.parse(operation.object);
@@ -120,10 +121,7 @@ export class DomainObjectRepository implements DomainObjectRepositoryPort {
         }
         const objectRef = domainObjectPath(parsed);
         const content = `${JSON.stringify(parsed, null, 2)}\n`;
-        await this.workspace.writeFileAtomic(objectRef, content);
-        // Safe even if the registry batch below fails: the registry would still point at the
-        // previous ref, so this entry simply never gets looked up.
-        this.cacheObject(objectRef, parsed);
+        writes.push({ objectRef, content, parsed });
         registryOperations.push({
           mode: operation.mode,
           input: {
@@ -134,6 +132,16 @@ export class DomainObjectRepository implements DomainObjectRepositoryPort {
             state: operation.state ?? objectState(parsed),
           },
         });
+      }
+      // Refused before any file is written. A stale copy carries the revision already registered, so
+      // its file is the registered one: writing it first replaced registered content with a write the
+      // registry then rejected, and every later read returned the rejected content.
+      this.registry.assertBatch(registryOperations);
+      for (const write of writes) {
+        await this.workspace.writeFileAtomic(write.objectRef, write.content);
+        // Safe even if the registry batch below fails: the check above admits only new revisions, so
+        // the registry still points at the previous ref and this entry is never looked up.
+        this.cacheObject(write.objectRef, write.parsed);
       }
       await this.registry.commitBatch(registryOperations);
     };

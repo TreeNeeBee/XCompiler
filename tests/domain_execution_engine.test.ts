@@ -10,6 +10,7 @@ import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../src/app
 import type { AttemptInput, AttemptResult } from '../src/application/execution/attempt_runner.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { QualityAssessmentService } from '../src/application/execution/quality_assessment_service.js';
+import { generateProjectDevelopmentReport } from '../src/application/reporting/project_report.js';
 import { ProjectGraphPersistenceService } from '../src/application/planning/project_graph_persistence_service.js';
 import type { Step } from '../src/domain/steps/step.js';
 import { DomainObjectRepository } from '../src/infrastructure/repository/domain_object_repository.js';
@@ -427,6 +428,25 @@ describe('ProjectOrchestrator', () => {
       const phase = await setup.repository.read(setup.graph.phases[0]!.id);
       expect(phase.objectType === 'phase' && phase.deliveredRevision).toBe(revisions[2]);
       expect(tagged).toEqual([revisions[2]]);
+    });
+
+    // dbc2excel-6 P1: the report a non-final delivery writes links itself to the Phase, inside delivery.
+    // completePhase then transitioned the copy it had read before, and the registry refused it.
+    it('delivers the Phase its own report was linked to while delivery was assembled', async () => {
+      const setup = await fixture();
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        writeDeliveryReport: () => generateProjectDevelopmentReport({
+          workspace: setup.workspace, plan: setup.plan, finalDelivery: false, delivering: true, repository: setup.repository,
+        }),
+        finalGate: async () => ({ ok: true, evidence: ['scenario passes'] }),
+      }, setup.plan);
+      const result = await engine.run(setup.graph.phases[0]!.id);
+
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      const phase = await setup.repository.read(setup.graph.phases[0]!.id);
+      expect(phase.objectType === 'phase' && phase.state).toBe('closed');
+      expect(phase.objectType === 'phase' && phase.reportIds).toHaveLength(1);
     });
 
     it('closes it on the passing gate even when nothing upstream marked its solution verified', async () => {

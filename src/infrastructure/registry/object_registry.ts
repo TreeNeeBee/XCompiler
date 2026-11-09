@@ -203,46 +203,21 @@ export class ObjectRegistry {
     });
   }
 
+  /**
+   * Checks a batch against the current entries without recording anything.
+   *
+   * The repository writes each object's revision file before the registry records it, so a write the
+   * registry would refuse must be refused first: a stale copy carries the revision already registered,
+   * and writing its file replaced the registered content with what was then rejected.
+   */
+  assertBatch(operations: readonly RegistryBatchOperation[]): void {
+    this.planBatch(operations);
+  }
+
   async commitBatch(operations: readonly RegistryBatchOperation[]): Promise<ObjectRegistryEntry[]> {
     if (operations.length === 0) return [];
     return this.serialize(async () => {
-      const shadow = new Map(this.entries);
-      const entries: ObjectRegistryEntry[] = [];
-      for (const operation of operations) {
-        const envelope = extractObjectEnvelope(operation.input.envelope);
-        const current = shadow.get(envelope.id);
-        if (operation.mode === 'register') {
-          if (current) throw new Error(`Object id has already been registered and cannot be reused: ${envelope.id}`);
-        } else {
-          if (!current) throw new Error(`Object registry entry not found: ${envelope.id}`);
-          if (current.tombstonedAt) throw new Error(`Cannot update tombstoned object: ${envelope.id}`);
-          if (envelope.objectType !== current.objectType || envelope.projectId !== current.projectId) {
-            throw new Error(`Object identity metadata cannot change: ${envelope.id}`);
-          }
-          if (envelope.createdAt !== current.createdAt) {
-            throw new Error(`Object createdAt cannot change: ${envelope.id}`);
-          }
-          if (envelope.revision !== current.revision + 1) {
-            throw new Error(
-              `${envelope.objectType} ${envelope.name} (${envelope.id}) revision must advance ` +
-              `from ${current.revision} to ${current.revision + 1}, not ${envelope.revision}: ` +
-              'the caller is holding a copy read before another write landed',
-            );
-          }
-        }
-        const parentId = operation.input.parentId ?? current?.parentId;
-        assertProjectAndParentIn(shadow, envelope, parentId);
-        const entry = ObjectRegistryEntrySchema.parse({
-          ...envelope,
-          objectRef: normalizeObjectRef(operation.input.objectRef),
-          contentHash: operation.input.contentHash,
-          parentId,
-          state: operation.input.state,
-        });
-        shadow.set(entry.id, entry);
-        entries.push(entry);
-      }
-
+      const entries = this.planBatch(operations);
       const sequence = this.eventSequence;
       let previousEventHash = this.lastEventHash;
       const events: ObjectRegistryEvent[] = entries.map((entry, index) => {
@@ -270,6 +245,46 @@ export class ObjectRegistry {
       await this.writeSnapshot();
       return entries.map((entry) => ({ ...entry }));
     });
+  }
+
+  private planBatch(operations: readonly RegistryBatchOperation[]): ObjectRegistryEntry[] {
+    const shadow = new Map(this.entries);
+    const entries: ObjectRegistryEntry[] = [];
+    for (const operation of operations) {
+      const envelope = extractObjectEnvelope(operation.input.envelope);
+      const current = shadow.get(envelope.id);
+      if (operation.mode === 'register') {
+        if (current) throw new Error(`Object id has already been registered and cannot be reused: ${envelope.id}`);
+      } else {
+        if (!current) throw new Error(`Object registry entry not found: ${envelope.id}`);
+        if (current.tombstonedAt) throw new Error(`Cannot update tombstoned object: ${envelope.id}`);
+        if (envelope.objectType !== current.objectType || envelope.projectId !== current.projectId) {
+          throw new Error(`Object identity metadata cannot change: ${envelope.id}`);
+        }
+        if (envelope.createdAt !== current.createdAt) {
+          throw new Error(`Object createdAt cannot change: ${envelope.id}`);
+        }
+        if (envelope.revision !== current.revision + 1) {
+          throw new Error(
+            `${envelope.objectType} ${envelope.name} (${envelope.id}) revision must advance ` +
+            `from ${current.revision} to ${current.revision + 1}, not ${envelope.revision}: ` +
+            'the caller is holding a copy read before another write landed',
+          );
+        }
+      }
+      const parentId = operation.input.parentId ?? current?.parentId;
+      assertProjectAndParentIn(shadow, envelope, parentId);
+      const entry = ObjectRegistryEntrySchema.parse({
+        ...envelope,
+        objectRef: normalizeObjectRef(operation.input.objectRef),
+        contentHash: operation.input.contentHash,
+        parentId,
+        state: operation.input.state,
+      });
+      shadow.set(entry.id, entry);
+      entries.push(entry);
+    }
+    return entries;
   }
 
   async tombstone(id: ObjectId, expectedRevision: number, now = new Date().toISOString()): Promise<ObjectRegistryEntry> {
