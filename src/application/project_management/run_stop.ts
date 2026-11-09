@@ -16,6 +16,7 @@ export type RunStop =
   | { code: 'pending_merge_integration'; status: string }
   | { code: 'merge_integration'; status: string }
   | { code: 'merge_gate_failed' }
+  | { code: 'merge_conflict'; branch: string; files: readonly string[] }
   | { code: 'merge_authorization_required' }
   | { code: 'no_downstream_verification'; ticketName: string }
   | { code: 'evidence_storage_failed'; ticketName: string; detail: string }
@@ -41,6 +42,7 @@ export function renderRunStop(stop: RunStop, messages: Messages['runStop']): str
     case 'pending_merge_integration': return messages.pendingMergeIntegration(stop.status);
     case 'merge_integration': return messages.mergeIntegration(stop.status);
     case 'merge_gate_failed': return messages.mergeGateFailed();
+    case 'merge_conflict': return messages.mergeConflict(stop.branch, stop.files.join(', '));
     case 'merge_authorization_required': return messages.mergeAuthorizationRequired();
     case 'no_downstream_verification': return messages.noDownstreamVerification(stop.ticketName);
     case 'evidence_storage_failed': return messages.evidenceStorageFailed(stop.ticketName, stop.detail);

@@ -877,6 +877,9 @@ const messages: Messages = {
     pendingMergeIntegration: (status) => `待处理的合并集成状态为 ${status}`,
     mergeIntegration: (status) => `合并集成状态为 ${status}`,
     mergeGateFailed: () => '合并门禁未通过',
+    mergeConflict: (branch, files) =>
+      `${branch} 与主干在 ${files} 上冲突，且没有未关闭的工单会重跑它的改动；` +
+      '请在该分支上解决冲突，或放弃该分支并重做其改动',
     mergeAuthorizationRequired: () => '需要先授权合并，才能执行后续 Step',
     noDownstreamVerification: (ticket) => `${ticket} 没有后续验证路径`,
     evidenceStorageFailed: (ticket, detail) => `必需的证据存储失败；${ticket} 已挂起，未创建缺陷 Ticket：${detail}`,

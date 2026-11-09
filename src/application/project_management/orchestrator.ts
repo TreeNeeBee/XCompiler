@@ -39,11 +39,30 @@ import { workFor } from '../../domain/workflow/work.js';
 import { isUnchangedRepairRecurrence } from './ticket_workflow.js';
 import { t } from '../../i18n/index.js';
 
+/** A generation whose branch no longer merges into the mainline. */
+interface MergeConflictSummary {
+  changeSetId: ObjectId;
+  changeSetName: string;
+  sourceBranch: string;
+  ownerTicketId: ObjectId;
+  correctiveTicketIds: readonly ObjectId[];
+  files: readonly string[];
+}
+
 interface MergeIntegrationResult {
-  status: 'merged' | 'nothing-to-merge' | 'failed' | 'blocked' | 'awaiting-authorization';
+  status:
+    | 'merged'
+    | 'nothing-to-merge'
+    | 'failed'
+    | 'blocked'
+    | 'awaiting-authorization'
+    | 'superseded'
+    | 'conflicted';
   reason?: string;
   failureLog?: string;
   workspaceBinding?: TicketWorkspaceBinding;
+  conflict?: MergeConflictSummary;
+  superseded?: readonly MergeConflictSummary[];
 }
 
 export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, 'repository' | 'plugins'> {
@@ -197,6 +216,32 @@ export class ProjectOrchestrator {
       await this.options.audit.event('note', `could not tag the ${phase.name} delivery: ${(error as Error).message}`, {
         messageId: 'domain.phase_release_tag_failed', ...context, error: (error as Error).message,
       });
+    }
+  }
+
+  /**
+   * Records each merge conflict integration met: the generations abandoned for their owners to rerun,
+   * and the conflict that stopped it. The stop itself only names the branch and the files.
+   */
+  private async recordMergeConflicts(
+    phase: Phase,
+    result: MergeIntegrationResult,
+    step?: Step,
+  ): Promise<void> {
+    const context = { projectId: phase.projectId, phaseId: phase.id, stepId: step?.id, stepName: step?.name };
+    for (const report of result.superseded ?? []) {
+      await this.options.audit.event(
+        'note',
+        `${report.sourceBranch} conflicts with the mainline; abandoned so its owner reruns on the current mainline`,
+        { messageId: 'domain.merge_generation_superseded', ...context, ...report },
+      );
+    }
+    if (result.status === 'conflicted' && result.conflict) {
+      await this.options.audit.event(
+        'note',
+        `${result.conflict.sourceBranch} conflicts with the mainline: ${result.reason ?? ''}`,
+        { messageId: 'domain.merge_conflict', ...context, ...result.conflict, reason: result.reason },
+      );
     }
   }
 
@@ -358,13 +403,21 @@ export class ProjectOrchestrator {
     await this.options.git.ensureRepo();
     if (this.options.integratePendingAuthorization) {
       const pending = await this.options.integratePendingAuthorization(phase.id);
-      if (pending.status !== 'merged' && pending.status !== 'nothing-to-merge') {
+      await this.recordMergeConflicts(phase, pending);
+      // An abandoned generation is not a stop: its owner reruns as ordinary scheduled work.
+      if (
+        pending.status !== 'merged' &&
+        pending.status !== 'nothing-to-merge' &&
+        pending.status !== 'superseded'
+      ) {
         return this.failure(
           phase.id,
           steps.length,
           0,
           undefined,
-          pending.reason ?? { code: 'pending_merge_integration', status: pending.status },
+          mergeConflictStop(pending) ??
+            pending.reason ??
+            { code: 'pending_merge_integration', status: pending.status },
         );
       }
     }
@@ -471,6 +524,15 @@ export class ProjectOrchestrator {
         await this.scheduler.attachPhaseQuality(phase.id, phaseAssessment.id);
         if (this.options.integratePhase) {
           const integration = await this.options.integratePhase(phase.id);
+          await this.recordMergeConflicts(phase, integration);
+          if (integration.status === 'conflicted') {
+            return this.failure(
+              phase.id, steps.length, executed, undefined,
+              mergeConflictStop(integration) ?? integration.reason ?? { code: 'merge_integration', status: integration.status },
+            );
+          }
+          // The owner of an abandoned generation has to rerun before the Phase can be delivered.
+          if (integration.status === 'superseded') continue;
           if (integration.status === 'blocked' || integration.status === 'awaiting-authorization') {
             // Neither is a defect in the project: the gate could not run, or the mainline is not
             // ours to write to. Both stop delivery without inventing a Bug.
@@ -637,6 +699,7 @@ export class ProjectOrchestrator {
         // branch, and a Bug or CR repairing that Story is recorded on the same ChangeSet — whereas
         // `rootTicketId` is the Phase Epic, which owns no branch and matches nothing.
         const landed = await this.options.integrateTicket(work.ticket.id);
+        await this.recordMergeConflicts(phase, landed, work.step);
         // A failing gate found a defect in the merged result and says so with its own checks, so it
         // takes the repair path every other discovered defect takes. `blocked` is different in kind:
         // the gate could not run, nothing about the project was shown to be wrong, and there is
@@ -679,7 +742,13 @@ export class ProjectOrchestrator {
             phase.id, steps.length, executed, work.step,
             landed.reason ?? { code: 'merge_integration', status: landed.status },
           );
+        } else if (landed.status === 'conflicted') {
+          return this.failure(
+            phase.id, steps.length, executed, work.step,
+            mergeConflictStop(landed) ?? landed.reason ?? { code: 'merge_integration', status: landed.status },
+          );
         }
+        // `superseded` needs nothing here: the generation's owner reruns as ordinary scheduled work.
       }
     }
   }
@@ -761,4 +830,10 @@ export class ProjectOrchestrator {
       ...(typeof reason === 'string' ? {} : { stop: reason }),
     };
   }
+}
+
+/** The typed stop for a conflict no open Ticket can rerun. */
+function mergeConflictStop(result: MergeIntegrationResult): RunStop | undefined {
+  if (result.status !== 'conflicted' || !result.conflict) return undefined;
+  return { code: 'merge_conflict', branch: result.conflict.sourceBranch, files: result.conflict.files };
 }

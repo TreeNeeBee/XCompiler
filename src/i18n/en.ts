@@ -893,6 +893,9 @@ const messages: Messages = {
     pendingMergeIntegration: (status) => `pending merge integration ${status}`,
     mergeIntegration: (status) => `merge integration ${status}`,
     mergeGateFailed: () => 'merge gate failed',
+    mergeConflict: (branch, files) =>
+      `${branch} conflicts with the mainline in ${files}, and no open Ticket reruns its work; ` +
+      'resolve the conflict on that branch, or abandon the branch and redo its work',
     mergeAuthorizationRequired: () => 'merge authorization is required before downstream execution',
     noDownstreamVerification: (ticket) => `${ticket} has no downstream verification path`,
     evidenceStorageFailed: (ticket, detail) =>

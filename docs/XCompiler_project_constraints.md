@@ -291,6 +291,11 @@ claims of unchanged meaning. Concrete supported cases and their proofs still nee
   worktrees are temporary candidate changes forked from the authoritative tree.
 - PM's file-tree projection records only the authoritative tree. Candidate changes are represented by
   Ticket, ChangeSet, merge-gate, and audit metadata; after merge, the authoritative tree is rescanned.
+- A merge is complete only when Git leaves no unmerged paths; a conflict is reported as a conflict,
+  never as a merged candidate. A generation that conflicts with the mainline is not repaired in place.
+  It is abandoned (its branch kept as evidence) when its open owner, which has not delivered onto it,
+  reruns at the Step where every change delivered onto it was made; otherwise integration stops with
+  the branch and the conflicting files.
 - Canonical state is persisted through repository ports and domain commits. PM caches are rebuildable
   projections and cannot become a second source of truth.
 - Raw audit records are append-only and complete except for required secret redaction. Derived

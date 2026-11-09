@@ -527,6 +527,7 @@ export interface Messages {
     pendingMergeIntegration: (status: string) => string;
     mergeIntegration: (status: string) => string;
     mergeGateFailed: () => string;
+    mergeConflict: (branch: string, files: string) => string;
     mergeAuthorizationRequired: () => string;
     noDownstreamVerification: (ticket: string) => string;
     evidenceStorageFailed: (ticket: string, detail: string) => string;

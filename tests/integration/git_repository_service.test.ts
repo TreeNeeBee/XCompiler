@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { simpleGit } from 'simple-git';
 import { GitRepositoryService } from '../../src/infrastructure/git/git_repository_service.js';
+import { MergeConflictError } from '../../src/application/workspace/git_port.js';
 
 async function repository(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-git-repo-'));
@@ -15,6 +16,22 @@ async function repository(): Promise<string> {
   await git.add('.');
   await git.commit('init');
   return root;
+}
+
+/** A repository whose `feature` branch and mainline both rewrote README.md. */
+async function divergedRepository() {
+  const root = await repository();
+  const git = simpleGit({ baseDir: root });
+  const targetBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  await git.checkoutLocalBranch('feature');
+  await fs.writeFile(path.join(root, 'README.md'), '# feature\n');
+  await git.add('.');
+  await git.commit('feature change');
+  await git.checkout(targetBranch);
+  await fs.writeFile(path.join(root, 'README.md'), '# master\n');
+  await git.add('.');
+  await git.commit('mainline change');
+  return { root, git, targetBranch };
 }
 
 describe('GitRepositoryService', () => {
@@ -100,31 +117,63 @@ describe('GitRepositoryService', () => {
     expect((await service.listWorktrees()).some((entry) => entry.path === orphan)).toBe(false);
   });
 
-  it('restores a clean canonical worktree when a squash merge conflicts', async () => {
-    const root = await repository();
-    const git = simpleGit({ baseDir: root });
-    const targetBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-    await git.checkoutLocalBranch('feature');
-    await fs.writeFile(path.join(root, 'README.md'), '# feature\n');
-    await git.add('.');
-    await git.commit('feature change');
-    await git.checkout(targetBranch);
-    await fs.writeFile(path.join(root, 'README.md'), '# master\n');
-    await git.add('.');
-    await git.commit('mainline change');
+  it('reports a conflicting squash merge as a conflict and restores a clean canonical worktree', async () => {
+    const { root, git, targetBranch } = await divergedRepository();
     const expectedTargetRevision = (await git.revparse(['HEAD'])).trim();
     const service = new GitRepositoryService(root);
 
-    await expect(service.squashMerge({
+    const error = await service.squashMerge({
       targetBranch,
       sourceBranch: 'feature',
       expectedTargetRevision,
       message: 'conflicting squash',
-    })).rejects.toThrow();
+    }).catch((caught: unknown) => caught);
 
+    // Typed, so integration can tell a stale branch from a merge that could not run.
+    expect(error).toBeInstanceOf(MergeConflictError);
+    expect((error as MergeConflictError).files).toEqual(['README.md']);
     expect((await git.revparse(['HEAD'])).trim()).toBe(expectedTargetRevision);
     expect((await git.status()).isClean()).toBe(true);
     expect(await fs.readFile(path.join(root, 'README.md'), 'utf8')).toBe('# master\n');
+  });
+
+  // simple-git resolves a conflicted `git merge`: git reports the conflict on stdout. The gate then
+  // ran on the unmerged target, passed, and recorded the target as the merged candidate.
+  it('reports a conflicting candidate merge as a conflict instead of returning the target', async () => {
+    const { root, git } = await divergedRepository();
+    const target = (await git.revparse(['HEAD'])).trim();
+    const service = new GitRepositoryService(root);
+    const gate = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-wt-gate-')), 'candidate');
+    await service.addWorktree({ path: gate, branch: 'xcompiler/gate/G1', startPoint: target });
+
+    const error = await service.mergeInto(gate, 'feature').catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(MergeConflictError);
+    expect((error as MergeConflictError).files).toEqual(['README.md']);
+    const candidate = simpleGit({ baseDir: gate });
+    expect((await candidate.revparse(['HEAD'])).trim()).toBe(target);
+    // The merge is aborted rather than left half-applied in a worktree something may reuse.
+    expect((await candidate.status()).isClean()).toBe(true);
+  });
+
+  it('returns the merge commit when a candidate merges cleanly', async () => {
+    const root = await repository();
+    const git = simpleGit({ baseDir: root });
+    const targetBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    await git.checkoutLocalBranch('feature');
+    await fs.writeFile(path.join(root, 'feature.md'), 'feature\n');
+    await git.add('.');
+    await git.commit('feature change');
+    await git.checkout(targetBranch);
+    const target = (await git.revparse(['HEAD'])).trim();
+    const service = new GitRepositoryService(root);
+    const gate = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-wt-gate-')), 'candidate');
+    await service.addWorktree({ path: gate, branch: 'xcompiler/gate/G2', startPoint: target });
+
+    const merged = await service.mergeInto(gate, 'feature');
+
+    expect(merged).not.toBe(target);
+    expect(await fs.readFile(path.join(gate, 'feature.md'), 'utf8')).toBe('feature\n');
   });
 });
 

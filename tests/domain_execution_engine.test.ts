@@ -1307,6 +1307,85 @@ describe('ProjectOrchestrator', () => {
     expect(String(recorded[0]!.reason)).toContain('already existed');
   });
 
+  // A conflict with the mainline is answered in one of two ways. The generation's open owner reruns
+  // it on the current mainline — ordinary scheduled work, so the run goes on — or nothing would
+  // rerun that work, and the run stops naming the branch and the files.
+  describe('a merge that conflicts with the mainline', () => {
+    const report = {
+      changeSetId: 'cs-1' as ObjectId,
+      changeSetName: 'changeset-T1-r2',
+      sourceBranch: 'xcompiler/ticket/T1-r2',
+      ownerTicketId: 'owner-1' as ObjectId,
+      correctiveTicketIds: [],
+      files: ['tests/test_parser.py'],
+    };
+    const superseded = { status: 'superseded' as const, superseded: [report] };
+    const conflicted = { status: 'conflicted' as const, reason: 'owner CR-1 is closed', conflict: report };
+
+    type Hook = 'integrateTicket' | 'integratePendingAuthorization' | 'integratePhase';
+    async function run(hook: Hook, first: Record<string, unknown>) {
+      const setup = await fixture();
+      const calls: string[] = [];
+      const notes: Array<Record<string, unknown>> = [];
+      let integrations = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, calls)),
+        audit: {
+          event: async (_kind: string, message: string, fields: Record<string, unknown>) => {
+            notes.push({ message, ...fields });
+          },
+        } as never,
+        finalGate: async () => ({ ok: true, evidence: ['scenario passes'] }),
+        [hook]: async () => {
+          integrations += 1;
+          return integrations === 1 ? first : { status: 'merged' };
+        },
+      }, setup.plan);
+      const result = await engine.run(setup.graph.phases[0]!.id);
+      return { result, calls, notes, integrations: () => integrations, steps: setup.graph.steps.length };
+    }
+
+    it.each([
+      ['after a Ticket delivers', 'integrateTicket'],
+      ['for a gate-passed generation at startup', 'integratePendingAuthorization'],
+      ['at Phase delivery', 'integratePhase'],
+    ] as const)('keeps running when the generation is abandoned for its owner to rerun %s', async (_case, hook) => {
+      const { result, calls, notes, integrations, steps } = await run(hook, superseded);
+
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(result.projectDelivered).toBe(true);
+      expect(calls).toHaveLength(steps);
+      expect(notes).toContainEqual(expect.objectContaining({
+        messageId: 'domain.merge_generation_superseded',
+        sourceBranch: 'xcompiler/ticket/T1-r2',
+        files: ['tests/test_parser.py'],
+      }));
+      // At Phase end the abandoned generation's owner reruns first, so integration is asked again.
+      if (hook === 'integratePhase') expect(integrations()).toBe(2);
+    });
+
+    it.each([
+      ['after a Ticket delivers', 'integrateTicket', 1],
+      ['for a gate-passed generation at startup', 'integratePendingAuthorization', 0],
+      ['at Phase delivery', 'integratePhase', 'all'],
+    ] as const)('stops with the conflict when nothing reruns the work %s', async (_case, hook, executed) => {
+      const { result, calls, notes, steps } = await run(hook, conflicted);
+
+      expect(result.stop).toEqual({
+        code: 'merge_conflict',
+        branch: 'xcompiler/ticket/T1-r2',
+        files: ['tests/test_parser.py'],
+      });
+      expect(result.failureReason).toContain('tests/test_parser.py');
+      expect(result.projectDelivered).not.toBe(true);
+      expect(calls).toHaveLength(executed === 'all' ? steps : executed);
+      expect(notes).toContainEqual(expect.objectContaining({
+        messageId: 'domain.merge_conflict',
+        reason: 'owner CR-1 is closed',
+      }));
+    });
+  });
+
 function options(
   workspace: Workspace,
   repository: DomainObjectRepository,

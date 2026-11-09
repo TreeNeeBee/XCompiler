@@ -36,6 +36,24 @@ const changeSet = {
   schemaVersion: 1, createdAt: now, updatedAt: now,
 };
 
+const otherStepId = createObjectId();
+const secondChangeSetId = createObjectId();
+const secondMergeRequestId = createObjectId();
+const afterCut = new Date(1000).toISOString();
+
+/** The generation's owner: an open Change Request at `stepId` that has not delivered onto it. */
+const owner = {
+  objectType: 'ticket', id: rootTicketId, phaseId, stepId, type: 'change-request', name: 'CR-1',
+  state: 'in_progress', commits: [],
+};
+
+/** A Bug that repaired the generation at the owner's Step and closed there. */
+const corrective = {
+  objectType: 'ticket', id: correctiveTicketId, type: 'bug', name: 'BUG-1', state: 'closed',
+  stepId, failure: { targetStepId: stepId },
+  commits: [{ kind: 'verified', stepId, revision: 'f'.repeat(40), recordedAt: afterCut }],
+};
+
 function harness(options: {
   checks: GateCheckResult[];
   mayMerge?: boolean;
@@ -44,11 +62,16 @@ function harness(options: {
   verdictOk?: boolean;
   verdictReason?: string;
   failMergedStateCommitOnce?: boolean;
+  owner?: Record<string, unknown>;
+  corrective?: Record<string, unknown>;
+  changeSet?: Record<string, unknown>;
+  /** A second generation of the same owner, listed after the first, with its own Merge Request. */
+  second?: Record<string, unknown>;
 }) {
   const checkScopes: string[] = [];
   let mergeMessage = '';
   let mergedHead = false;
-  const squashMerge = vi.fn(async (input: { message: string }) => {
+  const squashMerge = vi.fn(async (input: { message: string; sourceBranch: string }) => {
     mergeMessage = input.message;
     mergedHead = true;
     return 'c'.repeat(40);
@@ -68,9 +91,20 @@ function harness(options: {
   // Merge Request for every id and dropped every update is why this suite never noticed the service
   // writing through a ChangeSet copy it had been holding across two intervening writes.
   const stored = new Map<string, Record<string, unknown>>([
-    [changeSetId, { ...changeSet }],
+    [changeSetId, { ...changeSet, ...options.changeSet }],
     [mergeRequestId, { ...mergeRequest }],
+    [rootTicketId, { ...owner, ...options.owner }],
+    [correctiveTicketId, { ...corrective, ...options.corrective }],
   ]);
+  if (options.second) {
+    stored.set(secondChangeSetId, {
+      ...changeSet, id: secondChangeSetId, name: 'changeset-T2', sourceBranch: 'xcompiler/ticket/T2',
+      correctiveTicketIds: [], mergeRequestId: secondMergeRequestId, ...options.second,
+    });
+    stored.set(secondMergeRequestId, {
+      ...mergeRequest, id: secondMergeRequestId, changeSetId: secondChangeSetId, sourceBranch: 'xcompiler/ticket/T2',
+    });
+  }
   const put = (object: unknown) => {
     const record = object as Record<string, unknown>;
     if (typeof record?.id === 'string') stored.set(record.id, record);
@@ -79,11 +113,9 @@ function harness(options: {
 
   const service = new MergeIntegrationService({
     repository: {
-      list: async () => [stored.get(changeSetId)],
-      read: async (id: string) => id === rootTicketId
-        ? { objectType: 'ticket', id: rootTicketId, phaseId, stepId }
-        : id === stepId
-          ? { objectType: 'step', id: stepId, type: 'CODE' }
+      list: async () => [stored.get(changeSetId), ...(options.second ? [stored.get(secondChangeSetId)] : [])],
+      read: async (id: string) => id === stepId
+        ? { objectType: 'step', id: stepId, type: 'CODE' }
         : stored.get(id) ?? mergeRequest,
       commit: async (objects: unknown[]) => {
         if (rejectMergedState && objects.some((object) =>
@@ -148,7 +180,7 @@ function harness(options: {
     authorizeMerge: options.authorizeMerge,
     releaseChangeSet,
   });
-  return { service, squashMerge, releaseChangeSet, committed, checkScopes };
+  return { service, squashMerge, releaseChangeSet, committed, checkScopes, stored };
 }
 
 const ok = (name: string): GateCheckResult => ({ name, ok: true, summary: 'ok', kind: 'execution' });
@@ -194,16 +226,100 @@ describe('merge integration', () => {
     expect(squashMerge).not.toHaveBeenCalled();
   });
 
-  it('reports a merge candidate conflict as a repairable project failure', async () => {
-    const { service, squashMerge } = harness({
+  // A conflict means the mainline moved after the generation was cut. Repairing the generation in
+  // place keeps the repair on the same stale branch, so it conflicts again; the work has to be
+  // redone on the current mainline by the Ticket that owns it.
+  it('abandons a conflicting generation so its open owner reruns it on the current mainline', async () => {
+    const { service, squashMerge, releaseChangeSet, stored } = harness({
       checks: [],
       startError: new MergeConflictError('xcompiler/ticket/T1', ['src/parser.ts']),
     });
-    const outcome = await service.integratePhase(projectId, phaseId);
+    const outcome = await service.integrateTicket(projectId, correctiveTicketId);
 
-    expect(outcome.status).toBe('failed');
-    expect(outcome.failureLog).toContain('src/parser.ts');
+    expect(outcome.status, outcome.reason).toBe('superseded');
+    expect(outcome.superseded).toEqual([expect.objectContaining({
+      changeSetId, ownerTicketId: rootTicketId, correctiveTicketIds: [correctiveTicketId],
+      sourceBranch: 'xcompiler/ticket/T1', files: ['src/parser.ts'],
+    })]);
+    expect(stored.get(changeSetId)?.state).toBe('abandoned');
+    expect(stored.get(mergeRequestId)?.state).toBe('closed');
+    expect(releaseChangeSet).toHaveBeenCalledWith(changeSetId);
     expect(squashMerge).not.toHaveBeenCalled();
+  });
+
+  it('does not count what the owner delivered before the generation was cut', async () => {
+    const { service } = harness({
+      checks: [],
+      startError: new MergeConflictError('xcompiler/ticket/T1', ['src/parser.ts']),
+      owner: { commits: [{ kind: 'verified', stepId: otherStepId, revision: 'f'.repeat(40), recordedAt: now }] },
+      changeSet: { createdAt: new Date(500).toISOString() },
+    });
+    expect((await service.integrateTicket(projectId, correctiveTicketId)).status).toBe('superseded');
+  });
+
+  it.each([
+    ['the owner already closed', { owner: { state: 'closed' } }],
+    ['the owner already delivered onto it', {
+      owner: { commits: [{ kind: 'verified', stepId, revision: 'f'.repeat(40), recordedAt: afterCut }] },
+    }],
+    ['a corrective delivered onto it at another Step', {
+      corrective: {
+        failure: { targetStepId: otherStepId },
+        commits: [{ kind: 'verified', stepId: otherStepId, revision: 'f'.repeat(40), recordedAt: afterCut }],
+      },
+    }],
+  ] as const)('stops with the conflict when %s, because nothing would rerun that work', async (_case, setup) => {
+    const { service, releaseChangeSet, stored } = harness({
+      checks: [],
+      startError: new MergeConflictError('xcompiler/ticket/T1', ['src/parser.ts']),
+      ...setup,
+    });
+    const outcome = await service.integrateTicket(projectId, correctiveTicketId);
+
+    expect(outcome.status).toBe('conflicted');
+    expect(outcome.conflict).toMatchObject({ sourceBranch: 'xcompiler/ticket/T1', files: ['src/parser.ts'] });
+    expect(stored.get(changeSetId)?.state).not.toBe('abandoned');
+    expect(releaseChangeSet).not.toHaveBeenCalled();
+  });
+
+  // A delivered change still on its branch is invisible to every Step after it, so abandoning one
+  // gate-passed generation at startup is no reason to leave the next one unlanded.
+  it('still lands the other gate-passed generations when one is abandoned at startup', async () => {
+    const { service, squashMerge, stored } = harness({
+      checks: [ok('tests')],
+      changeSet: { state: 'gate-passed', mergeRequestId },
+      second: { state: 'gate-passed' },
+    });
+    squashMerge.mockRejectedValueOnce(new MergeConflictError('xcompiler/ticket/T1', ['src/parser.ts']));
+    const outcome = await service.integratePendingAuthorization(projectId, phaseId);
+
+    expect(outcome.status, outcome.reason).toBe('superseded');
+    expect(outcome.superseded?.map((report) => report.changeSetId)).toEqual([changeSetId]);
+    expect(squashMerge.mock.calls.map(([input]) => input.sourceBranch))
+      .toEqual(['xcompiler/ticket/T1', 'xcompiler/ticket/T2']);
+    expect(outcome.mergedRevisions).toEqual(['c'.repeat(40)]);
+    expect(stored.get(secondChangeSetId)?.state).toBe('merged');
+  });
+
+  // A gate recorded before conflicts were detected passed on a candidate that was never merged; the
+  // squash is where that generation's conflict surfaces, and it must take the same route.
+  it.each([
+    ['after its gate passes', 'reviewing', (service: MergeIntegrationService) =>
+      service.integrateTicket(projectId, correctiveTicketId)],
+    ['when a gate-passed generation is resumed', 'gate-passed', (service: MergeIntegrationService) =>
+      service.integratePendingAuthorization(projectId, phaseId)],
+  ] as const)('abandons a generation whose squash conflicts %s', async (_case, state, integrate) => {
+    const { service, squashMerge, releaseChangeSet, stored } = harness({
+      checks: [ok('tests')],
+      changeSet: { state, mergeRequestId },
+    });
+    squashMerge.mockRejectedValueOnce(new MergeConflictError('xcompiler/ticket/T1', ['src/parser.ts']));
+    const outcome = await integrate(service);
+
+    expect(outcome.status, outcome.reason).toBe('superseded');
+    expect(outcome.superseded?.map((report) => report.files)).toEqual([['src/parser.ts']]);
+    expect(stored.get(changeSetId)?.state).toBe('abandoned');
+    expect(releaseChangeSet).toHaveBeenCalledWith(changeSetId);
   });
 
   it('will not write to a mainline XCompiler did not create', async () => {

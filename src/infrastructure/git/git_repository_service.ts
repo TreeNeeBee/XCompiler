@@ -243,11 +243,10 @@ export class GitRepositoryService {
   async mergeInto(root: string, source: string): Promise<string> {
     const worktree = simpleGit({ baseDir: root });
     try {
-      await worktree.raw(['merge', '--no-ff', '--no-edit', source]);
+      await runMerge(worktree, source, ['merge', '--no-ff', '--no-edit', source]);
     } catch (error) {
-      const status = await worktree.status().catch(() => undefined);
-      if (status && status.conflicted.length > 0) {
-        throw new MergeConflictError(source, status.conflicted, { cause: error });
+      if (error instanceof MergeConflictError) {
+        await worktree.raw(['merge', '--abort']).catch(() => undefined);
       }
       throw error;
     }
@@ -304,7 +303,7 @@ export class GitRepositoryService {
       );
     }
     try {
-      await this.git.raw(['merge', '--squash', input.sourceBranch]);
+      await runMerge(this.git, input.sourceBranch, ['merge', '--squash', input.sourceBranch]);
       await this.git.raw(['commit', '-m', input.message]);
     } catch (error) {
       try {
@@ -360,4 +359,31 @@ export function containerOwnershipRecord(state: {
 /** Resolves symlinks when the path exists, so paths seen from different worktrees compare equal. */
 async function canonicalPath(candidate: string): Promise<string> {
   return fs.realpath(candidate).catch(() => candidate);
+}
+
+/**
+ * Runs a merge command and reports unmerged paths as a conflict, however the command exited.
+ *
+ * simple-git treats a conflicted merge as success: git prints `CONFLICT` to stdout and leaves stderr
+ * empty, so `raw()` resolves. A gate candidate built that way is the target itself with conflict
+ * markers in its working copy, and the gate that passed on it judged a merge that never happened.
+ * The index is the authority on whether the merge completed.
+ */
+async function runMerge(git: SimpleGit, source: string, args: string[]): Promise<void> {
+  let failure: unknown;
+  let failed = false;
+  await git.raw(args).catch((error: unknown) => {
+    failure = error;
+    failed = true;
+  });
+  let conflicted: string[];
+  try {
+    conflicted = (await git.status()).conflicted;
+  } catch (statusError) {
+    throw failed ? failure : statusError;
+  }
+  if (conflicted.length > 0) {
+    throw new MergeConflictError(source, conflicted, failed ? { cause: failure } : undefined);
+  }
+  if (failed) throw failure;
 }

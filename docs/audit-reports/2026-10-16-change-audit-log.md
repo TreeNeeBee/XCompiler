@@ -3465,3 +3465,38 @@ P1 包资源问题仍延后；不启用外部付费模型。
 **门禁**：typecheck、lint、`git diff --check`、`rule check`、`npm run build` 退出码均为 0；core 2294 例通过；integration+e2e 1648 例通过，在 `caffeinate -ims` 下运行。
 
 **真实状态核对**：`BUG-P2-011` 的验证 Step 即目标 `P2-S008`；选择器为该补充测试文件的用例，S008 门禁运行整个继承补充目录可覆盖；无以其为源的 CR 链；排在其后的是 `CR-CR-043`。
+
+### 合并冲突被当成合并成功；过时的一代无法修复（2026-11-09，真实 run 发现，D-86）
+
+**发现**：`1ec9b88` 续跑中，D-85 生效：`P2-S008` 修复通过后，`BUG-P2-011` 就地关闭。随后合并 `xcompiler/ticket/01a1b423-…-r2` 以 `merge could not be applied … unmerged files` 停止（`blocked`）。主干 `d378170` 干净，通过 439 例。
+
+**根因**：
+1. `GitRepositoryService.mergeInto` 用 simple-git 的 `raw(['merge', …])` 生成门禁候选。冲突时 git 把 `CONFLICT` 写到 stdout，stderr 为空，`raw()` 不抛错。在仓库克隆里实测：HEAD 停在主干，冲突文件留在工作区。门禁记录 `passed src d48e7f19 tgt d378170e cand d378170e`，候选提交就是主干本身。直到 squash 的 `commit` 因未合并路径失败才暴露，又按基础设施问题报 `blocked`。
+2. 即使检测到冲突，原先也按可修复失败处理：开 quality-gate Bug，绑定到同一条过时分支的工作区。修复留在那条分支上，再合并仍会冲突。r2 基于 `00d212b`；`CR-CR-048` 之后已把同一个 P1 功能补充测试的另一份修复合入主干。
+
+**用户决策**：选“检测修复加 A”。核实后，A 的原话（重跑冲突工单本身）在本例走不通：`BUG-P2-011` 已关闭，而 `closed` 是终态。于是请用户再定范围，选 A-收窄。
+
+**处理**：
+- `runMerge` 在候选合并和 squash 之后都读取 Git 状态，有未合并路径就抛 `MergeConflictError`（带文件列表，候选合并先 `merge --abort`）。是否冲突以索引为准，不看命令有没有抛错。
+- `MergeIntegrationService.resolveConflict` 处理两个冲突点：门禁候选、squash。后者用于此前在未合并候选上“通过”的旧门禁记录。
+  - 这一代的属主（root Ticket）仍会再运行（`created`/`in_progress`/`pending`/`reopened`），没有在这一代切出后交付 `verified` 提交，并且这一代切出后所有 `verified` 提交都在属主要重跑的 Step（`workStepId`）上时：ChangeSet → `abandoned`，MR → `closed`，释放 worktree，分支保留。返回 `superseded`，属主下次按常规调度在最新主干上重跑：非 CODE Step 绑到主干，CODE Step 从主干开新一代。
+  - 否则返回 `conflicted`，编排器以 `merge_conflict`（分支、冲突文件）停下。
+- 编排器的三处集成点（单张交付后、启动时恢复门禁已通过的几代、阶段交付）：遇到 `superseded` 写审计 `domain.merge_generation_superseded` 后继续，阶段交付时先让属主重跑；遇到 `conflicted` 写审计 `domain.merge_conflict` 后停下。启动时废弃其中一代，其余门禁已通过的仍会合并：已交付但还留在分支上的改动，后面的 Step 看不到。
+- 领域状态机不变。被废弃的一代上已关闭的纠正工单（本例 `BUG-P2-011`）保持关闭，审计里列出其编号。它修的内容由属主重跑时的门禁重新验证；CR 完成时还会重放其下 Bug 的契约。
+
+**离线复演**（复制 `dbc2excel-5` 的对象库，克隆主干，不调用模型）：启动恢复路径上 squash 报冲突，冲突文件为 `tests/verification/p1/functional-test/01a18432-…/test_s008_functional_risks.py`，结果为 `superseded`；主干不变；r2 为 `abandoned`，分支保留。`CR-CR-043` 下次绑到主干 `d378170e`，调度器下一项正是 `CR-CR-043 @ P2-S008`。
+
+**测试与证伪**：
+- 真实 git：候选合并冲突报 `MergeConflictError`，工作区干净；squash 冲突同样报出；无冲突时返回合并提交。
+- e2e（真实 git 与真实服务）：主干改写同一文件后，`integrateTicket` 返回 `superseded`，属主下一代从最新主干切出。
+- 单元：两个冲突点；三种停下情形（属主已关闭、属主已在这一代交付、纠正工单在其他 Step 交付）；切出前的交付不计入；启动时废弃一代后其余照常合并。
+- 编排器：三处集成点各验证 `superseded` 继续、`conflicted` 停下。
+- 证伪 20 处（W1–W9、O1–O8），全部被杀死。W1（候选合并检测）在 e2e 中会被 squash 检测兜住，由真实 git 测试直接杀死。W5（启动时废弃后继续）起初存活，补了两代测试后被杀死。阶段交付循环的“废弃后继续”改回原来的提前返回：下一轮会继续集成其余几代，那段代码只是优化。
+
+**门禁**：typecheck、lint、`git diff --check`、`npm run build`、`rule check` 退出码均为 0。core 2307 例通过，integration+e2e 1651 例通过，均在 `caffeinate -ims` 下运行。另有一次三组同时运行的全量测试，`domain_execution_engine` 中两例（“does not hold an unchanged repair by …”）超过 20 秒超时；同文件其他用例当时每例也要 12–19 秒。这两例单独运行各约 1.2 秒，在上面分组运行的门禁中也都通过。
+
+**续跑前全盘检查**（在副本上进行，不调用模型）：
+- 用真实的编排器、对象库、合并集成、调度和打标签代码，从启动一直跑到交付；只有 Step 尝试和场景判定换成直接通过的桩。结果：启动时 r2 被废弃；只执行一次 `CR-CR-043 @ P2-S008`；S008 关闭；阶段门禁通过后 `BUG-P2-004`（阶段门禁开出、停在 resolved 等交付复验）被关闭；交付文件清单已发布，阶段交付、项目交付完成，打出 `v2.0.0`；P2 没有未关闭的工单。
+- 门禁中确定性的部分在主干副本上逐项核对：交付文档齐全；门禁环境下全量 439 例通过；`src/main.py --help` 正常；交付场景退出码为 0，19 列表头，复用展开，J1939 列有值，警告表 3 条。`BrakePressure` 的 SPN 为空，因为样例本来就没定义。S008 测试集 35 例通过，`BUG-P2-011` 点名的 6 例在其中。
+- `CR-CR-043` 在主干上的继承测试改动检查：自其基线 `58fbb364` 以来只改过一个 P1 功能补充测试，当前内容的哈希已由 `CR-P2-017` 登记。尝试次数 2/7。
+- 剩余风险只在模型环节：`CR-CR-043` 的真实尝试，以及阶段门禁的场景判定。

@@ -1,7 +1,7 @@
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { StepType } from '../../domain/steps/step.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
-import type { TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
+import { workStepId, type Ticket, type TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import {
   transitionChangeSet,
   type TicketChangeSet,
@@ -20,7 +20,22 @@ export type IntegrationStatus =
   | 'nothing-to-merge'
   | 'failed'
   | 'blocked'
-  | 'awaiting-authorization';
+  | 'awaiting-authorization'
+  /** A generation conflicted with the mainline and was abandoned; its owner Ticket reruns it. */
+  | 'superseded'
+  /** A generation conflicted with the mainline and no open Ticket can rerun its work. */
+  | 'conflicted';
+
+/** A generation whose branch no longer merges into the mainline. */
+export interface MergeConflictReport {
+  changeSetId: ObjectId;
+  changeSetName: string;
+  sourceBranch: string;
+  ownerTicketId: ObjectId;
+  /** Corrective Tickets whose work was on the generation. */
+  correctiveTicketIds: ObjectId[];
+  files: string[];
+}
 
 export interface IntegrationOutcome {
   status: IntegrationStatus;
@@ -29,6 +44,10 @@ export interface IntegrationOutcome {
   mergedRevisions: string[];
   /** Exact candidate workspace that a corrective Ticket must inherit. */
   workspaceBinding?: TicketWorkspaceBinding;
+  /** The conflict that stopped integration, when the status is `conflicted`. */
+  conflict?: MergeConflictReport;
+  /** Generations abandoned during this call so their owners rerun on the current mainline. */
+  superseded?: MergeConflictReport[];
 }
 
 /** Runs the project's own gates against a merge candidate checked out at `root`. */
@@ -116,6 +135,8 @@ export class MergeIntegrationService {
 
     const mergedRevisions: string[] = [];
     for (const changeSet of pending) {
+      // `superseded` returns too: the Phase cannot be delivered until that owner reruns, and the
+      // generations after it are integrated on the next pass.
       const outcome = await this.integrate(changeSet, mergedRevisions, 'phase');
       if (outcome) return outcome;
     }
@@ -132,33 +153,40 @@ export class MergeIntegrationService {
     if (pending.length === 0) return { status: 'nothing-to-merge', mergedRevisions: [] };
 
     const mergedRevisions: string[] = [];
+    // Every gate-passed generation is attempted, because a delivered change still on its branch is
+    // invisible to the Steps that follow: abandoning one is no reason to leave the rest unlanded.
+    const superseded: MergeConflictReport[] = [];
     for (const changeSet of pending) {
       if (!changeSet.mergeRequestId) {
-        return {
+        return withSuperseded({
           status: 'blocked',
           reason: `gate-passed ChangeSet ${changeSet.name} has no merge request`,
           mergedRevisions,
-        };
+        }, superseded);
       }
       const request = await this.repositoryRead(changeSet.mergeRequestId);
       const reconciled = await this.reconcileMergeIntent(changeSet, request, mergedRevisions);
       if (reconciled) {
-        if (reconciled.status !== 'merged') return reconciled;
+        if (reconciled.status !== 'merged') return withSuperseded(reconciled, superseded);
         continue;
       }
       const verdict = await this.options.gates.currentVerdict(request.id);
       if (!verdict.ok || !verdict.run) {
-        return {
+        return withSuperseded({
           status: 'failed',
           reason: verdict.reason ?? 'the previous merge gate is no longer current',
           mergedRevisions,
           workspaceBinding: await this.changeSetWorkspaceBinding(changeSet),
-        };
+        }, superseded);
       }
       const outcome = await this.mergeGatePassed(changeSet, request, verdict.run, mergedRevisions);
-      if (outcome) return outcome;
+      if (outcome?.status === 'superseded') {
+        superseded.push(...outcome.superseded ?? []);
+        continue;
+      }
+      if (outcome) return withSuperseded(outcome, superseded);
     }
-    return { status: 'merged', mergedRevisions };
+    return finalOutcome(mergedRevisions, superseded);
   }
 
   private async integrate(
@@ -186,13 +214,7 @@ export class MergeIntegrationService {
       candidate = await this.options.gates.start(request.id);
     } catch (error) {
       if (error instanceof MergeConflictError) {
-        return {
-          status: 'failed',
-          reason: `merge candidate conflicts with ${this.options.targetBranch}`,
-          failureLog: error.message,
-          mergedRevisions,
-          workspaceBinding: await this.changeSetWorkspaceBinding(changeSet),
-        };
+        return this.resolveConflict(changeSet.id, error, mergedRevisions);
       }
       return blockedOutcome('merge gate candidate could not be created', error, mergedRevisions);
     }
@@ -312,6 +334,11 @@ export class MergeIntegrationService {
         message: `${mergeCommitMarker(changeSet.id)} ${changeSet.name}`,
       });
     } catch (error) {
+      // A gate recorded before conflicts were detected may have passed on a candidate that was
+      // never merged, so the squash is where such a generation's conflict first surfaces.
+      if (error instanceof MergeConflictError) {
+        return this.resolveConflict(changeSet.id, error, mergedRevisions);
+      }
       return {
         status: 'blocked',
         reason: `merge could not be applied for ${changeSet.sourceBranch}: ${(error as Error).message}`,
@@ -397,6 +424,104 @@ export class MergeIntegrationService {
     return { status: 'merged', mergedRevisions };
   }
 
+  /**
+   * Handles a generation whose branch no longer merges into the mainline.
+   *
+   * A conflict is neither a defect in a merged result — there is no merged result to judge — nor an
+   * infrastructure failure: the mainline moved after the generation was cut, and both edited the
+   * same paths. Repairing the generation in place cannot help, because the repair stays on the same
+   * stale branch and conflicts again. The work has to be redone against the current mainline.
+   *
+   * That is done automatically only when one open Ticket will redo all of it: the owner, which has
+   * not delivered onto the generation, at the Step where every change delivered onto it was made.
+   * Its rerun repeats that Step on the current mainline and has to pass that Step's gate again, and
+   * a Change Request also replays the contracts of the Bugs raised inside it. Anything else would
+   * drop delivered work that nothing reruns, so integration stops with the conflict instead.
+   */
+  private async resolveConflict(
+    changeSetId: ObjectId,
+    error: MergeConflictError,
+    mergedRevisions: string[],
+  ): Promise<IntegrationOutcome> {
+    const changeSet = await this.freshChangeSet(changeSetId);
+    const report: MergeConflictReport = {
+      changeSetId: changeSet.id,
+      changeSetName: changeSet.name,
+      sourceBranch: changeSet.sourceBranch,
+      ownerTicketId: changeSet.rootTicketId,
+      correctiveTicketIds: [...changeSet.correctiveTicketIds],
+      files: [...error.files],
+    };
+    const rerun = await this.ownerRerun(changeSet);
+    if (!rerun.owner) {
+      return {
+        status: 'conflicted',
+        reason: `${changeSet.sourceBranch} conflicts with ${this.options.targetBranch}: ${rerun.reason}`,
+        failureLog: error.message,
+        mergedRevisions,
+        conflict: report,
+      };
+    }
+    const request = changeSet.mergeRequestId
+      ? await this.repositoryRead(changeSet.mergeRequestId)
+      : undefined;
+    // The branch is kept: it is the evidence of what was tried, and nothing reads it once the
+    // generation is abandoned.
+    await this.options.repository.commit([
+      transitionChangeSet(changeSet, 'abandoned'),
+      ...(request && request.state !== 'merged' && request.state !== 'closed'
+        ? [advanceMergeRequest(request, ['closed'])]
+        : []),
+    ]);
+    let reason = `${changeSet.sourceBranch} conflicts with ${this.options.targetBranch}; ` +
+      `abandoned so ${rerun.owner.name} reruns on the current mainline`;
+    try {
+      await this.options.releaseChangeSet(changeSet.id);
+    } catch (cleanup) {
+      reason += `; worktree cleanup failed: ${errorMessage(cleanup)}`;
+    }
+    return {
+      status: 'superseded',
+      reason,
+      failureLog: error.message,
+      mergedRevisions,
+      superseded: [report],
+    };
+  }
+
+  /** The owner whose rerun redoes everything on the generation, or why there is none. */
+  private async ownerRerun(
+    changeSet: TicketChangeSet,
+  ): Promise<{ owner: Ticket; reason?: undefined } | { owner?: undefined; reason: string }> {
+    const owner = await this.options.repository.read(changeSet.rootTicketId);
+    if (owner.objectType !== 'ticket') {
+      return { reason: `owner ${changeSet.rootTicketId} is not a Ticket` };
+    }
+    if (!RERUNNABLE_TICKET_STATES.has(owner.state)) {
+      return { reason: `owner ${owner.name} is ${owner.state} and will not run again` };
+    }
+    const ownerStep = workStepId(owner);
+    const cutAt = Date.parse(changeSet.createdAt);
+    const contributors: Ticket[] = [owner];
+    for (const id of changeSet.correctiveTicketIds) {
+      const ticket = await this.options.repository.read(id);
+      if (ticket.objectType !== 'ticket') return { reason: `corrective ${id} is not a Ticket` };
+      contributors.push(ticket);
+    }
+    for (const ticket of contributors) {
+      const delivered = ticket.commits.filter((commit) =>
+        commit.kind === 'verified' && Date.parse(commit.recordedAt) >= cutAt);
+      if (delivered.length === 0) continue;
+      if (ticket.id === owner.id) {
+        return { reason: `owner ${owner.name} already delivered work onto it` };
+      }
+      if (delivered.some((commit) => commit.stepId !== ownerStep)) {
+        return { reason: `${ticket.name} delivered work onto it at a Step ${owner.name} does not rerun` };
+      }
+    }
+    return { owner };
+  }
+
   private async persistMergedState(
     changeSetId: ObjectId,
     request: MergeRequest,
@@ -477,6 +602,33 @@ export function mergeGateScopeForStep(type: StepType): MergeGateScope {
     return 'ticket-artifact';
   }
   return 'ticket-verification';
+}
+
+/** States from which the scheduler runs a Ticket again. */
+const RERUNNABLE_TICKET_STATES: ReadonlySet<Ticket['state']> = new Set([
+  'created',
+  'in_progress',
+  'pending',
+  'reopened',
+]);
+
+function withSuperseded(
+  outcome: IntegrationOutcome,
+  superseded: readonly MergeConflictReport[],
+): IntegrationOutcome {
+  return superseded.length === 0
+    ? outcome
+    : { ...outcome, superseded: [...(outcome.superseded ?? []), ...superseded] };
+}
+
+/** Abandoning a generation is reported even when everything else merged: its owner still reruns. */
+function finalOutcome(
+  mergedRevisions: string[],
+  superseded: readonly MergeConflictReport[],
+): IntegrationOutcome {
+  return superseded.length === 0
+    ? { status: 'merged', mergedRevisions }
+    : { status: 'superseded', mergedRevisions, superseded: [...superseded] };
 }
 
 function blockedOutcome(

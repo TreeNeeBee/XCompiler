@@ -272,6 +272,57 @@ describe('ticket delivery loop', () => {
       object.objectType === 'ticket-change-set' ? [object.generation, object.state] : []))
       .toEqual([[1, 'merged'], [2, 'merged']]);
   });
+
+  // dbc2excel-5 P2: a Bug repaired a generation cut before another Ticket changed the same file on
+  // the mainline. simple-git reported the conflicted candidate merge as a success, the gate passed
+  // on the unmerged mainline, and only the squash failed — a stop no repair on that branch could
+  // ever clear, because every repair stayed on the stale branch.
+  it('abandons a generation that conflicts with the mainline and cuts its owner a fresh one', async () => {
+    const world = await fixture();
+    const { repository, git, changeSets, gates, story } = world;
+    const integration = new MergeIntegrationService({
+      repository,
+      gates,
+      git,
+      targetBranch: 'master',
+      mayMerge: true,
+      releaseChangeSet: async (changeSetId) => {
+        await changeSets.release(changeSetId);
+      },
+      runChecks: async () => PASSED_GATE,
+    });
+
+    const stale = withField(await changeSets.ensureFor(story, world.coding), 'changeSet');
+    await changeSets.recordRevision(
+      stale.changeSet.id,
+      await commit(stale.root, 'src/parser.ts', 'export const parse = () => ({ source: "branch" });\n'),
+    );
+    // The mainline moves under the generation and rewrites the same file.
+    const mainline = await commit(
+      world.canonical,
+      'src/parser.ts',
+      'export const parse = () => ({ source: "mainline" });\n',
+    );
+
+    const outcome = await integration.integrateTicket(story.projectId, story.id);
+
+    expect(outcome.status, outcome.reason).toBe('superseded');
+    expect(outcome.superseded?.map((report) => report.files)).toEqual([['src/parser.ts']]);
+    expect(await git.revision('master')).toBe(mainline);
+    expect(await fs.readFile(path.join(world.canonical, 'src/parser.ts'), 'utf8')).toContain('mainline');
+    expect((await requireChangeSet(repository, stale.changeSet.id)).state).toBe('abandoned');
+    // The branch stays as the record of what was tried; only its worktree goes.
+    expect(await git.branchExists(stale.changeSet.sourceBranch)).toBe(true);
+    expect(await fs.stat(stale.root).then(() => true, () => false)).toBe(false);
+    expect((await git.listWorktrees()).map((entry) => entry.branch ?? ''))
+      .not.toEqual(expect.arrayContaining([expect.stringContaining('xcompiler/gate/')]));
+
+    // The owner's next attempt starts from the mainline it has to land on, not the stale branch.
+    const fresh = withField(await changeSets.ensureFor(story, world.coding), 'changeSet');
+    expect(fresh.changeSet.generation).toBe(2);
+    expect(fresh.changeSet.baseRevision).toBe(mainline);
+    expect(await fs.readFile(path.join(fresh.root, 'src/parser.ts'), 'utf8')).toContain('mainline');
+  });
 });
 
 async function mergeRequestState(
