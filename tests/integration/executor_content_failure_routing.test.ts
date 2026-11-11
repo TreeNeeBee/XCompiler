@@ -9,9 +9,14 @@ import { buildPlan } from '../../src/agents/planner.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
 import { DomainAttemptRunner, type AttemptResult } from '../../src/application/execution/attempt_runner.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
+import { ProjectManagerIntakeService } from '../../src/application/project_management/project_manager_intake.js';
 import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../../src/application/project_management/orchestrator.js';
+import { parseUserChangeRequest } from '../../src/application/project_management/user_change_request.js';
 import { loadConfigWithPath } from '../../src/config/config.js';
 import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
+import { createObjectId, type ObjectId } from '../../src/domain/identity/object_id.js';
+import { reviseObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
+import { PhaseSchema } from '../../src/domain/phases/phase.js';
 import { type Phase } from '../../src/domain/planning/execution_plan.js';
 import { DEFAULT_MODEL_POOLS } from '../../src/domain/workflow/role.js';
 import { phaseDocForIteration, testPlanDocForIteration } from '../../src/domain/planning/document_contract.js';
@@ -25,7 +30,7 @@ import { GitService } from '../../src/workspace/git.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
 
 describe('candidate content failure through Runtime, Runner and PM', () => {
-  it.each(['malformed', 'permission-denied', 'tool-not-allowed'] as const)('retains %s on the original Ticket without creating a product Bug', async kind => {
+  it.each(['malformed', 'permission-denied', 'tool-not-allowed', 'stale-assessment'] as const)('retains %s on the original Ticket without creating a product Bug', async kind => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-content-routing-')));
     const envKeys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
@@ -35,6 +40,23 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       actions: [{ tool: 'run_program', args: { args: ['-m', 'pytest', 'tests/test_functional.py'] } }], done: false });
     const unavailableTest = JSON.stringify({ thoughts: 'Request a gate that Runtime deliberately deferred',
       actions: [{ tool: 'run_tests', args: { args: ['tests/test_functional.py'] } }], done: false });
+    const plan = samplePlan();
+    const first = plan.steps[0]!;
+    const requirement = first.outputs[0]!;
+    const originalRequirement = '# Accepted requirement\nPreserve the calculation contract.\n';
+    const revisedRequirement = '# Revised requirement\nPreserve the calculation contract for all inputs.\n';
+    const staleAssessment = (round: number) => JSON.stringify({
+      thoughts: 'Assess and write the change in the final round',
+      qualityAssessment: {
+        completion: 1, upstreamAlignment: 1,
+        metrics: Object.fromEntries(Object.keys(first.qualityGate?.metrics ?? {}).map(name => [name, 1])),
+        evidence: ['Requirement reviewed.'],
+      },
+      actions: round === 1 ? [{ tool: 'replace_in_file', args: {
+        path: requirement, find: originalRequirement, replace: revisedRequirement, expectedCount: 1,
+      } }] : [{ tool: 'read_file', args: { path: requirement, offset: round } }],
+      done: true,
+    });
     const retainedEvent = kind === 'permission-denied'
       ? 'domain.permission_blocked_deferred' : 'domain.agent_execution_stall_retained';
     const server = createServer((request, response) => {
@@ -51,7 +73,8 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
         response.writeHead(200, { 'content-type': 'text/event-stream' });
         response.end(`data: ${JSON.stringify({ model: input.model,
           choices: [{ index: 0, delta: { content: kind === 'malformed' ? malformed
-            : kind === 'permission-denied' ? deniedTest : unavailableTest }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+            : kind === 'permission-denied' ? deniedTest
+              : kind === 'stale-assessment' ? staleAssessment(requests.length) : unavailableTest }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
       });
     });
     try {
@@ -62,22 +85,38 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       const container = new ProjectContainer(path.join(root, 'project'));
       const workspace = container.canonical().workspace;
       await workspace.ensure('.');
-      const plan = samplePlan();
-      const first = plan.steps[0]!;
       // The initial design Step deliberately defers its mandatory gate and cannot expose run_tests.
       // An explicitly available program invocation exercises the same test/permission boundary.
       if (kind === 'permission-denied') first.tools = ['run_program'];
       if (kind === 'tool-not-allowed') first.tools = ['run_tests'];
+      if (kind === 'stale-assessment') first.tools = ['replace_in_file', 'read_file'];
       expect(first.qualityGate).toBeDefined();
       for (const output of first.outputs) {
         await workspace.writeFile(output, output.endsWith('.py')
           ? 'def test_accepted_contract():\n    assert 1 + 1 == 2\n'
-          : '# Accepted requirement\nPreserve the calculation contract.\n');
+          : originalRequirement);
       }
       const graph = materializeProjectGraph({ draft: plan, topic: 'Deliver an accepted calculation.', projectName: 'content-routing' });
       const repository = new DomainObjectRepository(container.state);
       await repository.load();
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      let changeRequestId: ObjectId | undefined;
+      if (kind === 'stale-assessment') {
+        const phase = graph.phases[0]!;
+        const activePhase = PhaseSchema.parse({ ...phase, ...reviseObjectEnvelope(phase), state: 'in_progress' });
+        await repository.update(activePhase, activePhase.state);
+        const change = parseUserChangeRequest(YAML.stringify({
+          id: 'all-inputs', target: 'requirement-analysis', summary: 'Cover all inputs.',
+          expected: 'Preserve the calculation contract for all inputs.', evidence: ['The accepted requirement.'],
+          affectedArtifacts: [requirement],
+        }));
+        const accepted = await new ProjectManagerIntakeService(repository).acceptUserChangeRequest({
+          projectId: graph.project.id, phaseId: phase.id, change, language: plan.language,
+          artifactExists: file => workspace.exists(file), correlationId: createObjectId(),
+        });
+        if (accepted.status !== 'accepted') throw new Error('Expected a new Change Request');
+        changeRequestId = accepted.ticket.id;
+      }
       const configPath = path.join(root, 'config.yaml');
       await fs.writeFile(configPath, YAML.stringify({ llm: {
         providers: { local: { type: 'openai', api_key: '', model: 'fixture-model',
@@ -105,6 +144,7 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       });
       const options: ProjectOrchestratorOptions = { workspace, git: new GitService(workspace), sandbox, router, audit,
         repository, plugins, maxRoundsPerStep: 2, abortSignal: controller.signal, recordReplay,
+        ...(kind === 'stale-assessment' ? { maxDebugRoundsPerStep: 1 } : {}),
         requestPermission: async permission => {
           const approved = kind !== 'permission-denied' || permission.operationType !== 'shell_command';
           return { approved, outcome: approved ? 'approved' : 'denied', reason: 'Controlled user decision.' };
@@ -126,6 +166,7 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
       const failureContext = JSON.stringify(attempts.map(attempt => ({ reason: attempt.reason, code: attempt.failure?.code })));
       if (kind === 'permission-denied') expect(outcome, failureContext).toMatchObject({ executedSteps: 1, failedStepId: expect.any(String) });
       else expect(outcome, failureContext).toBe(stop);
+      if (changeRequestId) expect(attempts[0]!.reason).toContain('predates it');
       const tickets = await repository.list({ objectType: 'ticket', projectId: graph.project.id });
       expect(tickets.filter(ticket => ticket.objectType === 'ticket' && ticket.type === 'bug'),
         JSON.stringify(attempts.map(attempt => ({ failure: attempt.failure, calls: attempt.executor?.toolCalls }))))
@@ -146,7 +187,16 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
           call.executionStatus === 'tool-not-allowed' && !call.ok)).toBe(true);
         expect(attempts[0]!.testOutcomes.map(outcome => outcome.status)).toEqual(['skipped', 'skipped']);
       }
-      expect(requests).toHaveLength(kind === 'malformed' ? 4 : 2);
+      if (changeRequestId) {
+        const request = await repository.read(changeRequestId);
+        expect(request).toMatchObject({ type: 'change-request', state: 'in_progress', attempts: 1, applications: [] });
+        expect(attempts[0]!.executor?.toolCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ tool: 'replace_in_file', ok: true }),
+        ]));
+        expect(attempts[0]!.changedFiles).toContain(requirement);
+        expect(await workspace.readFile(requirement)).toBe(originalRequirement);
+      }
+      if (!changeRequestId) expect(requests).toHaveLength(kind === 'malformed' ? 4 : 2);
       expect(effects).not.toHaveBeenCalled();
       const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(line => line.trim())
         .map(line => JSON.parse(line) as AuditEvent);

@@ -2085,15 +2085,16 @@ export class StepExecutor {
       currentMissing: finalVerify.missing.length,
       providers: [...providers],
     });
+    const assessmentFreshAfterTools = qualityAssessmentRound > lastToolActionRound;
     const finalQualityAssessmentMissing = missingQualityAssessmentFields(
       inp.step,
       qualityAssessment,
-      qualityAssessmentRound > lastToolActionRound,
+      assessmentFreshAfterTools,
       { baselineExecutionDeferred: inp.baselineTestExecution === 'defer' },
     );
     const unresolvedFailureDetails = unresolvedFailureTexts(unresolvedToolFailures);
-    // Only the three round-budget outcomes are agent stalls; the other endings keep their existing
-    // (untyped) routing, which treats them as execution failures of the Step.
+    // Model-side round-budget failures stay with the same Ticket. Actual test failures are
+    // still routed from their recorded outcomes by the attempt runner.
     let maxRoundsError: string | undefined;
     let error: string;
     if (finalVerify.missing.length > 0) {
@@ -2114,6 +2115,9 @@ export class StepExecutor {
       error = 'DEBUG retry ended without repair evidence; run a successful patch/write/dependency change or verification command before done=true.';
     } else if (completionSignaled && finalQualityAssessmentMissing.length > 0) {
       error = `qualityAssessment is incomplete; missing: ${finalQualityAssessmentMissing.join(', ')}`;
+      // The model used its last round without reassessing the tool result. Keep the original
+      // work (including a pre-CODE CR's deferred test gate) for its next attempt.
+      if (qualityAssessment && !assessmentFreshAfterTools) maxRoundsError = error;
     } else {
       error = maxRoundsError = mutationGeneration > verifiedMutationGeneration
         ? 'max rounds exceeded before completion; the latest successful repair has not been followed by a successful verification.'
