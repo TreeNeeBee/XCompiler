@@ -13,6 +13,7 @@ import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.j
 import type { RoutingActor } from './role_registry.js';
 import type { PluginHost } from '../../plugins/host.js';
 import { PermissionDeniedError, type ToolPermissionRequest } from '../../tools/types.js';
+import { resolveWorkspacePath } from '../../tools/path_guard.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
 import {
   DomainAttemptRunner,
@@ -191,24 +192,57 @@ export class ProjectOrchestrator {
   }
 
   /**
-   * Writes the file manifest into the delivery document.
+   * Tags every delivered Phase whose release has no tag yet.
    *
-   * Called when every V-model Step has closed and the delivery Ticket has not: every ChangeSet has
-   * merged so the files are final, and delivery is still open so the manifest is part of what is
-   * delivered rather than an edit made to a delivered artifact.
-   *
-   * The tree is reconciled before rendering. Incremental updates only cover writes this process performed, and
-   * a squash merge lands the whole of CODE's work without passing through a tool at all — a
-   * manifest built from the incremental index would omit exactly the files the project consists of.
-   *
-   * Failure propagates. The manifest is a delivery artifact by the same rule as the documents
-   * beside it, and a Phase that could not produce one has not delivered what it claims.
+   * The tag follows the delivery, so a run that died between the two — or a tag that failed — left a
+   * release no later run would tag: nothing looked at a Phase once it was closed.
    */
+  private async tagMissingReleases(projectId: ObjectId): Promise<void> {
+    if (!this.options.tagDeliveredPhase) return;
+    const project = await this.options.repository.read(projectId);
+    if (project.objectType !== 'project') return;
+    for (const id of project.phaseIds) {
+      const phase = await this.options.repository.read(id);
+      if (phase.objectType === 'phase' && phase.state === 'closed' && phase.deliveredRevision) {
+        await this.tagRelease(id, { onlyWhenMissing: true });
+      }
+    }
+  }
+
+  /** Reports a delivered Phase, and the project with it when that was its last Phase. */
+  private async announceDelivery(
+    phase: Phase,
+    completion: { nextPhaseId?: ObjectId; projectDelivered: boolean },
+    totalSteps: number,
+    executedSteps: number,
+  ): Promise<ProjectOrchestratorResult> {
+    await this.transition({
+      event: 'phase_delivered',
+      projectId: phase.projectId,
+      phaseId: phase.id,
+      correlationId: createObjectId(),
+      message: 'Phase delivery gates passed.',
+    });
+    if (completion.projectDelivered) {
+      await this.transition({
+        event: 'project_delivered', projectId: phase.projectId, phaseId: phase.id,
+        correlationId: createObjectId(), message: 'Project delivery gates passed.',
+      });
+    }
+    return {
+      phaseId: phase.id,
+      nextPhaseId: completion.nextPhaseId,
+      projectDelivered: completion.projectDelivered,
+      totalSteps,
+      executedSteps,
+    };
+  }
+
   /**
    * A delivered Phase is a release, tagged at the revision it delivered. The delivery already stands
    * by then, so a tag that cannot be made is recorded rather than undoing it.
    */
-  private async tagRelease(phaseId: ObjectId): Promise<void> {
+  private async tagRelease(phaseId: ObjectId, options: { onlyWhenMissing?: boolean } = {}): Promise<void> {
     if (!this.options.tagDeliveredPhase) return;
     const phase = await this.options.repository.read(phaseId);
     if (phase.objectType !== 'phase' || !phase.deliveredRevision) return;
@@ -218,6 +252,8 @@ export class ProjectOrchestrator {
     const context = { projectId: phase.projectId, phaseId: phase.id, revision: release.revision };
     try {
       const tag = await this.options.tagDeliveredPhase(release);
+      // Checking a release that already has its tag is not an event.
+      if (options.onlyWhenMissing && !tag.created) return;
       await this.options.audit.event('note', `tagged the ${phase.name} delivery as ${tag.name}`, {
         messageId: 'domain.phase_release_tagged', ...context, tag: tag.name, created: tag.created,
       });
@@ -282,16 +318,25 @@ export class ProjectOrchestrator {
   private async promoteUserDocs(phase: Phase): Promise<void> {
     const promoted: Array<{ source: string; target: string }> = [];
     const missing: string[] = [];
+    const refused: string[] = [];
     for (const doc of promotedUserDocs(this.draft.projectType ?? 'application', phase.name)) {
-      const text = await this.options.workspace.readFile(doc.source).catch(() => undefined);
-      if (text === undefined) {
-        missing.push(doc.source);
+      // Both ends are resolved through any link first: a link out of the project is neither read into a
+      // release nor written through.
+      const source = await resolveWorkspacePath(this.options.workspace, doc.source, 'delivery', { mustExist: true });
+      if (!source.ok) {
+        (source.code === 'path_not_found' ? missing : refused).push(doc.source);
         continue;
       }
-      await this.options.workspace.writeFile(doc.target, text);
+      const target = await resolveWorkspacePath(this.options.workspace, doc.target, 'delivery', { forWrite: true });
+      if (!target.ok) {
+        refused.push(doc.target);
+        continue;
+      }
+      await this.options.workspace.writeFile(target.rel, await this.options.workspace.readFile(source.rel));
       promoted.push(doc);
     }
     const context = { projectId: phase.projectId, phaseId: phase.id };
+    await this.recordRefusedDeliveryPaths(phase, refused);
     if (promoted.length > 0) {
       await this.options.audit.event('note', `promoted ${phase.name} user documents to the project root`, {
         messageId: 'domain.user_docs_promoted', ...context, promoted,
@@ -304,6 +349,14 @@ export class ProjectOrchestrator {
         messageId: 'domain.user_doc_promotion_skipped', ...context, missing,
       });
     }
+  }
+
+  /** A delivery document whose path leads out of the project is left alone, and the release says so. */
+  private async recordRefusedDeliveryPaths(phase: Phase, paths: readonly string[]): Promise<void> {
+    if (paths.length === 0) return;
+    await this.options.audit.event('note', `${phase.name} delivery left ${paths.join(', ')} untouched: the path leads outside the project`, {
+      messageId: 'domain.delivery_path_refused', projectId: phase.projectId, phaseId: phase.id, paths: [...paths],
+    });
   }
 
   private async writeDeliveryReport(phase: Phase): Promise<void> {
@@ -337,6 +390,21 @@ export class ProjectOrchestrator {
     return this.options.commitCanonicalArtifact(phaseId, summary);
   }
 
+  /**
+   * Writes the file manifest into the delivery document.
+   *
+   * Called when every V-model Step has closed and the delivery Ticket has not: every ChangeSet has
+   * merged so the files are final, and delivery is still open so the manifest is part of what is
+   * delivered rather than an edit made to a delivered artifact.
+   *
+   * The tree is reconciled before rendering. Incremental updates only cover writes this process performed, and
+   * a squash merge lands the whole of CODE's work without passing through a tool at all — a
+   * manifest built from the incremental index would omit exactly the files the project consists of.
+   *
+   * Failure propagates. The manifest is a delivery artifact by the same rule as the documents
+   * beside it, and a Phase that could not produce one has not delivered what it claims. A delivery
+   * document whose path leads out of the project is the exception: it is left alone and recorded.
+   */
   private async publishFileManifest(phaseId: ObjectId): Promise<void> {
     const phase = await this.options.repository.read(phaseId);
     if (phase.objectType !== 'phase') return;
@@ -351,14 +419,21 @@ export class ProjectOrchestrator {
     // scratch directories, test caches — which no checkout of the release contains.
     const documented = await this.commitPendingDelivery(phase.id, 'publish delivery documents');
     await tree.rescan(documented);
+    const target = await resolveWorkspacePath(this.options.workspace, deliveryDoc, 'delivery', { forWrite: true });
+    if (!target.ok) {
+      // The delivery stands without a manifest; a manifest written outside the project would not be one.
+      await this.recordRefusedDeliveryPaths(phase, [deliveryDoc]);
+      await this.verifyManifestProvenance(phase.projectId, phaseId, tree, documented);
+      return;
+    }
     const files = documented && this.options.releaseFiles
       ? [...new Set([...await this.options.releaseFiles(documented), deliveryDoc])]
       : (await tree.entries()).filter((entry) => entry.type !== 'directory').map((entry) => entry.path);
-    const document = await this.options.workspace.readFile(deliveryDoc).catch(() => '');
+    const document = await this.options.workspace.readFile(target.rel).catch(() => '');
     const section = renderFileManifest(files.map((file) => ({ path: file, type: 'file' })), {
       scannedAt: new Date().toISOString(),
     });
-    await this.options.workspace.writeFile(deliveryDoc, upsertFileManifest(document, section));
+    await this.options.workspace.writeFile(target.rel, upsertFileManifest(document, section));
     const finalRevision = this.options.commitCanonicalArtifact
       ? await this.options.commitCanonicalArtifact(phase.id, 'publish delivery file manifest')
       : undefined;
@@ -481,6 +556,11 @@ export class ProjectOrchestrator {
     }
     await this.scheduler.reconcileClosedCorrectiveTickets(phase.projectId);
     await this.runner.synchronizeVerifiedBugResolutions?.(phase.projectId);
+    // A delivery interrupted after the Phase was recorded as delivered is finished, not repeated; and a
+    // release whose tag was never made — the run died first, or the tag failed — is tagged now.
+    const resumed = await this.scheduler.finishInterruptedDelivery(phase.id);
+    await this.tagMissingReleases(phase.projectId);
+    if (resumed) return this.announceDelivery(phase, resumed, phase.stepIds.length, 0);
     await this.transition({
       event: 'phase_started', projectId: phase.projectId, phaseId: phase.id,
       correlationId: createObjectId(), message: phase.objective,
@@ -668,26 +748,7 @@ export class ProjectOrchestrator {
         try {
           const completion = await this.scheduler.completePhase(phase.id);
           await this.tagRelease(phase.id);
-          await this.transition({
-            event: 'phase_delivered',
-            projectId: phase.projectId,
-            phaseId: phase.id,
-            correlationId: createObjectId(),
-            message: 'Phase delivery gates passed.',
-          });
-          if (completion.projectDelivered) {
-            await this.transition({
-              event: 'project_delivered', projectId: phase.projectId, phaseId: phase.id,
-              correlationId: createObjectId(), message: 'Project delivery gates passed.',
-            });
-          }
-          return {
-            phaseId: phase.id,
-            nextPhaseId: completion.nextPhaseId,
-            projectDelivered: completion.projectDelivered,
-            totalSteps: steps.length,
-            executedSteps: executed,
-          };
+          return await this.announceDelivery(phase, completion, steps.length, executed);
         } catch (error) {
           return this.failure(phase.id, steps.length, executed, undefined, (error as Error).message);
         }

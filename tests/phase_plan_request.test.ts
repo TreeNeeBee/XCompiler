@@ -305,6 +305,15 @@ describe('retained PhasePlan business parsing', () => {
     expect(() => parsePhasePlanResponse(JSON.stringify(raw), payload().parseContext)).toThrow(PlannerContractViolation);
   });
 
+  // dbc2excel-7: the schema refused a nested phase field, and every retry was told only that the current
+  // phase must be explicit, so the model never learned what to fix and failed the same way three times.
+  it('names the field the schema refused, so a retry can repair it', () => {
+    const [phase] = phasePlan().implementationPhases;
+    const broken = { ...phasePlan(), implementationPhases: [{ ...phase, status: 'active' }] };
+    expect(() => parsePhasePlanResponse(JSON.stringify(broken), payload().parseContext))
+      .toThrow(/\(implementationPhases\[0\]\.status: /u);
+  });
+
   it('keeps original architecture-demand and user-forced phase-split checks', () => {
     expect(() => parsePhasePlanResponse(JSON.stringify(phasePlan()), {
       ...payload().parseContext, rawRequirement: 'Build a complex platform.',

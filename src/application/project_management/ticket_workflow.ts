@@ -1003,10 +1003,7 @@ export class TicketWorkflow {
       //
       // Stated as a refusal rather than an exception. The chain is unfinished, not corrupt, and the
       // next hop or the reopened Step can still complete it.
-      const hasChild = (await this.list()).some((candidate) =>
-        candidate.type === 'change-request' &&
-        candidate.parentChangeRequestId === request.id &&
-        candidate.state !== 'cancelled');
+      const hasChild = (await this.list()).some((candidate) => continuesChain(request, candidate));
       const finalPropagationHop = !hasChild &&
         request.propagationStepIds.at(-1) === request.targetStepId;
       if (finalPropagationHop) {
@@ -1075,10 +1072,8 @@ export class TicketWorkflow {
     }
 
     if (ticket.type === 'change-request') {
-      const hasChild = (await this.list()).some((candidate) =>
-        candidate.type === 'change-request' &&
-        candidate.parentChangeRequestId === ticket.id &&
-        candidate.state !== 'cancelled');
+      const closedRequest = ticket;
+      const hasChild = (await this.list()).some((candidate) => continuesChain(closedRequest, candidate));
       const finalPropagationHop = !hasChild &&
         ticket.propagationStepIds.at(-1) === ticket.targetStepId;
       if (!finalPropagationHop) {
@@ -1765,6 +1760,22 @@ function severityPriority(severity: BugTicket['severity']): number {
   if (severity === 'high') return TICKET_PRIORITY.high;
   if (severity === 'medium') return TICKET_PRIORITY.normal;
   return TICKET_PRIORITY.low;
+}
+
+/**
+ * Whether `candidate` is the next hop of `request`'s own chain.
+ *
+ * `parentChangeRequestId` names two relationships: the previous hop of a chain, and the Change Request
+ * a correction was raised inside — a Bug found while that CR ran starts a chain of its own, whose first
+ * hop points back at it. A hop continues a chain only when it carries the chain's sources. Reading the
+ * nested chain as a continuation made a chain's true last hop look unfinished, so the sources it should
+ * have carried to closure stayed open and the Phase could never be delivered.
+ */
+function continuesChain(request: ChangeRequestTicket, candidate: Ticket): boolean {
+  return candidate.type === 'change-request' &&
+    candidate.parentChangeRequestId === request.id &&
+    candidate.state !== 'cancelled' &&
+    candidate.sourceTicketIds.some((id) => request.sourceTicketIds.includes(id));
 }
 
 function isPhaseDeliveryGateBug(ticket: BugTicket): boolean {

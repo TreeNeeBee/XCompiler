@@ -433,6 +433,7 @@ export interface Messages {
       refusedWithChange: (path: string, reason: string) => string;
       evidenceTooLarge: (path: string, part: 'change' | 'test' | 'requirements') => string;
       judgementUnavailable: string;
+      deliveredVersionUnreadable: (path: string) => string;
       unregisteredChange: (paths: string) => string;
     };
     addDependency: { description: string };

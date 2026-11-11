@@ -383,6 +383,21 @@ describe('read_file & list_dir', () => {
     expect(write.error).toContain('outside the project directory');
     expect(await fs.readFile(outsideFile, 'utf8')).toBe('secret = True\n');
   });
+
+  // A link whose target does not exist yet resolved nowhere, so the write passed the check and created
+  // that target wherever the link pointed.
+  it('refuses a write through a link whose target does not exist yet', async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-outside-'));
+    const outsideFile = path.join(outsideDir, 'created.py');
+    await ws.ensure('src');
+    await fs.symlink(outsideFile, ws.abs('src/dangling.py'));
+
+    const write = await writeFileTool.run({ path: 'src/dangling.py', content: 'leak = True\n' }, ctx);
+
+    expect(write.ok).toBe(false);
+    expect(write.error).toContain('outside the project directory');
+    await expect(fs.stat(outsideFile)).rejects.toThrow();
+  });
 });
 
 describe('parseUnifiedDiff', () => {

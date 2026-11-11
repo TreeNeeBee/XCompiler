@@ -449,6 +449,54 @@ describe('ProjectOrchestrator', () => {
       expect(phase.objectType === 'phase' && phase.reportIds).toHaveLength(1);
     });
 
+    // Codex XC-02: `delivered`, `closed` and the release tag are separate steps. A run that died between
+    // them left a Phase no later run would finish, because delivery only began from `in_progress`.
+    it.each([
+      ['after the Phase was saved as delivered', 'delivered'],
+      ['after the Phase was closed and before its release was tagged', 'closed'],
+    ] as const)('finishes a delivery interrupted %s without delivering again', async (_case, reached) => {
+      const setup = await fixture();
+      const head = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+      const interrupted = new Error('process died');
+      let gates = 0;
+      const base = () => ({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
+        canonicalRevisionState: async () => ({ head, pending: [] }),
+        finalGate: async () => { gates += 1; return { ok: true, evidence: ['scenario passes'] }; },
+      });
+      // The first run dies at the chosen point: on the write that closes the Phase, or while tagging.
+      const commit = setup.repository.commit.bind(setup.repository);
+      if (reached === 'delivered') {
+        setup.repository.commit = async (objects) => {
+          if (objects.some((object) => object.objectType === 'phase' && object.state === 'closed')) throw interrupted;
+          return commit(objects);
+        };
+      }
+      const dying = new ProjectOrchestrator({ ...base(), tagDeliveredPhase: async () => { throw interrupted; } }, setup.plan);
+      await dying.run(setup.graph.phases[0]!.id).catch(() => undefined);
+      setup.repository.commit = commit;
+      const stored = await setup.repository.read(setup.graph.phases[0]!.id);
+      expect(stored.objectType === 'phase' && stored.state).toBe(reached);
+
+      const tagged: string[] = [];
+      const gatesBefore = gates;
+      const resumed = new ProjectOrchestrator({
+        ...base(),
+        tagDeliveredPhase: async (release) => { tagged.push(release.revision); return { name: 'v1.0.0', created: true }; },
+      }, setup.plan);
+      const result = await resumed.run(setup.graph.phases[0]!.id);
+
+      expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
+      expect(result.projectDelivered).toBe(true);
+      const phase = await setup.repository.read(setup.graph.phases[0]!.id);
+      expect(phase.objectType === 'phase' && phase.state).toBe('closed');
+      const project = await setup.repository.read(setup.graph.project.id);
+      expect(project.objectType === 'project' && project.state).toBe('closed');
+      expect(tagged).toEqual([head]);
+      // Finished, not repeated: the gate that already passed is not run again.
+      expect(gates).toBe(gatesBefore);
+    });
+
     it('closes it on the passing gate even when nothing upstream marked its solution verified', async () => {
       const setup = await fixture();
       let gateRuns = 0;
@@ -852,7 +900,8 @@ describe('ProjectOrchestrator', () => {
         }
         const result = await passingAttempt(setup.repository, input.domainStep);
         return input.domainStep.type === 'FUNCTIONAL_TEST' && input.mode === 'debug'
-          ? { ...result, changedFiles: [supplement], testOutcomes: [passedTestOutcome(input.domainStep, [replays ? supplement : 'tests/other.py'])] }
+          ? { ...result, changedFiles: [supplement], wikiEntryIds: ['project.supplement-collection'],
+            testOutcomes: [passedTestOutcome(input.domainStep, [replays ? supplement : 'tests/other.py'])] }
           : result;
       },
     };
@@ -871,6 +920,8 @@ describe('ProjectOrchestrator', () => {
     }
     expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
     expect(bugs.map((bug) => [bug.state, bug.solution?.status, bug.verificationRecords.length])).toEqual([['closed', 'verified', 1]]);
+    // What the repair learned stays linked to the Bug, as on every other path that closes one.
+    expect(bugs[0]!.debugWikiCandidateEntryIds).toEqual(['project.supplement-collection']);
     expect(integrated).toContain(bugs[0]!.id);
   });
 
@@ -1200,6 +1251,54 @@ describe('ProjectOrchestrator', () => {
     // handed the repair to a Step that could not perform it.
     expect(discovered?.type === 'bug' && discovered.failure.failedStepId).toBe(code.id);
     expect(discovered?.type === 'bug' && discovered.failure.failedStepId).not.toBe(functional.id);
+  });
+
+  // dbc2excel-7 P1: a quality shortfall at S001 became an Enhancement whose chain ran to S008. A Bug raised
+  // while that last hop ran started a chain of its own, whose first hop names the hop it was raised inside.
+  // The last hop then looked as if it had a next hop, never carried the Enhancement to closure, and the
+  // Phase could not be delivered: "active Tickets [ENH-P1-001]".
+  it('closes a chain\'s source when a Bug was raised inside the chain\'s last hop', async () => {
+    const setup = await fixture();
+    const calls: string[] = [];
+    let failedQuality = false;
+    let failedLastHop = false;
+    const runner = {
+      initialize: async () => undefined,
+      run: async (input: AttemptInput): Promise<AttemptResult> => {
+        calls.push(`${input.domainStep.name}:${input.mode}`);
+        if (calls.length > 80) throw new Error(`still cycling: ${calls.join(', ')}`);
+        if (input.domainStep.type === 'REQUIREMENT_ANALYSIS' && input.mode === 'normal' && !failedQuality) {
+          failedQuality = true;
+          const assessment = await failingAssessment(setup.repository, input.domainStep);
+          return {
+            ok: false, reason: `Quality gate failed: ${assessment.gaps.join('; ')}`, failureLog: assessment.gaps.join('\n'),
+            assessment, changedFiles: [], wikiEntryIds: [], testOutcomes: [],
+          };
+        }
+        if (input.domainStep.type === 'FUNCTIONAL_TEST' && input.mode === 'change-request' && !failedLastHop) {
+          failedLastHop = true;
+          return {
+            ok: false, reason: 'functional acceptance failed', failureLog: 'assert None == ""',
+            changedFiles: [], wikiEntryIds: [], testOutcomes: [],
+          };
+        }
+        return passingAttempt(setup.repository, input.domainStep);
+      },
+    };
+    const engine = new ProjectOrchestrator(options(setup.workspace, setup.repository, runner), setup.plan);
+    const result = await engine.run(setup.graph.phases[0]!.id);
+
+    const tickets = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket');
+    const enhancement = tickets.find((ticket): ticket is TicketOf<'enhancement'> => ticket.type === 'enhancement')!;
+    const requests = tickets.filter((ticket): ticket is TicketOf<'change-request'> => ticket.type === 'change-request');
+    const functional = setup.graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
+    const lastHop = requests.find((ticket) => ticket.sourceTicketIds.includes(enhancement.id) && ticket.targetStepId === functional.id)!;
+    // The shape under test: a chain with other sources begins inside the Enhancement chain's last hop.
+    expect(requests.some((ticket) => ticket.parentChangeRequestId === lastHop.id &&
+      !ticket.sourceTicketIds.includes(enhancement.id))).toBe(true);
+    expect(result.failedStepId, JSON.stringify({ result, calls })).toBeUndefined();
+    expect(enhancement.state).toBe('closed');
+    expect(result.projectDelivered).toBe(true);
   });
 
   it('routes a CR quality shortfall through a linked Enhancement instead of a Bug', async () => {

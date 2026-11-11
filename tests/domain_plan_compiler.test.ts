@@ -339,6 +339,25 @@ describe('domain plan compiler', () => {
     expect(content).toContain(row);
   });
 
+  // Codex XC-01, the same boundary for the report: it is committed into a release, so a link out of the
+  // project at its path is not written through.
+  it('refuses to write the report through a link that leaves the project', async () => {
+    const graph = materializeProjectGraph({ draft: samplePlan(), topic: 'Build reports.', projectName: 'report' });
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-project-report-'));
+    const outside = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-report-outside-')), 'outside.md');
+    await fs.writeFile(outside, 'OUTSIDE FILE\n');
+    const workspace = new Workspace(root);
+    const repository = new DomainObjectRepository(workspace);
+    await repository.load();
+    await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+    await workspace.ensure('docs');
+    await fs.symlink(outside, workspace.abs('docs/project-development-report.P1.md'));
+
+    await expect(generateProjectDevelopmentReport({ workspace, plan: samplePlan(), finalDelivery: false, repository }))
+      .rejects.toThrow(/outside the project directory/u);
+    expect(await fs.readFile(outside, 'utf8')).toBe('OUTSIDE FILE\n');
+  });
+
   it('appends rebased Phases without replacing the canonical Project identity', async () => {
     const originalDraft = samplePlan();
     originalDraft.implementationPhases = [originalDraft.implementationPhases[0]!];

@@ -32,7 +32,7 @@ import {
 } from './execution_context.js';
 import { earlierPhaseTestOwners } from './earlier_phase_test_owners.js';
 import {
-  contractBasisDocuments, deliveringIteration, inheritedTestAssets, isExecutableTestPath, requiresContractBasisJudgement,
+  contractBasisDocuments, inheritedTestAssets, isExecutableTestPath, requiresContractBasisJudgement,
   type TestAssetOwnerStep,
 } from '../../domain/quality/test_assets.js';
 import type { Phase } from '../../domain/phases/phase.js';
@@ -1366,7 +1366,7 @@ export class DomainAttemptRunner {
           }
           const accepted = group.map((index) => ({ index, ...writes[index]!, resolved: resolutions[index] as Extract<ContractBasisResolution, { ok: true }> }));
           if (requiresContractBasisJudgement(step.type)) {
-            const refusal = await this.judgeContractBasis(scope, sources, accepted, (test) => this.readAsDelivered(scope, input, earlier, test));
+            const refusal = await this.judgeContractBasis(scope, sources, accepted, (test) => this.readAsDelivered(scope, input, test));
             if (refusal) {
               for (const index of group) verdicts[index] = refusal;
               continue;
@@ -1406,7 +1406,7 @@ export class DomainAttemptRunner {
     scope: ExecutionScope,
     sources: ContractBasisSources,
     writes: readonly { proposal: ContractBasisProposal; touched: readonly string[]; resolved: Extract<ContractBasisResolution, { ok: true }> }[],
-    readAsDelivered: (test: string) => Promise<string | undefined>,
+    readAsDelivered: (test: string) => Promise<DeliveredTest>,
   ): Promise<{ error: string } | undefined> {
     const text = tFor(getPromptLocale()).tools.contractBasis;
     const { judgeContractBasis } = this.options;
@@ -1418,7 +1418,10 @@ export class DomainAttemptRunner {
     const distinct = (values: readonly string[]) => [...new Set(values)].join('\n');
     const requirements = sources.documents[0] ? await sources.readAtBase(sources.documents[0]) : undefined;
     for (const test of [...new Set(writes.flatMap(({ touched }) => touched))]) {
-      const testAsDelivered = await readAsDelivered(test);
+      const delivered = await readAsDelivered(test);
+      // Without the delivered version nothing says which assertions the milestone holds, so nothing is judged.
+      if (delivered.kind === 'unknown') return { error: text.deliveredVersionUnreadable(test) };
+      const testAsDelivered = delivered.kind === 'delivered' ? delivered.text : undefined;
       // What earlier turns already changed: without it, a rename after the assertion had moved read as a
       // rename that moved nothing.
       const testBeforeChange = await scope.workspace.readFile(test).catch(() => undefined);
@@ -1443,31 +1446,43 @@ export class DomainAttemptRunner {
   }
 
   /**
-   * The test as the earlier Phase that owns it delivered it. Read at this Ticket's base it held what
-   * later Tickets had made of it, so a relaxed assertion read as the delivered one. A Phase delivered
-   * before deliveries were recorded falls back to where the next Phase began: the common ancestor of
-   * the baselines its Tickets started from. Absent rather than guessed when neither is known.
+   * The test as the last delivered Phase left it: the milestone a later Phase must not regress.
+   *
+   * Read at the Phase that first declared the test, a Phase in between that changed and delivered it did
+   * not count: what it had added read as content added later, which the judge is told is not protected.
+   * A Phase delivered before deliveries were recorded falls back to where this Phase began: the common
+   * ancestor of the baselines its Tickets started from.
+   *
+   * Three answers, kept apart. The delivered text. `absent` when that delivery verifiably holds no such
+   * file, so the test is new. `unknown` when no delivered revision can be read at all — never taken for
+   * "nothing was delivered", which would leave every assertion unprotected.
    */
-  private async readAsDelivered(scope: ExecutionScope, input: AttemptInput, earlier: readonly TestAssetOwnerStep[], test: string): Promise<string | undefined> {
-    const iteration = deliveringIteration(test, earlier);
-    if (!iteration) return undefined;
+  private async readAsDelivered(scope: ExecutionScope, input: AttemptInput, test: string): Promise<DeliveredTest> {
     const project = await this.options.repository.read(input.domainStep.projectId);
-    if (project.objectType !== 'project') return undefined;
+    if (project.objectType !== 'project') return { kind: 'unknown' };
     const phases = (await Promise.all(project.phaseIds.map((id) => this.options.repository.read(id))))
       .filter((object): object is Phase => object.objectType === 'phase');
-    const owner = phases.findIndex((phase) => phase.name === iteration);
-    if (owner < 0) return undefined;
-    let revision = phases[owner]!.deliveredRevision;
-    const next = phases[owner + 1];
-    if (!revision && next) {
+    const current = phases.findIndex((phase) => phase.id === input.domainStep.phaseId);
+    const milestone = phases.slice(0, Math.max(current, 0)).reverse()
+      .find((phase) => phase.state === 'closed' || phase.state === 'delivered');
+    if (!milestone) return { kind: 'unknown' };
+    let revision = milestone.deliveredRevision;
+    if (!revision) {
       const baselines = [...new Set((await this.options.repository.list({ objectType: 'ticket', projectId: project.id }))
-        .filter((object): object is Ticket => object.objectType === 'ticket' && object.phaseId === next.id)
+        .filter((object): object is Ticket => object.objectType === 'ticket' && object.phaseId === input.domainStep.phaseId)
         .flatMap((ticket) => ticket.commits.filter((commit) => commit.kind === 'baseline').map((commit) => commit.revision)))];
       revision = baselines.length > 1
         ? (await scope.git.raw().raw(['merge-base', '--octopus', ...baselines]).catch(() => '')).trim() || undefined
         : baselines[0];
     }
-    return revision ? scope.git.raw().raw(['show', `${revision}:${test}`]).catch(() => undefined) : undefined;
+    if (!revision) return { kind: 'unknown' };
+    const git = scope.git.raw();
+    // Listing fails for a revision Git does not hold and answers nothing for a file that revision lacks.
+    const listed = await git.raw(['-c', 'core.quotePath=false', 'ls-tree', '--name-only', revision, '--', test]).catch(() => undefined);
+    if (listed === undefined) return { kind: 'unknown' };
+    if (!listed.trim()) return { kind: 'absent' };
+    const text = await git.raw(['show', `${revision}:${test}`]).catch(() => undefined);
+    return text === undefined ? { kind: 'unknown' } : { kind: 'delivered', text };
   }
 
   private async recordContractBases(input: AttemptInput, bases: readonly TicketContractBasis[]): Promise<void> {
@@ -1778,6 +1793,9 @@ async function fileContentHash(scope: ExecutionScope, file: string): Promise<str
   const bytes = await fs.readFile(scope.workspace.abs(file)).catch(() => undefined);
   return bytes ? `sha256:${createHash('sha256').update(bytes).digest('hex')}` : undefined;
 }
+
+/** A test as the last delivered Phase left it, a test that delivery does not hold, or no readable delivery. */
+type DeliveredTest = { kind: 'delivered'; text: string } | { kind: 'absent' } | { kind: 'unknown' };
 
 /** Where this Ticket's work on this Step began: its first attempt's baseline, once one is recorded. */
 function ticketBaseRevision(input: AttemptInput, attemptBaseline?: string): string | undefined {

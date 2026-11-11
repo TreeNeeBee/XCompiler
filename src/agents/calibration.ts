@@ -221,9 +221,9 @@ export function calibrateDocPaths(steps: Step[], projectType: ProjectType = 'app
     renamed.set(iterationId, corrections);
     const rename = (p: string, scoped: (path: string) => string): string => {
       const next = iterationQualifiedDoc(p, iterationId) ?? scoped(remap(p));
-      // Only a name that is no canonical document is a misnaming. A canonical root path scoped to this
-      // iteration stays as written in text, where it may deliberately mean the earlier Phase's copy.
-      if (next !== p && !isCanonicalDocPath(p)) corrections.set(p, next);
+      // Only a name that is no canonical root document is a misnaming. A canonical root path scoped to
+      // this iteration stays as written in text, where it may deliberately mean the earlier Phase's copy.
+      if (next !== p && !CANONICAL_DOC_PATHS.has(p)) corrections.set(p, next);
       return next;
     };
     let inputs = dedup((s.inputs ?? []).map((p) => rename(p, (path) => iterationScopedInput(path, s.phase, iterationId))));
@@ -282,10 +282,6 @@ const TEST_PLAN_PHASES: Readonly<Record<string, Step['phase']>> = {
 
 const CANONICAL_DOC_PATHS: ReadonlySet<string> = new Set(Object.values(DOC_NAMES));
 
-function isCanonicalDocPath(path: string): boolean {
-  return CANONICAL_DOC_PATHS.has(path) || path.startsWith('docs/iterations/');
-}
-
 /** A Phase document whatever its number prefix (`docs/02-requirement-analysis.md`): its canonical path. */
 function canonicalPhaseDocAlias(path: string): string | undefined {
   const match = path.replace(/\\/g, '/').match(/^docs\/(?:\d{1,2}[-_])?([a-z]+(?:[-_][a-z]+)*)\.md$/iu);
@@ -303,7 +299,10 @@ function canonicalPhaseDocAlias(path: string): string | undefined {
 function iterationQualifiedDoc(path: string, iterationId: string): string | undefined {
   if (iterationId === 'P1') return undefined;
   const token = iterationId.toLowerCase();
-  const stripped = path.split('/').map((segment) => {
+  // The iteration's own directory names the iteration too: `docs/iterations/P2/02-requirement-analysis.md`
+  // is P2's requirement analysis under a wrong number, exactly as `docs/p2-02-requirement-analysis.md` is.
+  const unscoped = path.replace(new RegExp(`^docs/iterations/${token}/`, 'iu'), 'docs/');
+  const stripped = unscoped.split('/').map((segment) => {
     if (segment.toLowerCase() === token) return '';
     return segment
       .replace(new RegExp(`^${token}[-_]`, 'iu'), '')

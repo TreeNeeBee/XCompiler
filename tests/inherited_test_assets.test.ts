@@ -11,7 +11,7 @@ import { projectExecutionPlan } from '../src/application/execution/execution_ada
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
 import { materializeProjectExtension } from '../src/application/planning/project_graph_persistence_service.js';
 import { rebaseDraftPlanPhases } from '../src/domain/planning/compiler.js';
-import { reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
+import { createObjectEnvelope, reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { PhaseSchema } from '../src/domain/phases/phase.js';
 import { ProjectSchema } from '../src/domain/projects/project.js';
 import { TicketSchema, type WorkTicket } from '../src/domain/tickets/ticket.js';
@@ -283,8 +283,15 @@ describe('the contract basis gate of a real attempt', () => {
     expect(await ledger(setup)).toEqual([]);
   });
 
+  /** A project whose earlier Phase delivered at the seeded revision, as every real one has by its next Phase. */
+  const seededAfterDelivery = async (judge?: ContractBasisJudge) => {
+    const setup = await seeded(judge);
+    await recordDelivery(setup, (await setup.realGit!.raw().revparse(['HEAD'])).trim());
+    return setup;
+  };
+
   it('lets a functional change through when the judge confirms its citation', async () => {
-    const setup = await seeded(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+    const setup = await seededAfterDelivery(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
     const gate = await functionalGate(setup);
     expect(await checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ record: expect.any(Function) });
   });
@@ -293,14 +300,14 @@ describe('the contract basis gate of a real attempt', () => {
     ['no judge is configured', undefined],
     ['the judge answers nothing usable', vi.fn<ContractBasisJudge>(async () => { throw new ContractBasisJudgementError(); })],
   ])('refuses a functional change when %s', async (_name, judge) => {
-    const setup = await seeded(judge);
+    const setup = await seededAfterDelivery(judge);
     const gate = await functionalGate(setup);
     expect(await checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).toEqual({ error: tFor('en').tools.contractBasis.judgementUnavailable });
   });
 
   it('does not take a provider outage for a verdict', async () => {
     const outage = new Error('provider unavailable');
-    const setup = await seeded(async () => { throw outage; });
+    const setup = await seededAfterDelivery(async () => { throw outage; });
     const gate = await functionalGate(setup);
     await expect(checkOne(gate, [FUNCTIONAL], relaxing.args.contractBasis, relaxing)).rejects.toBe(outage);
   });
@@ -453,6 +460,56 @@ describe('the contract basis gate of a real attempt', () => {
         await setup.workspace.writeFile(FUNCTIONAL, AFTER_EARLIER_TURN);
         return { setup, gate: await functionalGate(setup) };
       };
+
+      // Codex XC-03: read at the Phase that first declared the test, a Phase in between that changed and
+      // delivered it did not count. Its assertions then read as content added later, which Rule 1.2.0
+      // does not protect, so a third Phase could remove what the second had delivered.
+      it('is what the last delivered Phase left, not what the first one did', async () => {
+        const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+        const { setup, gate } = await history(judge, 'phase');
+        const BETWEEN = `${DELIVERED}\ndef test_warnings_kept():\n    assert warnings == []\n`;
+        await setup.workspace.writeFile(FUNCTIONAL, BETWEEN);
+        const deliveredBetween = await setup.realGit!.snapshot('seed', 3, 'a Phase in between delivered more');
+        await setup.workspace.writeFile(FUNCTIONAL, AFTER_EARLIER_TURN);
+        const project = (await setup.repository.findProject())!;
+        const first = await setup.repository.read(project.phaseIds[0]!);
+        if (first.objectType !== 'phase') throw new Error('Expected P1');
+        const between = PhaseSchema.parse({
+          ...first, ...createObjectEnvelope({ name: 'P1B', objectType: 'phase', projectId: project.id }),
+          state: 'closed', deliveredRevision: deliveredBetween,
+        });
+        await setup.repository.commit([between, ProjectSchema.parse({
+          ...project, ...reviseObjectEnvelope(project), phaseIds: [project.phaseIds[0]!, between.id, ...project.phaseIds.slice(1)],
+        })]);
+
+        await gate.checkTurn([rename, extend]);
+
+        expect(judge.mock.calls[0]![0]).toMatchObject({ testAsDelivered: BETWEEN });
+      });
+
+      // "No such revision" is not "nothing was delivered": with no baseline, every assertion would read
+      // as added later and none would be protected.
+      it('refuses the change, with no judge asked, when the delivered revision cannot be read', async () => {
+        const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'unused' }));
+        const { setup, gate } = await history(judge, 'phase');
+        await recordDelivery(setup, 'f'.repeat(40));
+        const refusal = { error: tFor('en').tools.contractBasis.deliveredVersionUnreadable(FUNCTIONAL) };
+
+        expect(await gate.checkTurn([rename, extend])).toEqual([refusal, refusal]);
+        expect(judge).not.toHaveBeenCalled();
+      });
+
+      it('judges a test the delivered revision does not hold as new, with no delivered version', async () => {
+        const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));
+        const setup = await seededAfterDelivery(judge);
+        await setup.workspace.writeFile(FUNCTIONAL, AFTER_EARLIER_TURN);
+        const gate = await functionalGate(setup);
+
+        await gate.checkTurn([rename, extend]);
+
+        expect(judge).toHaveBeenCalledTimes(1);
+        expect(judge.mock.calls[0]![0]).not.toHaveProperty('testAsDelivered');
+      });
 
       it.each(['phase', 'next-phase-baseline'] as const)('is what the earlier Phase delivered, read from its %s', async (record) => {
         const judge = vi.fn<ContractBasisJudge>(async () => ({ supersedes: true, reason: 'The clause requires nineteen columns.' }));

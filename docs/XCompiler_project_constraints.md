@@ -137,10 +137,15 @@ only authority that changes Ticket state.
   against the test as the Phase that owns it delivered it, read at that Phase's recorded delivered
   revision, and on evidence sent whole or not at all. Content the delivered test does not contain is
   not what the milestone protects: a change to it is accepted when every delivered assertion stays in
-  force and the new content is consistent with the cited contract.
+  force and the new content is consistent with the cited contract. The delivered test is read at the
+  last Phase delivered before the current one, whichever Phase first declared it; when that revision
+  cannot be read the change is refused, and only a revision that verifiably lacks the file makes the
+  test a new one.
 - A plan names each canonical document once. An iteration-named copy of a canonical document
   (`docs/p2-01-requirement-analysis.md`, `docs/02-requirement-analysis-p2.md`, `docs/p2-tests/…`) is folded
   into that iteration's canonical path, in outputs, inputs and the Step's own text.
+- A Change Request is its chain's last hop unless a later hop carries the same sources. A chain begun
+  by a correction raised inside it is not its continuation, and the last hop carries its sources to closure.
 - A Bug repaired at the Step its contract names for verification is proven by that repair's own
   gate and closes there, even with no Step after it; the work parked behind it then closes the Step.
 - A delivered Phase is a release: its delivered revision is recorded on the Phase and tagged in the
@@ -151,7 +156,10 @@ only authority that changes Ticket state.
   before delivery is: a later Phase's user documents copied over the root copies, the development report,
   and the file manifest written into that Phase's own delivery document. The manifest lists the files the
   release commit holds, never ignored runtime output. The delivery gate checks the delivering Phase's
-  documents, not the root copies an earlier Phase wrote.
+  documents, not the root copies an earlier Phase wrote. Every path delivery reads or writes is resolved
+  through links first: one that leads outside the project is left untouched and recorded.
+- Delivery is resumable at every write: a Phase already recorded as delivered is finished — closed, the
+  project advanced, its release tagged — without running its gate or assembling its release again.
   A basis is registered only after its write succeeds, against the content that write left, so
   delivery can recheck every inherited test the Ticket changed by path and content, against what any
   Ticket of the Phase registered. The Phase delivery

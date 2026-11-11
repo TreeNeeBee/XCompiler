@@ -686,7 +686,29 @@ export class ProjectController {
       await this.saveTicketTransitionPath(epic, ['in_progress', 'resolved', 'closed']);
     }
     phase = await this.savePhaseTransition(deliveredRevision ? { ...phase, deliveredRevision } : phase, 'delivered');
-    await this.savePhaseTransition(phase, 'closed');
+    phase = await this.savePhaseTransition(phase, 'closed');
+    return this.advanceProjectPast(phase);
+  }
+
+  /**
+   * Finishes a delivery that was interrupted after the Phase was recorded as delivered.
+   *
+   * `delivered`, `closed` and the project's advance are separate writes. A run that died between them
+   * left a Phase no later run would finish, because delivery only begins from `in_progress`. The gate
+   * passed and the release stands at the recorded revision, so only what remains is done: the delivery
+   * is never assembled, judged or recorded a second time.
+   */
+  async finishInterruptedDelivery(
+    phaseId: ObjectId,
+  ): Promise<{ nextPhaseId?: ObjectId; projectDelivered: boolean } | undefined> {
+    let phase = await this.requirePhase(phaseId);
+    if (phase.state !== 'delivered' && phase.state !== 'closed') return undefined;
+    if (phase.state === 'delivered') phase = await this.savePhaseTransition(phase, 'closed');
+    return this.advanceProjectPast(phase);
+  }
+
+  /** Moves the project on from a closed Phase; each step is skipped when an earlier run already took it. */
+  private async advanceProjectPast(phase: Phase): Promise<{ nextPhaseId?: ObjectId; projectDelivered: boolean }> {
     let project = await this.requireProject(phase.projectId);
     const phases = await Promise.all(project.phaseIds.map((id) => this.requirePhase(id)));
     const next = phases.find((candidate) =>
@@ -696,13 +718,14 @@ export class ProjectController {
       ),
     );
     if (next) {
-      await this.state.selectCurrentPhase(project, next);
+      if (project.currentPhaseId !== next.id) await this.state.selectCurrentPhase(project, next);
       return { nextPhaseId: next.id, projectDelivered: false };
     }
-    if (project.state !== 'in_progress') {
+    if (project.state === 'closed') return { projectDelivered: true };
+    if (project.state === 'in_progress') project = await this.saveProjectTransition(project, 'delivered');
+    if (project.state !== 'delivered') {
       throw new Error(`Project ${project.name} is not in progress at final Phase completion`);
     }
-    project = await this.saveProjectTransition(project, 'delivered');
     await this.saveProjectTransition(project, 'closed');
     return { projectDelivered: true };
   }

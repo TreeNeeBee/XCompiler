@@ -84,6 +84,7 @@ import {
   normalizeImplementationPhases,
   normalizeStepIterations,
   parseComplexityAssessment,
+  implementationPhaseIssues,
   parseImplementationPhases,
   parseProjectType,
   validateImplementationPhaseDraft,
@@ -671,7 +672,10 @@ export function parsePhasePlanResponse(text: string, context: PhasePlanParseCont
   }
   const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
   if (!parsedImplementationPhases || parsedImplementationPhases.length === 0) {
-    throw new PlannerContractViolation('Planner PhasePlan missing valid implementationPhases; P1 current phase must be explicit.');
+    throw new PlannerContractViolation(
+      `Planner PhasePlan missing valid implementationPhases (${implementationPhaseIssues(obj.implementationPhases)}); ` +
+      'P1 current phase must be explicit.',
+    );
   }
   const phaseIssue = validateImplementationPhaseDraft(parsedImplementationPhases, complexityAssessment, {
     language: context.language,
@@ -944,7 +948,10 @@ export function parseDraftPlanJson(text: string, context?: DraftParseContext): D
     });
   const parsedImplementationPhases = parseImplementationPhases(obj.implementationPhases);
   if (context && (!parsedImplementationPhases || parsedImplementationPhases.length === 0)) {
-    throw new PlannerContractViolation('Planner JSON missing valid implementationPhases; the materialized current phase must be explicit.');
+    throw new PlannerContractViolation(
+      `Planner JSON missing valid implementationPhases (${implementationPhaseIssues(obj.implementationPhases)}); ` +
+      'the materialized current phase must be explicit.',
+    );
   }
   const phaseIssue = parsedImplementationPhases
     ? validateImplementationPhaseDraft(

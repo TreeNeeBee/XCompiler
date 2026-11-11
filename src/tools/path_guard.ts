@@ -73,6 +73,11 @@ export async function resolveWorkspacePath(
       if (!isInside(root, existingTarget)) return deny(operation, raw);
       return resolved(root, existingTarget);
     }
+    // A link whose target does not exist resolves nowhere, and a write through it creates that target
+    // wherever the link points — outside the project as readily as inside it.
+    if (await fs.lstat(requested).then((entry) => entry.isSymbolicLink(), () => false)) {
+      return deny(operation, raw);
+    }
     const parent = await nearestExistingParent(path.dirname(requested));
     const realParent = await fs.realpath(parent).catch(() => parent);
     if (!isInside(root, realParent)) return deny(operation, raw);

@@ -348,6 +348,7 @@ export class CorrectiveWorkflowService {
     solution: TicketSolution;
     sourceChange: { summary: string; entries: Changelist['entries']; commit?: string; verification: string[] };
     testOutcomes: readonly TestOutcome[];
+    debugWikiCandidateEntryIds?: string[];
   }): Promise<boolean> {
     const bug = input.work.ticket;
     if (bug.type !== 'bug' || bug.verificationContract.verificationStepId !== input.work.step.id) return false;
@@ -371,6 +372,8 @@ export class CorrectiveWorkflowService {
       verification: input.sourceChange.verification,
       verificationAssessmentId: input.qualityAssessmentId,
     });
+    // Before it closes, like a repair that propagates: what the repair learned stays linked to the Bug.
+    await this.tickets.setDebugWikiCandidates(bug.id, input.debugWikiCandidateEntryIds ?? []);
     await this.tickets.setSolution(bug.id, { ...input.solution, status: 'proposed' });
     await this.tickets.closeBugsProvenAt(step.projectId, step, input.testOutcomes, input.sourceChange.verification);
     // The Step stays delivered, as after any repair: the work parked behind the Bug, the Story or the

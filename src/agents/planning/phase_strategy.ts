@@ -22,6 +22,25 @@ export function parseImplementationPhases(value: unknown): ImplementationPhase[]
   return result.success ? result.data : undefined;
 }
 
+/**
+ * What makes `implementationPhases` invalid, by field path, for the Planner's retry.
+ *
+ * The contract feedback used to say only that the current phase must be explicit, whatever the schema had
+ * refused, so a model that got one nested field wrong was told to fix something it had not broken and
+ * failed the same way on every retry.
+ */
+export function implementationPhaseIssues(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return 'implementationPhases must be an array';
+  if (value.length === 0) return 'implementationPhases must not be empty';
+  const result = ImplementationPhaseSchema.array().safeParse(value);
+  if (result.success) return undefined;
+  return result.error.issues.slice(0, 5).map((issue) => {
+    const at = issue.path.reduce<string>((path, key) =>
+      typeof key === 'number' ? `${path}[${key}]` : `${path}.${String(key)}`, 'implementationPhases');
+    return `${at}: ${issue.message}`;
+  }).join('; ');
+}
+
 export function validateImplementationPhaseDraft(
   phases: ImplementationPhase[],
   assessment: ComplexityAssessment,

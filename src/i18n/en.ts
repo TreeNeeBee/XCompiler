@@ -774,6 +774,9 @@ const messages: Messages = {
         `Not written: another change to ${path} in this turn was refused, and one test is changed whole or not at all. ${reason}`,
       judgementUnavailable: 'This change could not be confirmed against its contract, so it is refused. Leave the test as an ' +
         'earlier Phase delivered it, and report what you found as a finding for its owner.',
+      deliveredVersionUnreadable: (path) =>
+        `${path} cannot be read as the last delivered Phase left it, so this change cannot be judged and is refused. ` +
+        'Leave the test as it is, and report what you found as a finding for its owner.',
       unregisteredChange: (paths) =>
         `${paths} changed in this Ticket with no contract basis registered. A delivered Phase must not regress: rewrite each of them ` +
         'to what its contract requires, with args.contractBasis on the write, or restore what the earlier Phase delivered.',

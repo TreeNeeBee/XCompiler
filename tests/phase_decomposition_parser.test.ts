@@ -153,6 +153,17 @@ describe('retained Phase decomposition business validation', () => {
       .toThrow(PlannerContractViolation);
   });
 
+  // The same contract feedback as the phase plan: name the field the schema refused, or a retry cannot fix it.
+  it('names the implementation phase field the schema refused', () => {
+    const retained = payload();
+    const [phase] = retained.phasePlan.implementationPhases;
+    const draft = { ...stepPlan(), requirementDigest: 'Integer formatter.', projectType: 'application',
+      complexityAssessment: retained.phasePlan.complexityAssessment,
+      implementationPhases: [{ ...phase, status: 'active' }] };
+    expect(() => parseDraftPlanJson(JSON.stringify(draft), retained.parseContext))
+      .toThrow(/\(implementationPhases\[0\]\.status: /u);
+  });
+
   it.each(['tools', 'inputs', 'outputs', 'dependsOn'] as const)('rejects non-string %s entries before calibration', field => {
     const response = stepPlan();
     (response.steps[3] as unknown as Record<string, unknown>)[field] = ['read_file', null];

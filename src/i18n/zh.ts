@@ -760,6 +760,8 @@ const messages: Messages = {
       refusedWithChange: (path, reason) =>
         `没有写入：这一轮对 ${path} 的另一处改动被拒绝，同一个测试要么整体修改，要么不改。${reason}`,
       judgementUnavailable: '无法确认这项改动符合其契约，因此被拒绝。请保持该测试为前序阶段交付时的内容，并把发现的问题作为 finding 报告给其负责方。',
+      deliveredVersionUnreadable: (path) =>
+        `无法读取 ${path} 在上一个已交付阶段的版本，这项改动无法判定，因此被拒绝。请保持该测试不变，并把发现的问题作为 finding 报告给其负责方。`,
       unregisteredChange: (paths) =>
         `${paths} 在本 Ticket 中被改动，但没有登记契约依据。已交付的阶段不得发生功能回退：` +
         '请按契约要求改写这些文件，并在写入时带上 args.contractBasis，或者恢复前序阶段交付时的内容。',

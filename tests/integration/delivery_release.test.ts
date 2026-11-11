@@ -24,7 +24,11 @@ describe('a Phase delivery release', () => {
     await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
-  async function delivered(options: { iterationReadme?: boolean } = {}) {
+  async function delivered(options: {
+    iterationReadme?: boolean;
+    /** Rearranges the working copy after the Phase's work is committed and before delivery assembles it. */
+    arrange?: (workspaceRoot: string) => Promise<void>;
+  } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-delivery-'));
     roots.push(root);
     const container = new ProjectContainer(root);
@@ -51,6 +55,8 @@ describe('a Phase delivery release', () => {
     await workspace.writeFile('.pytest_cache/v/cache/lastfailed', '{}\n');
     await workspace.writeFile('.xc-tmp/gates/P2-delivery/artifacts/advanced.xlsx', 'scratch\n');
 
+    await options.arrange?.(workspace.root);
+
     const repository = new DomainObjectRepository(container.state);
     await repository.load();
     const plan = twoPhasePlan();
@@ -59,14 +65,14 @@ describe('a Phase delivery release', () => {
     const phase = graph.phases.find((candidate) => candidate.name === 'P2')!;
     const repositoryGit = new GitRepositoryService(workspace.root);
     const snapshots = new GitService(workspace);
-    const notes: Array<{ message: string; messageId?: unknown }> = [];
+    const notes: Array<{ message: string; messageId?: unknown; paths?: unknown }> = [];
     const order: string[] = [];
     const orchestrator = new ProjectOrchestrator({
       workspace,
       repository,
       plugins: { size: 0 },
       audit: { event: async (_kind: string, message: string, data?: Record<string, unknown>) => {
-        notes.push({ message, messageId: data?.messageId });
+        notes.push({ message, messageId: data?.messageId, paths: data?.paths });
       } },
       writeDeliveryReport: async ({ finalDelivery }: { finalDelivery: boolean }) => {
         order.push(`report:${finalDelivery}`);
@@ -106,6 +112,64 @@ describe('a Phase delivery release', () => {
     expect(listed.some((file) => file!.startsWith('.pytest_cache/') || file!.startsWith('.xc-tmp/'))).toBe(false);
     // P1's functional-test document is P1's record, and stays as P1 delivered it.
     expect(await release.read('docs/08-functional-test.md')).toBe('# P1 functional test\n');
+  });
+
+  // Codex XC-01: promotion read and wrote through whatever the paths led to. A link out of the project put
+  // outside content into a release, or replaced a file outside the project with a Phase's README.
+  describe('a delivery document whose path leads outside the project', () => {
+    async function outside(files: Record<string, string>) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-delivery-outside-'));
+      roots.push(dir);
+      for (const [file, text] of Object.entries(files)) await fs.writeFile(path.join(dir, file), text);
+      return dir;
+    }
+    const refusedPaths = (notes: Array<{ messageId?: unknown; paths?: unknown }>) => notes
+      .filter((note) => note.messageId === 'domain.delivery_path_refused').flatMap((note) => note.paths as string[]);
+
+    it('does not read a linked Phase document into the release', async () => {
+      const dir = await outside({ 'marker.md': 'OUTSIDE CONTENT\n' });
+      const release = await delivered({ arrange: async (root) => {
+        await fs.rm(path.join(root, 'docs/iterations/P2/README.md'));
+        await fs.symlink(path.join(dir, 'marker.md'), path.join(root, 'docs/iterations/P2/README.md'));
+      } });
+
+      expect(await release.read('README.md')).toBe('# Signals (P1)\n');
+      expect(await simpleGit(release.workspace.root).raw(['show', `${release.head}:README.md`])).toBe('# Signals (P1)\n');
+      expect(refusedPaths(release.notes)).toEqual(['docs/iterations/P2/README.md']);
+      // The rest of the delivery is unaffected.
+      expect(await release.read('docs/quickstart.md')).toBe('# Quickstart (P2)\n');
+    });
+
+    it.each([
+      ['a linked root document', 'outside.md'],
+      ['a link whose target does not exist yet', 'not-yet-created.md'],
+    ] as const)('does not write a Phase document through %s', async (_case, linked) => {
+      const dir = await outside({ 'outside.md': 'OUTSIDE FILE\n' });
+      const release = await delivered({ arrange: async (root) => {
+        await fs.rm(path.join(root, 'README.md'));
+        await fs.symlink(path.join(dir, linked), path.join(root, 'README.md'));
+      } });
+
+      expect(await fs.readFile(path.join(dir, 'outside.md'), 'utf8')).toBe('OUTSIDE FILE\n');
+      expect(await fs.readdir(dir)).toEqual(['outside.md']);
+      expect(refusedPaths(release.notes)).toEqual(['README.md']);
+    });
+
+    it('treats a linked parent directory the same way, for sources and for the manifest', async () => {
+      const dir = await outside({ 'README.md': 'OUTSIDE README\n', 'quickstart.md': 'OUTSIDE QUICKSTART\n', '08-functional-test.md': 'OUTSIDE DELIVERY\n' });
+      const release = await delivered({ arrange: async (root) => {
+        await fs.rm(path.join(root, 'docs/iterations/P2'), { recursive: true });
+        await fs.symlink(dir, path.join(root, 'docs/iterations/P2'));
+      } });
+
+      expect(await release.read('README.md')).toBe('# Signals (P1)\n');
+      expect(await release.read('docs/quickstart.md')).toBe('# Quickstart (P1)\n');
+      // No manifest was written into the outside delivery document.
+      expect(await fs.readFile(path.join(dir, '08-functional-test.md'), 'utf8')).toBe('OUTSIDE DELIVERY\n');
+      expect(refusedPaths(release.notes).sort()).toEqual([
+        'docs/iterations/P2/08-functional-test.md', 'docs/iterations/P2/README.md', 'docs/iterations/P2/quickstart.md',
+      ]);
+    });
   });
 
   it('keeps the root README and says so when a plan made earlier never wrote the Phase\'s README', async () => {

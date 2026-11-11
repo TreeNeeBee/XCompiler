@@ -1,3 +1,4 @@
+import { resolveWorkspacePath } from '../../tools/path_guard.js';
 import type { Workspace } from '../../workspace/workspace.js';
 import type { Plan } from '../../domain/planning/execution_plan.js';
 import type { ProjectAuditResult } from '../delivery/project_audit.js';
@@ -192,7 +193,10 @@ export async function generateProjectDevelopmentReport(input: {
     '',
   ];
   const reportPath = developmentReportPath(currentPhase?.name, input.finalDelivery);
-  await input.workspace.writeFile(reportPath, `${lines.join('\n')}\n`);
+  // The report is committed into a release: a link out of the project is not written through.
+  const target = await resolveWorkspacePath(input.workspace, reportPath, 'development report', { forWrite: true });
+  if (!target.ok) throw new Error(target.error);
+  await input.workspace.writeFile(target.rel, `${lines.join('\n')}\n`);
   const subject = input.finalDelivery || !currentPhase
     ? { id: project.id, objectType: 'project' as const }
     : { id: currentPhase.id, objectType: 'phase' as const };

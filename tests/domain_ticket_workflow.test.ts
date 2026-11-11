@@ -243,7 +243,13 @@ describe('TicketWorkflow', () => {
       .toBe(false);
   });
 
-  it('closes an applied parent CR after its child hand-off was persisted before interruption', async () => {
+  // `parentChangeRequestId` also names the CR a correction was raised inside. Only a child carrying the
+  // parent's sources is its next hop: dbc2excel-7 read a nested Bug's chain as the continuation of an
+  // Enhancement chain's last hop, which then never carried the Enhancement to closure.
+  it.each([
+    ['closes an applied parent CR after its child hand-off was persisted before interruption', 'next-hop'],
+    ['keeps an applied last hop open when its only child is a correction raised inside it', 'nested'],
+  ] as const)('%s', async (_name, childKind) => {
     const { graph, repository, workflow, registration } = await setup();
     const integration = graph.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const functional = graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
@@ -318,11 +324,44 @@ describe('TicketWorkflow', () => {
         evidence: ['The functional contract was inspected and passed.'],
       },
     });
+    const nested = childKind === 'nested' ? await workflow.openBug({
+      creatorActorId: tester.id,
+      failedStep: functional,
+      targetStep: detailed,
+      verificationStep: functional,
+      kind: 'test-failure',
+      severity: 'high',
+      message: 'The functional gate failed while the Change Request was applied.',
+      summary: 'The functional gate failed while the Change Request was applied.',
+      category: 'test',
+      code: 'functional_gate_failed',
+      retryable: true,
+      switchProvider: false,
+      correlationId: createObjectId(),
+      ...bugContracts(functional, detailed, functional, {
+        category: 'test',
+        code: 'functional_gate_failed',
+        testSelectors: ['tests/functional/pipeline.test.ts'],
+      }),
+    }) : undefined;
+    if (nested) {
+      // Registered and assigned by PM like every Ticket, or the lifecycle refuses to process it.
+      await registration.routeAndAssign(nested.id, { forStepId: detailed.id });
+      await workflow.setSolution(nested.id, {
+        status: 'applied',
+        approach: 'Repair what the functional gate reported.',
+        rationale: 'The failure was found while the parent Change Request ran.',
+        changes: ['docs/03-detailed-design.md'],
+        verification: [],
+        updatedAt: new Date().toISOString(),
+      });
+    }
     const child = await workflow.openChangeRequest({
-      sourceTicketIds: [bug.id],
+      sourceTicketIds: [nested?.id ?? bug.id],
       creatorActorId: tester.id,
       triggerStepId: integration.id,
-      sourceStepId: functional.id,
+      // A nested correction's chain starts at the Step that repaired it, not at the hop it was raised in.
+      sourceStepId: nested ? detailed.id : functional.id,
       targetStepId: integration.id,
       propagationStepIds: [integration.id],
       parentChangeRequestId: parent.id,
@@ -339,12 +378,23 @@ describe('TicketWorkflow', () => {
 
     await workflow.reconcileClosedCorrectiveTickets(graph.project.id);
 
-    const recoveredParent = await repository.read(parent.id);
+    const parentState = async () => {
+      const object = await repository.read(parent.id);
+      return object.objectType === 'ticket' ? object.state : undefined;
+    };
     const openChild = await repository.read(child.id);
     const openBug = await repository.read(bug.id);
-    expect(recoveredParent.objectType === 'ticket' && recoveredParent.state).toBe('closed');
     expect(openChild.objectType === 'ticket' && openChild.state).toBe('created');
     expect(openBug.objectType === 'ticket' && openBug.state).not.toBe('closed');
+    if (childKind === 'next-hop') {
+      expect(await parentState()).toBe('closed');
+      return;
+    }
+    // It is its chain's last hop: its Bug is unproven and nothing else will run that gate, so neither
+    // the reconciliation above nor a direct closure closes it over that Bug.
+    expect(await parentState()).not.toBe('closed');
+    await workflow.closeVerified(parent.id);
+    expect(await parentState()).not.toBe('closed');
   });
 
   it('rejects a corrective handoff atomically when the repairing Step has no passing assessment', async () => {

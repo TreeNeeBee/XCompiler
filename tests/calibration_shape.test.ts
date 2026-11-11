@@ -287,6 +287,33 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
+  // Codex XC-04: the same misnumbering inside the iteration's own directory was left beside the canonical
+  // path, so the Step again had two requirement documents and its acceptance text named the wrong one.
+  it('folds a wrongly numbered document that is already in the iteration directory', () => {
+    const raw = [
+      { id: 'S009', phase: 'REQUIREMENT_ANALYSIS', iterationId: 'P2', title: 'requirements', description: 'd', systemPrompt: 'x'.repeat(30),
+        inputs: ['docs/topic.md'],
+        outputs: ['docs/iterations/P2/02-requirement-analysis.md', 'docs/iterations/P2/tests/functional_test_plan.md'],
+        acceptance: 'docs/iterations/P2/02-requirement-analysis.md lists the rules.',
+        subTasks: [{ id: 'S009-1', title: 'rules', description: 'Write the rules.', outputs: ['docs/iterations/P2/02-requirement-analysis.md'] }] },
+      { id: 'S010', phase: 'HIGH_LEVEL_DESIGN', iterationId: 'P2', title: 'design', description: 'd', systemPrompt: 'x'.repeat(30),
+        inputs: ['docs/iterations/P2/02-requirement-analysis.md'], outputs: [], acceptance: 'a' },
+    ] as unknown as Step[];
+
+    const [requirements, design] = calibrateDocPaths(raw, 'application');
+
+    expect(requirements!.outputs).toEqual([
+      'docs/iterations/P2/01-requirement-analysis.md',
+      'docs/iterations/P2/tests/functional-test-plan.md',
+    ]);
+    expect(requirements!.acceptance).toBe('docs/iterations/P2/01-requirement-analysis.md lists the rules.');
+    expect(requirements!.subTasks![0]!.outputs).toEqual(['docs/iterations/P2/01-requirement-analysis.md']);
+    expect(design!.inputs).toEqual(['docs/iterations/P2/01-requirement-analysis.md']);
+    // A wrong number names a different document only when that number is this Step's own: the design
+    // Step's canonical document keeps its place.
+    expect(design!.outputs).toContain('docs/iterations/P2/02-high-level-design.md');
+  });
+
   it('normalizes and guarantees the canonical topic input for requirement analysis', () => {
     const raw = [
       {

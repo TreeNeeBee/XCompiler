@@ -90,6 +90,7 @@ export class AttemptResultProcessor {
       if (affected.length === 0) {
         const closed = await this.options.controller.closeCorrectiveProvenAtOwnStep({
           work, qualityAssessmentId: result.assessment.id, solution, sourceChange, testOutcomes: result.testOutcomes,
+          debugWikiCandidateEntryIds: result.wikiEntryIds,
         });
         if (!closed) return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
       }
