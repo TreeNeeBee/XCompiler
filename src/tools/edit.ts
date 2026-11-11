@@ -14,7 +14,7 @@ import { suspiciousTextTruncationError } from './content_guard.js';
  */
 export const replaceInFileTool: Tool<
   { path: string; find: string; replace: string; expectedCount?: number },
-  { occurrences: number }
+  { path: string; occurrences: number }
 > = {
   name: 'replace_in_file',
   get description() { return toolText().replaceInFile.description; },
@@ -108,7 +108,7 @@ export const replaceInFileTool: Tool<
     await writeWorkspaceFile(abs, next, { tree: ctx.fileTree, root: ctx.ws.root });
     return {
       ok: true,
-      data: { occurrences },
+      data: { path: resolved.rel, occurrences },
       summary: `replaced ${occurrences}× in ${resolved.rel}`,
     };
   },

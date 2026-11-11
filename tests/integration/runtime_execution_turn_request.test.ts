@@ -783,4 +783,24 @@ describe('Runtime retained Executor requests', () => {
     expect(await current.ws.readFile('src/current.txt')).toBe('x'.repeat(100000));
     expect(current.boost).not.toHaveBeenCalled();
   });
+
+  it('expands the output budget without expanding a single file receipt at 512K', async () => {
+    const server = await endpoint(() => ({ output: JSON.stringify({ thoughts: 'Read a page of the current file',
+      actions: [{ tool: 'read_file', args: { path: 'src/current.txt', maxBytes: 200000 } }], done: true }) }));
+    const current = await fixture(server.url, { primaryWindow: 512 * 1024 });
+    await current.ws.writeFile('src/current.txt', 'x'.repeat(200_000));
+    const result = await new StepExecutor({ request: current.port, maxRounds: 1 }).run({
+      step: { ...step, tools: ['read_file'], outputs: [] }, work: 'code.implement', role: 'python-developer',
+      tools: [readFileTool], ctx: current.ctx,
+    });
+    expect(server.calls).toHaveLength(1);
+    expect(server.calls[0]!.max_tokens).toBe(65_536);
+    const prompt = server.calls[0]!.messages.map(message => message.content).join('\n');
+    const advertisedWindow = Number(/Current read window: (\d+)B/u.exec(prompt)?.[1]);
+    expect(advertisedWindow).toBeGreaterThan(0);
+    expect(advertisedWindow).toBeLessThanOrEqual(16 * 1024);
+    expect(result.toolCalls[0]).toMatchObject({ ok: true, data: {
+      path: 'src/current.txt', bytes: advertisedWindow, nextOffset: advertisedWindow, totalBytes: 200_000,
+    } });
+  });
 });

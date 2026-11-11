@@ -99,6 +99,83 @@ describe('StepExecutor Runtime request ownership', () => {
     expect(result.metrics.providers).toEqual(['retained-model']);
     expect(await ws.readFile('src/x.py')).toBe('retained\r\n');
   });
+
+  it('deduplicates current file evidence, retires stale bytes, and keeps raw Tool receipts in the audit', async () => {
+    const original = 'original-file-version-marker\n';
+    const revised = 'current-file-version-marker\n';
+    const contract = 'original-task-contract-marker\n';
+    const contextSnippets = [{ path: 'src/x.py', content: original }];
+    await ws.writeFile('src/x.py', original);
+    await fs.symlink('x.py', ws.abs('src/alias.py'));
+    await ws.writeFile('docs/contract.md', contract);
+    const audit = new AuditLogger({ root: tmp, command: 'history-test' });
+    const read = (file: string) => ({ tool: 'read_file', args: { path: file } });
+    const write = (file: string) => ({ tool: 'write_file', args: { path: file, content: `# ${file}\n` } });
+    const turns = [
+      [read('src/x.py'), read('docs/contract.md')],
+      [read('src/x.py'), write('src/a.py')],
+      [{ tool: 'replace_in_file', args: { path: 'src/alias.py', find: original.trim(), replace: revised.trim(), expectedCount: 1 } },
+        read('src/x.py')],
+      [write('src/b.py')],
+      [],
+    ];
+    const send = vi.fn(async ({ payload }: Parameters<ExecutionTurnRequestPort['send']>[0]) => ({
+      provider: 'local',
+      text: JSON.stringify({ thoughts: `Round ${payload.round}`, actions: turns[payload.round - 1], done: payload.round === turns.length }),
+    }));
+    await new StepExecutor({ request: { name: 'local', send }, maxRounds: turns.length }).run({
+      step: { ...baseStep, inputs: ['docs/contract.md'] }, work: 'change.apply',
+      tools: [readFileTool, writeFileTool, replaceInFileTool], ctx: { ...ctx, audit }, contextSnippets,
+    });
+    const prompt = (round: number) => send.mock.calls[round - 1]![0].messages.map(message => message.content).join('\n');
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(prompt(2).split(original.trim())).toHaveLength(2);
+    expect(prompt(3).split(original.trim())).toHaveLength(2);
+    expect(prompt(4)).not.toContain(original.trim());
+    expect(prompt(4)).toContain(revised.trim());
+    expect(prompt(5)).toContain(contract.trim());
+    expect(contextSnippets).toEqual([{ path: 'src/x.py', content: original }]);
+    const receipts = (await ws.readFile('audit/audit.jsonl')).trim().split('\n').map(line => JSON.parse(line))
+      .filter(event => event.messageId === 'audit.tool_result' && event.data.tool === 'read_file');
+    expect(receipts.filter(event => event.data.result.content === original)).toHaveLength(2);
+    expect(receipts).toContainEqual(expect.objectContaining({ data: expect.objectContaining({
+      result: expect.objectContaining({ path: 'src/x.py', content: revised }),
+    }) }));
+  });
+
+  it('keeps a failed test scope in a compacted history until that scope passes', async () => {
+    const failure = 'scope-A-actionable-diagnostic';
+    const verify = (suite: string) => ({ tool: 'run_program', args: { args: ['-m', 'pytest', suite] } });
+    const write = (round: number) => ({ tool: 'write_file', args: { path: `src/round${round}.py`, content: '# progress\n' } });
+    let aRuns = 0;
+    const runProgram: Tool = { ...runProgramTool, run: async args => {
+      const argv = (args as { args: string[] }).args;
+      const failed = argv.at(-1) === 'tests/test_a.py' && ++aRuns === 1;
+      return failed ? { ok: false, error: failure, summary: failure, data: { exitCode: 1 } }
+        : { ok: true, summary: `passed ${argv.at(-1)}`, data: { exitCode: 0 } };
+    } };
+    const turns = [
+      [verify('tests/test_a.py')],
+      [write(2), verify('tests/test_b.py')],
+      [write(3)],
+      [write(4), verify('tests/test_a.py')],
+      [{ tool: 'write_file', args: { path: 'src/final.py', content: '# done\n' } }],
+    ];
+    const send = vi.fn(async ({ payload }: Parameters<ExecutionTurnRequestPort['send']>[0]) => ({
+      provider: 'local',
+      text: JSON.stringify({ thoughts: `Round ${payload.round}`, actions: turns[payload.round - 1], done: payload.round === turns.length }),
+    }));
+    const result = await new StepExecutor({ request: { name: 'local', send }, maxRounds: turns.length }).run({
+      step: { ...baseStep, outputs: ['src/final.py'] }, work: 'change.apply', tools: [writeFileTool, runProgram], ctx,
+    });
+    const prompt = (round: number) => send.mock.calls[round - 1]![0].messages.map(message => message.content).join('\n');
+    expect(result.success).toBe(true);
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(prompt(4)).toContain(failure);
+    expect(prompt(4)).toContain('tests/test_a.py');
+    expect(prompt(5)).toContain('passed tests/test_a.py');
+    expect(prompt(5)).not.toContain(failure);
+  });
 });
 
 describe('StepExecutor prompt language', () => {
@@ -6751,7 +6828,7 @@ describe('StepExecutor system prompt assembly', () => {
     });
 
     expect(r.success).toBe(true);
-    expect(llm.messageCounts).toEqual([2, 4, 6, 6, 6]);
+    expect(llm.messageCounts).toEqual([2, 4, 6, 7, 7]);
   });
 });
 

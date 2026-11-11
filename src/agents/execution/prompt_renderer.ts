@@ -300,16 +300,6 @@ export function renderExecutionUserPrompt(
   ].filter(Boolean).join('\n');
 }
 
-export function compactExecutionMessages<
-  T extends { role: 'system' | 'user' | 'assistant'; content: string },
->(messages: T[], compact: boolean): T[] {
-  if (!compact || messages.length <= 6) return messages;
-  const system = messages[0];
-  const initialUser = messages[1];
-  if (!system || !initialUser) return messages;
-  return [system, initialUser, ...messages.slice(-4)];
-}
-
 function isDebugRepairSnippet(relativePath: string): boolean {
   const normalized = relativePath.replaceAll('\\', '/');
   return normalized.startsWith('src/') ||

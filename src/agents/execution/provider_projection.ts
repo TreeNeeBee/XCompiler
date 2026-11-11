@@ -3,6 +3,7 @@ import { RuleBusinessRequestError } from '../../llm/rule_business_request.js';
 import type { ChatMessage } from '../../llm/types.js';
 import { estimateMessageTokens, resolveSkillOperationWindow, type SkillOperationWindow } from '../../llm/window.js';
 import { renderExecutionUserPrompt } from './prompt_renderer.js';
+import { MAX_EXECUTION_FEEDBACK_CHARS, MAX_EXECUTION_READ_BYTES } from './feedback_renderer.js';
 import { describeToolForStep } from './tool_action_normalizer.js';
 
 /** Only the original initial user message receives the existing provider-window projection. */
@@ -36,6 +37,8 @@ export function projectExecutionProviderMessages(
   });
 
   const window = resolveSkillOperationWindow({ contextWindowTokens, promptTokens: estimateMessageTokens(actualMessages) });
+  window.feedbackCharBudget = Math.min(window.feedbackCharBudget, MAX_EXECUTION_FEEDBACK_CHARS);
+  window.readChunkBytes = Math.min(window.readChunkBytes, MAX_EXECUTION_READ_BYTES, window.feedbackCharBudget - 256);
   const context = { ...payload.promptContext, ctx: { ...payload.promptContext.ctx, ...window } };
   const userPrompt = renderCapturedUserPrompt(payload, context);
   const messages = actualMessages.map((message, index) => Object.freeze(index === initialUserIndex

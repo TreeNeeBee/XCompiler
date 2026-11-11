@@ -12,6 +12,7 @@ import { suspiciousTextTruncationError } from './content_guard.js';
 import { toolText } from './tool_text.js';
 
 interface ReadFileData {
+  path: string;
   content: string;
   offset: number;
   bytes: number;
@@ -68,6 +69,7 @@ export const readFileTool: Tool<
       return {
         ok: true,
         data: {
+          path: resolved.rel,
           content,
           offset,
           bytes: bytesRead,
@@ -127,6 +129,7 @@ function utf8SafeEnd(buffer: Buffer): number {
 }
 
 interface WriteFileData {
+  path: string;
   bytes: number;
   previousBytes: number;
   changed: boolean;
@@ -180,7 +183,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
       if (previous?.equals(next)) {
         return {
           ok: true,
-          data: { bytes: size, previousBytes, changed: false },
+          data: { path: resolved.rel, bytes: size, previousBytes, changed: false },
           summary: `unchanged ${resolved.rel} (${size}B; content identical)`,
         };
       }
@@ -215,7 +218,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
       await writeWorkspaceFile(abs, next, { tree: ctx.fileTree, root: ctx.ws.root });
       return {
         ok: true,
-        data: { bytes: size, previousBytes, changed: true },
+        data: { path: resolved.rel, bytes: size, previousBytes, changed: true },
         summary: `wrote ${resolved.rel} (${size}B, was ${previousBytes}B)`,
       };
     } catch (err) {
@@ -230,7 +233,7 @@ export const writeFileTool: Tool<{ path: string; content: string }, WriteFileDat
  * - 文件不存在时自动创建（等价于 write_file 写第一段，便于鲁棒续写）。
  * - 注意：append_file 不会自动添加换行；若调用者忘了在 content 末尾收尾换行，下一段会拼接在同一行。
  */
-export const appendFileTool: Tool<{ path: string; content: string }, { bytes: number; total: number }> = {
+export const appendFileTool: Tool<{ path: string; content: string }, { path: string; bytes: number; total: number }> = {
   name: 'append_file',
   get description() { return toolText().appendFile.description; },
   argsSchema: { path: 'string', content: 'string' },
@@ -276,7 +279,7 @@ export const appendFileTool: Tool<{ path: string; content: string }, { bytes: nu
       }
       return {
         ok: true,
-        data: { bytes: size, total },
+        data: { path: resolved.rel, bytes: size, total },
         summary: `appended ${size}B to ${resolved.rel} (now ${total}B)`,
       };
     } catch (err) {

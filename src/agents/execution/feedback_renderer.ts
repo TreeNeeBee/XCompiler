@@ -11,6 +11,10 @@ import {
 import { getPromptLocale, tFor } from '../../i18n/index.js';
 import type { ToolFailureCode, ToolResult } from '../../tools/types.js';
 
+// Keep one execution round readable even when the provider has a much larger output window.
+export const MAX_EXECUTION_FEEDBACK_CHARS = 16 * 1024;
+export const MAX_EXECUTION_READ_BYTES = MAX_EXECUTION_FEEDBACK_CHARS - 256;
+
 /** An unresolved failure as feedback reads it: its facts choose the guidance, `detail` is what is shown. */
 export interface UnresolvedFailureFeedback {
   tool: string;
@@ -68,24 +72,31 @@ export function renderExecutionFeedback(
     readChunkBytes?: number;
   } = {},
 ): string {
+  return formatExecutionFeedback(buildExecutionFeedback(results, verify, turn, operationWindow));
+}
+
+export function buildExecutionFeedback(
+  results: Array<ToolResult & { tool: string }>,
+  verify: { ok: boolean; missing: string[] },
+  turn: TurnFeedbackContext,
+  operationWindow: { feedbackCharBudget?: number; readChunkBytes?: number } = {},
+) {
   // Feedback is read by the model, so it follows the prompt language, not the user's locale.
   const messages = tFor(getPromptLocale()).prompts;
   const text = messages.executorFeedbackText;
-  const lines: string[] = [messages.executorFeedbackHeader];
+  const lines: string[] = [];
   const unresolved = turn.unresolvedFailures ?? [];
   const failureCodes = new Set([
     ...results.filter((result) => !result.ok).map((result) => result.code),
     ...unresolved.map((failure) => failure.code),
   ]);
-  let detailBudget = operationWindow.feedbackCharBudget ?? 12_000;
-  for (const result of results) {
-    lines.push(`- ${result.tool}: ${result.ok ? 'OK' : 'FAIL'} — ${truncate(result.summary ?? result.error ?? '', 1800)}`);
+  let detailBudget = Math.min(operationWindow.feedbackCharBudget ?? 12_000, MAX_EXECUTION_FEEDBACK_CHARS);
+  const receipts = results.map((result) => {
+    const summary = `- ${result.tool}: ${result.ok ? 'OK' : 'FAIL'} — ${truncate(result.summary ?? result.error ?? '', 1800)}`;
     const detail = renderToolResultDetail(result, detailBudget, operationWindow.readChunkBytes);
-    if (detail) {
-      lines.push(detail.text);
-      detailBudget -= detail.used;
-    }
-  }
+    if (detail) detailBudget -= detail.used;
+    return { result, summary, detail };
+  });
   if (verify.ok) {
     lines.push(messages.executorFeedbackVerifyOk);
     if (turn.repairEvidenceMissing) lines.push(messages.executorFeedbackRepairEvidenceMissing);
@@ -201,7 +212,17 @@ export function renderExecutionFeedback(
         : text.invalidCompletionUnresolved);
     }
   }
-  return lines.join('\n');
+  return { header: messages.executorFeedbackHeader, receipts, guidance: lines };
+}
+
+export function formatExecutionFeedback(
+  feedback: ReturnType<typeof buildExecutionFeedback>,
+  omitDetail: (result: ToolResult & { tool: string }) => boolean = () => false,
+  includeGuidance = true,
+): string {
+  return [feedback.header, ...feedback.receipts.flatMap(({ result, summary, detail }) =>
+    detail && !omitDetail(result) ? [summary, detail.text] : [summary]),
+  ...(includeGuidance ? feedback.guidance : [])].join('\n');
 }
 
 export function missingQualityAssessmentFields(
@@ -260,18 +281,20 @@ function renderToolResultDetail(
   result: ToolResult & { tool: string },
   remainingBudget: number,
   readChunkBytes?: number,
-): { text: string; used: number } | undefined {
+): { text: string; used: number; fullRead?: string } | undefined {
   if (!result.ok || remainingBudget <= 200) return undefined;
   const budget = Math.min(
     remainingBudget,
-    result.tool === 'read_file' ? (readChunkBytes ?? 6000) : 3000,
+    result.tool === 'read_file' ? (readChunkBytes ?? 6000) + 256 : 3000,
   );
   const data = isPlainRecord(result.data) ? result.data : undefined;
   if (result.tool === 'read_file' && typeof data?.content === 'string') {
+    const fullRead = data.content.length <= budget ? data.content : undefined;
     const content = truncate(data.content, budget);
     return {
       text: ['  content:', '<<<BEGIN read_file content', content, 'END read_file content>>>'].join('\n'),
       used: content.length,
+      fullRead,
     };
   }
   if (result.tool === 'list_dir' && Array.isArray(data?.entries)) {

@@ -143,7 +143,7 @@ function withoutPytestReportOptions(args: readonly string[]): string[] {
   return kept;
 }
 
-function isTestCall(call: ToolCallRecord): boolean {
+export function isTestCall(call: ToolCallRecord): boolean {
   return call.tool === 'run_tests' ||
     (call.tool === 'run_program' && isTestRunnerInvocation(toolArgList(call)));
 }

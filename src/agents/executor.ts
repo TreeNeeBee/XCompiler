@@ -69,14 +69,13 @@ import {
   type LLMTurn,
   ExecutionTurnProtocolError,
 } from './execution/turn_parser.js';
+import { renderExecutionUserPrompt } from './execution/prompt_renderer.js';
 import {
-  compactExecutionMessages,
-  renderExecutionUserPrompt,
-} from './execution/prompt_renderer.js';
-import {
+  buildExecutionFeedback,
+  formatExecutionFeedback,
   missingQualityAssessmentFields,
-  renderExecutionFeedback,
 } from './execution/feedback_renderer.js';
+import { ExecutionPromptHistory } from './execution/prompt_history.js';
 import {
   describeToolForStep,
   normalizeActions,
@@ -357,6 +356,7 @@ export class StepExecutor {
       { role: 'user', content: userPrompt },
     ];
     const calls: ExecutorRunResult['toolCalls'] = [];
+    const history = new ExecutionPromptHistory();
     let finalThought: string | undefined;
     let bugResolutionPlan: string | undefined;
     let bugResolutionDisposition: BugResolutionDisposition | undefined;
@@ -455,6 +455,7 @@ export class StepExecutor {
 
     const stepLabel = inp.stepName?.trim() || inp.step.id;
     for (let round = 1; round <= roundLimit; round++) {
+      history.beginRound(messages.length, calls.length);
       const testPhaseGatePendingAtRoundStart =
         (V_MODEL_TEST_PHASES as readonly string[]).includes(inp.step.phase) &&
         toolMap.has('run_tests') &&
@@ -499,13 +500,20 @@ export class StepExecutor {
             enforceRecoveryContract ||
             (bugResolutionPlanRequired && !bugResolutionPlan?.trim())
           );
+        const projectedHistory = history.project(messages, calls, {
+          snippets: inp.contextSnippets,
+          keyFiles: [...inp.step.inputs, ...(inp.ctx.contractBasisDocuments ?? [])],
+          unresolvedErrors: [...new Set([...unresolvedToolFailures.values()].map(failure => failure.detail))],
+          debug: !!inp.debugContext,
+          locale,
+        });
         const payload = validateExecutionTurnPayload({
           schemaVersion: 1, kind: 'step-execution-turn', templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
           locale, outputLocale: getLocale(), parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
           promptContext: {
             step: inp.step, work, ...(inp.role ? { role: inp.role } : {}), ...(inp.project ? { project: inp.project } : {}),
             baselineTestExecution: inp.baselineTestExecution,
-            baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: inp.contextSnippets,
+            baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: projectedHistory.snippets,
             acceptedContractChanges: inp.acceptedContractChanges,
             ticket: inp.ticket, changeRequest: inp.changeRequest, enhancement: inp.enhancement, debugContext: inp.debugContext,
             ctx: {
@@ -530,9 +538,9 @@ export class StepExecutor {
         const retainedToolDocs = payload.tools.map(tool =>
           `- ${tool.name}: ${describeToolForStep(tool, payload.promptContext.ctx, payload.promptContext.step)} args=${JSON.stringify(tool.argsSchema)}`,
         ).join('\n');
-        messages[1]!.content = renderExecutionUserPrompt(payload.promptContext, retainedToolDocs,
-          payload.initialMissingOutputs, payload.locale);
-        const chatMessages = compactExecutionMessages(messages, !!inp.debugContext);
+        const chatMessages = projectedHistory.messages;
+        chatMessages[1] = { role: 'user', content: renderExecutionUserPrompt(payload.promptContext, retainedToolDocs,
+          payload.initialMissingOutputs, payload.locale) };
         const chatOptions: RuleBusinessChatOptions = {
           responseFormat: 'json', temperature: 0.1, maxTokens: inp.ctx.responseTokenBudget,
           onProvider: (name) => { provider = name; },
@@ -1257,12 +1265,17 @@ export class StepExecutor {
         await inp.ctx.audit?.event('tool.result', t().audit.toolResult(a.tool, r.ok, r.summary ?? r.error ?? ''), {
           messageId: 'audit.tool_result',
           stepId: inp.step.id,
+          callId,
           tool: a.tool,
           ok: r.ok,
+          ...(r.summary === undefined ? {} : { summary: r.summary }),
+          // Keep the raw data from receipts the model-facing history may compact.
+          ...(RETAINED_HISTORY_TOOL_DATA.has(a.tool) && r.data !== undefined ? { result: r.data } : {}),
           // The message shows the summary when there is one, which for a runner is its output tail;
           // the tool's diagnosis and the code callers branch on would otherwise be in no record.
           ...(r.ok ? {} : { ...(r.error ? { error: r.error } : {}), ...(r.code ? { code: r.code } : {}) }),
-        });
+        }, { persistence: 'required' });
+        const changedFiles = r.ok ? changedFilesForAction(a.tool, a.args, r) : [];
         await inp.ctx.onToolEvent?.({
           callId,
           status: 'completed',
@@ -1273,9 +1286,9 @@ export class StepExecutor {
           ok: r.ok,
           summary: r.summary,
           error: r.error,
-          changedFiles: r.ok ? changedFilesForAction(a.tool, a.args, r) : undefined,
+          changedFiles: r.ok ? changedFiles : undefined,
         });
-        calls.push({
+        const call = {
           callId,
           tool: a.tool,
           args: a.args,
@@ -1284,8 +1297,14 @@ export class StepExecutor {
           error: r.error,
           code: r.code,
           data: r.data,
-        });
-        turnResults.push({ ...r, tool: a.tool });
+        };
+        calls.push(call);
+        const receipt = { ...r, tool: a.tool };
+        history.observe(receipt, call, successfulMutation
+          ? [...changedFiles, ...(isPlainRecord(r.data) && typeof r.data.path === 'string' ? [r.data.path] : []),
+            ...(a.tool === 'add_dependency' ? [profile.manifestFile] : [])]
+          : []);
+        turnResults.push(receipt);
         // A path Runtime owns leads outside the project: no action of this Step can change that and
         // the access cannot be authorised, so the attempt stops as permission blocked rather than
         // reading the refusal as a failing suite or retrying it.
@@ -1986,9 +2005,7 @@ export class StepExecutor {
         roundLimit = nextLimit;
       }
       messages.push({ role: 'assistant', content: compactTurnForHistory(turn, toolMap) });
-      messages.push({
-        role: 'user',
-        content: renderExecutionFeedback(turnResults, verify, {
+      const feedback = buildExecutionFeedback(turnResults, verify, {
           declaredDone: turn.done === true,
           actionCount: actions.length,
           unresolvedFailures: [...unresolvedToolFailures.values()],
@@ -2071,8 +2088,10 @@ export class StepExecutor {
         }, {
           feedbackCharBudget: inp.ctx.feedbackCharBudget,
           readChunkBytes: inp.ctx.readChunkBytes,
-        }),
-      });
+        });
+      const feedbackMessage = { role: 'user' as const, content: formatExecutionFeedback(feedback) };
+      history.remember(feedbackMessage, feedback);
+      messages.push(feedbackMessage);
     }
 
     const finalVerify = await verifyOutputs(inp);
@@ -2858,6 +2877,8 @@ const COMPLETION_VERIFICATION_TOOLS = new Set([
   'run_tests',
 ]);
 
+const RETAINED_HISTORY_TOOL_DATA = new Set(['read_file', 'list_dir', 'code_search', ...COMPLETION_VERIFICATION_TOOLS]);
+
 function hasSuccessfulCompletionVerification(calls: readonly ToolCallRecord[]): boolean {
   return calls.some((call) => call.ok && COMPLETION_VERIFICATION_TOOLS.has(call.tool));
 }
@@ -2911,6 +2932,9 @@ function compactActionArgs(tool: string, args: unknown): Record<string, unknown>
   }
   const compact: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
+    // A completed replacement carries its target and outcome in the receipt. Its search text can
+    // be an obsolete source revision, and its replacement text is available from the current file.
+    if (tool === 'replace_in_file' && (key === 'find' || key === 'replace')) continue;
     if (typeof value === 'string') {
       compact[key] = truncate(value, 500);
     } else if (Array.isArray(value)) {
