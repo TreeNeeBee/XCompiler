@@ -173,6 +173,37 @@ function retainedInput(events: AuditEvent[]): BusinessRequestInput {
 }
 
 describe('Runtime retained Executor requests', () => {
+  it.each([undefined, 'runtime'] as const)('retains and recovers %s snippet provenance through the provider boundary', async source => {
+    const server = await endpoint();
+    const current = await fixture(server.url);
+    const retry = { path: '.xcompiler/retry/TASK-001.md', content: 'Original failure\n' + 'evidence '.repeat(300) + '\nLast failure detail',
+      ...(source ? { source } : {}) };
+    const result = await new StepExecutor({ request: current.port, maxRounds: 1 }).run({
+      step, work: 'code.implement', role: 'python-developer', tools: [writeFileTool], ctx: current.ctx,
+      contextSnippets: [retry, { source: 'workspace', path: 'docs/input.md', content: 'Accepted input' }],
+    });
+    expect(result.success).toBe(true);
+    const prompt = server.calls[0]!.messages.filter(message => message.role === 'user').map(message => message.content).join('\n');
+    if (source) {
+      expect(prompt).toContain('## inline runtime evidence');
+      expect(prompt).toContain('not files in the workspace');
+      expect(prompt).toContain('Last failure detail');
+      expect(prompt.split('## context\n')[1]).not.toContain(retry.path);
+    } else {
+      // Old retained payloads keep their original rendering, including the original preview cap.
+      expect(prompt).not.toContain('## inline runtime evidence');
+      expect(prompt.split('## context\n')[1]).toContain(retry.path);
+      expect(prompt).not.toContain('Last failure detail');
+    }
+    const input = retainedInput(await current.events());
+    expect(JSON.stringify(input)).toContain('Last failure detail');
+    const restored = await resumeRuntimeExecutionTurnRequest({ container: current.container, audit: current.audit,
+      logicalRequestId: input.logicalRequestId });
+    expect(restored.status).toBe('recovered');
+    expect(server.calls).toHaveLength(1);
+    expect(await current.ws.exists(retry.path)).toBe(false);
+  });
+
   it('uses the assigned Actor pool and retains an actual Tool request without successful-turn score boosts', async () => {
     const primary = await endpoint();
     const assigned = await endpoint();

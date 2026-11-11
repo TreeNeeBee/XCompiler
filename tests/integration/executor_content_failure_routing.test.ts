@@ -197,6 +197,12 @@ describe('candidate content failure through Runtime, Runner and PM', () => {
         expect(await workspace.readFile(requirement)).toBe(originalRequirement);
       }
       if (!changeRequestId) expect(requests).toHaveLength(kind === 'malformed' ? 4 : 2);
+      // Real Runner assembly must label control-plane snapshots before Executor/provider rendering.
+      const prompt = (requests[0] as { messages: Array<{ role: string; content: string }> }).messages
+        .filter(message => message.role === 'user').map(message => message.content).join('\n');
+      expect(prompt).toContain('## inline runtime evidence');
+      expect(prompt).toContain('not files in the workspace');
+      expect(prompt.split('## context\n')[1]).not.toContain('.xcompiler/objects/ticket/');
       expect(effects).not.toHaveBeenCalled();
       const events = (await container.state.readFile('audit/audit.jsonl')).split('\n').filter(line => line.trim())
         .map(line => JSON.parse(line) as AuditEvent);

@@ -107,6 +107,7 @@ export class ExecutionPromptHistory {
     }
 
     const selectedSnippets = options.snippets?.filter(snippet => {
+      if (snippet.source === 'runtime') return true;
       const path = normalizeRelPath(snippet.path);
       if (this.versions.has(path)) return false;
       // Use the maximum ordinary file preview size, including on a larger fallback window.

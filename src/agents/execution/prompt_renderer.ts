@@ -27,7 +27,17 @@ export function renderExecutionUserPrompt(
   const snippetLimit = compactContext ? 900 : 2200;
   const architectureLimit = compactContext ? 3000 : 8000;
   const failureLogLimit = compactContext ? 2200 : 4000;
-  const contextBlock = snippets
+  const runtimeSnippets = snippets.filter((snippet) => snippet.source === 'runtime');
+  const runtimeBlock = runtimeSnippets.length > 0
+    ? [
+        '## inline runtime evidence',
+        'The identifiers below label captured Runtime evidence, not files in the workspace. Use the included content directly; do not read or write these identifiers with file tools. A truncation marker does not imply a readable file exists.',
+        ...runtimeSnippets.map((snippet) =>
+          `### evidence identifier: ${snippet.path}\n\`\`\`\n${truncate(snippet.content, architectureLimit)}\n\`\`\``),
+        '',
+      ].join('\n\n')
+    : '';
+  const contextBlock = snippets.filter((snippet) => snippet.source !== 'runtime')
     .map((snippet) =>
       `### ${snippet.path}\n\`\`\`\n${truncate(
         snippet.content,
@@ -292,6 +302,7 @@ export function renderExecutionUserPrompt(
     phaseDeliveryVerification,
     validationContractDefect,
     bugNoopHandoffContract,
+    runtimeBlock,
     contextBlock
       ? `## context\nTreat these existing files as the current project truth. Extend or refactor them in place; do not replace the project with a tiny parallel implementation.\n\n${contextBlock}\n`
       : '',

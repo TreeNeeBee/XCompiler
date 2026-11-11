@@ -104,7 +104,8 @@ describe('StepExecutor Runtime request ownership', () => {
     const original = 'original-file-version-marker\n';
     const revised = 'current-file-version-marker\n';
     const contract = 'original-task-contract-marker\n';
-    const contextSnippets = [{ path: 'src/x.py', content: original }];
+    const contextSnippets = [{ path: 'src/x.py', content: original },
+      { source: 'runtime' as const, path: 'src/x.py', content: 'Original failure fact, not a file preview' }];
     await ws.writeFile('src/x.py', original);
     await fs.symlink('x.py', ws.abs('src/alias.py'));
     await ws.writeFile('docs/contract.md', contract);
@@ -134,7 +135,8 @@ describe('StepExecutor Runtime request ownership', () => {
     expect(prompt(4)).not.toContain(original.trim());
     expect(prompt(4)).toContain(revised.trim());
     expect(prompt(5)).toContain(contract.trim());
-    expect(contextSnippets).toEqual([{ path: 'src/x.py', content: original }]);
+    expect(prompt(5)).toContain('Original failure fact, not a file preview');
+    expect(contextSnippets[0]).toEqual({ path: 'src/x.py', content: original });
     const receipts = (await ws.readFile('audit/audit.jsonl')).trim().split('\n').map(line => JSON.parse(line))
       .filter(event => event.messageId === 'audit.tool_result' && event.data.tool === 'read_file');
     expect(receipts.filter(event => event.data.result.content === original)).toHaveLength(2);
@@ -1953,7 +1955,9 @@ describe('StepExecutor system prompt assembly', () => {
     },
   );
 
-  it('hands an aligned upstream phase onward without inventing a repair', async () => {
+  it.each([
+    ['workspace', 'workspace', true], ['runtime', 'workspace', false], ['workspace', 'runtime', false],
+  ] as const)('requires workspace evidence for upstream %s and downstream %s before handoff', async (upstreamSource, downstreamSource, accepted) => {
     class DeferredNoopLLM implements LLMClient {
       readonly name = 'deferred-noop';
 
@@ -2004,8 +2008,8 @@ describe('StepExecutor system prompt assembly', () => {
       tools: [],
       ctx,
       contextSnippets: [
-        { path: 'src/x.py', content: 'x = 1\n' },
-        { path: 'src/cli.ts', content: 'export async function run() { return 1; }\n' },
+        { source: upstreamSource, path: 'src/x.py', content: 'x = 1\n' },
+        { source: downstreamSource, path: 'src/cli.ts', content: 'export async function run() { return 1; }\n' },
       ],
       ticket: executorBugTicketFixture({
         id: 'BUG-DEFERRED-NOOP',
@@ -2027,10 +2031,10 @@ describe('StepExecutor system prompt assembly', () => {
       },
     });
 
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(accepted);
     expect(result.rounds).toBe(1);
     expect(result.toolCalls).toEqual([]);
-    expect(result.qualityAssessment?.tolerance.failedTests).toBe(0);
+    if (accepted) expect(result.qualityAssessment?.tolerance.failedTests).toBe(0);
     expect(result.qualityAssessment?.blockedBy).toContain(
       'downstream CODE must implement the executable CLI behavior',
     );
@@ -2418,6 +2422,30 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.changeRequestDisposition?.outcome).toBe('not-applicable');
     expect(await ws.readFile('src/x.py')).toBe('export const value = 1;\n');
+  });
+
+  it.each(['workspace', 'runtime'] as const)('uses %s provenance when a CR claims an inspected no-op', async source => {
+    await ws.writeFile('src/x.py', 'x = 1\n');
+    const llm: LLMClient = { name: 'inspected-cr', async chat() {
+      return JSON.stringify({ thoughts: 'Current implementation already matches the accepted contract',
+        changeRequestDisposition: { outcome: 'not-applicable', reasonCategory: 'already-aligned',
+          rationale: 'The inspected implementation matches the accepted value.', inspectedArtifacts: ['src/x.py'],
+          evidence: ['The current implementation sets x to 1.'] },
+        qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {},
+          tolerance: { failedTests: 0, skippedTests: 0, warnings: 0 }, evidence: ['src/x.py'],
+          unavailableMetrics: [], gaps: [], blockedBy: [] },
+        actions: [], done: true });
+    } };
+    const result = await new StepExecutor(withFixtureExecutionRequest({ llm, maxRounds: 1 })).run({
+      step: baseStep, tools: [], ctx,
+      contextSnippets: [{ source, path: 'src/x.py', content: 'x = 1\n' }],
+      changeRequest: executorChangeRequestFixture({ id: 'CR-SNIPPET-ORIGIN', state: 'in_progress',
+        revision: 1, sourceTicketIds: ['BUG-SNIPPET-ORIGIN'], description: 'Set x to 1.',
+        originFailures: [], contractDelta: { summary: 'Set x to 1.', before: [], after: ['x equals 1'],
+          affectedArtifacts: ['src/x.py'] } }),
+    });
+    expect(result.success).toBe(source === 'workspace');
+    expect(result.toolCalls).toEqual([]);
   });
 
   it('requires a disposition when a CR only passes through a non-owning phase', async () => {

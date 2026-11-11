@@ -39,6 +39,8 @@ import { computeIncrementalAllowedWrites } from '../src/application/execution/ex
 import { Workspace } from '../src/workspace/workspace.js';
 import { FileDebugWiki } from '../src/infrastructure/knowledge/file_debug_wiki.js';
 import { unresolvedTestFailures } from '../src/application/execution/test_outcome.js';
+import type { ExecutionPromptContext } from '../src/application/execution/execution_turn_request.js';
+import { renderExecutionUserPrompt } from '../src/agents/execution/prompt_renderer.js';
 
 describe('attempt verification evidence', () => {
   it('replaces only the same run_program test invocation and ignores ordinary programs', () => {
@@ -480,6 +482,38 @@ describe('attempt cancellation detection', () => {
 });
 
 describe('attempt retry feedback', () => {
+  it('keeps retry, Ticket, architecture and downstream evidence separate from readable files', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-context-origin-'));
+    try {
+      const workspace = new Workspace(root);
+      await workspace.writeFile('docs/current.md', 'Accepted project input');
+      const input = contractAttempt('CODE');
+      input.ticket.name = 'TASK-001';
+      input.executionStep.inputs = ['docs/current.md'];
+      input.plan.architectureModules = [{ id: 'M001', name: 'Core', responsibility: 'Current implementation',
+        sourcePaths: ['src/main.ts'], testPaths: ['tests/main.test.ts'], dependencies: [] }];
+      input.plan.steps.push({ ...input.executionStep, id: 'S005', phase: 'UNIT_TEST', dependsOn: [input.executionStep.id] });
+      const runner = contractRunner(workspace);
+      const snippets = await (runner as unknown as {
+        contextSnippets(scope: { workspace: Workspace }, input: AttemptInput, retry: string): Promise<NonNullable<ExecutionPromptContext['contextSnippets']>>;
+      }).contextSnippets({ workspace }, input, 'Original failure\n' + 'detail '.repeat(400) + '\nLatest assertion');
+      const inline = snippets.filter(snippet => snippet.source === 'runtime');
+      expect(inline.map(snippet => snippet.path)).toEqual([
+        '.xcompiler/retry/TASK-001.md', `.xcompiler/objects/ticket/${input.ticket.id}.json`,
+        '.xcompiler/architecture-contract.json', `.xcompiler/downstream/${input.domainStep.name}.md`,
+      ]);
+      for (const snippet of inline) expect(await workspace.exists(snippet.path)).toBe(false);
+      expect(snippets.find(snippet => snippet.path === 'docs/current.md')?.source).toBe('workspace');
+      const prompt = renderExecutionUserPrompt({ step: input.executionStep, work: 'code.implement',
+        ctx: { allowedWrites: [] }, contextSnippets: snippets }, '');
+      expect(prompt).toContain('Latest assertion');
+      expect(prompt.split('## context\n')[1]).toContain('Accepted project input');
+      expect(prompt.split('## context\n')[1]).not.toContain('.xcompiler/');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('persists bounded test output instead of replacing it with the short tool error', () => {
     const failure = renderExecutorFailure({
       success: false,

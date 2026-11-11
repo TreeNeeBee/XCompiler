@@ -41,7 +41,7 @@ import type { RuleBusinessChatOptions } from '../llm/rule_business_request.js';
 import {
   EXECUTION_TURN_TEMPLATE_VERSION, ExecutionTurnContractViolation, ExecutionTurnEnvelopeError,
   ExecutionTurnRequestConfigurationError, ExecutionTurnRequestFailure, ExecutionTurnRoundRefusal, validateExecutionTurnPayload,
-  type ExecutionTurnPayload, type ExecutionTurnRequestPort,
+  type ExecutionPromptContext, type ExecutionTurnPayload, type ExecutionTurnRequestPort,
 } from '../application/execution/execution_turn_request.js';
 import { AuditPersistenceError } from '../audit/errors.js';
 import {
@@ -171,7 +171,7 @@ export interface ExecutorRunInput {
   tools: Tool[];
   ctx: ToolContext;
   /** 注入到 user prompt 的额外上下文（如已有 inputs 内容）。 */
-  contextSnippets?: Array<{ path: string; content: string }>;
+  contextSnippets?: ExecutionPromptContext['contextSnippets'];
   /** Canonical task handoff for this execution boundary. */
   ticket?: Ticket;
   /** Active engineering CR. The Step must apply only this delta to the existing baseline. */
@@ -2366,7 +2366,8 @@ function canAcceptExplicitChangeRequestNoop(
   if (delegatesWork && assessment.blockedBy.length === 0) return false;
   const inspected = new Set(disposition.inspectedArtifacts.map(normalizeComparablePath));
   const successfullyRead = new Set([
-    ...(input.contextSnippets ?? []).map((snippet) => normalizeComparablePath(snippet.path)),
+    ...(input.contextSnippets ?? []).filter((snippet) => snippet.source !== 'runtime')
+      .map((snippet) => normalizeComparablePath(snippet.path)),
     ...calls
       .filter((call) =>
         call.tool === 'read_file' &&
@@ -2483,7 +2484,8 @@ function canAcceptDeferredNoopHandoff(
   if (classifyDeferredBugNoopProblem(input, calls, disposition)) return false;
   if (input.step.outputs.length === 0) return false;
   const available = new Set([
-    ...(input.contextSnippets ?? []).map((snippet) => normalizeRelPath(snippet.path)),
+    ...(input.contextSnippets ?? []).filter((snippet) => snippet.source !== 'runtime')
+      .map((snippet) => normalizeRelPath(snippet.path)),
     ...calls
       .filter((call) => call.tool === 'read_file' && call.ok && typeof call.args?.path === 'string')
       .map((call) => normalizeRelPath(call.args!.path as string)),
@@ -2510,7 +2512,8 @@ function classifyDeferredBugNoopProblem(
     return { reason: 'owned-artifact', artifacts: ownedArtifacts };
   }
   const available = new Set([
-    ...(input.contextSnippets ?? []).map((snippet) => normalizeComparablePath(snippet.path)),
+    ...(input.contextSnippets ?? []).filter((snippet) => snippet.source !== 'runtime')
+      .map((snippet) => normalizeComparablePath(snippet.path)),
     ...calls
       .filter((call) => call.ok && call.tool === 'read_file' && typeof call.args?.path === 'string')
       .map((call) => normalizeComparablePath(String(call.args!.path))),

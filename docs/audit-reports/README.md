@@ -35,6 +35,7 @@
 | 2026-11-09 | [2026-11-09-dbc2excel-5-p2-final-audit.md](2026-11-09-dbc2excel-5-p2-final-audit.md) | 业务验证审计 | CC | dbc2excel-5 P2 交付终审（`v2.0.0`）：业务行为逐项实测、文档阐述问题 F-1～F-4、D-79～D-86 改动质量与后续建议 |
 | 2026-11-10 | [2026-11-10-d79-d87-change-report.md](2026-11-10-d79-d87-change-report.md) | 变更说明 | CC | D-79～D-87：RR-01～RR-03 处理、发布标签、真实续跑发现的 D-85/D-86、交付收尾 D-87；影响分析、已知问题与审计重点 |
 | 2026-11-10 | [2026-11-10-d79-d89-codex-audit-report.md](2026-11-10-d79-d89-codex-audit-report.md) | 独立审计 | Codex | D-79～D-89 与未提交改动，含交付越界、恢复与契约问题，以及 dbc2excel-7 P1 业务质量和门禁取证 |
+| 2026-11-12 | [2026-11-12-dbc2excel-7-p2-gate-context-fix.md](2026-11-12-dbc2excel-7-p2-gate-context-fix.md) | 故障与修复记录 | Codex | D-95：Python 路径加载误报、Runtime 内联证据来源及 P2 剩余测试缺口 |
 
 ## 约定
 

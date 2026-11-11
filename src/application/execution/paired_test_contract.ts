@@ -9,6 +9,7 @@ import {
 } from '../../domain/planning/execution_plan.js';
 import type { StageQualityAssessment } from '../../domain/quality/stage_quality.js';
 import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
+import { pythonPathImportReferences } from './python_path_imports.js';
 
 export interface PairedSourceTestInspection {
   ok: boolean;
@@ -24,7 +25,8 @@ export function mergePairedSourceTestQuality(
 ): StageQualityAssessment {
   if (inspection.ok) return assessment;
   const remediation =
-    'Rewrite the invalid test to import and exercise the declared product modules. Before CODE, ' +
+    'Add or patch focused behavioral tests that import and exercise the declared product modules. ' +
+    'Preserve inherited regression assertions; changes to delivered tests require an accepted contractBasis. Before CODE, ' +
     'imports may target planned source paths that do not exist yet. Do not create src/** stubs or ' +
     'product implementations during requirement/design phases, and do not duplicate product ' +
     'behavior inside tests.';
@@ -98,7 +100,7 @@ export async function inspectPairedSourceTests(
     }
     const matched = plan.language === 'typescript'
       ? typescriptProductReferences(testPath, content, expectedSources)
-      : pythonProductReferences(content, expectedSources);
+      : pythonProductReferences(testPath, content, expectedSources);
     references[testPath] = matched;
     const requiredReferences = sourceStep.phase === 'DETAILED_DESIGN'
       ? Math.min(2, expectedSources.length)
@@ -405,6 +407,7 @@ function typescriptProductReferences(
 }
 
 function pythonProductReferences(
+  testPath: string,
   content: string,
   expectedSources: string[],
 ): string[] {
@@ -434,6 +437,7 @@ function pythonProductReferences(
     ? expectedSources.filter((source) => containsPathLiteral(content, source))
     : [];
 
+  const pathImports = pythonPathImportReferences(content, testPath);
   return dedup(expectedSources.filter((source) => {
     const expectedModules = pythonModuleNames(source);
     return imports.some((entry) =>
@@ -443,7 +447,7 @@ function pythonProductReferences(
         expected.startsWith(`${entry.module}.`),
       ) &&
       entry.bindings.some((binding) => containsIdentifier(body, binding)),
-    ) || executablePathReferences.includes(source);
+    ) || executablePathReferences.includes(source) || pathImports.includes(normalizePath(source));
   }));
 }
 

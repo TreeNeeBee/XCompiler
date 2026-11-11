@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { ExecutionTurnRequestConfigurationError, type ExecutionTurnRequestPortFactory } from './execution_turn_request.js';
+import { ExecutionTurnRequestConfigurationError, type ExecutionPromptContext, type ExecutionTurnRequestPortFactory } from './execution_turn_request.js';
 import type { AuditLogger } from '../../audit/audit.js';
 import type { WorkspaceKind } from '../../domain/workspace/change_set.js';
 import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
@@ -438,6 +438,7 @@ export class DomainAttemptRunner {
       if (verificationInspection && verificationInspection.invalidSupplements.length > 0) {
         // First, so the renderer's per-snippet cap never cuts it: it is what this attempt must fix.
         environment.snippets.unshift({
+          source: 'runtime',
           path: `.xcompiler/verification/${input.domainStep.name}-supplements.md`,
           content: renderInvalidSupplementRepair(
             this.testValidator(scope).supplementalRoot(input.executionStep),
@@ -981,7 +982,7 @@ export class DomainAttemptRunner {
     scope: ExecutionScope,
     input: AttemptInput,
     retryFeedback?: string,
-  ): Promise<Array<{ path: string; content: string }>> {
+  ): Promise<NonNullable<ExecutionPromptContext['contextSnippets']>> {
     const candidates = new Set([
       ...input.executionStep.inputs,
       ...(input.mode === 'normal' ? [] : input.executionStep.outputs),
@@ -995,14 +996,16 @@ export class DomainAttemptRunner {
     // was opened, the cap kept the first 3000 characters of that, and the failure actually in hand
     // reached the model only as a one-line summary further down. The Ticket still travels — its
     // state, acceptance and routing are needed — with the prose that crowded them out bounded.
-    const snippets: Array<{ path: string; content: string }> = [];
+    const snippets: NonNullable<ExecutionPromptContext['contextSnippets']> = [];
     if (retryFeedback) {
       snippets.push({
+        source: 'runtime',
         path: `.xcompiler/retry/${input.ticket.name}.md`,
         content: retryFeedback,
       });
     }
     snippets.push({
+      source: 'runtime',
       path: `.xcompiler/objects/ticket/${input.ticket.id}.json`,
       content: JSON.stringify(ticketContextSnapshot(input.ticket), null, 2),
     });
@@ -1032,15 +1035,16 @@ export class DomainAttemptRunner {
     }
     if ((input.plan.architectureModules?.length ?? 0) > 0) {
       snippets.push({
+        source: 'runtime',
         path: '.xcompiler/architecture-contract.json',
         content: JSON.stringify({ architectureModules: input.plan.architectureModules }, null, 2),
       });
     }
     const downstream = buildDownstreamContextSnippet(input.plan, input.executionStep);
-    if (downstream) snippets.push({ path: `.xcompiler/downstream/${input.domainStep.name}.md`, content: downstream });
+    if (downstream) snippets.push({ source: 'runtime', path: `.xcompiler/downstream/${input.domainStep.name}.md`, content: downstream });
     for (const candidate of candidates) {
       if (!candidate || candidate.endsWith('/') || !(await scope.workspace.exists(candidate))) continue;
-      snippets.push({ path: candidate, content: await scope.workspace.readFile(candidate) });
+      snippets.push({ source: 'workspace', path: candidate, content: await scope.workspace.readFile(candidate) });
     }
     return snippets;
   }

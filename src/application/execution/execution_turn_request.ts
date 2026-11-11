@@ -73,7 +73,11 @@ export const ExecutionPromptContextSchema = z.object({
     'initial-pre-code', 'pre-code-correction', 'contract-change', 'code-step', 'post-code-correction', 'verification-step',
   ]).optional(),
   acceptedContractChanges: z.array(AcceptedContractChangeSchema).readonly().optional(),
-  contextSnippets: z.array(z.object({ path: z.string(), content: z.string() }).strict()).optional(),
+  contextSnippets: z.array(z.object({
+    path: z.string(), content: z.string(),
+    /** Absent in retained requests captured before snippet provenance was recorded. */
+    source: z.enum(['workspace', 'runtime']).optional(),
+  }).strict()).optional(),
   ticket: TicketSchema.optional(), changeRequest: ChangeRequestTicketSchema.optional(),
   enhancement: EnhancementTicketSchema.optional(), debugContext: DebugContextSchema.optional(),
   ctx: z.object({

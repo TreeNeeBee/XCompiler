@@ -9,6 +9,31 @@ import {
 } from '../src/application/execution/paired_test_contract.js';
 import { PLAN_VERSION, type Language, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
 import { Workspace } from '../src/workspace/workspace.js';
+import { TestPhaseValidator } from '../src/application/execution/test_phase_validator.js';
+
+// Same loader shape as the live failure, with a different product path and API.
+const pathLoadedPythonTest = `import importlib.util
+import sys
+from pathlib import Path
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / "src" / "renderer" / "render.py"
+
+def load_product():
+    assert SOURCE.is_file()
+    module_name = "product_under_test"
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+    spec = importlib.util.spec_from_file_location(module_name, SOURCE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+def test_render():
+    module = load_product()
+    assert module.render("record")
+`;
 
 describe('paired source test product-reference contract', () => {
   let root = '';
@@ -357,6 +382,65 @@ describe('paired source test product-reference contract', () => {
       plan.steps[0]!,
     );
     expect(localOnly.ok).toBe(false);
+  });
+
+  it.each(['CODE', 'HIGH_LEVEL_DESIGN'] as const)('recognises Python path loading at %s and the paired verifier', async phase => {
+    const testPath = 'tests/unit/test_renderer.py';
+    const plan = contractPlan('python', testPath, phase);
+    await workspace.writeFile(testPath, pathLoadedPythonTest);
+    const result = await inspectPairedSourceTests(workspace, plan, plan.steps[0]!);
+    expect(result.ok).toBe(true);
+    expect(result.references[testPath]).toEqual(['src/renderer/render.py']);
+    const verifier: Step = { ...plan.steps[0]!, id: 'S005', outputs: [],
+      phase: phase === 'CODE' ? 'UNIT_TEST' : 'MODULE_TEST' };
+    const inspection = await new TestPhaseValidator(workspace).inspect(plan, verifier);
+    expect(inspection.sourceContracts[0]?.references[testPath]).toEqual(['src/renderer/render.py']);
+    expect(inspection.invalid).toEqual([]);
+    // The gate must still reject this same test if it loads a different source.
+    await workspace.writeFile(testPath, pathLoadedPythonTest.replace('"renderer"', '"unrelated"'));
+    expect((await new TestPhaseValidator(workspace).inspect(plan, verifier)).invalid.join('\n')).toContain('exercises 0/1');
+  });
+
+  it.each([
+    ['docstring only', (text: string) => `"""${text}"""\ndef test_local():\n    assert True\n`],
+    ['comment only', (text: string) => text.split('\n').map(line => `# ${line}`).join('\n')],
+    ['wrong root', (text: string) => text.replace('parents[2]', 'parents[1]')],
+    ['unresolved source', (text: string) => text.replace('ROOT / "src" / "renderer" / "render.py"', 'choose_source()')],
+    ['without execution', (text: string) => text.replace('spec.loader.exec_module(module)', 'pass')],
+    ['different spec', (text: string) => text.replace('module_from_spec(spec)', 'module_from_spec(other)')],
+    ['without member use', (text: string) => text.replace('assert module.render("record")', 'assert True')],
+    ['uncalled loader', (text: string) => text.replace('module = load_product()', 'module = object()')],
+    ['outside workspace', (text: string) => text.replace('ROOT / "src"', 'ROOT / ".." / "src"')],
+  ] as const)('does not accept path-import evidence that is %s', async (_label, transform) => {
+    const testPath = 'tests/unit/test_renderer.py';
+    const plan = contractPlan('python', testPath, 'CODE');
+    await workspace.writeFile(testPath, transform(pathLoadedPythonTest));
+    expect((await inspectPairedSourceTests(workspace, plan, plan.steps[0]!)).ok).toBe(false);
+  });
+
+  it('recognises aliased importlib and pathlib bindings', async () => {
+    const testPath = 'tests/unit/test_renderer.py';
+    const plan = contractPlan('python', testPath, 'CODE');
+    await workspace.writeFile(testPath, pathLoadedPythonTest
+      .replace('import importlib.util', 'from importlib.util import spec_from_file_location as spec_for, module_from_spec as module_for')
+      .replace('from pathlib import Path', 'from pathlib import Path as FilePath').replace('Path(__file__)', 'FilePath(__file__)')
+      .replace('importlib.util.spec_from_file_location', 'spec_for').replace('importlib.util.module_from_spec', 'module_for'));
+    expect((await inspectPairedSourceTests(workspace, plan, plan.steps[0]!)).ok).toBe(true);
+  });
+
+  it('recognises a module loaded at top level and used by a test function', async () => {
+    const testPath = 'tests/unit/test_renderer.py';
+    const plan = contractPlan('python', testPath, 'CODE');
+    await workspace.writeFile(testPath, `import importlib.util
+from pathlib import Path
+source = Path(__file__).resolve().parent.parent.parent / "src" / "renderer" / "render.py"
+spec = importlib.util.spec_from_file_location("renderer_under_test", source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def test_render():
+    assert module.render("record")
+`);
+    expect((await inspectPairedSourceTests(workspace, plan, plan.steps[0]!)).ok).toBe(true);
   });
 
   it('routes one actionable finding without duplicating it as KPI and remediation gaps', () => {
