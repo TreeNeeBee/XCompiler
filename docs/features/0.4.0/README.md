@@ -2,6 +2,8 @@
 
 > **2026-10-16 起**：[审查变更清单](2026-10-15-review-change-list.md) 的 D-1–D-20 替代本文中与之冲突的描述（业务 Rule 推迟到 0.5、角色/工作内容拆分、RuleChain 分段、具名模型池等）。当前进度只以 [HANDOVER](HANDOVER.md) 的状态表为准（D-9）；下文带日期的段落是历史记录。
 
+2026-11-12 新增[上游纠正交付、CR 传导与重试身份修复设计](2026-11-12-upstream-correction-handoff-design.md)。设计采用源步骤交付本次自有修正、按影响传导 CR、原验证范围通过后关闭 Bug；尚未实施，不代表现有门禁已修改。
+
 Status: feature implementation in progress; tests follow complete functional milestones and release
 preparation follows functional acceptance. Updated 2026-10-15.
 
