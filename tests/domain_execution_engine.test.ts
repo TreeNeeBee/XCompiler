@@ -542,12 +542,15 @@ describe('ProjectOrchestrator', () => {
       };
       const trace: string[] = [];
       let gateRuns = 0;
+      let repairLanded = false;
       const engine = new ProjectOrchestrator({
         ...options(setup.workspace, setup.repository, passingRunner(setup.repository, trace)),
         integrateTicket: async (id) => {
           const ticket = await setup.repository.read(id);
-          if (ticket.objectType === 'ticket' && ticket.type === 'bug' && ticket.state === 'deliver') {
+          if (ticket.objectType === 'ticket' && ticket.type === 'bug' && ticket.state === 'deliver' && !repairLanded) {
+            repairLanded = true;
             trace.push('integrate S8 repair');
+            return { status: 'merged' };
           }
           return { status: 'nothing-to-merge' };
         },
@@ -578,6 +581,107 @@ describe('ProjectOrchestrator', () => {
         verificationRecords: [expect.objectContaining({ verificationStepId: functional.id, phaseGateAssessmentId: expect.any(String) })],
       });
     });
+
+    it.each([
+      ['merged', true],
+      ['awaiting-authorization', true],
+      ['conflicted', true],
+      ['failed', true],
+      ['failed', false],
+    ] as const)(
+      'handles a delivered S8 repair before reporter dispatch: %s (after restart: %s)',
+      async (mergeStatus, restart) => {
+        const setup = await fixture();
+        const phase = setup.graph.phases[0]!;
+        let gateRuns = 0;
+        let interruptedBug: TicketOf<'bug'> | undefined;
+        let resumedIntegrations = 0;
+        let integrated = false;
+        const queuedVerifications: ObjectId[] = [];
+        const startedVerifications: ObjectId[] = [];
+        const runner = {
+          initialize: async () => undefined,
+          run: async (input: AttemptInput) => {
+            if (input.mode === 'verification' && input.ticket.id === interruptedBug?.id) {
+              startedVerifications.push(input.ticket.id);
+              expect(integrated, 'S8 reporter must run after its repair has landed').toBe(true);
+            }
+            return passingAttempt(setup.repository, input.domainStep);
+          },
+        };
+        const base = options(setup.workspace, setup.repository, runner);
+        const makeEngine = () => new ProjectOrchestrator({
+          ...base,
+          onTransition: async (event) => {
+            if (event.event === 'ticket_routed' && event.ticketId === interruptedBug?.id) {
+              queuedVerifications.push(event.ticketId!);
+            }
+          },
+          integrateTicket: async id => {
+            const ticket = await setup.repository.read(id);
+            if (ticket.objectType !== 'ticket' || ticket.type !== 'bug' || ticket.state !== 'deliver') {
+              return { status: 'nothing-to-merge' };
+            }
+            if (!interruptedBug) {
+              interruptedBug = ticket;
+              if (restart) throw new Error('interrupted after Bug delivery and before integration');
+            }
+            if (ticket.id !== interruptedBug.id) return { status: 'nothing-to-merge' };
+            if (++resumedIntegrations > 1) throw new Error('same delivery sent to integration twice');
+            if (mergeStatus === 'conflicted') {
+              return { status: 'conflicted', conflict: {
+                changeSetId: ticket.id, changeSetName: 'Fixture repair', ownerTicketId: ticket.id,
+                correctiveTicketIds: [ticket.id], sourceBranch: 'fixture/repair', files: ['tests/functional.py'],
+              } };
+            }
+            if (mergeStatus === 'awaiting-authorization') return { status: mergeStatus, reason: 'Waiting for merge authorization' };
+            if (mergeStatus === 'failed') return { status: mergeStatus, reason: 'Merge gate rejected repair', failureLog: 'Recorded merge-gate evidence' };
+            integrated = true;
+            return { status: 'merged' };
+          },
+          reviewTicket: async input => {
+            const evidence = input.payload.evidence.find(item => item.ref === 'original-finding');
+            if (input.payload.kind === 'problem-confirmation' && evidence && JSON.parse(evidence.content).code === 'merge_gate_failed') {
+              return { kind: 'problem-confirmation', decision: 'dismissed', reason: 'No replacement work can be justified from this finding',
+                evidenceRefs: [evidence.ref], ticketType: null, targetStepId: null };
+            }
+            return base.reviewTicket!(input);
+          },
+          finalGate: async () => ++gateRuns === 1 ? {
+            ok: false, findings: [{ ...finding, category: 'test-defect', code: 's8_fixture', target: 'functional-test' }],
+          } : { ok: true },
+        }, setup.plan);
+
+        if (restart) {
+          await expect(makeEngine().run(phase.id)).rejects.toThrow('interrupted after Bug delivery and before integration');
+          await setup.repository.load();
+        }
+        const result = await makeEngine().run(phase.id);
+        const before = interruptedBug!;
+        const after = await setup.repository.read(before.id);
+        expect(resumedIntegrations).toBe(1);
+        if (mergeStatus === 'merged') {
+          expect(result.projectDelivered).toBe(true);
+          expect(startedVerifications).toEqual([before.id]);
+          expect(after).toMatchObject({ state: 'closed', attempts: before.attempts + 1, reporterActorId: before.reporterActorId });
+          return;
+        }
+        expect(result.projectDelivered).not.toBe(true);
+        expect(queuedVerifications).toEqual([]);
+        expect(startedVerifications).toEqual([]);
+        expect(after).toMatchObject({ state: 'deliver', attempts: before.attempts, verificationRecords: [] });
+        if (mergeStatus === 'awaiting-authorization') expect(result.failureReason).toContain('Waiting for merge authorization');
+        if (mergeStatus === 'conflicted') expect(result.stop).toMatchObject({ code: 'merge_conflict', files: ['tests/functional.py'] });
+        if (mergeStatus === 'failed') {
+          expect(result.failureReason).toContain('Merge gate rejected repair');
+          const saved = await setup.repository.read(phase.id);
+          expect(saved).toMatchObject({ problemReviews: expect.arrayContaining([expect.objectContaining({
+            origin: 'merge-gate', sourceTicketId: before.id,
+            report: expect.objectContaining({ evidence: ['Recorded merge-gate evidence'] }),
+          })]) });
+        }
+      },
+    );
 
     // A gate that could not judge returns no findings, and a Bug's finding missing from it was taken
     // as the Bug's pass: it closed, its solution was marked verified, and "Phase delivery gate passed"

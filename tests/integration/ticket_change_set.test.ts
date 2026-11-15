@@ -4,12 +4,18 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { withField } from '../support/domain_objects.js';
 import { simpleGit } from 'simple-git';
-import { createObjectId } from '../../src/domain/identity/object_id.js';
+import { createObjectId, type ObjectId } from '../../src/domain/identity/object_id.js';
 import { createObjectEnvelope, reviseObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
 import { TicketChangeSetService } from '../../src/application/workspace/ticket_change_set_service.js';
+import { MergeGateService } from '../../src/application/workspace/merge_gate_service.js';
+import { MergeIntegrationService } from '../../src/application/workspace/merge_integration_service.js';
+import { ProjectOrchestrator, type ProjectOrchestratorOptions } from '../../src/application/project_management/orchestrator.js';
+import { QualityAssessmentService } from '../../src/application/execution/quality_assessment_service.js';
 import { GitRepositoryService } from '../../src/infrastructure/git/git_repository_service.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
 import { ProjectContainer } from '../../src/workspace/project_container.js';
+import { GitService } from '../../src/workspace/git.js';
+import { PluginHost } from '../../src/plugins/host.js';
 import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
 import { ProjectGraphPersistenceService } from '../../src/application/planning/project_graph_persistence_service.js';
 import { PLAN_VERSION, type Plan } from '../../src/domain/planning/execution_plan.js';
@@ -20,6 +26,7 @@ import {
   type Ticket,
 } from '../../src/domain/tickets/ticket.js';
 import { transitionChangeSet } from '../../src/domain/workspace/change_set.js';
+import { passedTestOutcome } from '../helpers/ticket_fixtures.js';
 
 function samplePlan(): Plan {
   return {
@@ -61,7 +68,7 @@ async function fixture() {
   const canonical = path.join(container, 'worktrees', 'master');
   await fs.mkdir(canonical, { recursive: true });
   const git = simpleGit({ baseDir: canonical });
-  await git.init();
+  await git.init(['--initial-branch=master']);
   await git.addConfig('user.email', 'test@local');
   await git.addConfig('user.name', 'Test');
   await fs.writeFile(path.join(canonical, 'README.md'), '# fixture\n');
@@ -71,8 +78,9 @@ async function fixture() {
   const projectContainer = new ProjectContainer(container);
   const repository = new DomainObjectRepository(projectContainer.state);
   await repository.load();
+  const plan = samplePlan();
   const graph = materializeProjectGraph({
-    draft: samplePlan(),
+    draft: plan,
     topic: 'Build a TypeScript application.',
     projectName: 'fixture',
   });
@@ -97,7 +105,7 @@ async function fixture() {
   )!;
   return {
     container, canonical, repository, service, projectContainer, gitRepository,
-    graph, story, coding, design, designStory,
+    graph, plan, story, coding, design, designStory,
   };
 }
 
@@ -186,6 +194,114 @@ describe('TicketChangeSetService', () => {
     expect(verification.root).toBe(canonical);
     expect(verification.ticket.workspaceBinding).toMatchObject({ kind: 'canonical', revision });
     expect(await fs.readFile(path.join(verification.root, 'repair.txt'), 'utf8')).toBe('Integrated repair evidence');
+  });
+
+  it('recovers an interrupted Bug merge with real worktrees and checks authorization before the reporter starts', async () => {
+    const { repository, service, graph, plan, canonical, projectContainer, gitRepository } = await fixture();
+    const project = graph.project;
+    const phase = graph.phases[0]!;
+    const functional = graph.steps.find(step => step.type === 'FUNCTIONAL_TEST')!;
+    const workspace = projectContainer.canonical().workspace;
+    const repairPath = 'functional-repair.txt';
+    const repairContent = 'functional acceptance fixture repaired\n';
+    const canonicalGit = simpleGit({ baseDir: canonical });
+    const originalHead = await gitRepository.head();
+    let bugId: ObjectId | undefined;
+    let interrupted = false;
+    let authorized = false;
+    let gateChecks = 0;
+    let verificationAttempts = 0;
+    let phaseGateRuns = 0;
+    const integration = new MergeIntegrationService({
+      repository, git: gitRepository, targetBranch: projectContainer.canonicalBranch,
+      gates: new MergeGateService(repository, projectContainer, gitRepository, projectContainer.canonicalBranch),
+      mayMerge: false, authorizeMerge: async () => ({ approved: authorized, reason: 'Waiting for permission to merge the repair' }),
+      releaseChangeSet: async id => { await service.release(id); },
+      runChecks: async (root, scope) => {
+        gateChecks += 1;
+        expect(scope).toBe('ticket-verification');
+        expect(await fs.readFile(path.join(root, repairPath), 'utf8')).toBe(repairContent);
+        return [{ name: 'functional fixture', ok: true, kind: 'execution', summary: 'Candidate holds the repair' }];
+      },
+    });
+    const makeEngine = () => new ProjectOrchestrator({
+      workspace, repository, git: new GitService(workspace), plugins: new PluginHost(),
+      sandbox: {} as ProjectOrchestratorOptions['sandbox'],
+      router: {} as ProjectOrchestratorOptions['router'],
+      audit: { event: async () => undefined } as unknown as ProjectOrchestratorOptions['audit'],
+      requestPermission: async () => ({ approved: true }),
+      reviewTicket: async input => ({
+        kind: 'problem-confirmation', decision: 'confirmed', reason: 'Functional verifier confirms the original finding',
+        evidenceRefs: [input.payload.evidence[0]!.ref], ticketType: 'bug', targetStepId: functional.id,
+      }),
+      attemptRunner: {
+        initialize: async () => undefined,
+        run: async input => {
+          let commit = originalHead;
+          let changedFiles: string[] = [];
+          if (input.mode === 'debug') {
+            bugId = input.ticket.id;
+            await fs.writeFile(path.join(canonical, repairPath), repairContent);
+            await canonicalGit.add(repairPath);
+            await canonicalGit.commit('S8 repair candidate');
+            commit = await gitRepository.head();
+            await service.preserveRejectedCandidate({ ticketId: bugId, candidateRevision: commit, baseRevision: originalHead });
+            await canonicalGit.reset(['--hard', originalHead]);
+            changedFiles = [repairPath];
+          } else if (input.mode === 'verification') {
+            verificationAttempts += 1;
+            const scope = await service.ensureFor(input.ticket, input.domainStep);
+            expect(scope.root).toBe(canonical);
+            expect(await fs.readFile(path.join(scope.root, repairPath), 'utf8')).toBe(repairContent);
+            commit = await gitRepository.head();
+            expect(commit).not.toBe(originalHead);
+          }
+          const kpis = await Promise.all(input.domainStep.kpiIds.map(id => repository.read(id)));
+          const assessment = await new QualityAssessmentService(repository).assessStep({
+            step: input.domainStep,
+            metrics: kpis.flatMap(kpi => kpi.objectType === 'kpi' ? [{ metric: kpi.metric, value: kpi.target }] : []),
+          });
+          return { ok: true, assessment, changedFiles, commit, wikiEntryIds: [], testOutcomes: [passedTestOutcome(input.domainStep, ['tests/'])] };
+        },
+      },
+      integrateTicket: async id => {
+        if (id === bugId && !interrupted) {
+          interrupted = true;
+          throw new Error('Interrupted before opening the Bug merge gate');
+        }
+        return integration.integrateTicket(project.id, id);
+      },
+      integratePendingAuthorization: phaseId => integration.integratePendingAuthorization(project.id, phaseId),
+      finalGate: async () => ++phaseGateRuns === 1 ? {
+        ok: false, findings: [{
+          category: 'test-defect', target: 'functional-test', code: 'functional_fixture_incomplete',
+          summary: 'Functional fixture is incomplete', evidence: ['Fixture lacked the required input'],
+          affectedArtifacts: [], dependencyPackages: [],
+        }],
+      } : { ok: true },
+    }, plan);
+
+    await expect(makeEngine().run(phase.id)).rejects.toThrow('Interrupted before opening the Bug merge gate');
+    await repository.load();
+    const before = await repository.read(bugId!);
+    if (before.objectType !== 'ticket' || before.type !== 'bug') throw new Error('Expected interrupted Bug');
+    expect(before.state).toBe('deliver');
+    expect(await gitRepository.head()).toBe(originalHead);
+
+    const awaiting = await makeEngine().run(phase.id);
+    expect(awaiting.failureReason).toBe('Waiting for permission to merge the repair');
+    expect(await repository.read(before.id)).toMatchObject({ state: 'deliver', attempts: before.attempts, verificationRecords: [] });
+    await expect(fs.stat(path.join(canonical, repairPath))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(verificationAttempts).toBe(0);
+    expect(gateChecks).toBe(1);
+
+    authorized = true;
+    await repository.load();
+    const resumed = await makeEngine().run(phase.id);
+    expect(resumed.projectDelivered, JSON.stringify(resumed)).toBe(true);
+    expect(verificationAttempts).toBe(1);
+    expect(gateChecks).toBe(1);
+    expect(await repository.read(before.id)).toMatchObject({ state: 'closed', attempts: before.attempts + 1, reporterActorId: before.reporterActorId });
   });
 
   it('creates one branch and worktree for a root Ticket', async () => {

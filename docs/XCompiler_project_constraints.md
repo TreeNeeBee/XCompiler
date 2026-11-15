@@ -97,12 +97,17 @@ only authority that changes Ticket state.
   original external gate to pass. A different test passing, a source-delivery assessment, a cancelled
   CR, or a CR reporter's acceptance is never Bug closure proof. The same failure reuses the original
   Bug and its budgets; failures and evidence remain append-only.
+  A delivered Bug's pending integration is reconciled before the original reporter starts a
+  verification attempt. Pending integration cannot consume a reporter attempt.
 - A CR target passing its own gate submits an immutable delivery (`deliver`). The reporter invokes
   its own model to accept or reject that candidate and to decide whether another downstream CR is
   necessary. The next hop is persisted before the current hop closes, and restart reuses its identity.
   Each CR closes independently of its source Bug, avoiding mutual waits. Rejection reopens the same
   CR. Accepted responses are recovered by exact request identity; absent adoption is not proof that
   a model request was never sent and cannot authorize silent resend.
+  An interrupted submission resumes from its latest unsubmitted passing application and retains
+  the candidate and assessment. A rejected delivery remains in history and cannot be resubmitted
+  as the replacement application.
 - Active legacy Tickets receive an explicit, audited reporter migration. An old development-created
   Bug retains its ID, creator, evidence and budget; its reporter becomes the original designated
   verifier. Old passing CR applications require independent acceptance; old repaired Bugs require

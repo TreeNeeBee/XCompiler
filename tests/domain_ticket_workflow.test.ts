@@ -256,6 +256,61 @@ describe('TicketWorkflow', () => {
     expect((await controller.next(graph.phases[0]!.id))?.ticket.id).toBe(request.id);
   });
 
+  it('recovers only the current CR application when a replacement uses the same Git revision', async () => {
+    const { graph, repository, registration } = await setup();
+    const reviewTicket = vi.fn<TicketReviewPort>(acceptReview).mockImplementationOnce(async input => ({
+      kind: 'ticket-acceptance', decision: 'reject', reason: 'The original evidence is insufficient',
+      evidenceRefs: [input.payload.subjectId], propagation: null,
+    }));
+    const controller = new ProjectController(repository, { reviewTicket });
+    const target = graph.steps[0]!;
+    const reporter = await registration.discovererActorIdForStep(target.id);
+    const request = await openChangeRequestFor(repository, graph, [target.id], reporter);
+    const start = async () => controller.start({ phase: graph.phases[0]!, step: target,
+      ticket: (await registration.routeAndAssign(request.id)).ticket });
+    const candidate = { summary: 'Existing revision implements the delta', entries: [], commit: 'b'.repeat(40) };
+    const firstWork = await start();
+    await controller.completeChangeRequestStep({ ...candidate, work: firstWork,
+      qualityAssessmentId: await passingAssessment(repository, firstWork.step) });
+    const rejected = asTicket(await repository.read(request.id), 'change-request');
+    await controller.reconcileClosedCorrectiveTickets(graph.project.id);
+    expect(asTicket(await repository.read(request.id), 'change-request')).toMatchObject({
+      state: 'reopened', deliveries: rejected.deliveries, acceptanceRecords: rejected.acceptanceRecords,
+    });
+
+    const replacement = await start();
+    const qualityAssessmentId = await passingAssessment(repository, replacement.step);
+    const commit = repository.commit.bind(repository);
+    const interruption = new Error('Interrupted before replacement delivery');
+    const spy = vi.spyOn(repository, 'commit').mockImplementation(async objects => {
+      if (objects.some(object => object.objectType === 'ticket' && object.id === request.id && object.state === 'deliver')) throw interruption;
+      return commit(objects);
+    });
+    try {
+      await expect(controller.completeChangeRequestStep({ ...candidate, work: replacement, qualityAssessmentId }))
+        .rejects.toBe(interruption);
+    } finally {
+      spy.mockRestore();
+    }
+
+    await repository.load();
+    await controller.reclaimUnreachableWork(graph.project.id);
+    await controller.reconcileClosedCorrectiveTickets(graph.project.id);
+    const recovered = asTicket(await repository.read(request.id), 'change-request');
+    expect(recovered).toMatchObject({ state: 'deliver', attempts: 2, acceptanceRecords: rejected.acceptanceRecords });
+    expect(recovered.deliveries[0]).toEqual(rejected.deliveries[0]);
+    expect(recovered.deliveries[1]).toMatchObject({ assessmentId: qualityAssessmentId, candidateRevision: candidate.commit });
+    expect(recovered.deliveries[1]!.requestId).not.toBe(rejected.deliveries[0]!.requestId);
+    expect(recovered.applications.map(application => application.verificationAssessmentId)).toEqual([
+      rejected.deliveries[0]!.assessmentId, qualityAssessmentId,
+    ]);
+    expect(reviewTicket).toHaveBeenCalledTimes(1);
+    await controller.reconcileClosedCorrectiveTickets(graph.project.id);
+    expect(await repository.read(request.id)).toEqual(recovered);
+    expect(await controller.resumeAcceptance(request.id)).toMatchObject({ closed: true });
+    expect(reviewTicket.mock.calls[1]?.[0].logicalRequestId).toBe(recovered.deliveries[1]!.requestId);
+  });
+
   it('routes a development owner gap through a CR and resumes the original Bug without closing it', async () => {
     const { graph, repository, registration, workflow } = await setup();
     const coding = graph.steps.find(step => step.type === 'CODE')!;

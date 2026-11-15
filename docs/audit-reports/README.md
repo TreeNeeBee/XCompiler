@@ -37,6 +37,8 @@
 | 2026-11-10 | [2026-11-10-d79-d89-codex-audit-report.md](2026-11-10-d79-d89-codex-audit-report.md) | 独立审计 | Codex | D-79～D-89 与未提交改动，含交付越界、恢复与契约问题，以及 dbc2excel-7 P1 业务质量和门禁取证 |
 | 2026-11-12 | [2026-11-12-dbc2excel-7-p2-gate-context-fix.md](2026-11-12-dbc2excel-7-p2-gate-context-fix.md) | 故障与修复记录 | Codex | D-95：Python 路径加载误报、Runtime 内联证据来源及 P2 剩余测试缺口 |
 | 2026-11-15 | [2026-11-15-ticket-responsibility-change-report.md](2026-11-15-ticket-responsibility-change-report.md) | 变更报告 | Codex | Ticket 职责、CR 独立验收、Bug 原范围复验、旧票迁移与中断恢复 |
+| 2026-11-15 | [2026-11-15-ticket-responsibility-codex-audit-report.md](2026-11-15-ticket-responsibility-codex-audit-report.md) | 独立审计 | Codex | `9bdb79f..d780e87`；TR-01 CR 交付前中断失去排程、TR-02 Bug 待合入修复未恢复；138 项定向测试通过 |
+| 2026-11-16 | [2026-11-16-ticket-recovery-fix-report.md](2026-11-16-ticket-recovery-fix-report.md) | 审计修复报告 | Codex | TR-01 CR 交付恢复、TR-02 原 reporter 派发前恢复 Bug 合入 |
 
 ## 约定
 

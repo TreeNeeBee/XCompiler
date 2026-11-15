@@ -4,7 +4,7 @@
 
 ## 当前状态（唯一进度表）
 
-最近增量更新为 2026-11-15。以 `9bdb79f` 为本轮基线，Ticket 职责与交接修复的框架门禁已通过，真实 `dbc2excel-7` 尚未续跑。见 [Ticket 实施记录](2026-11-13-ticket-responsibility-implementation.md)和[变更报告](../../audit-reports/2026-11-15-ticket-responsibility-change-report.md)。表中其他行保留历史阶段记录。
+最近增量更新为 2026-11-16。在 `d780e87` 上修复了独立审计确认的 TR-01 与 TR-02。CR 可从已保存的 application 恢复交付，Bug 在派发 reporter 前恢复待合入修复。真实 `dbc2excel-7` 尚未续跑。见 [Ticket 实施记录](2026-11-13-ticket-responsibility-implementation.md)和[审计修复报告](../../audit-reports/2026-11-16-ticket-recovery-fix-report.md)。表中其他行保留历史阶段记录。
 审查与审计报告已归档到 [`docs/audit-reports/`](../../audit-reports/README.md)。
 下方带 2026-10-15 或更早日期的检查结果保留为历史证据，不代表本轮变更已经通过。
 
@@ -20,7 +20,7 @@
 | 6 | M-C 请求基础设施 | 已完成：容量跳过（C1）、正常路径不读审计（C2，按 D-21 替代字节区间）、每次执行一份 Rule 快照（C3）；调用点证伪通过 | 无本阶段剩余项 |
 | 7 | M-D Rule 抽取与提示组装 | 已完成：23 个编译器 RuleList（en/zh）、Runtime 绑定计算、Executor/规划提示改由 Rule 承载 Who/What/How；调用点证伪通过 | 无本阶段剩余项 |
 | 8 | M-E 协议纠正校准接通 | 已完成：`escape-insertion` 准入与证明、账本额度耗尽、Executor、需求澄清、阶段规划、阶段拆解与场景结果判定生产接线与恢复；调用点证伪通过 | 无本阶段剩余项；下一步 G1 |
-| 9 | 小规模真实项目验证 | 框架修复和完整门禁已完成（2026-11-15），4,040 个用例通过。原工程副本迁移 38 张票，重复执行新增 0 张。P1 已交付，P2 原 `BUG-P2-002` 为 `pending`，11/12 次 | 在用户可见 Terminal 恢复 P2，保留原证据与预算，观察 S3 交付、CR 独立验收及 S6 原范围复验。真实 P2 与发布仍待验证。见[本轮变更报告](../../audit-reports/2026-11-15-ticket-responsibility-change-report.md) |
+| 9 | 小规模真实项目验证 | Ticket 职责和 TR-01、TR-02 框架修复已完成，4,049 个本地回归用例通过。原工程副本迁移 38 张票，重复执行新增 0 张。P1 已交付，预演中的 P2 原 `BUG-P2-002` 为 `pending`，11/12 次 | 在用户可见 Terminal 恢复 P2，保留原证据与预算，观察 S3 交付、CR 独立验收及 S6 原范围复验。真实 P2 与发布仍待验证。见[审计修复报告](../../audit-reports/2026-11-16-ticket-recovery-fix-report.md) |
 | 10 | P1 发布准备 | 已完成并提交（`efb64b0`，用户选择先于 D-20）：10 项资源失败已修复、版本 0.4.0 / Plugin API 4、依赖审计 0 项、完整门禁通过；未打 tag、未发布 | 原生 pkg 二进制由 release workflow 构建；发版时运行 `release:local -- v0.4.0` |
 | 11 | 审查后修正 | 已提交 `c49b11c`：审计半行防护、修复提示按类型码、删除死字段、产出缺失类型化。未提交：删除单轮规划提示并迁入 3 项指导（C）；同一执行的选择材料丢失后停止发送（E，Codex SNP-01）。当前门禁：core 120/1,764，integration 66/1,503，e2e 2/11 | 提交 C、E；处理[审计报告](../../audit-reports/2026-10-17-change-audit-report.md)第 8 节的遗留决定 |
 | 12 | RuleChain 修订（[合同](2026-10-18-rulechain-revision.md)，[变更清单](2026-10-15-review-change-list.md) D-22～D-34） | 已实施、未提交：32 位槽位与 schema 2、`xcompiler rule` 与本地差异层、最小规则集与适用维度、分区与选择策略及失败降级、基础段与分组渲染、Python 列表与两种语言去重、Rule 正文按摘要存放；调用点证伪通过。现有 26 个 RuleList、75 条 Rule。2026-10-20 已处理 [Codex 审计](../../audit-reports/2026-10-20-codex-audit-report.md) RC-01～RC-07 与第 4.1 节（D-35），并修复自我审查发现的缺产出类别问题。过程见[审计日志](../../audit-reports/2026-10-16-change-audit-log.md#rulechain-修订实施2026-10-19-起未提交)，汇总见 [2026-10-20 工作记录](../../audit-reports/2026-10-20-work-report.md) | 用户审定：三份内容草案（[`drafts/`](drafts/)）、Python 列表不设显式最小规则集的做法、创世声明 en 变体含中文；之后提交，再做第 9 行 |

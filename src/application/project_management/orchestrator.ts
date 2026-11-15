@@ -67,6 +67,11 @@ interface MergeIntegrationResult {
   superseded?: readonly MergeConflictSummary[];
 }
 
+type TicketIntegration =
+  | { status: 'ready' }
+  | { status: 'reschedule'; reason: string | RunStop }
+  | { status: 'stopped'; result: ProjectOrchestratorResult };
+
 export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, 'repository' | 'plugins'>, TicketAcceptanceOptions {
   repository: DomainObjectRepositoryPort;
   plugins: PluginHost;
@@ -656,8 +661,8 @@ export class ProjectOrchestrator {
         if (!accepted.closed) continue;
         const step = steps.find(candidate => candidate.id === ticket.targetStepId);
         if (!step) throw new Error('Delivered CR has no target in its Phase');
-        const stopped = await this.integrateDeliveredTicket(phase, { phase, step, ticket }, steps.length, executed);
-        if (stopped) return stopped;
+        const integration = await this.integrateDeliveredTicket(phase, { phase, step, ticket }, steps.length, executed);
+        if (integration.status === 'stopped') return integration.result;
         integratedDeliveries.add(delivery.requestId);
       }
       const observation = await progress.observe(phase.projectId, phase.id);
@@ -776,6 +781,22 @@ export class ProjectOrchestrator {
         }
       }
 
+      if (work.ticket.type === 'bug' && work.ticket.state === 'deliver') {
+        // A prior run can record delivery before it lands the repair. Check from the repair Step
+        // before handing the Bug to its reporter; the merge port looks up the current generation.
+        const sourceStepId = work.ticket.failure.targetStepId;
+        const source = steps.find(step => step.id === sourceStepId);
+        if (!source) throw new Error('Delivered Bug has no repair Step in its Phase');
+        const repair = { ...work, step: source };
+        const integration = await this.integrateDeliveredTicket(phase, repair, steps.length, executed);
+        if (integration.status === 'stopped') return integration.result;
+        if (integration.status === 'reschedule') {
+          const stopped = await this.stopIfSameDeliveredBug(repair, steps.length, executed, integration.reason);
+          if (stopped) return stopped;
+          continue;
+        }
+      }
+
       let assignee: RoutingActor | undefined;
       const executionStep = projection.byDomainStepId.get(work.step.id);
       if (!executionStep) {
@@ -874,19 +895,35 @@ export class ProjectOrchestrator {
         return this.failure(phase.id, steps.length, executed, work.step, disposition.stop ?? disposition.reason);
       }
       if (result.ok && disposition.integrate !== false) {
-        const stopped = await this.integrateDeliveredTicket(phase, work, steps.length, executed);
-        if (stopped) return stopped;
+        const integration = await this.integrateDeliveredTicket(phase, work, steps.length, executed);
+        if (integration.status === 'stopped') return integration.result;
         const delivered = await this.options.repository.read(work.ticket.id);
         if (delivered.objectType === 'ticket' && delivered.type === 'change-request') {
           const delivery = delivered.deliveries.at(-1);
           if (delivery) integratedDeliveries.add(delivery.requestId);
+        } else if (delivered.objectType === 'ticket' && delivered.type === 'bug' &&
+          delivered.state === 'deliver' && integration.status === 'reschedule') {
+          const stopped = await this.stopIfSameDeliveredBug({ ...work, ticket: delivered }, steps.length, executed, integration.reason);
+          if (stopped) return stopped;
         }
       }
     }
   }
 
-  private async integrateDeliveredTicket(phase: Phase, work: ScheduledWork, totalSteps: number, executed: number): Promise<ProjectOrchestratorResult | undefined> {
-    if (!this.options.integrateTicket) return undefined;
+  private async stopIfSameDeliveredBug(
+    repair: ScheduledWork, totalSteps: number, executed: number, reason: string | RunStop,
+  ): Promise<ProjectOrchestratorResult | undefined> {
+    const next = await this.scheduler.resume(repair.phase.id);
+    // If intake or conflict recovery queued other work, let the scheduler run it first. An
+    // unchanged rejected delivery cannot go to verification or run its merge gate in a loop.
+    if (!next || (next.ticket.id === repair.ticket.id && next.ticket.state === 'deliver')) {
+      return this.failure(repair.phase.id, totalSteps, executed, repair.step, reason);
+    }
+    return undefined;
+  }
+
+  private async integrateDeliveredTicket(phase: Phase, work: ScheduledWork, totalSteps: number, executed: number): Promise<TicketIntegration> {
+    if (!this.options.integrateTicket) return { status: 'ready' };
     // The delivering Ticket itself. Its ChangeSet is keyed on the CODE Story that owns the
     // branch, and a Bug or CR repairing that Story is recorded on the same ChangeSet — whereas
     // `rootTicketId` is the Phase Epic, which owns no branch and matches nothing.
@@ -907,11 +944,12 @@ export class ProjectOrchestrator {
           workspaceBinding: landed.workspaceBinding,
         });
       } catch (error) {
-        return this.unchangedRecurrenceStop(error, phase, totalSteps, executed, work.step);
+        return { status: 'stopped', result: await this.unchangedRecurrenceStop(error, phase, totalSteps, executed, work.step) };
       }
       if (gate.action === 'stop') {
-        return this.failure(phase.id, totalSteps, executed, work.step, gate.reason);
+        return { status: 'stopped', result: this.failure(phase.id, totalSteps, executed, work.step, gate.reason) };
       }
+      return { status: 'reschedule', reason: landed.reason ?? { code: 'merge_gate_failed' } };
     } else if (landed.status === 'awaiting-authorization') {
       await this.options.audit.event('note', `${work.step.name} passed its gate but was not merged`, {
         messageId: 'domain.merge_awaiting_authorization',
@@ -922,26 +960,29 @@ export class ProjectOrchestrator {
         ticketId: work.ticket.id,
         reason: landed.reason,
       });
-      return this.failure(
+      return { status: 'stopped', result: this.failure(
         phase.id,
         totalSteps,
         executed,
         work.step,
         landed.reason ?? { code: 'merge_authorization_required' },
-      );
+      ) };
     } else if (landed.status === 'blocked') {
-      return this.failure(
+      return { status: 'stopped', result: this.failure(
         phase.id, totalSteps, executed, work.step,
         landed.reason ?? { code: 'merge_integration', status: landed.status },
-      );
+      ) };
     } else if (landed.status === 'conflicted') {
-      return this.failure(
+      return { status: 'stopped', result: this.failure(
         phase.id, totalSteps, executed, work.step,
         mergeConflictStop(landed) ?? landed.reason ?? { code: 'merge_integration', status: landed.status },
-      );
+      ) };
     }
-    // `superseded` needs nothing here: the generation's owner reruns as ordinary scheduled work.
-    return undefined;
+    if (landed.status === 'superseded') {
+      // The generation's owner reruns as ordinary scheduled work.
+      return { status: 'reschedule', reason: { code: 'merge_integration', status: landed.status } };
+    }
+    return { status: 'ready' };
   }
 
   private throwIfAborted(): void {

@@ -58,7 +58,8 @@ vi.mock('../../src/llm/preflight.js', () => ({
 vi.mock('../../src/sandbox/factory.js', () => ({ createSandbox: vi.fn() }));
 
 describe('Runtime initializes the configured knowledge store', () => {
-  it.each(['after-delivery', 'before-review'] as const)('resumes a delivered CR through its reporter model and immutable Git candidate at the Run boundary (%s)', async interruptionPoint => {
+  it.each(['after-application', 'before-delivery', 'after-delivery', 'before-review'] as const)(
+    'resumes a CR through its reporter model and immutable Git candidate at the Run boundary (%s)', async interruptionPoint => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-review-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
@@ -129,12 +130,27 @@ describe('Runtime initializes the configured knowledge store', () => {
           throw interruption;
         })
         : undefined;
+      const commit = repository.commit.bind(repository);
+      const interruptedCommit = interruptionPoint === 'after-application' || interruptionPoint === 'before-delivery'
+        ? vi.spyOn(repository, 'commit').mockImplementation(async objects => {
+          if (objects.some(object => object.objectType === 'ticket' && object.id === ticket.id &&
+            (interruptionPoint === 'after-application' ? object.solution?.status === 'proposed' : object.state === 'deliver'))) {
+            throw interruption;
+          }
+          return commit(objects);
+        })
+        : undefined;
       await expect(controller.completeChangeRequestStep({ work, qualityAssessmentId: assessment.id,
         summary: 'Implemented output', entries: [{ path: 'src/main.py', operation: 'create' }], commit: revision,
       })).rejects.toBe(interruption);
       interruptedDelivery?.mockRestore();
-      const delivered = await repository.read(ticket.id);
-      if (delivered.objectType !== 'ticket') throw new Error('Missing delivered fixture Ticket');
+      interruptedCommit?.mockRestore();
+      const interrupted = await repository.read(ticket.id);
+      if (interrupted.objectType !== 'ticket' || interrupted.type !== 'change-request') throw new Error('Missing interrupted CR');
+      expect(interrupted).toMatchObject({ attempts: 1, acceptanceRecords: [], applications: [
+        { stepId: target.id, verificationAssessmentId: assessment.id },
+      ] });
+      expect(interrupted.deliveries).toHaveLength(interruptedCommit ? 0 : 1);
       await workspace.writeFile('src/main.py', 'print("later working tree edit")\n');
       const planPath = container.control.abs('plan.P1.json');
       await new FilePlanStore().savePlan(planPath, draft);
@@ -157,8 +173,16 @@ describe('Runtime initializes the configured knowledge store', () => {
       expect(payload).toMatchObject({ subjectId: ticket.id, candidateIdentity: revision });
       expect(payload.evidence).toContainEqual({ ref: `${revision}:src/main.py`, content: 'print("accepted candidate")\n' });
       await repository.load();
-      expect(await repository.read(ticket.id)).toMatchObject({ state: 'closed', reporterActorId: reporter.id,
-        acceptanceRecords: [{ requestId: delivered.deliveries[0]!.requestId, reporterActorId: reporter.id, verdict: { decision: 'accept' } }],
+      const accepted = await repository.read(ticket.id);
+      if (accepted.objectType !== 'ticket' || accepted.type !== 'change-request') throw new Error('Missing accepted CR');
+      expect(accepted.deliveries).toHaveLength(1);
+      const delivery = accepted.deliveries[0]!;
+      expect(delivery).toMatchObject({ assessmentId: assessment.id, candidateRevision: revision,
+        changelistId: interrupted.applications[0]!.changelistId });
+      if (interrupted.deliveries[0]) expect(delivery).toEqual(interrupted.deliveries[0]);
+      expect(accepted).toMatchObject({ state: 'closed', reporterActorId: reporter.id, attempts: interrupted.attempts,
+        applications: interrupted.applications,
+        acceptanceRecords: [{ requestId: delivery.requestId, reporterActorId: reporter.id, verdict: { decision: 'accept' } }],
       });
       expect(unexpectedExecution).not.toHaveBeenCalled();
     } finally {

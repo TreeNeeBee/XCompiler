@@ -1536,19 +1536,10 @@ export class TicketWorkflow {
   }
 
   async reconcileClosedCorrectiveTickets(projectId: ObjectId): Promise<void> {
-    // Older releases stored a passing application without a reporter handoff. Recover that
-    // evidence into a pending review; never infer reporter acceptance from the target's gate.
     for (const ticket of await this.list()) {
       if (ticket.projectId !== projectId || ticket.duplicateOfTicketId) continue;
-      if (ticket.type === 'change-request' && ticket.deliveries.length === 0 &&
-        ['in_progress', 'resolved'].includes(ticket.state) && ticket.solution?.status === 'verified' && ticket.blockedByTicketIds.length === 0) {
-        const application = ticket.applications.at(-1);
-        if (!application?.verificationAssessmentId || application.stepId !== ticket.targetStepId) continue;
-        const change = await this.repository.read(application.changelistId);
-        if (change.objectType !== 'changelist' || change.ticketId !== ticket.id) throw new Error('Legacy CR application has no matching changelist');
-        await this.deliverForReview({ ticketId: ticket.id, stepId: ticket.targetStepId,
-          qualityAssessmentId: application.verificationAssessmentId, summary: change.summary,
-          entries: change.entries, commit: change.commit, verification: change.verification });
+      if (ticket.type === 'change-request') {
+        await this.resumeChangeRequestDelivery(ticket);
       }
       if (ticket.type === 'bug' && ticket.state === 'resolved' && ticket.solution) {
         const requests = (await this.list()).filter(candidate => candidate.type === 'change-request' && candidate.sourceTicketIds.includes(ticket.id));
@@ -1596,6 +1587,30 @@ export class TicketWorkflow {
         await this.cancelDuplicate(duplicateId, original.id);
       }
     }
+  }
+
+  /** A passing application can survive an interruption that returns its Ticket to pending. */
+  private async resumeChangeRequestDelivery(ticket: ChangeRequestTicket): Promise<void> {
+    if (ticket.blockedByTicketIds.length > 0) return;
+    const interrupted = ticket.state === 'in_progress' ||
+      (ticket.state === 'pending' && ticket.pendingReason === 'interrupted');
+    const legacy = ticket.deliveries.length === 0 && ticket.solution?.status === 'verified' &&
+      (ticket.state === 'in_progress' || ticket.state === 'resolved');
+    if (!interrupted && !legacy) return;
+
+    const application = ticket.applications.at(-1);
+    if (!application?.verificationAssessmentId || application.stepId !== ticket.targetStepId ||
+      ticket.deliveries.some(delivery => delivery.assessmentId === application.verificationAssessmentId)) return;
+    const step = await new ProjectStateService(this.repository).requireStep(ticket.targetStepId);
+    if (!legacy && step.state !== 'in_progress') return;
+    const change = await this.repository.read(application.changelistId);
+    if (change.objectType !== 'changelist' || change.ticketId !== ticket.id || change.stepId !== step.id) {
+      throw new Error('CR application has no matching changelist');
+    }
+    // Resume submission only. The reporter still decides whether to accept the candidate.
+    await this.deliverForReview({ ticketId: ticket.id, stepId: step.id,
+      qualityAssessmentId: application.verificationAssessmentId, summary: change.summary,
+      entries: change.entries, commit: change.commit, verification: change.verification });
   }
 
   /** Repairs an interrupted hand-off without claiming that the original failure was replayed. */
@@ -1693,6 +1708,8 @@ export class TicketWorkflow {
         }
         return object;
       }
+      // A replacement review can reuse the Git revision, but needs its own QA and application.
+      return undefined;
     }
     for (const changelistId of ticket.changelistIds) {
       const object = await this.repository.read(changelistId);
