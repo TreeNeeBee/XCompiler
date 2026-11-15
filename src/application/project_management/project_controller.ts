@@ -11,6 +11,7 @@ import {
 } from '../../domain/steps/step.js';
 import {
   isActiveTicket,
+  workStepId,
   TicketSchema,
   type BugTicket,
   type ChangeRequestApplicationDecision,
@@ -34,10 +35,10 @@ import { createDomainEvent } from '../observability/domain_event_factory.js';
 import { DomainAuditTrail } from '../observability/domain_audit_trail.js';
 import type { AttemptFailure } from '../execution/failure_classification.js';
 import type { TestOutcome } from '../execution/test_outcome.js';
-import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { buildDebugBrief, buildFailureSignature } from '../execution/debug_brief.js';
 import { WorkScheduler, workModeFor, type ScheduledWork } from './work_scheduler.js';
 import { CorrectiveWorkflowService } from './corrective_workflow_service.js';
+import type { TicketAcceptanceOptions } from './ticket_acceptance_service.js';
 import {
   ProjectManagerIntakeService,
   type ProjectManagerProblemIntake,
@@ -68,15 +69,15 @@ export class ProjectController {
       onStepsClosed?: (phaseId: ObjectId) => Promise<void>;
       /** The revision the Phase delivers, read once its last delivery artifact is committed. */
       deliveredRevision?: (phaseId: ObjectId) => Promise<string | undefined>;
-    } = {},
+    } & TicketAcceptanceOptions = {},
   ) {
     this.tickets = new TicketWorkflow(repository);
     this.registration = new TicketRegistrationService(repository);
     this.state = new ProjectStateService(repository);
     this.governance = new GovernanceService(repository);
     this.scheduler = new WorkScheduler(repository);
-    this.corrective = new CorrectiveWorkflowService(repository);
-    this.intake = new ProjectManagerIntakeService(repository);
+    this.corrective = new CorrectiveWorkflowService(repository, hooks);
+    this.intake = new ProjectManagerIntakeService(repository, hooks);
     this.traces = new DomainAuditTrail(repository);
   }
 
@@ -88,12 +89,16 @@ export class ProjectController {
     return this.scheduler.resume(phaseId);
   }
 
-  async reconcilePhaseDeliveryBugs(
-    phaseId: ObjectId,
-    findings: readonly Pick<DeliveryGateFinding, 'code' | 'target'>[],
-    phaseGateAssessmentId: ObjectId,
-  ): Promise<ObjectId[]> {
-    return this.tickets.reconcilePhaseDeliveryBugs(phaseId, findings, phaseGateAssessmentId);
+  async resumeAcceptance(ticketId: ObjectId) {
+    return this.corrective.resumeAcceptance(ticketId);
+  }
+
+  async resumeProblemConfirmations(phaseId: ObjectId) {
+    await this.intake.resume(phaseId);
+  }
+
+  async verifyDeliveredBug(input: Parameters<CorrectiveWorkflowService['verifyDeliveredBug']>[0]) {
+    return this.corrective.verifyDeliveredBug(input);
   }
 
   async start(work: ScheduledWork): Promise<ScheduledWork> {
@@ -193,7 +198,8 @@ export class ProjectController {
         throw new Error('Change Request type changed while recording its missing attempt outcome');
       }
     }
-    const stepForContext = ticket.stepId ? await this.requireStep(ticket.stepId) : undefined;
+    const executionStepId = workStepId(ticket);
+    const stepForContext = executionStepId ? await this.requireStep(executionStepId) : undefined;
     const decision = evaluateAttemptExtension(
       evidence,
       xcompilerBuildId(),
@@ -341,7 +347,7 @@ export class ProjectController {
   async retainAgentExecutionFailure(work: ScheduledWork, reason: string): Promise<void> {
     const step = await this.requireStep(work.step.id);
     const ticket = await this.requireTicket(work.ticket.id);
-    if (step.state !== 'in_progress' || ticket.state !== 'in_progress') {
+    if (step.state !== 'in_progress' || (ticket.state !== 'in_progress' && ticket.state !== 'deliver')) {
       throw new Error(`Only active work can retain an agent execution failure: ${step.name}/${ticket.name}`);
     }
     await this.checkpoint(
@@ -433,7 +439,7 @@ export class ProjectController {
   ): Promise<void> {
     const step = await this.requireStep(work.step.id);
     const ticket = await this.requireTicket(work.ticket.id);
-    if (step.state !== 'in_progress' || ticket.state !== 'in_progress') {
+    if (step.state !== 'in_progress' || (ticket.state !== 'in_progress' && ticket.state !== 'deliver')) {
       throw new Error(`Only active work can return an attempt to PM: ${step.name}/${ticket.name}`);
     }
     const revisedStep = StepSchemaWithRevision(step, {
@@ -448,7 +454,9 @@ export class ProjectController {
         await this.state.transitionTicket(task, 'pending', pendingReason);
       }
     }
-    const parkedTicket = await this.state.transitionTicket(revisedTicket, 'pending', pendingReason);
+    const parkedTicket = ticket.state === 'deliver'
+      ? await this.state.transitionTicket(revisedTicket, 'deliver')
+      : await this.state.transitionTicket(revisedTicket, 'pending', pendingReason);
     const parkedStep = await this.state.transitionStep(revisedStep, 'pending', pendingReason);
     await this.checkpoint(
       parkedStep,
@@ -475,15 +483,19 @@ export class ProjectController {
       step = await this.saveStepTransition(step, 'closed');
       if (!step.pairedStepId) throw new Error(`Verification Step ${step.name} has no paired source Step`);
       let source = await this.requireStep(step.pairedStepId);
-      if (source.state !== 'delivered') {
+      if (source.state !== 'delivered' && source.state !== 'closed') {
         throw new Error(`Paired source Step ${source.name} must be delivered before ${step.name} can close`);
       }
-      source = await this.saveStepTransition(source, 'closed');
+      if (source.state !== 'closed') source = await this.saveStepTransition(source, 'closed');
       const sourceStory = await this.tickets.storyForStep(source.id);
       if (sourceStory.state === 'resolved') await this.saveTicketTransition(sourceStory, 'closed');
       await this.checkpoint(source, `Closed after paired verification ${step.name}`);
     }
     await this.checkpoint(step, `Delivered ${step.name} through ${story.name}`);
+  }
+
+  routeWorkCorrection(input: Parameters<CorrectiveWorkflowService['routeWorkCorrection']>[0]) {
+    return this.corrective.routeWorkCorrection(input);
   }
 
   async routeFailure(input: {
@@ -568,10 +580,10 @@ export class ProjectController {
     return this.corrective.propagateCorrectiveChange(input);
   }
 
-  async closeCorrectiveProvenAtOwnStep(
-    input: Parameters<CorrectiveWorkflowService['closeCorrectiveProvenAtOwnStep']>[0],
+  async completeCorrectiveWithoutPropagation(
+    input: Parameters<CorrectiveWorkflowService['completeCorrectiveWithoutPropagation']>[0],
   ): Promise<boolean> {
-    return this.corrective.closeCorrectiveProvenAtOwnStep(input);
+    return this.corrective.completeCorrectiveWithoutPropagation(input);
   }
 
   async completeChangeRequestStep(input: {
@@ -603,8 +615,11 @@ export class ProjectController {
     await this.tickets.reconcileClosedCorrectiveTickets(projectId);
     const tickets = await this.tickets.list();
     for (const ticket of tickets) {
-      if (ticket.projectId === projectId && ticket.type === 'change-request' && isActiveTicket(ticket)) {
+      if (ticket.projectId !== projectId) continue;
+      if (ticket.type === 'change-request' && isActiveTicket(ticket)) {
         await this.corrective.activateChangeRequest(ticket.id);
+      } else if (ticket.type === 'bug' && ticket.state === 'closed') {
+        await this.corrective.resumeBugVerificationCompletion(ticket);
       }
     }
     const objects = await this.repository.list({ objectType: 'step', projectId });

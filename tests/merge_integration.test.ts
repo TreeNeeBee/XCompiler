@@ -43,7 +43,7 @@ const afterCut = new Date(1000).toISOString();
 
 /** The generation's owner: an open Change Request at `stepId` that has not delivered onto it. */
 const owner = {
-  objectType: 'ticket', id: rootTicketId, phaseId, stepId, type: 'change-request', name: 'CR-1',
+  objectType: 'ticket', id: rootTicketId, phaseId, stepId, targetStepId: stepId, type: 'change-request', name: 'CR-1',
   state: 'in_progress', commits: [],
 };
 

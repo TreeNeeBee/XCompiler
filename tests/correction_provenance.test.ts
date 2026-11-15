@@ -29,8 +29,8 @@ describe('correction provenance', () => {
 
     expect(origin).toEqual({ id: 'unit-id', phase: 'UNIT_TEST' });
     expect(resolveBaselineGateExecution(plan, requirement, request, origin)).toMatchObject({
-      mode: 'execute',
-      reason: 'post-code-correction',
+      mode: 'defer',
+      reason: 'source-delivery',
       originStepId: 'unit-id',
     });
   });
@@ -80,8 +80,8 @@ describe('correction provenance', () => {
 
     expect(origin).toEqual({ id: 'unit-id', phase: 'UNIT_TEST' });
     expect(resolveBaselineGateExecution(plan, requirement, enhancement, origin)).toEqual({
-      mode: 'execute',
-      reason: 'post-code-correction',
+      mode: 'defer',
+      reason: 'source-delivery',
       originStepId: 'unit-id',
       originPhase: 'UNIT_TEST',
     });

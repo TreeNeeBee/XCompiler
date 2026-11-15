@@ -6,10 +6,10 @@ title:
   en: Repairing a Bug on a Step
   zh: 修复 Step 上的 Bug
 slot: "0x00011002"
-version: 2.0.0
+version: 2.1.0
 ctime: 2026-10-16T15:15:35Z
-mtime: 2026-10-19T00:00:00Z
-digest: sha256:701d595cb41dc48a63c36b428fca27dc7ecb4fbcc22fc64b358de2fd60e7e288
+mtime: 2026-11-14T07:10:38.028Z
+digest: sha256:ee6c887e60806888278b5837ffb55158e5ea347ea84f2e95cc7cd167a7fb4f54
 rules:
   - id: 513f6ba5-cbf9-5fd7-b36e-6e9ff8b1eb61
     name: resolution-plan
@@ -52,17 +52,17 @@ rules:
       zh: 契约协调：将已验收的上游规范、测试、真实实现和调用方视为同一组契约。多种调用形式语义兼容时，应以可选参数、重载或适配器形成一个统一实现并全部保留；确实不可兼容时，报告契约缺陷并回退上游，禁止在互斥实现之间反复覆盖。
   - id: 324c92bf-430d-542a-aa29-115aef555f52
     name: paired-gate-ownership
-    version: 2.0.0
+    version: 2.1.0
     level: mandatory
     ctime: 2026-10-16T15:15:35Z
-    mtime: 2026-10-19T00:00:00Z
-    digest: sha256:159ac264f647882bbfa5a989627dcff64fd8b1a589cedce5a646c29d7fe5a85f
+    mtime: 2026-11-14T07:10:38.028Z
+    digest: sha256:e0b779632d394252cef14f32575df9b82d0de961b7a7e3f339fa7cfa8d036420
     description:
       en: "Applies when an inherited paired gate exists: only its tests decide whether the Bug is complete."
       zh: 存在继承的配对门禁时适用：只有它的测试决定 Bug 是否完成。
     instruction:
-      en: "Paired-gate ownership: when the Debug context declares an inherited paired verification gate, use only its exact tests as this Bug completion gate. Do not absorb compiler/test failures owned by later V-model Steps; those remain visible and must be routed through their own Tickets when their Step runs."
-      zh: 配对门禁归属：Debug 上下文声明继承的配对验证门禁时，当前 Bug 只能以其中的精确测试作为完成门禁；不得吸收后续 V 模型 Step 所属的编译或测试失败，这些错误必须保留，并在对应 Step 执行时通过独立 Ticket 路由。
+      en: "Paired-gate ownership: the original Bug is complete only after its reporting verification Step passes the exact inherited failure scope. When Runtime declares source-delivery with deferred baseline execution, finish the current Step owned artifacts and checks, record downstream obligations, and hand off without claiming the Bug is fixed. Do not require a source Step to execute tests of downstream implementation or change files it does not own. The downstream CRs receive independent acceptance; the original reporter still performs final Bug verification."
+      zh: 配对门禁归属：只有原报告验证阶段通过继承的精确失败范围，原 Bug 才算完成。当 Runtime 声明源步骤交付且基线延后执行时，完成当前 Step 自有产物和检查，记录下游义务并交接，不得声称原 Bug 已修复。不得要求源步骤执行依赖下游实现的测试或修改不属于自身的文件。下游 CR 分别独立验收，原 reporter 仍负责最终 Bug 复验。
   - id: 58b9a345-c88d-5400-9394-593e8fcab07d
     name: bug-evidence-source
     version: 2.0.0

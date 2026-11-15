@@ -1,9 +1,11 @@
 import type { Changelist } from '../../domain/evidence/evidence.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
+import type { DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import {
   STEP_TYPE_ORDER, VERIFICATION_STEP_TYPES, stepDependsOn, stepSatisfiesDependency, type Step,
 } from '../../domain/steps/step.js';
+import { workStepId } from '../../domain/tickets/ticket.js';
 import type {
   BugTicket,
   ChangeRequestApplicationDecision,
@@ -17,19 +19,28 @@ import type {
 } from '../../domain/tickets/ticket.js';
 import type { AttemptFailure } from '../execution/failure_classification.js';
 import type { TestOutcome } from '../execution/test_outcome.js';
+import { TicketAcceptanceService, type TicketAcceptanceOptions } from './ticket_acceptance_service.js';
 import { ProjectStateService } from './project_state_service.js';
 import type { ScheduledWork } from './work_scheduler.js';
 import { TicketWorkflow } from './ticket_workflow.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
 import { TicketBlockerService } from './ticket_blocker_service.js';
+import type { RunStop } from './run_stop.js';
 import { VERIFICATION_SUPPLEMENT_DIR, inheritedSupplementRoots } from '../../domain/quality/test_assets.js';
 import { earlierPhaseTestOwners } from '../execution/earlier_phase_test_owners.js';
 import { normalizeGitPath } from '../execution/v_model_policy.js';
 import {
   buildBugFailureContracts,
-  bugVerificationProven,
   bugVerificationSatisfied,
+  isPhaseDeliveryGateBug,
 } from './bug_verification.js';
+
+export class OriginalVerificationUnavailableError extends Error {
+  constructor(readonly stop: RunStop, message: string) {
+    super(message);
+    this.name = 'OriginalVerificationUnavailableError';
+  }
+}
 
 export class CorrectiveWorkflowService {
   private readonly tickets: TicketWorkflow;
@@ -37,7 +48,7 @@ export class CorrectiveWorkflowService {
   private readonly registration: TicketRegistrationService;
   private readonly blockers: TicketBlockerService;
 
-  constructor(private readonly repository: DomainObjectRepositoryPort) {
+  constructor(private readonly repository: DomainObjectRepositoryPort, private readonly acceptance: TicketAcceptanceOptions = {}) {
     this.tickets = new TicketWorkflow(repository);
     this.state = new ProjectStateService(repository);
     this.registration = new TicketRegistrationService(repository);
@@ -155,6 +166,42 @@ export class CorrectiveWorkflowService {
     return request;
   }
 
+  /** A development processor asks another owner to correct an existing contract's implementation. */
+  async routeWorkCorrection(input: {
+    requestingTicketId: ObjectId;
+    reportingStepId: ObjectId;
+    targetStepId: ObjectId;
+    creatorActorId: ObjectId;
+    finding: DeliveryGateFinding;
+  }): Promise<ChangeRequestTicket> {
+    const reporting = await this.state.requireStep(input.reportingStepId);
+    const target = await this.state.requireStep(input.targetStepId);
+    const source = await this.state.requireTicket(input.requestingTicketId);
+    if (source.phaseId !== target.phaseId || reporting.phaseId !== target.phaseId || reporting.id === target.id) {
+      throw new Error('Work correction must address another Step in the same Phase');
+    }
+    const request = await this.tickets.openChangeRequest({
+      changeKind: 'work-correction', creatorActorId: input.creatorActorId,
+      sourceTicketIds: [source.id], triggerStepId: reporting.id, sourceStepId: reporting.id,
+      targetStepId: target.id, propagationStepIds: [target.id],
+      contractDelta: {
+        summary: input.finding.summary, before: input.finding.evidence,
+        after: [input.finding.summary], affectedArtifacts: input.finding.affectedArtifacts ?? [],
+      },
+      implementationPlan: [
+        `Correct the reported ${input.finding.category} in ${target.name}-owned artifacts under the existing accepted contract.`,
+        'Keep the original failure evidence. Do not change an accepted business contract without a contract-change CR.',
+      ],
+      verificationGate: [`${target.name} passes its own delivery gate for this correction.`],
+      correlationId: source.source.correlationId,
+      sourceExternalId: JSON.stringify(['work-correction', source.id, target.id, input.finding.category, input.finding.code]),
+    });
+    await this.registration.register(request.id);
+    await this.state.moveStepPending(reporting, 'quality-gap');
+    await this.activateChangeRequest(request.id);
+    return request;
+  }
+
   /** The HIGH_LEVEL_DESIGN Step of the requesting Step's Phase: the one that owns the manifest. */
   private async designStepFor(step: Step): Promise<Step> {
     const objects = await this.repository.list({ objectType: 'step', projectId: step.projectId });
@@ -199,11 +246,8 @@ export class CorrectiveWorkflowService {
           ? failed
           : await this.state.requireStep(failed.pairedStepId)
         : failed;
-    const verification = isVerificationStep(target)
-      ? target
-      : isVerificationStep(failed)
-        ? failed
-        : await this.state.requireStep(target.pairedStepId ?? failed.pairedStepId);
+    if (!isVerificationStep(failed)) throw new Error('Only S5-S8 may report a new Bug');
+    const verification = failed;
     const routing = this.state.prepareCorrectiveRouting(failed, target, 'defect');
     failed = routing.source;
     target = routing.target;
@@ -342,7 +386,7 @@ export class CorrectiveWorkflowService {
    * the run stopped on "no downstream verification path" instead. Answers false, changing nothing,
    * when the Bug is not this Step's to prove, the attempt did not prove it, or a chain still carries it.
    */
-  async closeCorrectiveProvenAtOwnStep(input: {
+  async completeCorrectiveWithoutPropagation(input: {
     work: ScheduledWork;
     qualityAssessmentId: ObjectId;
     solution: TicketSolution;
@@ -351,9 +395,10 @@ export class CorrectiveWorkflowService {
     debugWikiCandidateEntryIds?: string[];
   }): Promise<boolean> {
     const bug = input.work.ticket;
-    if (bug.type !== 'bug' || bug.verificationContract.verificationStepId !== input.work.step.id) return false;
+    if (bug.type !== 'bug') return false;
     let step = await this.state.requireStep(input.work.step.id);
-    if (!isVerificationStep(step) || !bugVerificationSatisfied(bug, step, input.testOutcomes)) return false;
+    const verifiesHere = bug.verificationContract.verificationStepId === step.id && !isPhaseDeliveryGateBug(bug);
+    if (verifiesHere && (!isVerificationStep(step) || !bugVerificationSatisfied(bug, step, input.testOutcomes))) return false;
     const openChain = (await this.tickets.list()).some((ticket) => ticket.type === 'change-request' &&
       ticket.sourceTicketIds.includes(bug.id) && ticket.state !== 'closed' && ticket.state !== 'cancelled');
     if (openChain) return false;
@@ -375,11 +420,19 @@ export class CorrectiveWorkflowService {
     // Before it closes, like a repair that propagates: what the repair learned stays linked to the Bug.
     await this.tickets.setDebugWikiCandidates(bug.id, input.debugWikiCandidateEntryIds ?? []);
     await this.tickets.setSolution(bug.id, { ...input.solution, status: 'proposed' });
+    await this.tickets.awaitVerification(bug.id, { stepId: step.id, qualityAssessmentId: input.qualityAssessmentId });
+    if (!verifiesHere) {
+      await this.state.checkpoint(step, `${bug.name} delivered to its original verification reporter`);
+      return true;
+    }
+    await this.registration.routeAndAssign(bug.id, { forStepId: step.id });
     await this.tickets.closeBugsProvenAt(step.projectId, step, input.testOutcomes, input.sourceChange.verification);
     // The Step stays delivered, as after any repair: the work parked behind the Bug, the Story or the
     // Change Request that found it, resumes and closes the Step through its own gate.
     await this.state.checkpoint(step, `${bug.name} repaired and proven at its own gate`);
-    return true;
+    const closed = (await this.state.requireTicket(bug.id)).state === 'closed';
+    if (closed) await this.finishReviewedStep(step.id);
+    return closed;
   }
 
   async propagateCorrectiveChange(input: {
@@ -426,29 +479,6 @@ export class CorrectiveWorkflowService {
       verificationAssessmentId: input.qualityAssessmentId,
     });
     await this.tickets.setSolution(input.work.ticket.id, solution);
-    // The chain never opens onto the Step that the Change Request under repair will re-apply
-    // itself. A Bug or Enhancement raised inside a CR is repaired upstream, and the parked CR then
-    // resumes and re-applies its own Step carrying that repair; opening a hop there would hand the
-    // same Step two deltas from two chains, and whichever landed first would close the Step and
-    // strand the other. With the first hop already at that Step there is no chain to open at all,
-    // so the corrective Ticket has no chain of its own and waits for the gate that found it.
-    //
-    // Waiting is not the same as closing, and the CR it repairs has to be woken explicitly. While
-    // the corrective Ticket closed here, its closure released that CR; parking it releases the
-    // blocker but leaves the CR parked, so the repair reached its Step and nothing carried it on.
-    if (await this.repairedChangeRequestTargetsStep(input.work.ticket, input.affectedStepIds[0]!)) {
-      await this.tickets.awaitVerification(input.work.ticket.id, {
-        stepId: step.id,
-        qualityAssessmentId: input.qualityAssessmentId,
-      });
-      const repaired = input.work.ticket.parentTicketId;
-      if (repaired) await this.activateChangeRequest(repaired);
-      await this.state.checkpoint(
-        step,
-        `Corrective solution completed in ${step.name}; the Change Request it repairs carries it onward`,
-      );
-      return undefined;
-    }
     const request = await this.tickets.openChangeRequest({
       changeKind: 'corrective',
       creatorActorId: await this.state.ticketOwnerActorId(input.work.ticket.id),
@@ -478,291 +508,91 @@ export class CorrectiveWorkflowService {
     verification?: string[];
     application?: ChangeRequestApplicationDecision;
     testOutcomes?: readonly TestOutcome[];
-  }): Promise<{
-    status: 'applied' | 'awaiting-verification';
-    closed: boolean;
-    sourceTicketIds?: ObjectId[];
-    sourceTicketTypes?: Array<'bug' | 'enhancement'>;
-    verifiedBugTicketIds?: ObjectId[];
-    unprovenBugTicketIds?: ObjectId[];
-  }> {
-    if (input.work.ticket.type !== 'change-request') {
-      throw new Error('completeChangeRequestStep requires a Change Request');
-    }
-    let step = await this.state.requireStep(input.work.step.id);
+  }): Promise<{ status: 'applied' | 'rejected'; closed: boolean; verifiedBugTicketIds?: ObjectId[] }> {
+    if (input.work.ticket.type !== 'change-request') throw new Error('CR delivery requires a Change Request');
+    const step = await this.state.requireStep(input.work.step.id);
     await this.state.requirePassingQualityAssessment(step, input.qualityAssessmentId);
-    const request = await this.state.requireTicket(input.work.ticket.id);
-    if (request.type !== 'change-request') throw new Error('Change Request type changed while applying it');
-    const sourceTickets = await Promise.all(request.sourceTicketIds.map((id) => this.state.requireTicket(id)));
-    const dependencyRequest = request.changeKind === 'dependency';
-    const contractChange = request.changeKind === 'contract-change';
-    if (request.changeKind === 'corrective' && sourceTickets.some((source) =>
-      source.type !== 'bug' && source.type !== 'enhancement')) {
-      throw new Error(`Change Request ${request.name} has an invalid source Ticket`);
-    }
-    if ((dependencyRequest || contractChange) && sourceTickets.some((source) =>
-      source.type !== 'story' && source.type !== 'task')) {
-      throw new Error(`Change Request ${request.name} has an invalid work source Ticket`);
-    }
-    const correctiveSources = request.changeKind !== 'corrective'
-      ? []
-      : sourceTickets as Array<BugTicket | EnhancementTicket>;
-    let next = dependencyRequest ? undefined : nextPropagationStepId(request, step.id);
-    // Stopping at the Change Request under repair is a decision, not the end of the scope: that CR
-    // resumes and re-applies its own Step, carrying this repair onward and proving it there. The
-    // chain must not be extended past that meeting point, or the same Step receives two deltas.
-    const metRepairedRequest = next !== undefined && (await Promise.all(
-      correctiveSources.map((source) => this.repairedChangeRequestTargetsStep(source, next!)),
-    )).some(Boolean);
-    if (metRepairedRequest) {
-      next = undefined;
-      // The chain stops here because the Change Request under repair owns the next Step, and that
-      // CR is parked behind the very Bug this chain repaired. Leaving the block in place deadlocks
-      // them: the Bug waits for its original gate, and the only thing that will run that gate is
-      // the CR the Bug is holding. The repair has landed, so the Bug releases its hold and waits
-      // for the verdict instead of blocking the Step that produces it.
-      for (const source of correctiveSources) {
-        if (!source.parentTicketId) continue;
-        await this.tickets.awaitVerification(source.id, {
-          stepId: step.id,
-          qualityAssessmentId: input.qualityAssessmentId,
-        });
-        await this.activateChangeRequest(source.parentTicketId);
-      }
-    }
-    if (!next && !metRepairedRequest) {
-      // A Bug closes only once its original failure has been replayed and passed, and the contract
-      // can be satisfied at exactly one Step: the one that observed the failure. A chain that ends
-      // anywhere else has not proven anything yet.
-      //
-      // Ending it there is not a crash. Failing to reach the proving Step is an ordinary outcome of
-      // how the chain was scoped, so the chain is extended to that Step and the delta travels one
-      // more hop. When the proving Step is the one that just ran and the replay still did not
-      // happen, there is nowhere further to go: this CR closes and its source Bug stays open, which
-      // keeps the failed Story blocked and the work visible. Throwing instead ended the whole run
-      // over a Bug that simply was not finished.
-      const unproven = correctiveSources.filter((source): source is BugTicket =>
-        source.type === 'bug' &&
-        source.state !== 'closed' &&
-        source.state !== 'cancelled' &&
-        !bugVerificationProven(source, step, input.testOutcomes ?? []));
-      const proving = unproven
-        .map((bug) => bug.verificationContract.verificationStepId)
-        .find((stepId) => stepId !== step.id);
-      if (proving) next = proving;
-    }
-    // Nothing is mutated until this hop can actually finish. Delivering the Step and recording the
-    // application while a source Bug is unproven would strand the Change Request: it refuses to
-    // close, and the scheduler skips a CR that already has an application at its target, so nothing
-    // would ever run it again. Returning instead leaves it schedulable for the attempt that can
-    // supply the replay.
-    const unprovenSources = correctiveSources.filter((source): source is BugTicket =>
-      source.type === 'bug' &&
-      source.state !== 'closed' &&
-      source.state !== 'cancelled' &&
-      !bugVerificationProven(source, step, input.testOutcomes ?? []));
-    const verificationDueHere = unprovenSources.filter((source) =>
-      source.verificationContract.verificationStepId === step.id);
-    // A correction cannot pass through the Step that owns its immutable replay contract. Letting it
-    // continue merely because another downstream Step exists postpones the verdict until the end of
-    // the chain, then manufactures a backward CR to revisit this Step. Besides obscuring the failed
-    // gate, that loop can reserve the same role twice. The current CR remains the unit of work until
-    // this Step has actually replayed the original failure.
-    if (verificationDueHere.length > 0) {
-      return {
-        status: 'awaiting-verification',
-        closed: false,
-        unprovenBugTicketIds: verificationDueHere.map((source) => source.id),
-      };
-    }
-    // Not at the meeting point: there the Bug was deliberately handed to the Change Request under
-    // repair, which runs the Step that proves it. Retrying here could never produce that proof and
-    // would spend the whole attempt budget rediscovering it.
-    if (!next && !metRepairedRequest && unprovenSources.length > 0) {
-      return {
-        status: 'awaiting-verification',
-        closed: false,
-        unprovenBugTicketIds: unprovenSources.map((source) => source.id),
-      };
-    }
-    step = await this.state.attachQuality(step, input.qualityAssessmentId);
-    if (step.state === 'in_progress') step = await this.state.transitionStep(step, 'delivered');
-    if (isVerificationStep(step)) {
-      step = await this.state.transitionStep(step, 'closed');
-      if (!step.pairedStepId) throw new Error(`Verification Step ${step.name} has no paired source Step`);
-      let source = await this.state.requireStep(step.pairedStepId);
-      if (source.state === 'delivered') {
-        source = await this.state.transitionStep(source, 'closed');
-        await this.state.checkpoint(source, `Closed by CR verification ${step.name}`);
-        await this.closeStoriesForClosedSteps([source.id]);
-      }
-    }
-    await this.tickets.recordChange({
-      ticketId: input.work.ticket.id,
-      stepId: step.id,
-      summary: input.summary,
-      entries: input.entries,
-      commit: input.commit,
-      verification: input.verification,
-      verificationAssessmentId: input.qualityAssessmentId,
-      application: input.application,
-    });
-    for (const source of correctiveSources) {
-      if (source.type !== 'bug') continue;
-      await this.tickets.recordBugVerification(
-        source.id,
-        step,
-        input.testOutcomes ?? [],
-        input.qualityAssessmentId,
-      );
-    }
-    // A dependency request is told apart by what its source points at, not by a flag: it was opened
-    // by the Story that needed packages, whereas a corrective chain descends from a Bug or
-    // Enhancement. Nothing is being repaired, so there is no source defect to resolve and no delta
-    // to carry downstream — the design answered, and the Step that asked can run again.
-    if (dependencyRequest) {
-      await this.completeDependencyRequest(request, input.verification ?? []);
-      return { status: 'applied', closed: true };
-    }
-    // A Bug parked at a meeting point is proven by whichever chain reaches its gate, not only by the
-    // one that opened it, so every hop closes what its own Step has just proven.
-    await this.tickets.closeBugsProvenAt(
-      step.projectId,
-      step,
-      input.testOutcomes ?? [],
-      input.verification ?? [],
-    );
-    const verifiedRaisedBugs = await this.tickets.verifyCorrectionsRaisedBy(
-      request.id,
-      step,
-      input.testOutcomes ?? [],
-      input.verification ?? [],
-    );
-    // Every downstream owner must evaluate the accepted correction against its own contract and
-    // gate. An empty changelist is an auditable no-op application at this Step, not evidence that
-    // later artifacts and tests are unaffected.
-    // Read before closing: closure releases the assignment, and the child records who handed the
-    // delta on.
-    const handedOnBy = next ? await this.state.ticketOwnerActorId(request.id) : undefined;
-    // Persist the next hop before closing this one. Source-Ticket closure checks for an active
-    // sibling CR; closing first creates a false instant in which no sibling exists, prematurely
-    // closes the Bug/Enhancement, unblocks its failed Story, and can consume the role capacity the
-    // next hop needs.
-    if (next) {
-      await this.openChildChangeRequest(request, next, handedOnBy!, {
-        summary: input.summary,
-        entries: input.entries,
-      });
-    }
-    // This CR closes as soon as its own Step is verified. The already-persisted child carries the
-    // remaining work, so the current assignee's capacity is released without closing the source.
-    await this.tickets.setSolution(request.id, {
-      status: 'verified',
-      approach: request.solution?.approach ?? request.implementationPlan.join('\n'),
-      rationale: request.solution?.rationale ?? request.contractDelta.summary,
-      changes: request.solution?.changes ?? request.contractDelta.affectedArtifacts,
-      verification: [...request.verificationGate, ...(input.verification ?? [])],
-      updatedAt: new Date().toISOString(),
-    });
-    await this.tickets.closeVerified(request.id, {
-      verificationStep: step,
-      testOutcomes: input.testOutcomes,
-    });
-    // `parentChangeRequestId` carries two relationships: the previous hop of this chain, which is
-    // already closed and ignores this, and a CR parked while a Bug found inside it was repaired.
-    // The second is the one that needs waking, and nothing else wakes it.
-    if (request.parentChangeRequestId) {
-      await this.activateChangeRequest(request.parentChangeRequestId);
-    }
-    const storySteps = next
-      ? [request.sourceStepId, request.targetStepId]
-      : await this.closedStepIdsForPhase(step);
-    await this.closeStoriesForClosedSteps(storySteps);
-    if (next) {
-      // The source Bug or Enhancement waits for the last descendant, not for this hop.
-      return { status: 'applied', closed: false };
-    }
-    return {
-      status: 'applied',
-      closed: true,
-      sourceTicketIds: request.sourceTicketIds,
-      sourceTicketTypes: correctiveSources.map((source) => source.type),
-      verifiedBugTicketIds: [...new Set([
-        ...verifiedRaisedBugs,
-        ...(await Promise.all(correctiveSources
-          .filter((source): source is BugTicket => source.type === 'bug')
-          .map(async (source) => await this.state.requireTicket(source.id))))
-          .filter((source) => source.state === 'closed')
-          .map((source) => source.id),
-      ])],
-    };
+    await this.tickets.deliverForReview({ ...input, ticketId: input.work.ticket.id, stepId: step.id });
+    return this.resumeAcceptance(input.work.ticket.id);
   }
 
-  /**
-   * Opens the one Step this Change Request is due to be applied to next.
-   *
-   * Reopening the whole downstream chain at once put every affected Step into `reopened` before
-   * anyone knew whether the delta would even reach them: a CR that resolves at the first Step still
-   * left the rest reopened, and the V-model's own ordering was replaced by a scheduler picking from
-   * a pool. The state machine advances one Step at a time, so activation does too.
-   */
-  /**
-   * Closes a satisfied dependency request and lets the Step that raised it continue.
-   *
-   * The requesting Step was parked on `dependency`, not on a defect, so nothing about it needs
-   * repairing — it simply could not proceed until the manifest carried what it asked for.
-   */
-  private async completeDependencyRequest(
-    request: ChangeRequestTicket,
-    verification: readonly string[],
-  ): Promise<void> {
-    await this.tickets.setSolution(request.id, {
-      status: 'verified',
-      approach: request.implementationPlan.join('\n'),
-      rationale: request.contractDelta.summary,
-      changes: request.contractDelta.affectedArtifacts,
-      verification: [...request.verificationGate, ...verification],
-      updatedAt: new Date().toISOString(),
-    });
-    await this.tickets.closeVerified(request.id);
-
-    // Every downstream Step re-checks, whether or not this hop changed anything. Only the Step
-    // owner can verify whether the changed dependency environment affects its contract.
-    const applied = await this.state.requireStep(request.targetStepId);
-    const next = await this.nextDownstreamStepId(applied);
-    if (next) {
-      await this.openDependencyRecheck(request, next);
-      return;
-    }
-    // Nothing downstream is left, so the Step that raised the need can run again.
-    const requesting = await this.state.requireStep(request.sourceStepId);
-    if (requesting.state === 'pending') {
-      await this.state.transitionStep(requesting, 'in_progress');
-    }
+  async resumeAcceptance(ticketId: ObjectId) {
+    const result = await new TicketAcceptanceService(this.repository, this.acceptance).review(ticketId);
+    const ticket = await this.state.requireTicket(ticketId);
+    if (result.closed && ticket.type === 'change-request') await this.finishReviewedStep(ticket.targetStepId);
+    return result;
   }
 
-  /** Carries "the dependency environment changed" one Step further, for that Step to verify. */
-  private async openDependencyRecheck(
-    parent: ChangeRequestTicket,
-    targetStepId: ObjectId,
-  ): Promise<void> {
-    const target = await this.state.requireStep(targetStepId);
-    const reopened = target.state === 'delivered' || target.state === 'closed'
-      ? await this.state.transitionStep(target, 'reopened')
-      : target;
-    const child = await this.tickets.openDependencyChangeRequest({
-      creatorActorId: parent.creatorActorId,
-      requestingStepId: parent.sourceStepId,
-      targetStep: reopened,
-      packages: parent.contractDelta.after.map((line) => line.split(' ')[0] ?? line),
-      reason: `The dependency set changed upstream; confirm ${reopened.name} still holds against it.`,
-      kind: 'recheck',
-      correlationId: parent.source.correlationId,
-      sourceKind: parent.source.kind,
-      sourceExternalId: parent.source.externalId,
-      parentChangeRequestId: parent.id,
-    });
-    await this.registration.register(child.id);
+  async verifyDeliveredBug(input: { work: ScheduledWork; qualityAssessmentId: ObjectId; testOutcomes: readonly TestOutcome[] }): Promise<boolean> {
+    const bug = await this.state.requireTicket(input.work.ticket.id);
+    if (bug.type !== 'bug' || bug.state !== 'deliver') throw new Error('Bug acceptance requires a delivered Bug');
+    const step = await this.state.requireStep(input.work.step.id);
+    if (!bugVerificationSatisfied(bug, step, input.testOutcomes)) return false;
+    let phaseGateAssessmentId: ObjectId | undefined;
+    if (isPhaseDeliveryGateBug(bug)) {
+      if (!this.acceptance.replayBugGate) throw new Error('Original Phase gate verification is not configured');
+      const replay = await this.acceptance.replayBugGate(bug);
+      if (!replay.passed) {
+        const recurring = replay.findings.find(finding => finding.code === bug.failure.code && finding.target === bug.failure.details?.findingTarget);
+        if (recurring) {
+          await this.routeFailure({ failedStepId: step.id, targetStepId: bug.failure.targetStepId,
+            creatorActorId: bug.reporterActorId!, message: recurring.evidence.join('\n'), summary: recurring.summary,
+            failure: { kind: 'execution', category: bug.failure.category, code: bug.failure.code, message: recurring.evidence.join('\n'), retryable: true, switchProvider: false },
+            bugKind: bug.bugKind, correlationId: bug.source.correlationId, tool: bug.failure.tool,
+            affectedArtifacts: bug.verificationContract.artifactTargets,
+          });
+        } else if (replay.blockingTicketIds?.length) {
+          for (const id of replay.blockingTicketIds) {
+            await this.repository.commit(await this.blockers.prepare(await this.state.requireTicket(bug.id), id, 'defect'));
+          }
+          await this.state.moveStepPending(await this.state.requireStep(step.id), 'defect');
+        } else {
+          const reason = replay.reason ?? 'Original external verification is incomplete';
+          throw new OriginalVerificationUnavailableError(replay.stop ?? { code: 'gate_unjudged', detail: reason }, reason);
+        }
+        return false;
+      }
+      phaseGateAssessmentId = replay.assessmentId;
+    }
+    await this.tickets.recordBugVerification(bug.id, step, input.testOutcomes, input.qualityAssessmentId, phaseGateAssessmentId);
+    if (!bug.solution) throw new Error('Delivered Bug has no repair solution');
+    await this.tickets.setSolution(bug.id, { ...bug.solution, status: 'verified', updatedAt: new Date().toISOString() });
+    const closed = await this.tickets.closeVerified(bug.id, { verificationStep: step, testOutcomes: input.testOutcomes });
+    if (closed.state !== 'closed') return false;
+    await this.finishReviewedStep(step.id);
+    return true;
+  }
+
+  async resumeBugVerificationCompletion(bug: BugTicket): Promise<void> {
+    if (bug.state !== 'closed' || !bug.reporterActorId) return;
+    const proof = bug.verificationRecords.at(-1);
+    if (!proof || proof.reporterActorId !== bug.reporterActorId) return;
+    const step = await this.state.requireStep(bug.verificationContract.verificationStepId);
+    if (proof.verificationStepId !== step.id || step.qualityAssessmentId !== proof.qualityAssessmentId) return;
+    await this.finishReviewedStep(step.id);
+  }
+
+  private async finishReviewedStep(stepId: ObjectId): Promise<void> {
+    let step = await this.state.requireStep(stepId);
+    if (step.state !== 'delivered' && step.state !== 'closed') return;
+    const tickets = await this.tickets.list();
+    const outstanding = tickets.some(ticket => ticket.state !== 'closed' && ticket.state !== 'cancelled' && !ticket.duplicateOfTicketId &&
+      ticket.pendingReason !== 'change-request' && ['bug', 'enhancement', 'change-request'].includes(ticket.type) && workStepId(ticket) === step.id);
+    if (outstanding || !isVerificationStep(step)) return;
+    if (step.state === 'delivered') step = await this.state.transitionStep(step, 'closed');
+    const closed = [step.id];
+    if (step.pairedStepId) {
+      const source = await this.state.requireStep(step.pairedStepId);
+      const sourcePending = tickets.some(ticket => ticket.state !== 'closed' && ticket.state !== 'cancelled' && !ticket.duplicateOfTicketId &&
+        ticket.pendingReason !== 'change-request' && ['bug', 'enhancement', 'change-request'].includes(ticket.type) && workStepId(ticket) === source.id);
+      if (source.state === 'delivered' && !sourcePending) {
+        await this.state.transitionStep(source, 'closed');
+        closed.push(source.id);
+      }
+    }
+    const phaseSteps = (await this.repository.list({ objectType: 'step', projectId: step.projectId }))
+      .filter((object): object is Step => object.objectType === 'step' && object.phaseId === step.phaseId && object.state === 'closed');
+    await this.closeStoriesForClosedSteps([...new Set([...closed, ...phaseSteps.map(candidate => candidate.id)])]);
   }
 
   async activateChangeRequest(ticketId: ObjectId): Promise<ChangeRequestTicket> {
@@ -770,7 +600,7 @@ export class CorrectiveWorkflowService {
     if (ticket.type !== 'change-request') throw new Error(`Ticket ${ticketId} is not a Change Request`);
     if (ticket.state === 'closed' || ticket.state === 'cancelled') return ticket;
     await this.ensureVerificationStoryBlocked(ticket);
-    if (ticket.applications.some((application) => application.stepId === ticket.targetStepId)) {
+    if (ticket.state === 'deliver') {
       return ticket;
     }
     let step = await this.state.requireStep(ticket.targetStepId);
@@ -832,133 +662,6 @@ export class CorrectiveWorkflowService {
     return stepDependsOn(target, discoveringStepId, byId);
   }
 
-  /**
-   * Whether `stepId` is where the Change Request this repair chain came from will apply itself.
-   *
-   * A Bug raised inside a Change Request records that CR as its parent, and every hop of the chain
-   * the Bug propagates keeps the Bug as its source. So the CR under repair is reachable from any
-   * hop, and the Step it targets is where the two chains meet.
-   */
-  private async repairedChangeRequestTargetsStep(
-    source: BugTicket | EnhancementTicket,
-    stepId: ObjectId,
-  ): Promise<boolean> {
-    if (!source.parentTicketId) return false;
-    const parent = await this.state.requireTicket(source.parentTicketId);
-    return parent.type === 'change-request' && parent.targetStepId === stepId;
-  }
-
-  /**
-   * The Step immediately after `step` in the V-model, or undefined at the end of the chain.
-   *
-   * Recomputed at each hop rather than taken from a list fixed when the first CR opened, which is
-   * what makes the propagation scope discovered rather than asserted in advance.
-   */
-  private async nextDownstreamStepId(step: Step): Promise<ObjectId | undefined> {
-    const objects = await this.repository.list({ objectType: 'step', projectId: step.projectId });
-    const downstream = objects
-      .filter((object): object is Step =>
-        object.objectType === 'step' &&
-        object.phaseId === step.phaseId &&
-        STEP_TYPE_ORDER[object.type] > STEP_TYPE_ORDER[step.type])
-      .sort((left, right) =>
-        (STEP_TYPE_ORDER[left.type] - STEP_TYPE_ORDER[right.type]) || left.name.localeCompare(right.name));
-    return downstream[0]?.id;
-  }
-
-  /**
-   * Carries the delta one Step further as its own Ticket, registered so PM routes it.
-   *
-   * A child rather than another application on the same Ticket, because whoever owns the next Step
-   * owns this work: its gate, its attempts, and its closure. One Ticket spanning four roles has no
-   * single owner to hold to any of that.
-   */
-  /**
-   * The Ticket at the head of a contract-change chain, whose delta is the change the chain exists to land.
-   *
-   * Every hop rewrites its own delta with what that hop changed, which is right for scope and wrong
-   * for substance: by the third hop the delta reads "docs/03-detailed-design.md is accepted in its
-   * current form" and carries none of the requirement. Walking to the head recovers it structurally
-   * rather than parsing it back out of the verification gate's prose.
-   */
-  private async rootContractChange(request: ChangeRequestTicket): Promise<ChangeRequestTicket> {
-    let current = request;
-    const seen = new Set<ObjectId>([current.id]);
-    while (current.parentChangeRequestId && !seen.has(current.parentChangeRequestId)) {
-      seen.add(current.parentChangeRequestId);
-      // Reading the chain is context, not the work. An unreadable ancestor must not stop the delta
-      // from travelling — the nearest one we did read still carries a real change, and losing the
-      // whole hop over missing background is a worse answer than slightly poorer background.
-      const parent = await this.state.requireTicket(current.parentChangeRequestId).catch(() => undefined);
-      if (!parent || parent.type !== 'change-request') break;
-      current = parent;
-    }
-    return current;
-  }
-
-  private async openChildChangeRequest(
-    parent: ChangeRequestTicket,
-    targetStepId: ObjectId,
-    creatorActorId: ObjectId,
-    applied: { summary: string; entries: Changelist['entries'] },
-  ): Promise<ChangeRequestTicket> {
-    // What travels downstream is what this hop changed, not the instructions that repaired the
-    // Step where the chain began. Copying the parent's plan verbatim handed a DETAILED_DESIGN Step
-    // "create docs/01-requirement-analysis.md" — files it does not own and that already existed —
-    // so it had nothing to do, produced no actions, and the attempt stopped for no progress.
-    const changed = [...new Set(applied.entries.map((entry) => entry.path))];
-    const artifacts = changed.length > 0 ? changed : parent.contractDelta.affectedArtifacts;
-    // The change itself, unchanged at every hop. Only the scope is local; the requirement is not.
-    const root = await this.rootContractChange(parent);
-    const child = await this.tickets.openChangeRequest({
-      changeKind: parent.changeKind === 'contract-change' ? 'contract-change' : 'corrective',
-      creatorActorId,
-      sourceTicketIds: parent.sourceTicketIds,
-      triggerStepId: parent.triggerStepId,
-      sourceStepId: parent.targetStepId,
-      targetStepId,
-      // The remaining scope, starting at this hop. A hop added to reach a Bug's proving Step is not
-      // in the parent's planned scope, so it opens a scope of its own rather than slicing from a
-      // list that never contained it.
-      propagationStepIds: parent.propagationStepIds.includes(targetStepId)
-        ? parent.propagationStepIds.slice(parent.propagationStepIds.indexOf(targetStepId))
-        : [targetStepId],
-      contractDelta: {
-        // What the upstream Step actually changed, stated in full, plus why the chain exists. A hop
-        // decides its own exposure, so it needs both: the change to assess, and the requirement that
-        // makes the assessment meaningful. Carrying only the first left CODE reading
-        // "docs/03-detailed-design.md is accepted in its current form" — a statement about a file it
-        // does not own, with nothing to assess — so it answered "not mine", correctly, and the
-        // product never changed while the design said it had.
-        // A hop that changed nothing passes the upstream change on untouched rather than wrapping it:
-        // wrapping nests on every no-op hop and the text grows without bound down a long chain.
-        // That a hop changed nothing is stated in the plan, where it is instruction rather than content.
-        summary: changed.length > 0 ? applied.summary : parent.contractDelta.summary,
-        before: [`This chain exists to satisfy: ${root.contractDelta.summary}`],
-        after: changed.length > 0
-          ? [`${artifacts.join(', ')} now carry that change; downstream Steps must be consistent with it.`]
-          : [...parent.contractDelta.after],
-        affectedArtifacts: artifacts,
-      },
-      // The question a hop answers is impact, not ownership of the upstream file. Naming that file as
-      // the task made every Step that did not own it close the chain untouched; naming it as the
-      // material to read keeps the guard this construction was written for — a hop never inherits
-      // work it cannot do — while asking the judgement that makes the chain worth propagating.
-      implementationPlan: [
-        `Upstream changed: ${changed.length > 0 ? applied.summary : 'nothing at the previous Step'}`,
-        `Read ${artifacts.join(', ')} and decide whether that change affects what this Step owns.`,
-        'Apply what it requires of this Step; if nothing here is affected, record that as the outcome.',
-        'Either way the change continues downstream, so state what you changed for the next Step.',
-      ],
-      verificationGate: parent.verificationGate,
-      parentChangeRequestId: parent.id,
-      correlationId: parent.source.correlationId,
-    });
-    await this.registration.register(child.id);
-    await this.activateChangeRequest(child.id);
-    return child;
-  }
-
   private async closeStoriesForClosedSteps(stepIds: readonly ObjectId[]): Promise<void> {
     for (const stepId of stepIds) {
       const step = await this.state.requireStep(stepId);
@@ -980,14 +683,6 @@ export class CorrectiveWorkflowService {
         await this.state.transitionTicketPath(story, path);
       }
     }
-  }
-
-  private async closedStepIdsForPhase(step: Step): Promise<ObjectId[]> {
-    const objects = await this.repository.list({ objectType: 'step', projectId: step.projectId });
-    return objects
-      .filter((object): object is Step =>
-        object.objectType === 'step' && object.phaseId === step.phaseId && object.state === 'closed')
-      .map((object) => object.id);
   }
 
   private async completeTasks(story: Ticket): Promise<void> {
@@ -1032,17 +727,6 @@ function ticketClosurePath(ticket: Ticket): Array<'in_progress' | 'resolved' | '
 
 function isVerificationStep(step: Step): boolean {
   return (VERIFICATION_STEP_TYPES as readonly string[]).includes(step.type);
-}
-
-function nextPropagationStepId(
-  request: ChangeRequestTicket,
-  currentStepId: ObjectId,
-): ObjectId | undefined {
-  const index = request.propagationStepIds.indexOf(currentStepId);
-  if (index < 0) {
-    throw new Error(`Change Request ${request.name} does not include its current target in propagation scope`);
-  }
-  return request.propagationStepIds[index + 1];
 }
 
 /**

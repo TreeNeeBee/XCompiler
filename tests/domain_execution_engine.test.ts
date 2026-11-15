@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -260,7 +261,7 @@ describe('ProjectOrchestrator', () => {
 
       const result = await engine.run(setup.graph.phases[0]!.id);
       expect(result.failedStepId, JSON.stringify({ result, calls })).toBeUndefined();
-      expect(gateRuns).toBe(3);
+      expect(gateRuns).toBe(4);
       const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
       expect(calls.filter((call) => call === `${code.name}:debug`).length).toBeGreaterThanOrEqual(2);
     });
@@ -280,7 +281,7 @@ describe('ProjectOrchestrator', () => {
             calls.push(`${input.domainStep.name}:${input.mode}`);
             const attempt = await passingAttempt(setup.repository, input.domainStep);
             // The repair concludes the code already meets its contract and changes no file.
-            return input.domainStep.id === code.id && input.mode === 'debug' ? { ...attempt, changedFiles: [] } : attempt;
+            return input.mode !== 'normal' ? { ...attempt, changedFiles: [] } : attempt;
           },
         }),
         audit: { event: async (_kind: string, _message: string, data: Record<string, unknown>) => { events.push(data); } } as never,
@@ -304,7 +305,7 @@ describe('ProjectOrchestrator', () => {
       // Refused before anything was written: the Bug still waits on the verdict it already has.
       const bugs = (await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }))
         .filter((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug');
-      expect(bugs.map((bug) => bug.objectType === 'ticket' && bug.state)).toEqual(['resolved']);
+      expect(bugs.map((bug) => bug.objectType === 'ticket' && bug.state)).toEqual(['deliver']);
     });
 
     // A live Bug stopped here because of a compiler defect. The defect was fixed, and the same record
@@ -327,7 +328,7 @@ describe('ProjectOrchestrator', () => {
           run: async (input: AttemptInput): Promise<AttemptResult> => {
             calls.push(`${input.domainStep.name}:${input.mode}`);
             const attempt = await passingAttempt(setup.repository, input.domainStep);
-            return input.domainStep.id === code.id && input.mode === 'debug' ? { ...attempt, changedFiles: changed } : attempt;
+            return input.mode !== 'normal' ? { ...attempt, changedFiles: changed } : attempt;
           },
         }),
         finalGate: async () => gates.shift()
@@ -339,7 +340,7 @@ describe('ProjectOrchestrator', () => {
         expect((await run([], [false, false])).stop).toMatchObject({ code: 'unchanged_repair_recurred' });
         rebuild();
         await age(setup.repository, setup.graph.project.id);
-        const resumed = await run(['src/main.py'], [false, true]);
+        const resumed = await run(['src/main.py'], [false, true, true]);
         expect(resumed.stop).toBeUndefined();
         expect(calls.filter((call) => call === `${code.name}:debug`)).toHaveLength(2);
       } finally {
@@ -510,7 +511,8 @@ describe('ProjectOrchestrator', () => {
           const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
             .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
           for (const bug of bugs) {
-            expect(bug.state).toBe('resolved');
+            if (bug.state === 'closed') continue;
+            expect(bug.state).toBe('deliver');
             await setup.repository.commit([TicketSchema.parse({ ...bug, ...reviseObjectEnvelope(bug), solution: { ...bug.solution!, status: 'proposed' } })]);
           }
           return { ok: true, evidence: ['scenario passes'] };
@@ -519,11 +521,62 @@ describe('ProjectOrchestrator', () => {
 
       const result = await engine.run(setup.graph.phases[0]!.id);
       expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
-      expect(gateRuns).toBe(2);
+      expect(gateRuns).toBe(3);
       const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
         .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
       expect(bugs.map((bug) => [bug.state, bug.solution?.status])).toEqual([['closed', 'verified']]);
-      expect(bugs[0]!.solution!.verification.some((line) => line.startsWith('Phase delivery gate passed'))).toBe(true);
+      expect(bugs[0]!.verificationRecords[0]?.phaseGateAssessmentId).toBeDefined();
+    });
+
+    it('hands an S8 repair to its original Phase gate after the candidate is integrated', async () => {
+      const setup = await fixture();
+      const phase = setup.graph.phases[0]!;
+      const functional = setup.graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
+      const s8Finding = {
+        ...finding,
+        category: 'test-defect' as const,
+        code: 'functional_fixture_inconsistent',
+        summary: 'The functional verification fixture disagrees with the accepted scenario.',
+        evidence: ['Functional fixture omits the header row specified by the accepted scenario.'],
+        target: 'functional-test' as const,
+      };
+      const trace: string[] = [];
+      let gateRuns = 0;
+      const engine = new ProjectOrchestrator({
+        ...options(setup.workspace, setup.repository, passingRunner(setup.repository, trace)),
+        integrateTicket: async (id) => {
+          const ticket = await setup.repository.read(id);
+          if (ticket.objectType === 'ticket' && ticket.type === 'bug' && ticket.state === 'deliver') {
+            trace.push('integrate S8 repair');
+          }
+          return { status: 'nothing-to-merge' };
+        },
+        finalGate: async () => {
+          gateRuns += 1;
+          if (gateRuns === 1) return { ok: false, findings: [s8Finding], evidence: s8Finding.evidence };
+          if (gateRuns === 2) {
+            const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+              .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+            expect(bugs).toHaveLength(1);
+            expect(bugs[0]).toMatchObject({ state: 'deliver', verificationContract: { verificationStepId: functional.id } });
+            trace.push('replay original Phase gate');
+          }
+          return { ok: true, evidence: ['Functional verification fixture and scenario agree.'] };
+        },
+      }, setup.plan);
+
+      const result = await engine.run(phase.id);
+      expect(result.projectDelivered, JSON.stringify({ result, trace })).toBe(true);
+      expect(trace.slice(8)).toEqual([
+        `${functional.name}:debug`, 'integrate S8 repair', `${functional.name}:verification`, 'replay original Phase gate',
+      ]);
+      expect(gateRuns).toBe(3);
+      const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
+        .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
+      expect(bugs).toHaveLength(1);
+      expect(bugs[0]).toMatchObject({ state: 'closed', creatorActorId: bugs[0]!.reporterActorId,
+        verificationRecords: [expect.objectContaining({ verificationStepId: functional.id, phaseGateAssessmentId: expect.any(String) })],
+      });
     });
 
     // A gate that could not judge returns no findings, and a Bug's finding missing from it was taken
@@ -552,7 +605,7 @@ describe('ProjectOrchestrator', () => {
       expect(result.failureReason).toContain('scenario unverifiable');
       const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
         .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
-      expect(bugs.map((bug) => [bug.state, bug.solution?.status])).toEqual([['resolved', 'proposed']]);
+      expect(bugs.map((bug) => [bug.state, bug.solution?.status])).toEqual([['deliver', 'proposed']]);
       expect(bugs[0]!.solution!.verification.some((line) => line.startsWith('Phase delivery gate passed'))).toBe(false);
     });
 
@@ -565,19 +618,19 @@ describe('ProjectOrchestrator', () => {
         ...options(setup.workspace, setup.repository, passingRunner(setup.repository, [])),
         finalGate: async () => {
           gateRuns += 1;
-          if (gateRuns > 4) throw new Error('the delivery gate is being rerun');
+          if (gateRuns > 5) throw new Error('the delivery gate is being rerun');
           if (gateRuns === 1) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [finding] };
           if (gateRuns === 2) return { ok: false, reason: 'scenario failed', evidence: ['scenario failed'], findings: [other] };
           const first = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
             .find((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug' && ticket.failure.code === finding.code);
-          stateWhileOtherFailed = first?.state;
+          stateWhileOtherFailed ??= first?.state;
           return { ok: true, evidence: ['scenarios pass'] };
         },
       }, setup.plan);
 
       const result = await engine.run(setup.graph.phases[0]!.id);
       expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
-      expect(stateWhileOtherFailed).toBe('resolved');
+      expect(stateWhileOtherFailed).toBe('deliver');
       const bugs = objectsOf(await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }), 'ticket')
         .filter((ticket): ticket is TicketOf<'bug'> => ticket.type === 'bug');
       expect(bugs.map((bug) => bug.state)).toEqual(['closed', 'closed']);
@@ -653,7 +706,7 @@ describe('ProjectOrchestrator', () => {
             ticket.description.includes('invalid payload'));
           // Step/CR verification proves the repair, but the external gate has not returned its
           // verdict yet. It must not be reported closed before this replay runs.
-          expect(repairedPhaseBug?.objectType === 'ticket' && repairedPhaseBug.state).toBe('resolved');
+          if (gateRuns === 2) expect(repairedPhaseBug?.objectType === 'ticket' && repairedPhaseBug.state).not.toBe('closed');
           return { ok: true, evidence: ['all corrected delivery checks pass'] };
         }
         return {
@@ -713,7 +766,7 @@ describe('ProjectOrchestrator', () => {
       ticket.description.includes('invalid payload'))).toHaveLength(1);
     expect(tickets.find((ticket) => ticket.type === 'bug' &&
       ticket.description.includes('invalid payload'))?.state).toBe('closed');
-    expect(tickets.filter((ticket) => ticket.type === 'enhancement' &&
+    expect(tickets.filter((ticket) => ticket.type === 'bug' &&
       ticket.description.includes('empty-response scenario'))).toHaveLength(1);
     expect(tickets.filter((ticket) => ticket.type === 'change-request' &&
       ticket.name.startsWith('DEP-') &&
@@ -735,7 +788,7 @@ describe('ProjectOrchestrator', () => {
     expect(pm).toBeDefined();
     const intakeTickets = tickets.filter((ticket) => ticket.source.kind === 'pm-intake');
     expect(intakeTickets.length).toBeGreaterThanOrEqual(4);
-    expect(intakeTickets.every((ticket) => ticket.creatorActorId === pm?.id)).toBe(true);
+    expect(intakeTickets.every((ticket) => ticket.creatorActorId !== pm?.id && ticket.reporterActorId === ticket.creatorActorId)).toBe(true);
     const phaseAssessments = objectsOf(await setup.repository.list({
       objectType: 'quality-assessment',
       projectId: setup.graph.project.id,
@@ -788,7 +841,7 @@ describe('ProjectOrchestrator', () => {
             projectId: setup.graph.project.id,
           });
           const sourceBug = tickets.find((ticket) => ticket.objectType === 'ticket' && ticket.type === 'bug');
-          expect(sourceBug?.objectType === 'ticket' && sourceBug.state).toBe('resolved');
+          expect(sourceBug?.objectType === 'ticket' && sourceBug.state).toBe('pending');
           const activeRequest = tickets.find((ticket) =>
             ticket.objectType === 'ticket' &&
             ticket.type === 'change-request' &&
@@ -799,7 +852,7 @@ describe('ProjectOrchestrator', () => {
             ticket.type === 'story' &&
             ticket.stepId === setup.graph.steps.find((step) => step.type === 'UNIT_TEST')!.id);
           expect(activeRequest?.objectType).toBe('ticket');
-          expect(failedStory?.objectType === 'ticket' && failedStory.blockedByTicketIds).toContain(activeRequest!.id);
+          expect(failedStory?.objectType === 'ticket' && failedStory.blockedByTicketIds).toContain(sourceBug!.id);
         }
         if (input.domainStep.type === 'UNIT_TEST' && input.mode === 'normal' && !failedUnit) {
           failedUnit = true;
@@ -853,26 +906,17 @@ describe('ProjectOrchestrator', () => {
     const downstream = hops.filter((hop) => hop.parentChangeRequestId);
     expect(downstream.length).toBeGreaterThan(0);
     for (const hop of downstream) {
-      const plan = hop.type === 'change-request' ? hop.implementationPlan.join(' ') : '';
-      // Each hop is handed what changed upstream and asked whether it is affected — not handed the
-      // upstream file as its task. Framing it as ownership let every Step that did not own that file
-      // close the chain untouched while the product never changed.
-      expect(plan).toContain('Upstream changed:');
-      expect(plan).toContain('decide whether that change affects what this Step owns');
-      // The guard the original construction existed for: a hop never inherits work it cannot do.
-      expect(plan).toContain('Apply what it requires of this Step');
-      // And the chain keeps moving whatever this hop decides.
-      expect(plan).toContain('continues downstream');
-      // Why the chain exists travels with it, so "does this affect me" is answerable.
-      const root = hops.find((candidate) => !candidate.parentChangeRequestId);
-      expect(hop.type === 'change-request' && hop.contractDelta.before.join(' '))
-        .toContain(root?.type === 'change-request' ? root.contractDelta.summary : '');
+      expect(hop.implementationPlan).toEqual(['Apply the accepted delta']);
+      expect(hop.reporterActorId).toBe(hop.creatorActorId);
+      const parent = hops.find(candidate => candidate.id === hop.parentChangeRequestId)!;
+      expect(parent.acceptanceRecords.at(-1)?.verdict).toMatchObject({ decision: 'accept', propagation: { targetStepId: hop.targetStepId } });
+      expect(hop.contractDelta.before).toEqual(parent.contractDelta.before);
     }
     expect(bug?.objectType === 'ticket' && bug.type === 'bug' && bug.changelistIds).toHaveLength(1);
     const bugChange = bug?.objectType === 'ticket' && bug.type === 'bug'
       ? await setup.repository.read(bug.changelistIds[0]!)
       : undefined;
-    expect(bugChange?.objectType === 'changelist' && bugChange.commit).toBe('commit-P1-S004');
+    expect(bugChange?.objectType === 'changelist' && bugChange.commit).toBe(createHash('sha1').update('P1-S004').digest('hex'));
     expect(persistedWikiTickets).toEqual([bug!.id]);
     expect(calls.findIndex((call) => call.startsWith('wiki:'))).toBeGreaterThan(
       calls.lastIndexOf('P1-S008:change-request'),
@@ -925,7 +969,7 @@ describe('ProjectOrchestrator', () => {
     expect(integrated).toContain(bugs[0]!.id);
   });
 
-  it('does not call the merge boundary for a CR attempt that missed the original Bug replay', async () => {
+  it('merges an independently accepted CR once and leaves original Bug replay to its reporter', async () => {
     const setup = await fixture();
     const integratedTicketIds: string[] = [];
     let failedFunctional = false;
@@ -974,7 +1018,7 @@ describe('ProjectOrchestrator', () => {
     const result = await engine.run(setup.graph.phases[0]!.id);
 
     expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
-    expect(functionalCrAttempts).toBe(2);
+    expect(functionalCrAttempts).toBe(1);
     expect(functionalCrTicketId).toBeDefined();
     expect(integratedTicketIds.filter((ticketId) => ticketId === functionalCrTicketId)).toHaveLength(1);
   });
@@ -1088,10 +1132,10 @@ describe('ProjectOrchestrator', () => {
     // rather than the Step being handed the same delta by both chains.
     const rootBug = bugs.find((ticket) => ticket.id !== repairBug!.id)!;
     expect(targetsOf(rootBug.id)).toEqual(stepIds('P1-S005', 'P1-S006', 'P1-S007', 'P1-S008'));
-    expect(targetsOf(repairBug!.id)).toEqual(stepIds('P1-S004', 'P1-S005'));
+    expect(targetsOf(repairBug!.id)).toEqual(stepIds('P1-S004', 'P1-S005', 'P1-S006', 'P1-S007', 'P1-S008'));
 
     // S006 is attempted twice: the application that failed, and the one after the repair landed.
-    expect(calls.filter((call) => call === 'P1-S006:change-request')).toHaveLength(2);
+    expect(calls.filter((call) => call === 'P1-S006:change-request')).toHaveLength(3);
     expect(calls).toContain('P1-S003:debug');
     // The corrective Ticket owns the S003 repair. Closing it must not leave the ordinary Story
     // reopened and schedule a second full detailed-design pass before the parent CR resumes.
@@ -1118,7 +1162,7 @@ describe('ProjectOrchestrator', () => {
             testOutcomes: [],
           };
         }
-        if (input.domainStep.type === 'CODE' && input.mode === 'change-request' && !reportedContradiction) {
+        if (input.domainStep.type === 'FUNCTIONAL_TEST' && input.mode === 'change-request' && !reportedContradiction) {
           reportedContradiction = true;
           return {
             ok: false,
@@ -1195,9 +1239,9 @@ describe('ProjectOrchestrator', () => {
             testOutcomes: [],
           };
         }
-        if (input.domainStep.type === 'CODE' && input.mode === 'change-request' && !renderedGateFailure) {
+        if (input.domainStep.type === 'UNIT_TEST' && input.mode === 'change-request' && !renderedGateFailure) {
           renderedGateFailure = true;
-          const rendered = 'CODE executable test gate failed:\nCases under test: tests/unit/cli.test.ts';
+          const rendered = 'UNIT_TEST executable test gate failed:\nCases under test: tests/unit/cli.test.ts';
           return {
             ok: false,
             reason: `validation defect reported: ${rendered}`,
@@ -1206,7 +1250,7 @@ describe('ProjectOrchestrator', () => {
             wikiEntryIds: [],
             testOutcomes: [{
               status: 'failed',
-              stepType: 'CODE',
+              stepType: 'UNIT_TEST',
               tool: 'run_tests',
               args: ['tests/unit/cli.test.ts'],
               exitCode: 1,
@@ -1241,10 +1285,10 @@ describe('ProjectOrchestrator', () => {
     expect(result.failedStepId, JSON.stringify(result)).toBeUndefined();
     const tickets = (await setup.repository.list({ objectType: 'ticket', projectId: setup.graph.project.id }))
       .filter((ticket) => ticket.objectType === 'ticket');
-    const code = setup.graph.steps.find((step) => step.type === 'CODE')!;
+    const code = setup.graph.steps.find((step) => step.type === 'UNIT_TEST')!;
     const functional = setup.graph.steps.find((step) => step.type === 'FUNCTIONAL_TEST')!;
     const discovered = tickets.find((ticket) =>
-      ticket.type === 'bug' && ticket.description.includes('CODE executable test gate failed'));
+      ticket.type === 'bug' && ticket.description.includes('UNIT_TEST executable test gate failed'));
 
     expect(discovered, JSON.stringify(tickets.map((ticket) => ticket.name))).toBeDefined();
     // The Step that ran the gate owns the failure. Attributing it to the chain's origin is what
@@ -1253,7 +1297,7 @@ describe('ProjectOrchestrator', () => {
     expect(discovered?.type === 'bug' && discovered.failure.failedStepId).not.toBe(functional.id);
   });
 
-  // dbc2excel-7 P1: a quality shortfall at S001 became an Enhancement whose chain ran to S008. A Bug raised
+  // Historical P1 nested-chain shape, now reported by S005: a verifier quality shortfall creates a chain to S008. A Bug raised
   // while that last hop ran started a chain of its own, whose first hop names the hop it was raised inside.
   // The last hop then looked as if it had a next hop, never carried the Enhancement to closure, and the
   // Phase could not be delivered: "active Tickets [ENH-P1-001]".
@@ -1267,7 +1311,7 @@ describe('ProjectOrchestrator', () => {
       run: async (input: AttemptInput): Promise<AttemptResult> => {
         calls.push(`${input.domainStep.name}:${input.mode}`);
         if (calls.length > 80) throw new Error(`still cycling: ${calls.join(', ')}`);
-        if (input.domainStep.type === 'REQUIREMENT_ANALYSIS' && input.mode === 'normal' && !failedQuality) {
+        if (input.domainStep.type === 'UNIT_TEST' && input.mode === 'normal' && !failedQuality) {
           failedQuality = true;
           const assessment = await failingAssessment(setup.repository, input.domainStep);
           return {
@@ -1360,12 +1404,10 @@ describe('ProjectOrchestrator', () => {
     // that CR's own quality debt rather than a defect against the Step's Story.
     expect(requests.some((ticket) => ticket.id === enhancements[0]?.parentTicketId)).toBe(true);
 
-    // It opens no chain of its own. The CR it repairs is parked on the very Step the repair would
-    // propagate to, and resumes to re-apply that Step carrying the repair — so the Step is never
-    // handed the same delta by two chains at once.
+    // Its independent correction is accepted before the parent CR resumes.
     expect(requests.some((ticket) =>
-      ticket.type === 'change-request' && ticket.sourceTicketIds.includes(enhancements[0]!.id))).toBe(false);
-    expect(calls.filter((call) => call === 'P1-S005:change-request')).toHaveLength(2);
+      ticket.type === 'change-request' && ticket.sourceTicketIds.includes(enhancements[0]!.id))).toBe(true);
+    expect(calls.filter((call) => call === 'P1-S005:change-request')).toHaveLength(3);
   });
 });
 
@@ -1552,6 +1594,17 @@ function options(
     workspace,
     repository,
     attemptRunner,
+    reviewTicket: async input => {
+      if (input.payload.kind === 'problem-confirmation') {
+        const report = JSON.parse(input.payload.evidence.find(item => item.ref === 'original-finding')!.content);
+        const steps = JSON.parse(input.payload.evidence.find(item => item.ref === 'phase-step-contracts')!.content) as Array<{ id: string; type: string }>;
+        const targets: Record<string, string> = { code: 'CODE', 'requirement-analysis': 'REQUIREMENT_ANALYSIS', 'high-level-design': 'HIGH_LEVEL_DESIGN', 'detailed-design': 'DETAILED_DESIGN', 'unit-test': 'UNIT_TEST', 'integration-test': 'INTEGRATION_TEST', 'module-test': 'MODULE_TEST', 'functional-test': 'FUNCTIONAL_TEST' };
+        return { kind: 'problem-confirmation', decision: 'confirmed', reason: 'Verifier confirmed the supplied evidence', evidenceRefs: ['original-finding'], ticketType: report.category === 'change-request' || report.category === 'dependency' ? 'change-request' : 'bug', targetStepId: steps.find(step => step.type === (targets[report.target] ?? 'FUNCTIONAL_TEST'))!.id as never };
+      }
+      const steps = JSON.parse(input.payload.evidence.find(item => item.ref === 'eligible-downstream-steps')!.content) as Array<{ id: string; outputs: string[] }>;
+      const next = steps[0];
+      return { kind: 'ticket-acceptance', decision: 'accept', reason: 'Reporter independently accepted the hop', evidenceRefs: [input.payload.subjectId], propagation: next ? { targetStepId: next.id as never, summary: 'Apply the accepted delta', affectedArtifacts: next.outputs, implementationPlan: ['Apply the accepted delta'], verificationGate: ['Own gate passes'] } : null };
+    },
     plugins: new PluginHost(),
     git: {
       ensureRepo: async () => undefined,
@@ -1586,7 +1639,7 @@ async function passingAttempt(repository: DomainObjectRepository, step: Step): P
     ok: true,
     assessment,
     changedFiles: step.outputs,
-    commit: `commit-${step.name}`,
+    commit: createHash('sha1').update(step.name).digest('hex'),
     solutionPlan: `Complete ${step.name} incrementally.`,
     wikiEntryIds: [],
     // A passing attempt ran this Step's tests and they passed. Reporting no outcomes at all made

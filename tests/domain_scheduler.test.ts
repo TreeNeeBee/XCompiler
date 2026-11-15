@@ -70,7 +70,7 @@ describe('PM WorkScheduler', () => {
     expect(resumed && workModeFor(resumed.ticket)).toBe('debug');
   });
 
-  it('stops offering a Step the repair it has already finished', async () => {
+  it('offers a delivered Bug to its original verifier instead of repeating its repair', async () => {
     // A Bug parked for its verification is done, not blocked. Leaving it schedulable handed the same
     // Step the same repair again the moment it finished: a live run cycled one Bug through
     // pending → in_progress three times, and the Ticket never propagated because each cycle
@@ -122,7 +122,9 @@ describe('PM WorkScheduler', () => {
 
     const next = await fixture.controller.next(fixture.graph.phases[0]!.id);
 
-    expect(next?.ticket.id).not.toBe(bug.id);
+    expect(next?.ticket.id).toBe(bug.id);
+    expect(next?.step.id).toBe(bug.verificationContract.verificationStepId);
+    expect(next && workModeFor(next.ticket)).toBe('verification');
   });
 
   it('resumes an owned Ticket whose Step is pending before dispatching an earlier created CR', async () => {
@@ -192,6 +194,46 @@ describe('PM WorkScheduler', () => {
       forStepId: resumed!.step.id,
     });
     expect(routed.assignment.id).toBe(activeAssignmentId);
+  });
+
+  it('resumes a rejected CR after its replacement attempt is deferred', async () => {
+    const fixture = await setup();
+    const phase = fixture.graph.phases[0]!;
+    const target = fixture.graph.steps[0]!;
+    const workflow = new TicketWorkflow(fixture.repository);
+    const source = await workflow.storyForStep(target.id);
+    const reporter = await fixture.registration.discovererActorIdForStep(target.id);
+    const request = await workflow.openChangeRequest({
+      changeKind: 'contract-change', creatorActorId: reporter, sourceTicketIds: [source.id],
+      triggerStepId: target.id, sourceStepId: target.id, targetStepId: target.id, propagationStepIds: [target.id],
+      contractDelta: { summary: 'Clarify the service contract', before: ['Ambiguous output'], after: ['Explicit output'], affectedArtifacts: target.outputs },
+      implementationPlan: ['Document the required output'], verificationGate: ['The output is unambiguous'],
+    });
+    const controller = new ProjectController(fixture.repository, { reviewTicket: async ({ payload }) => ({
+      kind: 'ticket-acceptance', decision: 'reject', reason: 'The required output is still ambiguous.', evidenceRefs: [payload.subjectId], propagation: null,
+    }) });
+    const assigned = await fixture.registration.routeAndAssign(request.id);
+    const work = await controller.start({ phase, step: target, ticket: assigned.ticket });
+    const kpis = await Promise.all(target.kpiIds.map(id => fixture.repository.read(id)));
+    const assessment = await new QualityAssessmentService(fixture.repository).assessStep({ step: work.step,
+      metrics: kpis.flatMap(kpi => kpi.objectType === 'kpi' ? [{ metric: kpi.metric, value: kpi.target }] : []),
+    });
+    expect(await controller.completeChangeRequestStep({ work, qualityAssessmentId: assessment.id,
+      summary: 'Submitted the first contract revision', entries: [{ path: target.outputs[0]!, operation: 'update' }], commit: 'a'.repeat(40),
+    })).toMatchObject({ status: 'rejected', closed: false });
+    const retry = await controller.next(phase.id);
+    expect(retry?.ticket.id).toBe(request.id);
+    const reassigned = await fixture.registration.routeAndAssign(request.id);
+    await controller.deferInfrastructureFailure(await controller.start({ ...retry!, ticket: reassigned.ticket }), 'Service temporarily unavailable');
+    const repository = new DomainObjectRepository(new Workspace(fixture.root));
+    await repository.load();
+    expect(await repository.read(request.id)).toMatchObject({ state: 'pending', pendingReason: 'external-service', attempts: 1,
+      applications: [expect.objectContaining({ verificationAssessmentId: assessment.id })],
+      acceptanceRecords: [expect.objectContaining({ verdict: expect.objectContaining({ decision: 'reject' }) })],
+    });
+    const resumed = await new ProjectController(repository).resume(phase.id);
+    expect(resumed?.ticket.id).toBe(request.id);
+    expect(resumed && workModeFor(resumed.ticket)).toBe('change-request');
   });
 
   it('materializes a missing CR outcome before considering one recovery attempt', async () => {
@@ -270,7 +312,7 @@ describe('PM WorkScheduler', () => {
     )).toBe(true);
   });
 
-  it('names the failure that kept recurring when it stops a Ticket', async () => {
+  it.each(['bug', 'change-request'] as const)('stops repeated %s failures using the execution Step, not the discovery Step', async (ticketType) => {
     // A live run ended on "same failure recurred 3 times without convergence" and nothing more; which
     // failure it was took a search through the audit log to find.
     const fixture = await setup();
@@ -278,6 +320,8 @@ describe('PM WorkScheduler', () => {
     const story = fixture.graph.tickets.find((ticket): ticket is TicketOf<'story'> =>
       ticket.type === 'story' && ticket.stepId === step.id)!;
     const creator = fixture.graph.actors.find((actor) => actor.roleId === 'requirements-analyst')!;
+    const discovery = fixture.graph.steps.find(candidate => candidate.type === 'FUNCTIONAL_TEST')!;
+    const reporter = fixture.graph.actors.find(actor => actor.roleId === 'test-engineer')!;
     const {
       workKind: _workKind,
       verificationTicketId: _verificationTicketId,
@@ -285,13 +329,29 @@ describe('PM WorkScheduler', () => {
       ...ticketBase
     } = story;
     const correlationId = createObjectId();
-    const request = TicketSchema.parse({
+    const common = {
       ...ticketBase,
       ...createObjectEnvelope({ name: 'CR-P1-S001-RECURRING', objectType: 'ticket', projectId: story.projectId }),
-      type: 'change-request', changeKind: 'contract-change', creatorActorId: creator.id, state: 'created',
+      stepId: discovery.id, state: 'created',
       assignmentIds: [], activeAssignmentId: undefined, attempts: 3, maxAttempts: 3,
       solution: undefined, resolvedAt: undefined, closedAt: undefined,
-      source: { kind: 'runtime', correlationId }, sourceTicketIds: [story.id],
+      source: { kind: 'runtime', correlationId },
+    };
+    const request = TicketSchema.parse(ticketType === 'bug' ? {
+      ...common, type: 'bug', creatorActorId: reporter.id, reporterActorId: reporter.id,
+      bugKind: 'test-failure', severity: 'high',
+      verificationContract: bugContracts(discovery, step, discovery, { category: 'test', code: 'test_assets_incomplete' }).verificationContract,
+      failure: {
+        category: 'test', code: 'test_assets_incomplete', message: 'Original verification failed', summary: 'Original verification failed',
+        retryable: true, switchProvider: false,
+        failedStepId: discovery.id, failedStepType: discovery.type,
+        targetStepId: step.id, targetStepType: step.type,
+        verificationStepId: discovery.id, verificationStepType: discovery.type,
+        identity: bugContracts(discovery, step, discovery, { category: 'test', code: 'test_assets_incomplete' }).identity,
+      },
+    } : {
+      ...common, type: 'change-request', changeKind: 'contract-change', creatorActorId: creator.id, reporterActorId: creator.id,
+      sourceTicketIds: [story.id],
       triggerStepId: step.id, sourceStepId: step.id, targetStepId: step.id, propagationStepIds: [step.id],
       originFailures: [],
       contractDelta: {

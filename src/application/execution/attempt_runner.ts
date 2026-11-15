@@ -406,7 +406,7 @@ export class DomainAttemptRunner {
       // live Debugger spent 26 attempts re-fixing an import error the Ticket was created for, which
       // an earlier round had already fixed, while the assertion actually failing never reached it.
       const { assembled, debugBrief } = await this.assembleContext(input);
-      const debugContext = input.ticket.type === 'bug'
+      const debugContext = input.ticket.type === 'bug' && input.mode !== 'verification'
         ? debugContextFrom(input.ticket, debugBrief!, assembled.debugWikiMatches)
         : undefined;
       const previousAttempt = input.ticket.type === 'bug'
@@ -526,7 +526,7 @@ export class DomainAttemptRunner {
           debugBrief: retryBrief ? retryBrief.summary : debugContext?.brief.summary,
           ...((retryBrief ?? debugContext?.brief) ? { failureCategory: (retryBrief ?? debugContext!.brief).category } : {}),
           suggestions: debugContext?.suggestions,
-          repairRequired: true,
+          repairRequired: input.mode !== 'verification',
           verificationScope: environment.verificationScope.inheritedFromTicket
             ? {
                 stepId: environment.verificationScope.verificationStepId!,
@@ -714,6 +714,7 @@ export class DomainAttemptRunner {
         scopedAssessment
           ? mergePairedSourceTestQuality(scopedAssessment, pairedTestInspection)
           : scopedAssessment,
+        environment.baselineGateExecution.mode === 'defer' ? 'source-delivery' : 'full-step',
       );
       if (!assessment.passed) {
         const qualityFailure = renderQualityAssessmentFailure(assessment);
@@ -872,12 +873,13 @@ export class DomainAttemptRunner {
       resolvedToolNames.push('run_tests');
     }
     const toolNames = [...new Set(resolvedToolNames)].filter((name) =>
-      baselineGateExecution.mode !== 'defer' || name !== 'run_tests'
+      (baselineGateExecution.mode !== 'defer' || name !== 'run_tests') &&
+      (input.mode !== 'verification' || ['read_file', 'list_dir', 'code_search', 'run_tests'].includes(name))
     );
     const supplementalTestRoot = isVerification(input.domainStep)
       ? this.testValidator(scope).supplementalRoot(input.executionStep)
       : undefined;
-    const allowedWrites = await this.attemptAllowedWrites(scope, input);
+    const allowedWrites = input.mode === 'verification' ? [] : await this.attemptAllowedWrites(scope, input);
     const earlierTestOwners = await this.earlierTestOwners(input);
     const inheritedTests = inheritedTestAssets(input.domainStep.type, earlierTestOwners, input.plan.language);
     const retryFeedback = await this.latestAttemptFailure(input);
@@ -1090,7 +1092,7 @@ export class DomainAttemptRunner {
     return selected ? renderAttemptRetryFeedback(selected, input.executionStep.phase) : undefined;
   }
 
-  private async recordAssessment(step: Step, value?: StageQualityAssessment): Promise<QualityAssessment> {
+  private async recordAssessment(step: Step, value?: StageQualityAssessment, scope: QualityAssessment['scope'] = 'full-step'): Promise<QualityAssessment> {
     const metrics = [
       ...(value?.completion === undefined ? [] : [{ metric: 'completion', value: value.completion }]),
       ...(value?.upstreamAlignment === undefined ? [] : [{ metric: 'upstreamAlignment', value: value.upstreamAlignment }]),
@@ -1098,6 +1100,7 @@ export class DomainAttemptRunner {
     ];
     return this.quality.assessStep({
       step,
+      scope,
       metrics,
       // A precondition the Step does not own is recorded, not held against it. It reaches the gate
       // as evidence so the assessment still shows why the Step could go no further.

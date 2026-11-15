@@ -4,8 +4,10 @@ import { assertStateTransition, type StateTransitions } from '../../util/state_m
 import { ObjectEnvelopeSchema, reviseObjectEnvelope } from '../objects/object_envelope.js';
 import { ObjectIdSchema, type ObjectId } from '../identity/object_id.js';
 import { PendingReasonSchema } from '../workflow/pending_reason.js';
+import { TicketAcceptanceRecordSchema, TicketDeliverySchema } from './ticket_review.js';
 import { STEP_TYPES } from '../steps/step.js';
-import { WORKSPACE_KINDS } from '../workspace/change_set.js';
+import { TicketWorkspaceBindingSchema, type TicketWorkspaceBinding } from './workspace_binding.js';
+export { TicketWorkspaceBindingSchema, TICKET_WORKSPACE_BINDING_REASONS, type TicketWorkspaceBinding } from './workspace_binding.js';
 import {
   BugVerificationContractSchema,
   BugVerificationRecordSchema,
@@ -55,6 +57,7 @@ export const TICKET_STATES = [
   'created',
   'in_progress',
   'pending',
+  'deliver',
   'resolved',
   'reopened',
   'cancelled',
@@ -64,9 +67,10 @@ export type TicketState = (typeof TICKET_STATES)[number];
 
 const TICKET_TRANSITIONS: StateTransitions<TicketState> = {
   created: ['in_progress', 'pending', 'cancelled'],
-  in_progress: ['pending', 'resolved', 'cancelled'],
-  pending: ['in_progress', 'cancelled'],
-  resolved: ['closed', 'reopened'],
+  in_progress: ['pending', 'deliver', 'resolved', 'cancelled'],
+  pending: ['in_progress', 'deliver', 'cancelled'],
+  deliver: ['closed', 'reopened', 'pending', 'cancelled'],
+  resolved: ['deliver', 'closed', 'reopened'],
   reopened: ['in_progress', 'cancelled'],
   cancelled: ['reopened', 'closed'],
   closed: [],
@@ -155,44 +159,16 @@ export const TicketSourceSchema = z.object({
 
 export type TicketSource = z.infer<typeof TicketSourceSchema>;
 
-export const TICKET_WORKSPACE_BINDING_REASONS = [
-  'initial',
-  'inherited',
-  'change-set',
-  'merge-gate',
-  'recovered',
-] as const;
-
-/**
- * The working copy in which this Ticket must be executed.
- *
- * Paths are relative to the Project container so the state remains valid when a container moves.
- * A revision pins recovery to evidence Git can reconstruct after a process restart. The current
- * binding may advance, while `workspaceBindingHistory` retains every prior binding append-only.
- */
-export const TicketWorkspaceBindingSchema = z.object({
-  kind: z.enum(WORKSPACE_KINDS),
-  relativePath: z.string().min(1).refine(
-    (value) => !value.startsWith('/') && !value.split('/').includes('..'),
-    'Ticket workspace path must be relative to the Project container',
-  ),
-  branch: z.string().min(1),
-  revision: GitRevisionSchema,
-  workspaceId: ObjectIdSchema.optional(),
-  changeSetId: ObjectIdSchema.optional(),
-  mergeGateRunId: ObjectIdSchema.optional(),
-  reason: z.enum(TICKET_WORKSPACE_BINDING_REASONS),
-  boundAt: z.string().datetime({ offset: true }),
-}).strict();
-
-export type TicketWorkspaceBinding = z.infer<typeof TicketWorkspaceBindingSchema>;
-
 const TicketBaseSchema = ObjectEnvelopeSchema.extend({
   objectType: z.literal('ticket'),
   type: z.enum(TICKET_TYPES),
   phaseId: ObjectIdSchema,
   stepId: ObjectIdSchema.optional(),
   creatorActorId: ObjectIdSchema,
+  /** Acceptance owner. Absent only on legacy objects until explicit reporter migration. */
+  reporterActorId: ObjectIdSchema.optional(),
+  deliveries: z.array(TicketDeliverySchema).default([]),
+  acceptanceRecords: z.array(TicketAcceptanceRecordSchema).default([]),
   requiredCapabilities: z.array(z.string().min(1)).default([]),
   priority: z.number().int().min(TICKET_PRIORITY_MIN).max(TICKET_PRIORITY_MAX),
   parentTicketId: ObjectIdSchema.optional(),
@@ -357,7 +333,7 @@ export const ChangeRequestTicketSchema = TicketBaseSchema.extend({
   // without one — absence means "written by an older build", not corruption. Requiring it made the
   // repository refuse those objects, and the refusal surfaced as an unhandled error at startup that
   // no operator could tell apart from a damaged workspace. Corrective is what those Tickets were.
-  changeKind: z.enum(['corrective', 'dependency', 'contract-change']).default('corrective'),
+  changeKind: z.enum(['corrective', 'work-correction', 'dependency', 'contract-change']).default('corrective'),
   sourceTicketIds: z.array(ObjectIdSchema).min(1),
   parentChangeRequestId: ObjectIdSchema.optional(),
   triggerStepId: ObjectIdSchema,
@@ -498,7 +474,7 @@ export function transitionTicketPath(
     // Step that did the work. Closure remains the line that cannot be skipped: a verified solution
     // and the original failure replayed where it was observed.
     if (
-      next === 'resolved' &&
+      (next === 'resolved' || next === 'deliver') &&
       ['bug', 'enhancement', 'change-request'].includes(ticket.type) &&
       !ticket.solution
     ) {
@@ -581,7 +557,8 @@ export function lastVerifiedRevision(ticket: Ticket): string | undefined {
 }
 
 export function workStepId(ticket: Ticket): ObjectId | undefined {
-  if (ticket.type === 'bug') return ticket.failure.targetStepId;
+  if (ticket.type === 'bug') return ticket.state === 'deliver' ? ticket.verificationContract.verificationStepId : ticket.failure.targetStepId;
   if (ticket.type === 'enhancement') return ticket.targetStepId;
+  if (ticket.type === 'change-request') return ticket.targetStepId;
   return ticket.stepId;
 }

@@ -63,6 +63,10 @@ export function buildBugFailureContracts(input: {
   return { identity, verificationContract };
 }
 
+export function isPhaseDeliveryGateBug(bug: BugTicket): boolean {
+  return bug.source.kind === 'pm-intake' && bug.failure.details?.reportOrigin === 'phase-delivery-gate';
+}
+
 /** Verifies the original failed scope, not merely that some later CR gate happened to pass. */
 export function bugVerificationSatisfied(
   bug: BugTicket,
@@ -72,16 +76,24 @@ export function bugVerificationSatisfied(
   const contract = bug.verificationContract;
   if (contract.verificationStepId !== step.id || contract.verificationStepType !== step.type) return false;
   if (contract.kind === 'quality-gate' && contract.testSelectors.length === 0) return true;
-  const passed = outcomes.filter((outcome) => outcome.status === 'passed' && outcome.stepType === step.type);
+  const relevant = outcomes.filter(outcome => outcome.stepType === step.type &&
+    ['passed', 'failed', 'timed_out'].includes(outcome.status));
+  const passed = relevant.filter((outcome) => outcome.status === 'passed');
   if (passed.length === 0) return false;
   const requiredSelectors = replayableTestSelectors(contract.testSelectors);
   if (requiredSelectors.length === 0) return true;
-  const executed = canonicalStrings(
-    passed.flatMap((outcome) => outcome.args.filter((arg) => !arg.startsWith('-'))),
-    normalizeSelector,
-  );
-  return requiredSelectors.every((selector) =>
-    executed.some((candidate) => selectorCoveredBy(candidate, selector)));
+  return requiredSelectors.every(selector => {
+    let proven = false;
+    for (const outcome of relevant) {
+      const executed = outcome.args.filter(arg => !arg.startsWith('-')).map(normalizeSelector);
+      if (outcome.status === 'passed') {
+        if (executed.some(candidate => selectorCoveredBy(candidate, selector))) proven = true;
+      } else if (executed.some(candidate => selectorCoveredBy(candidate, selector) || selectorCoveredBy(selector, candidate))) {
+        proven = false;
+      }
+    }
+    return proven;
+  });
 }
 
 /** Accepts either this execution's exact replay or an earlier append-only proof from the same CR chain. */
@@ -108,6 +120,9 @@ function selectorCoveredBy(executed: string, required: string): boolean {
   // A file-level run proves every selected case in that file, so this compares the file portion.
   const executionPath = testSelectorPath(executed);
   const requiredPath = testSelectorPath(required);
+  if (executed !== executionPath) {
+    return executed === required || required.startsWith(`${executed}::`) || required.startsWith(`${executed} > `);
+  }
   return executionPath === requiredPath ||
     requiredPath.startsWith(`${executionPath.replace(/\/$/u, '')}/`);
 }

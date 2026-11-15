@@ -1,4 +1,5 @@
-import { createObjectEnvelope } from '../../domain/objects/object_envelope.js';
+import { createObjectEnvelope, reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
+import { VERIFICATION_STEP_TYPES } from '../../domain/steps/step.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import {
@@ -159,11 +160,53 @@ export class TicketRegistrationService {
   }
 
   async registerProjectTickets(projectId: ObjectId): Promise<Ticket[]> {
+    await this.migrateProjectReporters(projectId);
     const objects = await this.repository.list({ objectType: 'ticket', projectId });
     const tickets = objects.filter((object): object is Ticket => object.objectType === 'ticket');
     const registered: Ticket[] = [];
     for (const ticket of tickets) registered.push(await this.register(ticket.id));
     return registered;
+  }
+
+  /** Explicit, append-only migration of the pre-reporter format; never a closure verdict. */
+  async migrateProjectReporters(projectId: ObjectId): Promise<number> {
+    const objects = await this.repository.list({ objectType: 'ticket', projectId });
+    let count = 0;
+    for (const object of objects) {
+      if (object.objectType !== 'ticket' || object.reporterActorId) continue;
+      if (object.state === 'closed' || object.state === 'cancelled') continue;
+      const ticket = await this.requireTicket(object.id);
+      if (ticket.reporterActorId) continue;
+      const legacyDevelopmentBug = ticket.type === 'bug' &&
+        !VERIFICATION_STEP_TYPES.some((type) => type === ticket.failure.failedStepType);
+      const reporterActorId = legacyDevelopmentBug
+        ? await this.discovererActorIdForStep(ticket.verificationContract.verificationStepId)
+        : ticket.creatorActorId;
+      const reporter = await this.roles.require(reporterActorId);
+      if (reporter.projectId !== projectId) throw new Error(`Reporter for ${ticket.name} belongs to another Project`);
+      const pm = await this.projectManager(projectId);
+      const built = await this.traces.build(ticket, [{
+        eventType: 'correction', initiatorActorId: pm.id, initiatorRole: pm.roleId,
+        reasonCode: 'ticket.reporter_migrated',
+        reason: legacyDevelopmentBug
+          ? 'Legacy development-created Bug: acceptance assigned to its original verification Step; creator and evidence preserved.'
+          : 'Legacy Ticket: acceptance assigned to its original creator.',
+        evidenceRefs: [ticket.creatorActorId, reporterActorId],
+        correlationId: ticket.source.correlationId, causationId: ticket.id,
+      }]);
+      const migrated = TicketSchema.parse({
+        ...built.ticket, ...reviseObjectEnvelope(ticket), reporterActorId,
+      });
+      await this.repository.commit([...built.events, migrated, createDomainEvent({
+        projectId, aggregate: { id: ticket.id, objectType: 'ticket' },
+        eventType: 'ticket.reporter_migrated',
+        payload: { creatorActorId: ticket.creatorActorId, reporterActorId, legacyDevelopmentBug },
+        phaseId: ticket.phaseId, ticketId: ticket.id, correlationId: ticket.source.correlationId,
+        causationId: ticket.id, objectRevision: migrated.revision,
+      })]);
+      count += 1;
+    }
+    return count;
   }
 
   /**
@@ -223,6 +266,7 @@ export class TicketRegistrationService {
     } = {},
   ): Promise<{ ticket: Ticket; assignment: TicketAssignment }> {
     let ticket = await this.register(ticketId);
+    if (ticket.state === 'deliver' && !ticket.reporterActorId) throw new Error(`Ticket ${ticket.name} needs reporter migration before acceptance`);
     if (ticket.duplicateOfTicketId) {
       throw new Error(
         `Duplicate Ticket ${ticket.name} follows ${ticket.duplicateOfTicketId} and must not be assigned`,
@@ -240,14 +284,21 @@ export class TicketRegistrationService {
       const owner = await this.roles.resolve(existing.assigneeActorId);
       // A Change Request keeps propagating into Steps owned by other roles; when the current owner
       // cannot perform the next application, PM releases and re-routes instead of failing the Ticket.
-      const blocked = this.roles.ineligibility(owner, ticket, step, { ignoreAssignmentId: existing.id });
-      if (!blocked) return { ticket, assignment: existing };
+      const blocked = this.roles.ineligibility(owner, ticket, step, { ignoreAssignmentId: existing.id, ignoreCapacity: options.administrative === true });
+      if (!blocked && existing.state === 'accepted' && (ticket.state !== 'deliver' || existing.assigneeActorId === ticket.reporterActorId)) {
+        if (!options.administrative && existing.capacityConsumed && !owner.actor.activeAssignmentIds.includes(existing.id)) {
+          await this.repository.commit([reviseActor(owner.actor, { activeAssignmentIds: [...owner.actor.activeAssignmentIds, existing.id] })]);
+        }
+        return { ticket, assignment: existing };
+      }
       releasedAssignment = existing;
     }
     const parentAssignment = options.inheritedFromTicketId
       ? await this.assignmentForTicket(options.inheritedFromTicketId)
       : undefined;
-    const assignee = parentAssignment
+    const assignee = ticket.state === 'deliver'
+      ? await this.reporterFor(ticket, step, options.administrative === true)
+      : parentAssignment
       ? await this.requireEligibleInheritedOwner(ticket, parentAssignment.assigneeActorId, step)
       : await this.roles.route(ticket, step, { ignoreCapacity: options.administrative === true });
     const pm = await this.projectManager(ticket.projectId);
@@ -464,7 +515,7 @@ export class TicketRegistrationService {
 
   private assertCreationAuthority(ticket: Ticket, creator: ActorRegistration): void {
     const pmIntake = ticket.source.kind === 'pm-intake';
-    const pmOwned = ticket.type === 'epic' || ticket.type === 'story' || pmIntake;
+    const pmOwned = ticket.type === 'epic' || ticket.type === 'story' || (pmIntake && creator.roleId === 'project-manager' && ticket.type !== 'bug');
     if (pmOwned && creator.roleId !== 'project-manager') {
       throw new Error(`${ticket.type} ${ticket.name} must be created by Project Manager`);
     }
@@ -484,6 +535,12 @@ export class TicketRegistrationService {
       throw new Error(`Ticket ${ticket.name} does not have an accepted active assignment`);
     }
     return object;
+  }
+
+  private async reporterFor(ticket: Ticket, step: Parameters<RoleRegistry['eligible']>[1], administrative: boolean) {
+    const { actor, reason } = await this.roles.ineligibilityOf(ticket.reporterActorId!, ticket, step, { ignoreCapacity: administrative });
+    if (reason) throw new Error(`Reporter ${actor.name} cannot accept ${ticket.name}: ${reason}`);
+    return actor;
   }
 
   private async requireEligibleInheritedOwner(

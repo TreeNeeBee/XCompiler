@@ -266,7 +266,7 @@ describe('attempt verification scope', () => {
     )).toEqual({ mode: 'defer', reason: 'initial-pre-code' });
   });
 
-  it('executes an S1-S3 baseline when the correction originated at S4 or later', () => {
+  it('defers downstream executable tests while S1-S3 delivers a correction', () => {
     const plan = fixturePlan();
     const design = {
       ...plan.steps[0]!,
@@ -286,8 +286,8 @@ describe('attempt verification scope', () => {
     } as Ticket;
 
     expect(resolveBaselineGateExecution(plan, design, ticket)).toEqual({
-      mode: 'execute',
-      reason: 'post-code-correction',
+      mode: 'defer',
+      reason: 'source-delivery',
       originStepId: 'code-id',
       originPhase: 'CODE',
     });
@@ -312,9 +312,9 @@ describe('attempt verification scope', () => {
     expect(resolveBaselineGateExecution(plan, design, hop('contract-change'))).toEqual({
       mode: 'defer', reason: 'contract-change', originStepId: 'unit-id', originPhase: 'UNIT_TEST',
     });
-    // A corrective hop changes no contract, so the product it repairs must still pass its baseline.
+    // A source correction delivers its own artifacts before downstream implementation can satisfy the executable baseline.
     expect(resolveBaselineGateExecution(plan, design, hop('corrective'))).toMatchObject({
-      mode: 'execute', reason: 'post-code-correction',
+      mode: 'defer', reason: 'source-delivery',
     });
     // CODE applies the change and always runs its own baseline.
     expect(resolveBaselineGateExecution(plan, plan.steps.find((step) => step.phase === 'CODE')!, hop('contract-change')))
@@ -350,7 +350,7 @@ describe('attempt verification scope', () => {
     });
   });
 
-  it('executes an S1-S3 baseline for an Enhancement discovered by a right-side Step', () => {
+  it('keeps an upstream Enhancement within its source delivery gate', () => {
     const plan = fixturePlan();
     const design = {
       ...plan.steps[0]!,
@@ -366,8 +366,8 @@ describe('attempt verification scope', () => {
       targetStepId: 'design-id',
       verificationStepId: 'unit-id',
     } as Ticket)).toEqual({
-      mode: 'execute',
-      reason: 'post-code-correction',
+      mode: 'defer',
+      reason: 'source-delivery',
       originStepId: 'unit-id',
       originPhase: 'UNIT_TEST',
     });

@@ -110,9 +110,9 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
   Object.freeze({
     relativePath: 'work-repair-debug.yaml',
     listId: '85a71cae-36dc-55bd-bd71-c0e916026d7d',
-    listVersion: '2.0.0',
+    listVersion: '2.1.0',
     slot: 0x00011002,
-    digest: 'sha256:701d595cb41dc48a63c36b428fca27dc7ecb4fbcc22fc64b358de2fd60e7e288',
+    digest: 'sha256:ee6c887e60806888278b5837ffb55158e5ea347ea84f2e95cc7cd167a7fb4f54',
   }),
   Object.freeze({
     relativePath: 'work-change-apply.yaml',
@@ -190,5 +190,12 @@ export const COMPILER_RULE_MANIFEST: readonly CompilerRuleManifestEntry[] = Obje
     listVersion: '1.2.0',
     slot: 0x00011301,
     digest: 'sha256:3f1ac15a5848224f4c0e173f92069de42b23632ea1847f4ee77664735d5f8e0b',
+  }),
+  Object.freeze({
+    relativePath: 'ticket-review.yaml',
+    listId: '33b0b299-1baf-41cd-b24e-2d8fc05ea364',
+    listVersion: '1.0.0',
+    slot: 0x00011302,
+    digest: 'sha256:b534ccad1de46b1136a0289b39a99d572714f2b1b76d0d791a22ab9597595557',
   }),
 ]);

@@ -218,6 +218,8 @@ export function renderExecutionUserPrompt(
           baselineText.validateDeliverables,
           input.baselineTestExecutionReason === 'pre-code-correction'
             ? baselineText.preCodeCorrection
+            : input.baselineTestExecutionReason === 'source-delivery'
+              ? baselineText.sourceDelivery
             : input.baselineTestExecutionReason === 'contract-change'
               ? baselineText.contractChange
               : baselineText.initialPass,

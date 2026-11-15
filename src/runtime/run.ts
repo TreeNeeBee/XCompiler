@@ -40,6 +40,7 @@ import {
 } from '../application/project_management/project_manager_intake.js';
 import { parseUserChangeRequest, UserChangeRequestError } from '../application/project_management/user_change_request.js';
 import { judgeRuntimeContractBasis } from './contract_basis_judgement.js';
+import { judgeRuntimeTicketReview, readTicketReviewArtifacts } from './ticket_review.js';
 import {
   frozenRequirementsFor, isScenarioOutcomeJudgementError, scenarioArtifactText,
 } from '../application/execution/scenario_outcome_judge.js';
@@ -604,6 +605,19 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   let finalProjectAudit: ProjectAuditResult | undefined;
   const engine = new ProjectOrchestrator({
+    reviewTicket: (request) => judgeRuntimeTicketReview({
+      ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,
+    }),
+    readReviewArtifacts: async (ticket, delivery) => {
+      const change = await domainRepository.read(delivery.changelistId);
+      if (change.objectType !== 'changelist' || !delivery.candidateRevision) throw new Error('Ticket acceptance requires a retained candidate revision');
+      return readTicketReviewArtifacts({
+        revision: delivery.candidateRevision,
+        paths: [...ticket.contractDelta.affectedArtifacts, ...change.entries.map(entry => entry.path)],
+        filesAt: revision => repositoryGit.filesAt(revision),
+        readAt: (revision, file) => git.raw().raw(['show', `${revision}:${file}`]),
+      });
+    },
     executionRequests: (scope) => createRuntimeExecutionTurnRequestPort({
       config: cfg.rules, container, recordReplay, router, audit, scope,
     }),

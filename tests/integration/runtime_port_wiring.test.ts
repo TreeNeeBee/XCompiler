@@ -1,5 +1,7 @@
 import { setPromptTranslation } from '../../src/i18n/index.js';
 import { promises as fs } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -17,6 +19,10 @@ import { ProjectGraphPersistenceService } from '../../src/application/planning/p
 import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/phase_plan_files.js';
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
 import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
+import { TicketRegistrationService } from '../../src/application/project_management/ticket_registration_service.js';
+import { ProjectController } from '../../src/application/project_management/project_controller.js';
+import { QualityAssessmentService } from '../../src/application/execution/quality_assessment_service.js';
+import type { TicketReviewPayload } from '../../src/application/execution/ticket_review_request.js';
 import { RoleRegistry } from '../../src/application/project_management/role_registry.js';
 import * as deliveryListings from '../../src/application/reporting/delivery_listing.js';
 import { materializeProjectGraph } from '../../src/application/planning/project_graph_persistence_service.js';
@@ -52,6 +58,118 @@ vi.mock('../../src/llm/preflight.js', () => ({
 vi.mock('../../src/sandbox/factory.js', () => ({ createSandbox: vi.fn() }));
 
 describe('Runtime initializes the configured knowledge store', () => {
+  it.each(['after-delivery', 'before-review'] as const)('resumes a delivered CR through its reporter model and immutable Git candidate at the Run boundary (%s)', async interruptionPoint => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-review-')));
+    const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const previous = envKeys.map(key => process.env[key]);
+    const calls: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        if (!body) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
+        const parsed = JSON.parse(body) as typeof calls[number];
+        calls.push(parsed);
+        const payload = JSON.parse(parsed.messages.at(-1)!.content) as TicketReviewPayload;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ model: parsed.model, choices: [{ index: 0, message: { content: JSON.stringify({
+          kind: 'ticket-acceptance', decision: 'accept', reason: 'The candidate implements the accepted delta',
+          evidenceRefs: [payload.subjectId], propagation: null,
+        }) }, finish_reason: 'stop' }] }));
+      });
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      process.env.XC_PATH = path.join(root, 'installation');
+      process.env.XCOMPILER_PATH = process.env.XC_PATH;
+      process.env.GIT_CONFIG_GLOBAL = path.join(root, 'empty-git-config');
+      process.env.GIT_CONFIG_NOSYSTEM = '1';
+      await fs.writeFile(process.env.GIT_CONFIG_GLOBAL, '');
+      const container = new ProjectContainer(path.join(root, 'project'));
+      const workspace = container.canonical().workspace;
+      await workspace.ensure('src');
+      await workspace.writeFile('src/main.py', 'print("accepted candidate")\n');
+      const runGit = async (...args: string[]) => (await promisify(execFile)('git', ['-C', workspace.root, ...args])).stdout;
+      await runGit('init');
+      await runGit('config', 'user.name', 'Runtime review fixture');
+      await runGit('config', 'user.email', 'fixture@example.invalid');
+      await runGit('add', 'src/main.py');
+      await runGit('commit', '-m', 'candidate');
+      const revision = (await runGit('rev-parse', 'HEAD')).trim();
+      const draft = runtimePlan();
+      const graph = materializeProjectGraph({ draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-review' });
+      const repository = new DomainObjectRepository(container.state);
+      await repository.load();
+      await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      const reporting = graph.steps.find(step => step.type === 'DETAILED_DESIGN')!;
+      const target = graph.steps.find(step => step.type === 'CODE')!;
+      const registration = new TicketRegistrationService(repository);
+      const reporter = await registration.actorById(await registration.discovererActorIdForStep(reporting.id));
+      await repository.update(reviseActor(reporter, { modelPool: 'reporter' }), reporter.state);
+      const workflow = new TicketWorkflow(repository);
+      const source = await workflow.storyForStep(reporting.id);
+      const ticket = await workflow.openChangeRequest({
+        changeKind: 'work-correction', creatorActorId: reporter.id, sourceTicketIds: [source.id],
+        triggerStepId: reporting.id, sourceStepId: reporting.id, targetStepId: target.id, propagationStepIds: [target.id],
+        contractDelta: { summary: 'Implement the accepted output', before: ['Missing output'], after: ['Accepted output'], affectedArtifacts: ['src/main.py'] },
+        implementationPlan: ['Implement the declared output'], verificationGate: ['The output matches the contract'],
+      });
+      const assigned = await registration.routeAndAssign(ticket.id);
+      const interruption = new Error('Interrupt before reporter acceptance');
+      const controller = new ProjectController(repository, { reviewTicket: async () => { throw interruption; } });
+      const work = await controller.start({ phase: graph.phases[0]!, step: target, ticket: assigned.ticket });
+      const kpis = await Promise.all(work.step.kpiIds.map(id => repository.read(id)));
+      const assessment = await new QualityAssessmentService(repository).assessStep({ step: work.step,
+        metrics: kpis.flatMap(kpi => kpi.objectType === 'kpi' ? [{ metric: kpi.metric, value: kpi.target }] : []),
+      });
+      const deliver = TicketWorkflow.prototype.deliverForReview;
+      const interruptedDelivery = interruptionPoint === 'after-delivery'
+        ? vi.spyOn(TicketWorkflow.prototype, 'deliverForReview').mockImplementation(async function (this: TicketWorkflow, input) {
+          await deliver.call(this, input);
+          throw interruption;
+        })
+        : undefined;
+      await expect(controller.completeChangeRequestStep({ work, qualityAssessmentId: assessment.id,
+        summary: 'Implemented output', entries: [{ path: 'src/main.py', operation: 'create' }], commit: revision,
+      })).rejects.toBe(interruption);
+      interruptedDelivery?.mockRestore();
+      const delivered = await repository.read(ticket.id);
+      if (delivered.objectType !== 'ticket') throw new Error('Missing delivered fixture Ticket');
+      await workspace.writeFile('src/main.py', 'print("later working tree edit")\n');
+      const planPath = container.control.abs('plan.P1.json');
+      await new FilePlanStore().savePlan(planPath, draft);
+      const configPath = await writeConfig(root, `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
+      const config = YAML.parse(await fs.readFile(configPath, 'utf8'));
+      config.llm.providers.reporter = { ...config.llm.providers.local, model: 'reporter-model' };
+      config.llm.pools.reporter = ['reporter'];
+      await fs.writeFile(configPath, YAML.stringify(config));
+      const unexpectedExecution = vi.fn(async (): Promise<never> => { throw new Error('No project command is part of this reporter recovery fixture'); });
+      vi.mocked(createSandbox).mockReturnValue({ kind: 'subprocess', build: vi.fn(async () => ({ rebuilt: false, reason: 'Preparation outside this fixture' })),
+        exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution });
+      const stop = new Error('Stop before subsequent Step execution');
+      vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(stop);
+      const result = await runExecute({ workspace: container.root, planPath, configPath,
+        debugWikiPath: path.join(root, 'debug-wiki'), io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' });
+      expect(result).toMatchObject({ status: 'error', message: stop.message });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.model).toBe('reporter-model');
+      const payload = JSON.parse(calls[0]!.messages.at(-1)!.content) as TicketReviewPayload;
+      expect(payload).toMatchObject({ subjectId: ticket.id, candidateIdentity: revision });
+      expect(payload.evidence).toContainEqual({ ref: `${revision}:src/main.py`, content: 'print("accepted candidate")\n' });
+      await repository.load();
+      expect(await repository.read(ticket.id)).toMatchObject({ state: 'closed', reporterActorId: reporter.id,
+        acceptanceRecords: [{ requestId: delivered.deliveries[0]!.requestId, reporterActorId: reporter.id, verdict: { decision: 'accept' } }],
+      });
+      expect(unexpectedExecution).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['normal', 'debug'] as const)('composes the retained execution port and Actor model pool through real Run and %s attempt before the real Tool boundary', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-executor-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
@@ -97,13 +215,15 @@ describe('Runtime initializes the configured knowledge store', () => {
       await repository.load();
       await new ProjectGraphPersistenceService(repository).persistGraph(graph);
       const phase = graph.phases[0]!;
+      const verifier = graph.steps.find(candidate => candidate.type === 'FUNCTIONAL_TEST')!;
+      const reporter = graph.actors.find(candidate => candidate.roleId === 'test-engineer')!;
       const ticket = mode === 'normal'
         ? graph.tickets.find(candidate => candidate.type === 'story' && candidate.stepId === domainStep.id)!
-        : await new TicketWorkflow(repository).openBug({ creatorActorId: actor.id, failedStep: domainStep,
-          targetStep: domainStep, verificationStep: domainStep, kind: 'stage-execution', severity: 'high',
+        : await new TicketWorkflow(repository).openBug({ creatorActorId: reporter.id, failedStep: verifier,
+          targetStep: domainStep, verificationStep: verifier, kind: 'stage-execution', severity: 'high',
           message: 'The owned requirement artifacts are missing before CODE.', summary: 'Missing owned requirement artifacts.',
           category: 'contract', code: 'artifact_missing', retryable: true, switchProvider: false, correlationId: createObjectId(),
-          ...bugContracts(domainStep, domainStep, domainStep, { category: 'contract', code: 'artifact_missing',
+          ...bugContracts(verifier, domainStep, verifier, { category: 'contract', code: 'artifact_missing',
             artifactTargets: domainStep.outputs }) });
       const projection = projectExecutionPlan(draft, phase, graph.steps);
       const attempt: AttemptInput = { plan: projection.plan, executionStep: projection.byDomainStepId.get(domainStep.id)!,
@@ -127,7 +247,7 @@ describe('Runtime initializes the configured knowledge store', () => {
         const environment = await internal.buildEnvironment(internal.canonicalScope(), attempt);
         const executed = await environment.executor.run({ step: attempt.executionStep, role: actualRole, work,
           tools: environment.tools, ctx: environment.context, skillHints: environment.hints, baselineTestExecution: 'defer',
-          baselineTestExecutionReason: mode === 'debug' ? 'pre-code-correction' : 'initial-pre-code',
+          baselineTestExecutionReason: mode === 'debug' ? 'source-delivery' : 'initial-pre-code',
           project: { intent: attempt.plan.intent, projectType: attempt.plan.projectType },
           ...(mode === 'debug' ? { debugContext: { bugTicketId: ticket.id, reason: 'The owned requirement artifacts are missing before CODE.',
             failureCategory: 'missing_output' as const,
@@ -139,6 +259,8 @@ describe('Runtime initializes the configured knowledge store', () => {
       await new FilePlanStore().savePlan(planPath, draft);
       const configPath = await writeConfig(root, `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
       const configuration = YAML.parse(await fs.readFile(configPath, 'utf8'));
+      configuration.locale = 'en';
+      configuration.prompt_translate = 'off';
       configuration.llm.providers.assigned = { ...configuration.llm.providers.local, model: 'assigned-actor-model' };
       configuration.llm.pools.assigned = ['assigned'];
       await fs.writeFile(configPath, YAML.stringify(configuration));
@@ -161,6 +283,8 @@ describe('Runtime initializes the configured knowledge store', () => {
       expect(events.some(event => event.messageId === 'llm.execution_turn_judgement')).toBe(true);
       // The Rule block leads the request, starting from the base segment's level definitions.
       expect(calls[0]!.messages[0]!.content).toContain('[0x00000001] ');
+      expect(calls[0]!.messages[0]!.content).toContain('Design Step: your deliverable');
+      if (mode === 'debug') expect(calls[0]!.messages[0]!.content).toContain('record downstream obligations');
       // The pinned selection read the request facts from the retained payload (revision 11.4).
       const [snapshotFile] = await fs.readdir(container.state.abs('rules', 'requests', 'snapshots'));
       const pinned = JSON.parse(await container.state.readFile(`rules/requests/snapshots/${snapshotFile}`)) as { context: Record<string, unknown> };

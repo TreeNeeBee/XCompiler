@@ -58,13 +58,14 @@ export class TicketLifecycleService {
     ticketOrId: Ticket | ObjectId,
     path: readonly TicketState[],
     input: TicketTransitionInput = {},
+    relatedObjects: readonly PersistedDomainObject[] = [],
   ): Promise<Ticket> {
     const prepared = await this.prepareTransitionPath(ticketOrId, path, input);
     // Distilled before the closure commits, not after: if the Step Context write fails, nothing has
     // moved and the caller can retry. Distilling afterwards would leave a closed Ticket whose
     // knowledge was lost with no transition left to re-run.
     if (prepared.ticket.state === 'closed') await this.distillation.distil(prepared.ticket);
-    await this.repository.commit(prepared.objects);
+    await this.repository.commit([...prepared.objects, ...relatedObjects]);
     return prepared.ticket;
   }
 
@@ -191,6 +192,7 @@ export class TicketLifecycleService {
 function traceEventForTransition(from: TicketState, to: TicketState): TicketTraceEventType {
   if (to === 'in_progress') return from === 'pending' || from === 'reopened' ? 'resumed' : 'started';
   if (to === 'pending') return 'pending';
+  if (to === 'deliver') return 'handed_off';
   if (to === 'resolved') return 'resolved';
   if (to === 'closed') return 'closed';
   if (to === 'reopened') return 'reopened';

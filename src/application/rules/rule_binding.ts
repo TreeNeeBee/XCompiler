@@ -43,6 +43,7 @@ export const STEP_WORK_RULE_SLOTS: Readonly<Record<StepWorkId, number>> = Object
 export const OPERATION_WORK_RULE_SLOTS: Readonly<Partial<Record<WorkId, number>>> = Object.freeze({
   'judge.scenario': 0x00011300,
   'judge.contract-basis': 0x00011301,
+  'review.ticket': 0x00011302,
 });
 
 const StepWorkSchema = z.enum(STEP_WORK_IDS);
@@ -91,8 +92,8 @@ export function ruleBindingSlots(raw: RuleBindingRequest): readonly { slot: numb
     slots.push({ slot: WORK_FRAGMENT_RULE_SLOTS['execution.common'], optional: false });
     if (request.work === 'repair.debug') slots.push({ slot: WORK_FRAGMENT_RULE_SLOTS['repair.debug'], optional: false });
     if (request.work === 'change.apply') slots.push({ slot: WORK_FRAGMENT_RULE_SLOTS['change.apply'], optional: false });
-    // A Bug on a design Step was opened by its paired verification: repairing it is the job there.
-    if (isDeclarativeOutputWork(stepWork) && request.work !== 'repair.debug' && request.baselineDeferred) {
+    // The source's delivery scope applies equally to initial work, CRs and upstream Bug repairs.
+    if (isDeclarativeOutputWork(stepWork) && request.baselineDeferred) {
       slots.push({ slot: WORK_FRAGMENT_RULE_SLOTS['design.baseline-deferred'], optional: false });
     }
     slots.push({ slot: STEP_WORK_RULE_SLOTS[stepWork], optional: false });

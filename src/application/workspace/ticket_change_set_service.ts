@@ -60,6 +60,10 @@ export class TicketChangeSetService {
    */
   async ensureFor(ticket: Ticket, step: Step): Promise<TicketWorkspace> {
     const current = await this.requireTicket(ticket.id);
+    if (current.type === 'bug' && current.state === 'deliver') {
+      if (await this.findLineageChangeSet(current)) throw new Error('Bug reporter verification requires its correction to be integrated');
+      return this.bindCanonical(current, 'recovered');
+    }
     const bound = await this.resolveBinding(current, step);
     if (bound) return bound;
 

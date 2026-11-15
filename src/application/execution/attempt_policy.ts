@@ -24,7 +24,7 @@ import {
   type CorrectionOrigin,
 } from './correction_provenance.js';
 
-export type AttemptMode = 'normal' | 'debug' | 'enhancement' | 'change-request';
+export type AttemptMode = 'normal' | 'debug' | 'verification' | 'enhancement' | 'change-request';
 
 export function shouldPreserveExistingFiles(mode: AttemptMode): boolean {
   return mode !== 'normal';
@@ -48,7 +48,7 @@ export type BaselineGateExecution =
     }
   | {
       mode: 'defer';
-      reason: 'initial-pre-code' | 'pre-code-correction' | 'contract-change';
+      reason: 'initial-pre-code' | 'pre-code-correction' | 'contract-change' | 'source-delivery';
       originStepId?: string;
       originPhase?: Step['phase'];
     }
@@ -68,19 +68,7 @@ const DEVELOPMENT_PHASE_ORDER: Record<string, number> = {
   FUNCTIONAL_TEST: 7,
 };
 
-/**
- * Decide whether a left-side Step can execute its baseline tests.
- *
- * S1-S3 always author and statically validate their tests. Only the initial pre-CODE path defers
- * execution. A correction discovered by S4 or any right-side Step proves a product baseline exists,
- * so the routed source Step must execute its baseline gate before redelivering.
- *
- * A contract change is the exception. Its hop at S1-S3 moves the paired tests to the new contract,
- * and those cannot pass against a product that has not yet taken the change; S4 applies it later
- * in the same chain, where the paired verification Step runs them. Requiring them to pass first
- * kept a live requirement analysis and high-level design on the old assertions — each said the
- * alignment had to wait for CODE — and the verification Steps then failed on exactly those.
- */
+/** S1-S3 prove their own static delivery. S4 and verification Steps prove the product. */
 export function resolveBaselineGateExecution(
   plan: Plan,
   executionStep: Step,
@@ -107,20 +95,12 @@ export function resolveBaselineGateExecution(
     };
   }
   if (!origin) return { mode: 'defer', reason: 'initial-pre-code' };
-  const reachesCode = (DEVELOPMENT_PHASE_ORDER[origin.phase] ?? -1) >= DEVELOPMENT_PHASE_ORDER.CODE!;
-  return reachesCode
-    ? {
-        mode: 'execute',
-        reason: 'post-code-correction',
-        originStepId: origin.id,
-        originPhase: origin.phase,
-      }
-    : {
-        mode: 'defer',
-        reason: 'pre-code-correction',
-        originStepId: origin.id,
-        originPhase: origin.phase,
-      };
+  return {
+    mode: 'defer',
+    reason: (DEVELOPMENT_PHASE_ORDER[origin.phase] ?? -1) >= DEVELOPMENT_PHASE_ORDER.CODE! ? 'source-delivery' : 'pre-code-correction',
+    originStepId: origin.id,
+    originPhase: origin.phase,
+  };
 }
 
 export function resolveAttemptTestArgs(

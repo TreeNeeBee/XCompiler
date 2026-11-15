@@ -652,6 +652,7 @@ export interface Messages {
       validateDeliverables: string;
       preCodeCorrection: string;
       contractChange: string;
+      sourceDelivery: string;
       initialPass: string;
       keepTestsExecutable: string;
       onlyExecutionDeferred: string;

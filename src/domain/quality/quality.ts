@@ -35,6 +35,8 @@ export const QualityAssessmentSchema = ObjectEnvelopeSchema.extend({
   observations: z.array(KpiObservationSchema),
   score: z.number().min(0).max(1),
   passed: z.boolean(),
+  /** Source delivery does not prove the downstream product or the original Bug's failed gate. */
+  scope: z.enum(['full-step', 'source-delivery']).default('full-step'),
   gaps: z.array(z.string().min(1)).default([]),
   /**
    * Structural KPIs this attempt could not observe at all.

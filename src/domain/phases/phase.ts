@@ -4,6 +4,7 @@ import { ObjectEnvelopeSchema, reviseObjectEnvelope } from '../objects/object_en
 import { ObjectIdSchema } from '../identity/object_id.js';
 import { PendingReasonSchema } from '../workflow/pending_reason.js';
 import { DeliveryGateSchema, phaseDeliveryGate } from '../quality/delivery_gate.js';
+import { ProblemReviewSchema } from '../tickets/ticket_review.js';
 
 export const PHASE_STATES = [
   'created',
@@ -41,6 +42,7 @@ export const PhaseSchema = ObjectEnvelopeSchema.extend({
   deliverableIds: z.array(ObjectIdSchema).default([]),
   checkpointIds: z.array(ObjectIdSchema).default([]),
   reportIds: z.array(ObjectIdSchema).default([]),
+  problemReviews: z.array(ProblemReviewSchema).default([]),
   scope: z.array(z.string().min(1)).default([]),
   verificationGate: z.array(z.string().min(1)).min(1),
   /** Phase-level integrated delivery and live-scenario acceptance contract. */

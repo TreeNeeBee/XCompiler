@@ -88,6 +88,14 @@ export class ProjectStateService {
     return updated;
   }
 
+  /** Persist an executing Step's passed delivery in the same batch as its Ticket handoff. */
+  prepareStepDelivery(step: Step, qualityAssessmentId: ObjectId): PersistedDomainObject[] {
+    if (step.state !== 'in_progress') return [];
+    const assessed = reviseStep(step, { qualityAssessmentId });
+    const delivered = transitionStep(assessed, 'delivered');
+    return [assessed, delivered, stepTransitionEvent(assessed, delivered)];
+  }
+
   async attachPhaseQuality(phase: Phase, qualityAssessmentId: ObjectId): Promise<Phase> {
     const object = await this.repository.read(qualityAssessmentId);
     if (

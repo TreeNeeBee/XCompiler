@@ -17,6 +17,7 @@ import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain
 import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
+import { OriginalVerificationUnavailableError } from './corrective_workflow_service.js';
 
 export interface AttemptResultProcessorOptions {
   repository: DomainObjectRepositoryPort;
@@ -67,7 +68,21 @@ export class AttemptResultProcessor {
       return { action: 'stop', reason: 'Passing attempt has no Quality Assessment' };
     }
 
-    if (mode === 'normal') {
+    if (mode === 'verification') {
+      let closed: boolean;
+      try {
+        closed = await this.options.controller.verifyDeliveredBug({ work, qualityAssessmentId: result.assessment.id, testOutcomes: result.testOutcomes });
+      } catch (error) {
+        if (!(error instanceof OriginalVerificationUnavailableError)) throw error;
+        return stopFor(error.stop);
+      }
+      if (!closed) {
+        const current = await this.options.repository.read(work.ticket.id);
+        if (current.objectType === 'ticket' && (current.state === 'reopened' || current.blockedByTicketIds.length > 0)) return { action: 'continue', integrate: false };
+        return { action: 'stop', reason: `${work.ticket.name} has not passed its original reporter verification` };
+      }
+      await this.options.recordVerifiedBugResolution?.(work.ticket.id);
+    } else if (mode === 'normal') {
       await this.options.controller.deliverNormal(work, result.assessment.id);
     } else if (work.ticket.type === 'bug' || work.ticket.type === 'enhancement') {
       const affectedArtifacts = correctiveAffectedArtifacts(steps, work.step, result);
@@ -79,8 +94,8 @@ export class AttemptResultProcessor {
         steps, work.step, affectedArtifacts, project.language,
       );
       const solution = correctiveSolution(work, result.solutionPlan, result.changedFiles, result.commit);
-      // Nothing downstream to verify: right when the Bug is this Step's to prove and this attempt
-      // proved it, and a stop only otherwise.
+      // No downstream change hands the repair to its original reporter; same-Step repairs can
+      // also supply the original verification in this attempt.
       const sourceChange = {
         summary: result.solutionPlan ?? `Corrected ${work.ticket.name} in ${work.step.name}.`,
         entries: result.changes ?? changelistEntries(result.changedFiles),
@@ -88,11 +103,11 @@ export class AttemptResultProcessor {
         verification: result.assessment.evidence,
       };
       if (affected.length === 0) {
-        const closed = await this.options.controller.closeCorrectiveProvenAtOwnStep({
+        const delivered = await this.options.controller.completeCorrectiveWithoutPropagation({
           work, qualityAssessmentId: result.assessment.id, solution, sourceChange, testOutcomes: result.testOutcomes,
           debugWikiCandidateEntryIds: result.wikiEntryIds,
         });
-        if (!closed) return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
+        if (!delivered) return stopFor({ code: 'no_downstream_verification', ticketName: work.ticket.name });
       }
       const parentTicket = work.ticket.parentTicketId
         ? await this.options.repository.read(work.ticket.parentTicketId)
@@ -120,9 +135,7 @@ export class AttemptResultProcessor {
           : undefined,
         sourceChange,
       });
-      // No Change Request means the repair had nowhere to propagate: the Change Request it was
-      // raised inside re-applies that Step itself and carries the repair onward. The corrective
-      // Ticket closed in place, so there is nothing to route.
+      // Each CR is routed separately; a Bug without one remains deliver until its reporter verifies it.
       if (request) {
         await this.routeTicket(phase, work, request.id, request.type, request.source.correlationId);
       }
@@ -137,27 +150,7 @@ export class AttemptResultProcessor {
         application: result.changeRequestDisposition,
         testOutcomes: result.testOutcomes,
       });
-      if (completion.status === 'awaiting-verification') {
-        const reason = await this.options.controller.recordChangeRequestVerificationFailure({
-          work,
-          unprovenBugTicketIds: completion.unprovenBugTicketIds ?? [],
-          testOutcomes: result.testOutcomes,
-        });
-        await this.options.audit.event('note', `${work.step.name} Change Request verification incomplete`, {
-          messageId: 'domain.change_request_verification_incomplete',
-          projectId: work.step.projectId,
-          phaseId: phase.id,
-          stepId: work.step.id,
-          stepName: work.step.name,
-          ticketId: work.ticket.id,
-          reason,
-          unprovenBugTicketIds: completion.unprovenBugTicketIds ?? [],
-        });
-        // The candidate commit remains in its Ticket worktree for the next bounded attempt, but it
-        // is neither merged nor presented as a delivered Step until the immutable Bug contract is
-        // replayed successfully.
-        return { action: 'continue', integrate: false };
-      }
+      if (completion.status === 'rejected') return { action: 'continue', integrate: false };
       if (completion.closed) {
         for (const ticketId of completion.verifiedBugTicketIds ?? []) {
           await this.options.recordVerifiedBugResolution?.(ticketId);
@@ -282,6 +275,35 @@ export class AttemptResultProcessor {
       ...(result.gateFindings ?? []),
       ...(result.assessment?.findings ?? []),
     ]);
+    // Development work is not a verifier's defect report. The original Ticket already owns this
+    // failed attempt and its candidate; another Bug/Enhancement would block it behind itself.
+    if (STEP_TYPE_ORDER[work.step.type] <= STEP_TYPE_ORDER.CODE) {
+      const changes = gateFindings.filter((finding) => finding.category === 'change-request' &&
+        resolveFindingTarget(steps, work.step, finding).id !== work.step.id);
+      if (changes.length > 0) await this.routeGateFindings(phase, work, steps, result, changes);
+      const requests: ObjectId[] = [];
+      for (const finding of gateFindings.filter((finding) => finding.category !== 'change-request')) {
+        const target = resolveFindingTarget(steps, work.step, finding);
+        if (target.id === work.step.id) continue;
+        if (finding.category === 'dependency') {
+          await this.routeGateFindings(phase, work, steps, result, [finding]);
+          continue;
+        }
+        const request = await this.options.controller.routeWorkCorrection({
+          requestingTicketId: work.ticket.id, reportingStepId: work.step.id, targetStepId: target.id,
+          creatorActorId: await this.options.tickets.ownerActorId(work.ticket.id), finding,
+        });
+        requests.push(request.id);
+      }
+      if (requests.length > 0) await this.options.tickets.registerGateBatch(requests);
+      await this.options.audit.event('note', `${work.step.name} development failure retained on current Ticket`, {
+        messageId: 'domain.development_failure_retained',
+        projectId: work.step.projectId, phaseId: phase.id, stepId: work.step.id,
+        ticketId: work.ticket.id, workMode: mode,
+        failure: result.failure, findings: gateFindings,
+      });
+      return { action: 'continue' };
+    }
     // A corrective role can discover that an accepted artifact owned by another Step is deficient.
     // That is independent work, not another attempt at the current Bug. Route only cross-Step
     // quality gaps here; same-Step findings remain feedback for the current corrective Ticket, and
@@ -446,7 +468,7 @@ export class AttemptResultProcessor {
       await this.routeTicket(phase, work, routed.id, routed.type, routed.source.correlationId);
       return { action: 'continue' };
     }
-    if (mode !== 'normal') return { action: 'continue' };
+    if (mode !== 'normal' && mode !== 'verification') return { action: 'continue' };
     const routed = await this.options.controller.routeFailure({
       creatorActorId: await this.options.tickets.ownerActorId(work.ticket.id),
       failedStepId: work.step.id,
@@ -595,18 +617,19 @@ export class AttemptResultProcessor {
     if (!work.step.pairedStepId) {
       return { action: 'stop', reason: input.reason };
     }
-    const routed = await this.options.controller.routeFailure({
-      failedStepId: work.step.id,
-      message: input.failureLog ?? input.reason,
-      summary: input.reason,
-      failure: fallbackExecutionFailure(input.reason),
-      correlationId: work.ticket.source.correlationId,
-      causationId: work.ticket.id,
-      creatorActorId: await this.options.tickets.ownerActorId(work.ticket.id),
+    const current = await this.options.repository.read(work.ticket.id);
+    if (current.objectType !== 'ticket') throw new Error('Merge rejection source must be a Ticket');
+    await this.options.controller.intakeProblems({
+      projectId: phase.projectId, phaseId: phase.id, origin: 'merge-gate',
+      correlationId: work.ticket.source.correlationId, sourceTicketId: work.ticket.id,
+      candidateIdentity: input.workspaceBinding?.revision ?? current.commits.at(-1)?.revision ?? current.id,
       workspaceBinding: input.workspaceBinding,
-      bugKind: 'quality-gate',
+      reports: [{
+        category: 'product-defect', code: 'merge_gate_failed', target: 'code',
+        summary: input.reason, evidence: [input.failureLog ?? input.reason, ...(input.workspaceBinding ? [JSON.stringify(input.workspaceBinding)] : [])],
+        affectedArtifacts: work.step.outputs, dependencyPackages: [],
+      }],
     });
-    await this.routeTicket(phase, work, routed.id, routed.type, routed.source.correlationId);
     return { action: 'continue' };
   }
 
@@ -774,10 +797,8 @@ export function correctiveAffectedArtifacts(
   source: Step,
   result: AttemptResult,
 ): string[] {
-  if (result.changedFiles.length > 0) return [...new Set(result.changedFiles)];
-  if (result.bugResolutionDisposition?.outcome === 'deferred') {
-    return [...new Set(result.bugResolutionDisposition.affectedArtifacts)];
-  }
+  const artifacts = [...result.changedFiles, ...(result.bugResolutionDisposition?.outcome === 'deferred' ? result.bugResolutionDisposition.affectedArtifacts : [])];
+  if (artifacts.length > 0) return [...new Set(artifacts)];
   return [...source.outputs];
 }
 

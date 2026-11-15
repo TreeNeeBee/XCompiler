@@ -1,4 +1,5 @@
 import type { PhaseRelease } from './phase_release_tag.js';
+import type { TicketAcceptanceOptions } from './ticket_acceptance_service.js';
 import type { Plan } from '../../domain/planning/execution_plan.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import { renderFileManifest, upsertFileManifest } from '../workspace/file_manifest.js';
@@ -66,7 +67,7 @@ interface MergeIntegrationResult {
   superseded?: readonly MergeConflictSummary[];
 }
 
-export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, 'repository' | 'plugins'> {
+export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, 'repository' | 'plugins'>, TicketAcceptanceOptions {
   repository: DomainObjectRepositoryPort;
   plugins: PluginHost;
   projectionWriter?: ProjectProjectionWriter;
@@ -167,6 +168,31 @@ export class ProjectOrchestrator {
 
   constructor(private readonly options: ProjectOrchestratorOptions, private readonly draft: Plan) {
     this.scheduler = new ProjectController(options.repository, {
+      reviewTicket: options.reviewTicket,
+      readReviewArtifacts: options.readReviewArtifacts,
+      replayBugGate: async bug => {
+        if (!this.options.finalGate) throw new Error('Original Phase gate replay is not configured');
+        const gate = await this.options.finalGate();
+        const assessment = await this.quality.assessPhase({ phase: await this.requirePhase(bug.phaseId), passed: gate.ok,
+          evidence: gate.evidence ?? [gate.reason ?? 'Original Phase gate replay'], findings: gate.findings ?? [] });
+        const unrelated = (gate.findings ?? []).filter(finding => finding.code !== bug.failure.code || finding.target !== bug.failure.details?.findingTarget);
+        const blockers = !gate.ok && unrelated.length > 0 ? await this.scheduler.intakeProblems({
+          projectId: bug.projectId, phaseId: bug.phaseId, origin: 'phase-delivery-gate', reports: unrelated,
+          correlationId: bug.source.correlationId, candidateIdentity: (await this.options.canonicalRevisionState?.())?.head ?? assessment.id,
+        }) : [];
+        return { passed: gate.ok, assessmentId: assessment.id, findings: gate.findings ?? [], reason: gate.reason, stop: gate.stop, blockingTicketIds: blockers.map(ticket => ticket.id) };
+      },
+      retestProblem: async (report, phaseId) => {
+        if (report.origin === 'phase-delivery-gate') {
+          if (!this.options.finalGate) throw new Error('Phase gate replay is not configured');
+          return [{ ref: 'verification-replay', content: JSON.stringify(await this.options.finalGate()) }];
+        }
+        const replay = report.sourceTicketId && this.options.integrateTicket
+          ? await this.options.integrateTicket(report.sourceTicketId)
+          : this.options.integratePhase ? await this.options.integratePhase(phaseId) : undefined;
+        if (!replay) throw new Error('Merge gate replay is not configured');
+        return [{ ref: 'verification-replay', content: JSON.stringify(replay) }];
+      },
       onStepsClosed: (phaseId) => this.publishDelivery(phaseId),
       // After the manifest commit: the delivered tree, which later Phases' tests are judged against.
       deliveredRevision: async () => (await this.options.canonicalRevisionState?.())?.head,
@@ -555,6 +581,7 @@ export class ProjectOrchestrator {
       });
     }
     await this.scheduler.reconcileClosedCorrectiveTickets(phase.projectId);
+    await this.scheduler.resumeProblemConfirmations(phase.id);
     await this.runner.synchronizeVerifiedBugResolutions?.(phase.projectId);
     // A delivery interrupted after the Phase was recorded as delivered is finished, not repeated; and a
     // release whose tag was never made — the run died first, or the tag failed — is tagged now.
@@ -617,8 +644,22 @@ export class ProjectOrchestrator {
 
     let executed = 0;
     const progress = new ProjectProgressGuard(this.options.repository);
+    const integratedDeliveries = new Set<string>();
     for (;;) {
       this.throwIfAborted();
+      const objects = await this.options.repository.list({ objectType: 'ticket', projectId: phase.projectId });
+      for (const ticket of objects) {
+        if (ticket.objectType !== 'ticket' || ticket.phaseId !== phase.id || ticket.type !== 'change-request') continue;
+        const delivery = ticket.deliveries.at(-1);
+        if (!delivery || integratedDeliveries.has(delivery.requestId) || (ticket.state !== 'deliver' && ticket.state !== 'closed')) continue;
+        const accepted = await this.scheduler.resumeAcceptance(ticket.id);
+        if (!accepted.closed) continue;
+        const step = steps.find(candidate => candidate.id === ticket.targetStepId);
+        if (!step) throw new Error('Delivered CR has no target in its Phase');
+        const stopped = await this.integrateDeliveredTicket(phase, { phase, step, ticket }, steps.length, executed);
+        if (stopped) return stopped;
+        integratedDeliveries.add(delivery.requestId);
+      }
       const observation = await progress.observe(phase.projectId, phase.id);
       if (observation.stalled) {
         return this.failure(
@@ -645,16 +686,6 @@ export class ProjectOrchestrator {
           evidence: gate.evidence ?? [gate.reason ?? 'Phase delivery gate evaluated.'],
           findings: gate.findings ?? [],
         });
-        // Only a passing gate is a verdict on the Bugs waiting for it. A gate that failed, or could not
-        // judge at all, says nothing about a Bug whose finding it did not repeat; taking that silence
-        // as a pass closed one with "Phase delivery gate passed" recorded as its proof.
-        if (gate.ok) {
-          await this.scheduler.reconcilePhaseDeliveryBugs(
-            phase.id,
-            gate.findings ?? [],
-            phaseAssessment.id,
-          );
-        }
         if (!gate.ok) {
           const acceptance = steps.find((step) => step.type === 'FUNCTIONAL_TEST');
           if (!acceptance || !gate.findings?.length) {
@@ -673,6 +704,7 @@ export class ProjectOrchestrator {
               origin: 'phase-delivery-gate',
               reports: gate.findings,
               correlationId: createObjectId(),
+              candidateIdentity: (await this.options.canonicalRevisionState?.())?.head ?? phaseAssessment.id,
             });
           } catch (error) {
             return this.unchangedRecurrenceStop(error, phase, steps.length, executed, acceptance);
@@ -726,21 +758,11 @@ export class ProjectOrchestrator {
               );
             }
             // The gate observed the failure, so it creates the Bug and PM routes it.
-            await this.scheduler.routeFailure({
-              creatorActorId: await this.tickets.discovererActorIdForStep(acceptance.id),
-              failedStepId: acceptance.id,
-              message: integration.failureLog ?? integration.reason ?? 'Merge gate failed.',
-              summary: integration.reason ?? 'Merge gate failed.',
-              failure: {
-                kind: 'execution',
-                category: 'test',
-                code: 'merge_gate_failed',
-                message: integration.failureLog ?? integration.reason ?? 'Merge gate failed.',
-                retryable: true,
-                switchProvider: false,
-              },
-              bugKind: 'quality-gate',
-              correlationId: createObjectId(),
+            await this.scheduler.intakeProblems({
+              projectId: phase.projectId, phaseId: phase.id, origin: 'merge-gate', correlationId: createObjectId(),
+              candidateIdentity: (await this.options.canonicalRevisionState?.())?.head ?? phaseAssessment.id,
+              reports: [{ category: 'product-defect', code: 'merge_gate_failed', target: 'code',
+                summary: integration.reason ?? 'Merge gate failed.', evidence: [integration.failureLog ?? integration.reason ?? 'Merge gate failed.'], affectedArtifacts: [], dependencyPackages: [] }],
             });
             continue;
           }
@@ -851,63 +873,75 @@ export class ProjectOrchestrator {
         await this.projection.refresh(phase.projectId);
         return this.failure(phase.id, steps.length, executed, work.step, disposition.stop ?? disposition.reason);
       }
-      if (result.ok && disposition.integrate !== false && this.options.integrateTicket) {
-        // The delivering Ticket itself. Its ChangeSet is keyed on the CODE Story that owns the
-        // branch, and a Bug or CR repairing that Story is recorded on the same ChangeSet — whereas
-        // `rootTicketId` is the Phase Epic, which owns no branch and matches nothing.
-        const landed = await this.options.integrateTicket(work.ticket.id);
-        await this.recordMergeConflicts(phase, landed, work.step);
-        // A failing gate found a defect in the merged result and says so with its own checks, so it
-        // takes the repair path every other discovered defect takes. `blocked` is different in kind:
-        // the gate could not run, nothing about the project was shown to be wrong, and there is
-        // nothing to ask anyone to repair.
-        if (landed.status === 'failed') {
-          let gate: Awaited<ReturnType<AttemptResultProcessor['processIntegrationFailure']>>;
-          try {
-            gate = await this.results.processIntegrationFailure({
-              phase,
-              work,
-              reason: landed.reason ?? 'merge gate rejected the change',
-              failureLog: landed.failureLog,
-              workspaceBinding: landed.workspaceBinding,
-            });
-          } catch (error) {
-            return this.unchangedRecurrenceStop(error, phase, steps.length, executed, work.step);
-          }
-          if (gate.action === 'stop') {
-            return this.failure(phase.id, steps.length, executed, work.step, gate.reason);
-          }
-        } else if (landed.status === 'awaiting-authorization') {
-          await this.options.audit.event('note', `${work.step.name} passed its gate but was not merged`, {
-            messageId: 'domain.merge_awaiting_authorization',
-            projectId: work.step.projectId,
-            phaseId: phase.id,
-            stepId: work.step.id,
-            stepName: work.step.name,
-            ticketId: work.ticket.id,
-            reason: landed.reason,
-          });
-          return this.failure(
-            phase.id,
-            steps.length,
-            executed,
-            work.step,
-            landed.reason ?? { code: 'merge_authorization_required' },
-          );
-        } else if (landed.status === 'blocked') {
-          return this.failure(
-            phase.id, steps.length, executed, work.step,
-            landed.reason ?? { code: 'merge_integration', status: landed.status },
-          );
-        } else if (landed.status === 'conflicted') {
-          return this.failure(
-            phase.id, steps.length, executed, work.step,
-            mergeConflictStop(landed) ?? landed.reason ?? { code: 'merge_integration', status: landed.status },
-          );
+      if (result.ok && disposition.integrate !== false) {
+        const stopped = await this.integrateDeliveredTicket(phase, work, steps.length, executed);
+        if (stopped) return stopped;
+        const delivered = await this.options.repository.read(work.ticket.id);
+        if (delivered.objectType === 'ticket' && delivered.type === 'change-request') {
+          const delivery = delivered.deliveries.at(-1);
+          if (delivery) integratedDeliveries.add(delivery.requestId);
         }
-        // `superseded` needs nothing here: the generation's owner reruns as ordinary scheduled work.
       }
     }
+  }
+
+  private async integrateDeliveredTicket(phase: Phase, work: ScheduledWork, totalSteps: number, executed: number): Promise<ProjectOrchestratorResult | undefined> {
+    if (!this.options.integrateTicket) return undefined;
+    // The delivering Ticket itself. Its ChangeSet is keyed on the CODE Story that owns the
+    // branch, and a Bug or CR repairing that Story is recorded on the same ChangeSet — whereas
+    // `rootTicketId` is the Phase Epic, which owns no branch and matches nothing.
+    const landed = await this.options.integrateTicket(work.ticket.id);
+    await this.recordMergeConflicts(phase, landed, work.step);
+    // A failing gate found a defect in the merged result and says so with its own checks, so it
+    // takes the repair path every other discovered defect takes. `blocked` is different in kind:
+    // the gate could not run, nothing about the project was shown to be wrong, and there is
+    // nothing to ask anyone to repair.
+    if (landed.status === 'failed') {
+      let gate: Awaited<ReturnType<AttemptResultProcessor['processIntegrationFailure']>>;
+      try {
+        gate = await this.results.processIntegrationFailure({
+          phase,
+          work,
+          reason: landed.reason ?? 'merge gate rejected the change',
+          failureLog: landed.failureLog,
+          workspaceBinding: landed.workspaceBinding,
+        });
+      } catch (error) {
+        return this.unchangedRecurrenceStop(error, phase, totalSteps, executed, work.step);
+      }
+      if (gate.action === 'stop') {
+        return this.failure(phase.id, totalSteps, executed, work.step, gate.reason);
+      }
+    } else if (landed.status === 'awaiting-authorization') {
+      await this.options.audit.event('note', `${work.step.name} passed its gate but was not merged`, {
+        messageId: 'domain.merge_awaiting_authorization',
+        projectId: work.step.projectId,
+        phaseId: phase.id,
+        stepId: work.step.id,
+        stepName: work.step.name,
+        ticketId: work.ticket.id,
+        reason: landed.reason,
+      });
+      return this.failure(
+        phase.id,
+        totalSteps,
+        executed,
+        work.step,
+        landed.reason ?? { code: 'merge_authorization_required' },
+      );
+    } else if (landed.status === 'blocked') {
+      return this.failure(
+        phase.id, totalSteps, executed, work.step,
+        landed.reason ?? { code: 'merge_integration', status: landed.status },
+      );
+    } else if (landed.status === 'conflicted') {
+      return this.failure(
+        phase.id, totalSteps, executed, work.step,
+        mergeConflictStop(landed) ?? landed.reason ?? { code: 'merge_integration', status: landed.status },
+      );
+    }
+    // `superseded` needs nothing here: the generation's owner reruns as ordinary scheduled work.
+    return undefined;
   }
 
   private throwIfAborted(): void {

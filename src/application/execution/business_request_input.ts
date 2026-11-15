@@ -41,6 +41,10 @@ export const ContractBasisJudgementOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('contract-basis-judgement'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
   actorId: ObjectId, role: z.literal('project-manager'), roleVersion: Text, work: z.literal('judge.contract-basis'),
 }).strict();
+export const TicketReviewOwnerSchema = ModelPoolBindingSchema.extend({
+  kind: z.literal('ticket-review'), projectId: ObjectId, phaseId: ObjectId, executionId: UUID,
+  subjectId: ObjectId, actorId: ObjectId, role: RoleIdSchema, roleVersion: Text, work: z.literal('review.ticket'),
+}).strict();
 export const PlanningOperationOwnerSchema = ModelPoolBindingSchema.extend({
   kind: z.literal('planning-operation'), operationId: UUID,
   operation: z.enum(['clarification', 'phase-plan', 'phase-decomposition']),
@@ -64,7 +68,7 @@ export const ProjectPlanningOperationOwnerSchema = ModelPoolBindingSchema.extend
 }).strict();
 export const StepExecutionOwnerSchema = ExecutionRequestScopeSchema.extend({ kind: z.literal('step-execution') }).strict();
 export const BusinessRequestOwnerSchema = z.discriminatedUnion('kind', [
-  ScenarioJudgementOwnerSchema, ContractBasisJudgementOwnerSchema, PlanningOperationOwnerSchema,
+  ScenarioJudgementOwnerSchema, ContractBasisJudgementOwnerSchema, TicketReviewOwnerSchema, PlanningOperationOwnerSchema,
   ProjectPlanningOperationOwnerSchema, StepExecutionOwnerSchema, TextTranslationOwnerSchema,
 ]);
 export type ScenarioJudgementOwner = z.infer<typeof ScenarioJudgementOwnerSchema>;
@@ -330,6 +334,7 @@ export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInp
       || (ticket !== undefined && (ticket.id.toLowerCase() !== owner.ticketId
         || ticket.projectId.toLowerCase() !== owner.projectId || ticket.phaseId.toLowerCase() !== owner.phaseId
         || (executingStepId !== undefined && executingStepId.toLowerCase() !== owner.stepId)
+        || (ticket.type === 'change-request' && ticket.stepId !== undefined && ticket.stepId !== ticket.targetStepId)
         || (owner.assignmentId !== undefined && ticket.activeAssignmentId?.toLowerCase() !== owner.assignmentId)))) {
       throw new BusinessRequestInputError('invalid', { logicalRequestId: input.logicalRequestId, field: 'audit_context' });
     }
@@ -355,7 +360,7 @@ export function assertBusinessRequestAuditContext(input: Pick<BusinessRequestInp
       ownerMatches = input.owner.kind === 'planning-operation' || input.owner.kind === 'project-planning-operation';
       break;
   }
-  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'contract-basis-judgement'
+  if (!ownerMatches || input.owner.kind === 'scenario-judgement' || input.owner.kind === 'contract-basis-judgement' || input.owner.kind === 'ticket-review'
     || input.owner.kind === 'step-execution'
     || input.owner.kind === 'text-translation' || input.owner.operation !== operation
     || input.templateVersion !== input.auditContext.templateVersion

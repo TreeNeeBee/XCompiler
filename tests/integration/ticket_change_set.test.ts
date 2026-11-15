@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { withField } from '../support/domain_objects.js';
 import { simpleGit } from 'simple-git';
 import { createObjectId } from '../../src/domain/identity/object_id.js';
-import { createObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
+import { createObjectEnvelope, reviseObjectEnvelope } from '../../src/domain/objects/object_envelope.js';
 import { TicketChangeSetService } from '../../src/application/workspace/ticket_change_set_service.js';
 import { GitRepositoryService } from '../../src/infrastructure/git/git_repository_service.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
@@ -153,6 +153,39 @@ describe('TicketChangeSetService', () => {
     const inherited = await service.ensureFor(correction, design);
     expect(inherited.changeSet?.id).toBe(promoted.changeSet?.id);
     expect(inherited.root).toBe(promoted.root);
+  });
+
+  it('verifies a delivered Bug against the integrated canonical revision and refuses an unmerged repair', async () => {
+    const { service, repository, story, coding, canonical, graph } = await fixture();
+    const initial = withField(await service.ensureFor(story, coding), 'changeSet');
+    const bug = await registerBug(repository, story);
+    const repair = await service.ensureFor(bug, coding);
+    const git = simpleGit({ baseDir: repair.root });
+    await fs.writeFile(path.join(repair.root, 'repair.txt'), 'Integrated repair evidence');
+    await git.add('repair.txt');
+    await git.commit('repair candidate');
+    const revision = (await git.revparse(['HEAD'])).trim();
+    let changeSet = await service.recordRevision(initial.changeSet.id, revision);
+    const current = await repository.read(bug.id);
+    if (current.objectType !== 'ticket') throw new Error('Bug fixture missing');
+    const delivered = TicketSchema.parse({ ...current, ...reviseObjectEnvelope(current), state: 'deliver',
+      solution: { status: 'proposed', approach: 'Repair implementation', rationale: 'Original failing contract', changes: ['repair.txt'], verification: [], updatedAt: new Date().toISOString() } });
+    await repository.update(delivered);
+    const verifier = graph.steps.find(step => step.type === 'UNIT_TEST')!;
+    await expect(service.ensureFor(delivered, verifier)).rejects.toThrow('requires its correction to be integrated');
+    await simpleGit({ baseDir: canonical }).merge(['--ff-only', changeSet.sourceBranch]);
+    for (const state of ['reviewing', 'gate-passed'] as const) {
+      changeSet = transitionChangeSet(changeSet, state);
+      await repository.update(changeSet, changeSet.state);
+    }
+    changeSet = transitionChangeSet(changeSet, 'merged', { mergedRevision: revision });
+    await repository.update(changeSet, changeSet.state);
+    await service.release(changeSet.id);
+    await repository.load();
+    const verification = await service.ensureFor(delivered, verifier);
+    expect(verification.root).toBe(canonical);
+    expect(verification.ticket.workspaceBinding).toMatchObject({ kind: 'canonical', revision });
+    expect(await fs.readFile(path.join(verification.root, 'repair.txt'), 'utf8')).toBe('Integrated repair evidence');
   });
 
   it('creates one branch and worktree for a root Ticket', async () => {

@@ -39,7 +39,7 @@ describe('Rule binding computation (change list 1.5, item 4)', () => {
       expect(slots(base)).not.toContain(deferred);
       expect(slots({ ...base, work: 'change.apply', baselineDeferred: true })).toContain(deferred);
       // A Bug on a design Step was opened by its paired verification: repairing it is the job.
-      expect(slots({ ...base, work: 'repair.debug', baselineDeferred: true })).not.toContain(deferred);
+      expect(slots({ ...base, work: 'repair.debug', baselineDeferred: true })).toContain(deferred);
     },
   );
 
@@ -182,7 +182,7 @@ describe('the Rule block a request receives', () => {
     expect((await boundRuleBlock({ ...design, baselineDeferred: true })).content)
       .toContain('Do not record that deferral as a quality gap');
     expect((await boundRuleBlock({ ...design, baselineDeferred: false })).content).not.toContain('Design Step');
-    expect((await boundRuleBlock({ ...design, work: 'repair.debug', baselineDeferred: true })).content).not.toContain('Design Step');
+    expect((await boundRuleBlock({ ...design, work: 'repair.debug', baselineDeferred: true })).content).toContain('Design Step');
   });
 
   // A contract-change hop kept the old contract's assertions so its baseline stayed green; the CODE

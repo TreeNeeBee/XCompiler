@@ -5,7 +5,7 @@ import { STEP_TYPE_ORDER, stepSatisfiesDependency, type Step } from '../../domai
 import { isActiveTicket, workStepId, type Ticket, type WorkTicket } from '../../domain/tickets/ticket.js';
 import { TicketWorkflow } from './ticket_workflow.js';
 
-export type WorkMode = 'normal' | 'debug' | 'enhancement' | 'change-request';
+export type WorkMode = 'normal' | 'debug' | 'verification' | 'enhancement' | 'change-request';
 
 export interface ScheduledWork {
   phase: Phase;
@@ -177,18 +177,21 @@ function activeCorrectiveTickets(step: Step, tickets: readonly Ticket[]): Ticket
     // the Step again re-runs a repair that already landed and the Ticket comes straight back: a live
     // run spent three cycles there before anyone noticed it was the same repair each time.
     .filter((ticket) => ticket.state !== 'resolved')
+    .filter((ticket) => ticket.pendingReason !== 'change-request')
+    .filter((ticket) => ticket.type !== 'change-request' || ticket.state !== 'deliver')
     .filter((ticket) => ticket.duplicateOfTicketId === undefined)
     .filter((ticket) => ticket.blockedByTicketIds.length === 0)
     .filter((ticket) =>
-      // Bugs and Enhancements are repaired at the Step `workStepId` designates, which is the same
-      // rule PM routes them by. A Change Request is the exception: it spans several Steps, so it is
-      // matched against whichever of them still lacks an application.
+      // Bugs and Enhancements use the same work Step as PM routing. Each CR has one target and an
+      // old application does not complete a candidate the reporter sent back for another attempt.
       ((ticket.type === 'bug' || ticket.type === 'enhancement') &&
         workStepId(ticket) === step.id &&
-        !ticket.changeRequestTicketIds.some((id) => openChangeRequests.has(id))) ||
+        (ticket.state === 'in_progress' || ticket.state === 'reopened' || !ticket.changeRequestTicketIds.some((id) => openChangeRequests.has(id)))) ||
       (ticket.type === 'change-request' &&
         ticket.targetStepId === step.id &&
-        !ticket.applications.some((application) => application.stepId === step.id)))
+        (ticket.state === 'reopened' ||
+          ticket.acceptanceRecords.some(record => record.requestId === ticket.deliveries.at(-1)?.requestId && record.verdict.decision !== 'accept') ||
+          !ticket.applications.some((application) => application.stepId === step.id))))
     .sort((left, right) =>
       correctionRank(right) - correctionRank(left) ||
       right.priority - left.priority ||
@@ -210,7 +213,7 @@ function scheduledStepId(ticket: Ticket): ObjectId | undefined {
 }
 
 export function workModeFor(ticket: Ticket): WorkMode {
-  if (ticket.type === 'bug') return 'debug';
+  if (ticket.type === 'bug') return ticket.state === 'deliver' ? 'verification' : 'debug';
   if (ticket.type === 'enhancement') return 'enhancement';
   if (ticket.type === 'change-request') return 'change-request';
   return 'normal';

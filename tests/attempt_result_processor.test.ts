@@ -9,6 +9,41 @@ import {
 } from '../src/application/project_management/attempt_result_processor.js';
 import type { Step } from '../src/domain/steps/step.js';
 
+describe('development failures stay on the original work', () => {
+  it.each(['REQUIREMENT_ANALYSIS', 'HIGH_LEVEL_DESIGN', 'DETAILED_DESIGN', 'CODE'] as const)(
+    '%s does not manufacture a child Bug for a failed test or entrypoint', async (type) => {
+      const routed: string[] = [];
+      const audit: unknown[] = [];
+      // A processor boundary fixture: all unrelated controller operations are intentionally absent.
+      const processor = new AttemptResultProcessor({
+        controller: {
+          routeFailure: async () => { routed.push('bug'); throw new Error('unexpected Bug'); },
+          routeQualityGap: async () => { routed.push('enhancement'); throw new Error('unexpected Enhancement'); },
+        },
+        audit: { event: async (_kind: string, _text: string, data: unknown) => { audit.push(data); } },
+      } as unknown as ConstructorParameters<typeof AttemptResultProcessor>[0]);
+      for (const ticketType of ['story', 'change-request', 'bug'] as const) {
+        const failure = {
+          kind: 'execution' as const, category: 'test' as const,
+          code: type === 'CODE' ? 'entrypoint_launch_failed' : 'test_command_failed',
+          message: 'captured failure', retryable: true, switchProvider: false,
+          details: { exitCode: 1, originalEvidence: 'immutable evidence reference' },
+        };
+        const step = { id: 'step', type, projectId: 'project', name: type } as Step;
+        const disposition = await processor.process({
+          phase: { id: 'phase' },
+          work: { step, ticket: { id: 'original', type: ticketType, name: 'original' } },
+          steps: [step],
+          result: { ok: false, failure, changedFiles: ['owned-output'], wikiEntryIds: [], testOutcomes: [] },
+        } as unknown as Parameters<AttemptResultProcessor['process']>[0]);
+        expect(disposition).toEqual({ action: 'continue' });
+        expect(audit.at(-1)).toMatchObject({ ticketId: 'original', failure });
+      }
+      expect(routed).toEqual([]);
+    },
+  );
+});
+
 describe('correctivePropagationStepIds shortcut reachability', () => {
   const step = (id: string, type: string, state: string, pairedStepId?: string) =>
     ({ id, name: id, type, state, pairedStepId, projectId: 'p', phaseId: 'ph', outputs: [] } as unknown as Step);
@@ -156,7 +191,7 @@ describe('correctiveAffectedArtifacts', () => {
 });
 
 describe('Change Request verification completion', () => {
-  it('does not deliver or merge a passing-quality attempt that did not replay its source Bug', async () => {
+  it('does not merge a passing target delivery rejected by its reporter', async () => {
     const auditEvents: Array<Record<string, unknown>> = [];
     const transitions: Array<Record<string, unknown>> = [];
     const recordedFailures: Array<Record<string, unknown>> = [];
@@ -164,7 +199,7 @@ describe('Change Request verification completion', () => {
       repository: { read: async () => undefined, list: async () => [], commit: async () => {} },
       controller: {
         completeChangeRequestStep: async () => ({
-          status: 'awaiting-verification',
+          status: 'rejected',
           closed: false,
           unprovenBugTicketIds: ['bug-id'],
         }),
@@ -207,10 +242,8 @@ describe('Change Request verification completion', () => {
     });
 
     expect(disposition).toEqual({ action: 'continue', integrate: false });
-    expect(recordedFailures).toHaveLength(1);
-    expect(auditEvents.map((event) => event.messageId)).toEqual([
-      'domain.change_request_verification_incomplete',
-    ]);
+    expect(recordedFailures).toHaveLength(0);
+    expect(auditEvents).toEqual([]);
     expect(transitions).toEqual([]);
   });
 });
@@ -234,7 +267,7 @@ describe('renderFindingMessage', () => {
 });
 
 describe('corrective routing evidence', () => {
-  it('carries the preserved workspace and exact finding artifacts into an Enhancement', async () => {
+  it('keeps an owned development quality gap on the original Ticket', async () => {
     const { AttemptResultProcessor } = await import(
       '../src/application/project_management/attempt_result_processor.js');
     const routed: Array<Record<string, unknown>> = [];
@@ -311,11 +344,7 @@ describe('corrective routing evidence', () => {
       },
     });
 
-    expect(routed).toHaveLength(1);
-    expect(routed[0]).toMatchObject({
-      affectedArtifacts: ['tests/modules/domain.test.ts'],
-      workspaceBinding: binding,
-    });
+    expect(routed).toEqual([]);
   });
 
   it('keeps findings with different machine codes as independent routed Tickets', async () => {
@@ -351,7 +380,7 @@ describe('corrective routing evidence', () => {
       onTransition: async () => {},
     } as never);
     const step = {
-      id: 'step-id', name: 'P1-S004', type: 'CODE', projectId: 'project-id', phaseId: 'phase-id',
+      id: 'step-id', name: 'P1-S005', type: 'UNIT_TEST', projectId: 'project-id', phaseId: 'phase-id',
     } as Step;
     const finding = {
       category: 'product-defect' as const,
@@ -409,9 +438,9 @@ describe('corrective routing evidence', () => {
     const processor = new AttemptResultProcessor({
       repository: { read: async () => undefined, list: async () => [], commit: async () => {} },
       controller: {
-        routeQualityGap: async (input: Record<string, unknown>) => {
+        routeWorkCorrection: async (input: Record<string, unknown>) => {
           routed.push(input);
-          return { id: 'enhancement-id', type: 'enhancement', source: { correlationId: 'correlation-id' } };
+          return { id: 'request-id', type: 'change-request', source: { correlationId: 'correlation-id' } };
         },
       },
       tickets: { ownerActorId: async () => 'actor-id', registerGateBatch: async () => [] },
@@ -441,11 +470,11 @@ describe('corrective routing evidence', () => {
     const processor = new AttemptResultProcessor({
       repository: { read: async () => undefined, list: async () => [], commit: async () => {} },
       controller: {
-        routeQualityGap: async (input: Record<string, unknown>) => {
+        routeWorkCorrection: async (input: Record<string, unknown>) => {
           routed.push(input);
           return {
-            id: 'enhancement-id',
-            type: 'enhancement',
+            id: 'request-id',
+            type: 'change-request',
             source: { correlationId: 'correlation-id' },
           };
         },
@@ -496,12 +525,12 @@ describe('corrective routing evidence', () => {
 
     expect(routed).toHaveLength(1);
     expect(routed[0]).toMatchObject({
-      sourceStepId: requirement.id,
+      reportingStepId: requirement.id,
       targetStepId: design.id,
-      sourceBugTicketId: 'bug-id',
-      affectedArtifacts: ['package.json'],
+      requestingTicketId: 'bug-id',
+      finding: { code: 'language_test_entrypoint_contract_invalid', affectedArtifacts: ['package.json'] },
     });
-    expect(registered).toEqual([['enhancement-id']]);
+    expect(registered).toEqual([['request-id']]);
   });
 
   it('keeps a current-Step quality finding on its existing Change Request', async () => {

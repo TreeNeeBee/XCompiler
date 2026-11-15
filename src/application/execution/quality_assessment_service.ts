@@ -26,6 +26,7 @@ export class QualityAssessmentService {
     evidence?: string[];
     gaps?: string[];
     findings?: readonly DeliveryGateFinding[];
+    scope?: QualityAssessment['scope'];
     now?: string;
   }): Promise<QualityAssessment> {
     const kpis = await Promise.all(input.step.kpiIds.map(async (id) => {
@@ -68,6 +69,7 @@ export class QualityAssessmentService {
         now: observedAt,
       }),
       subject: { id: input.step.id, objectType: 'step' },
+      scope: input.scope ?? 'full-step',
       observations,
       score: result.score,
       passed: result.passed && (input.gaps?.length ?? 0) === 0 && (input.findings?.length ?? 0) === 0,

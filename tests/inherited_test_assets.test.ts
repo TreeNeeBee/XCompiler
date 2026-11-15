@@ -1,3 +1,4 @@
+import { TicketRegistrationService } from '../src/application/project_management/ticket_registration_service.js';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -121,7 +122,7 @@ describe('a Phase gate finding aimed at a verification level', () => {
     await repository.load();
     const graph = materializeProjectGraph({ draft: twoPhasePlan(), topic: 'Export signals.', projectName: 'signals' });
     await new ProjectGraphPersistenceService(repository).persistGraph(graph);
-    const [ticket] = await new ProjectManagerIntakeService(repository).accept({
+    const [ticket] = await new ProjectManagerIntakeService(repository, { reviewTicket: async () => ({ kind: 'problem-confirmation', decision: 'confirmed', reason: 'Verifier confirmed the target ownership', evidenceRefs: ['original-finding'], ticketType: 'bug', targetStepId: graph.steps.find(step => step.type === type && step.phaseId === graph.phases[0]!.id)!.id }) }).accept({
       projectId: graph.project.id, phaseId: graph.phases[0]!.id, origin: 'phase-delivery-gate', correlationId: createObjectId(),
       reports: [{ category: 'product-defect', code: `delivery_check_failed:tests:${target}`, summary: 'A stale P1 assertion.',
         evidence: ['assert 19 == 16'], target, affectedArtifacts: ['tests/verification/p1/integration-test/x/test_s.py'], dependencyPackages: [] }],
@@ -141,7 +142,7 @@ describe('an unregistered change to an inherited test, found at a verification S
     const setup = await secondPhaseAttempt();
     const integration = setup.steps.find((step) => step.type === 'INTEGRATION_TEST')!;
     const bug = await new CorrectiveWorkflowService(setup.repository).routeFailure({
-      creatorActorId: setup.testEngineerId, failedStepId: integration.id, message: 'unregistered', summary: 'unregistered',
+      creatorActorId: await new TicketRegistrationService(setup.repository).discovererActorIdForStep(integration.id), failedStepId: integration.id, message: 'unregistered', summary: 'unregistered',
       failure: { kind: 'execution', category: 'quality', code: 'inherited_test_change_unregistered', message: 'unregistered',
         retryable: true, switchProvider: false, details: { paths: [file] } },
       correlationId: createObjectId(), bugKind: 'test-failure',
@@ -661,7 +662,7 @@ describe('a verification failure confined to inherited supplements', () => {
     const bug = await new CorrectiveWorkflowService(setup.repository).routeFailure({
       failedStepId: integration.id, message: 'assert 19 == 16', summary: 'Integration gate failed.',
       failure: { kind: 'execution', category: 'test', code: 'test_command_failed', message: 'assert 19 == 16', retryable: true, switchProvider: false },
-      bugKind: 'test-failure', correlationId: createObjectId(), creatorActorId: setup.testEngineerId,
+      bugKind: 'test-failure', correlationId: createObjectId(), creatorActorId: await new TicketRegistrationService(setup.repository).discovererActorIdForStep(integration.id),
       testOutcomes: [{ status: 'failed', stepType: 'INTEGRATION_TEST', tool: 'run_tests', args: [failedTest.split('::')[0]!], timedOut: false,
         failedTests: [failedTest], recordedAt: new Date().toISOString() }],
     });

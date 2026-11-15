@@ -47,6 +47,9 @@ export const BugVerificationRecordSchema = z.object({
   verificationStepId: ObjectIdSchema,
   verificationStepType: z.enum(STEP_TYPES),
   qualityAssessmentId: ObjectIdSchema,
+  reporterActorId: ObjectIdSchema.optional(),
+  acceptedChangeRequestIds: z.array(ObjectIdSchema).default([]),
+  phaseGateAssessmentId: ObjectIdSchema.optional(),
   executedTestSelectors: z.array(z.string().min(1)).default([]),
   recordedAt: z.string().datetime({ offset: true }),
 }).strict();

@@ -164,6 +164,7 @@ export interface ExecutorRunInput {
     | 'initial-pre-code'
     | 'pre-code-correction'
     | 'contract-change'
+    | 'source-delivery'
     | 'code-step'
     | 'post-code-correction'
     | 'verification-step';

@@ -70,7 +70,7 @@ export const ExecutionPromptContextSchema = z.object({
   project: z.object({ intent: z.enum(PLAN_INTENTS), projectType: z.enum(PROJECT_TYPES) }).strict().optional(),
   baselineTestExecution: z.enum(['execute', 'defer']).optional(),
   baselineTestExecutionReason: z.enum([
-    'initial-pre-code', 'pre-code-correction', 'contract-change', 'code-step', 'post-code-correction', 'verification-step',
+    'initial-pre-code', 'pre-code-correction', 'contract-change', 'source-delivery', 'code-step', 'post-code-correction', 'verification-step',
   ]).optional(),
   acceptedContractChanges: z.array(AcceptedContractChangeSchema).readonly().optional(),
   contextSnippets: z.array(z.object({

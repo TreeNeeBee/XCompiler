@@ -36,6 +36,7 @@
 | 2026-11-10 | [2026-11-10-d79-d87-change-report.md](2026-11-10-d79-d87-change-report.md) | 变更说明 | CC | D-79～D-87：RR-01～RR-03 处理、发布标签、真实续跑发现的 D-85/D-86、交付收尾 D-87；影响分析、已知问题与审计重点 |
 | 2026-11-10 | [2026-11-10-d79-d89-codex-audit-report.md](2026-11-10-d79-d89-codex-audit-report.md) | 独立审计 | Codex | D-79～D-89 与未提交改动，含交付越界、恢复与契约问题，以及 dbc2excel-7 P1 业务质量和门禁取证 |
 | 2026-11-12 | [2026-11-12-dbc2excel-7-p2-gate-context-fix.md](2026-11-12-dbc2excel-7-p2-gate-context-fix.md) | 故障与修复记录 | Codex | D-95：Python 路径加载误报、Runtime 内联证据来源及 P2 剩余测试缺口 |
+| 2026-11-15 | [2026-11-15-ticket-responsibility-change-report.md](2026-11-15-ticket-responsibility-change-report.md) | 变更报告 | Codex | Ticket 职责、CR 独立验收、Bug 原范围复验、旧票迁移与中断恢复 |
 
 ## 约定
 

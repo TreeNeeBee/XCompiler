@@ -31,6 +31,7 @@ export const WORK_IDS = [
   'judge.scenario',
   /** Whether a cited contract truly supersedes a test an earlier Phase delivered. */
   'judge.contract-basis',
+  'review.ticket',
   'manage.project',
   /** Translating free text between the user's locale and the English models read (prompt translation). */
   'text.translate',
@@ -73,7 +74,7 @@ const STEP_DEFAULT_ROLE: Readonly<Record<StepWorkId, RoleId | 'developer'>> = Ob
   'verify.functional': 'test-engineer',
 });
 
-const OPERATION_ROLE: Readonly<Record<Exclude<WorkId, StepWorkId | 'repair.debug' | 'change.apply'>, RoleId>> =
+const OPERATION_ROLE: Readonly<Record<Exclude<WorkId, StepWorkId | 'repair.debug' | 'change.apply' | 'review.ticket'>, RoleId>> =
   Object.freeze({
     'plan.clarify': 'project-manager',
     'plan.phase': 'planner',

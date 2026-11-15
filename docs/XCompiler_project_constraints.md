@@ -41,15 +41,20 @@ Confirmed by the user on 2026-09-07:
   states what it provides, and PM assembles an actor (role profile plus model pool) at runtime and
   registers it in the object registry. Plans record work only; they never choose a role. Eligibility
   and actor selection are deterministic business-layer policy, never RuleChain content.
-- PM creates only Project-context Epic and V-model Story Tickets. Inside a Phase, the actor or gate
-  with the technical context creates Task, Bug, Enhancement, and Change Request Tickets.
-- Data, failures, or observations originating outside a Phase enter through PM's problem-intake
-  boundary. PM may materialize a Ticket there because the external caller submits evidence rather
-  than a Phase-local Ticket.
+- PM creates Project-context Epic and V-model Story Tickets. Inside a Phase, the actor with the
+  technical context creates the work. Only S5-S8 verification Actors may create a new Bug, with that
+  Actor as its reporter. S1-S4 retain their own failures on the current Ticket and use a CR for
+  cross-owner work; they do not manufacture a Bug or Enhancement to retry their own work.
+- External gate findings enter PM problem intake. The matching S5-S8 Actor independently reviews
+  captured evidence and ownership, returning a retained structured confirmation before a Bug or CR
+  is created. Insufficient evidence permits one additional evidence collection and review; an
+  unresolved finding remains unconfirmed. PM never invents technical confirmation or impersonates
+  the verifier. Report, candidate, reporter, request identity and every review round survive restart.
 - PM does not invent, merge, reclassify, or rewrite technical context. It records governance
   decisions and requests domain transitions through typed application commands.
-- Ticket ownership belongs to the assigned processor. PM retains monitoring, routing, reassignment,
-  escalation, delivery, and administrative closure authority.
+- A Ticket's assignment names its current processor; `reporterActorId` names its acceptance and
+  closure owner. PM owns monitoring, routing, reassignment and handoff, while technical acceptance
+  belongs to the reporter. Explicit Actor model-pool overrides remain isolated from global fallbacks.
 
 ### Routing-time duplicate Bug policy
 
@@ -84,12 +89,24 @@ only authority that changes Ticket state.
   and append-only trace history remain explicit and globally identifiable.
 - Every Bug preserves the original stage, operation, target, structured failure identity, raw
   evidence reference, and an executable verification contract. Exact replay proof is append-only and
-  remains attached to the Bug while its CR continues through later impact Steps.
-- A Bug becomes `resolved` only after its repair is applied and the repairing Step's own delivery
-  gate passes. `resolved` means implementation is complete while the original failure verdict is
-  still outstanding; it is not executable or blocked work. The Bug closes only after its original
-  failure contract is replayed successfully at the designated verification Step. The same failure
-  recurring reopens that Bug. A downstream gate passing for unrelated work is not closure proof.
+  remains attached to the Bug; final proof must follow acceptance of all associated CRs.
+- A repaired Bug with downstream CRs enters `pending / change-request` under PM custody. After
+  every associated CR closes, or after its own delivery when no CR is required, it enters `deliver`
+  and is assigned to its original S5-S8 reporter. It closes only after that reporter passes the
+  original failure scope with a full verification assessment. Phase-gate Bugs also require their
+  original external gate to pass. A different test passing, a source-delivery assessment, a cancelled
+  CR, or a CR reporter's acceptance is never Bug closure proof. The same failure reuses the original
+  Bug and its budgets; failures and evidence remain append-only.
+- A CR target passing its own gate submits an immutable delivery (`deliver`). The reporter invokes
+  its own model to accept or reject that candidate and to decide whether another downstream CR is
+  necessary. The next hop is persisted before the current hop closes, and restart reuses its identity.
+  Each CR closes independently of its source Bug, avoiding mutual waits. Rejection reopens the same
+  CR. Accepted responses are recovered by exact request identity; absent adoption is not proof that
+  a model request was never sent and cannot authorize silent resend.
+- Active legacy Tickets receive an explicit, audited reporter migration. An old development-created
+  Bug retains its ID, creator, evidence and budget; its reporter becomes the original designated
+  verifier. Old passing CR applications require independent acceptance; old repaired Bugs require
+  fresh reporter verification. Historical closed/cancelled Tickets are not rewritten or auto-passed.
 - Scheduled work derives its execution mode from canonical Ticket type at the execution boundary.
   A persisted or independently supplied `work.mode` is forbidden because it duplicates lifecycle
   state and can disagree with the Ticket.
@@ -102,9 +119,10 @@ only authority that changes Ticket state.
 - A person's contract change enters only a Phase in progress, through `run --change-request`; PM
   validates it before any model call and it then follows the ordinary propagation. Each listed
   artifact must be owned by a Step the change reaches, and its id stays bound to its content.
-- A folded Change Request hop retains every source Ticket explicitly. Closing the hop must reconcile
-  every source; its final hop must prove every active source Bug's exact verification contract before
-  any closure transition. A secondary Bug or Enhancement must not remain parked indefinitely.
+- A folded Change Request hop retains every source Ticket explicitly and never combines different
+  reporters or mutates a candidate already awaiting acceptance. Closing the hop reconciles each
+  source's handoff without closing its Bugs. A reopened source still being repaired cannot be
+  delivered merely because its earlier CRs are closed.
 - Bug, Enhancement, Change Request, dependency, permission, and environment outcomes remain distinct
   for lifecycle, audit, metrics, and model scoring.
 
@@ -113,9 +131,14 @@ only authority that changes Ticket state.
 - Every implementation Phase contains the canonical eight Steps:
   `REQUIREMENT_ANALYSIS`, `HIGH_LEVEL_DESIGN`, `DETAILED_DESIGN`, `CODE`, `UNIT_TEST`,
   `INTEGRATION_TEST`, `MODULE_TEST`, and `FUNCTIONAL_TEST`.
-- S1-S4 produce their owned deliverables, deliverable checks, and baseline tests. On the first pass,
-  S1-S3 skip baseline execution because code does not yet exist; a corrective return after S4 must
-  execute the applicable baseline gate.
+- S1-S4 produce their owned deliverables, deliverable checks and baseline tests. S1-S3 source
+  delivery does not require downstream implementation tests to pass, including a corrective return
+  after S4. The accepted default defers that executable baseline, preserving validation of owned
+  artifacts and source evidence as `source-delivery`, never `full-step`. An explicit required gate
+  remains required. CODE executes its own baseline, and S5-S8 perform full verification.
+- Step completion checks local responsibility: S1-S4 finish or hand off their current processing
+  work; S5-S8 finish their acceptance work. PM-held and other-Step Tickets do not prevent completion
+  of the local responsibility. Newly reported Bugs can trigger a V-model return.
 - S5-S8 independently inspect the inherited baseline tests, add risk-driven functional tests when
   required by their approved contract, freeze the test set, execute it, and distinguish test defects
   from product defects.
@@ -144,8 +167,9 @@ only authority that changes Ticket state.
 - A plan names each canonical document once. An iteration-named copy of a canonical document
   (`docs/p2-01-requirement-analysis.md`, `docs/02-requirement-analysis-p2.md`, `docs/p2-tests/…`) is folded
   into that iteration's canonical path, in outputs, inputs and the Step's own text.
-- A Change Request is its chain's last hop unless a later hop carries the same sources. A chain begun
-  by a correction raised inside it is not its continuation, and the last hop carries its sources to closure.
+- A nested correction is a separate chain with explicit sources. The reporter decides each next hop;
+  a parent CR may resume only after its blocking correction is accepted. A source Bug then returns
+  to its original verifier; the final CR never closes it on the verifier's behalf.
 - A Bug repaired at the Step its contract names for verification is proven by that repair's own
   gate and closes there, even with no Step after it; the work parked behind it then closes the Step.
 - A delivered Phase is a release: its delivered revision is recorded on the Phase and tagged in the
@@ -180,7 +204,7 @@ only authority that changes Ticket state.
   summaries happen to match.
 - Phase delivery gates validate complete deliverables and real user scenarios, including real network
   behavior when the scenario requires it. External gate findings go to PM problem intake, which may
-  create multiple independent Tickets and restart corrective V-model work.
+  request verification-Actor confirmation for multiple independent Tickets and restart corrective V-model work.
 - A real-scenario failure is classified from accepted project context and captured evidence by an
   LLM. An implementation that realizes a still-valid contract incorrectly becomes a Bug; a required
   change to an accepted requirement, capability, interface, dependency, data source, or design

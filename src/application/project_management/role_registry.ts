@@ -34,6 +34,9 @@ export interface RoutingRequirement {
 }
 
 export function routingRequirement(ticket: Ticket, step?: Step): RoutingRequirement {
+  if (ticket.state === 'deliver') {
+    return { capabilities: ticket.type === 'bug' && step ? capabilitiesForStep(step.type) : [] };
+  }
   if (ticket.type === 'change-request' && step) {
     return { capabilities: capabilitiesForStep(step.type, 'change-request') };
   }
@@ -125,8 +128,9 @@ export class RoleRegistry {
   ): string | undefined {
     const { actor, profile } = candidate;
     const required = routingRequirement(ticket, step);
+    if (actor.projectId !== ticket.projectId) return 'belongs to another Project';
     if (actor.state !== 'active') return `state=${actor.state}`;
-    if (!profile.supportedTicketTypes.includes(ticket.type)) {
+    if (ticket.state !== 'deliver' && !profile.supportedTicketTypes.includes(ticket.type)) {
       return `does not support ticket type ${ticket.type}`;
     }
     // A language specialist works only in its language; a language-neutral role works in any.

@@ -1,11 +1,17 @@
+import { canonicalRuleJson } from '../rules/rule_evidence_encoding.js';
+import { createObjectId } from '../../domain/identity/object_id.js';
+import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
+import { PhaseSchema } from '../../domain/phases/phase.js';
+import { ProblemConfirmationVerdictSchema, type ProblemReview } from '../../domain/tickets/ticket_review.js';
+import type { TicketAcceptanceOptions } from './ticket_acceptance_service.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { Phase } from '../../domain/phases/phase.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
-import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { DeliveryGateFindingSchema, FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { inheritedTestAssets } from '../../domain/quality/test_assets.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
-import type { Ticket } from '../../domain/tickets/ticket.js';
+import type { Ticket, TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import { t } from '../../i18n/index.js';
 import { earlierPhaseTestOwners } from '../execution/earlier_phase_test_owners.js';
 import { ownedAffectedArtifacts } from '../execution/execution_context.js';
@@ -18,6 +24,7 @@ import {
 
 export const PROJECT_MANAGER_PROBLEM_ORIGINS = [
   'phase-delivery-gate',
+  'merge-gate',
   // Reserved for the post-delivery Runtime boundary. It still requires a selected/reopened Phase.
   'external-usage',
 ] as const;
@@ -34,6 +41,9 @@ export interface ProjectManagerProblemIntake {
   origin: ProjectManagerProblemOrigin;
   reports: readonly DeliveryGateFinding[];
   correlationId: ObjectId;
+  candidateIdentity?: string;
+  sourceTicketId?: ObjectId;
+  workspaceBinding?: TicketWorkspaceBinding;
 }
 
 export interface UserChangeRequestInput {
@@ -48,9 +58,18 @@ export class ProjectManagerIntakeService {
   private readonly corrective: CorrectiveWorkflowService;
   private readonly registration: TicketRegistrationService;
 
-  constructor(private readonly repository: DomainObjectRepositoryPort) {
+  constructor(private readonly repository: DomainObjectRepositoryPort, private readonly review: TicketAcceptanceOptions = {}) {
     this.corrective = new CorrectiveWorkflowService(repository);
     this.registration = new TicketRegistrationService(repository);
+  }
+
+  async resume(phaseId: ObjectId): Promise<void> {
+    const phase = await this.repository.read(phaseId);
+    if (phase.objectType !== 'phase') throw new Error('Problem confirmation recovery requires a Phase');
+    for (const record of phase.problemReviews.filter(record => record.ticketIds === undefined)) {
+      await this.accept({ projectId: phase.projectId, phaseId, origin: record.origin, reports: [record.report],
+        correlationId: record.correlationId, candidateIdentity: record.candidateIdentity, sourceTicketId: record.sourceTicketId, workspaceBinding: record.workspaceBinding });
+    }
   }
 
   /**
@@ -140,15 +159,44 @@ export class ProjectManagerIntakeService {
     const acceptance = steps.find((step) => step.type === 'FUNCTIONAL_TEST');
     if (!acceptance) throw new Error(`PM intake requires a complete V-model Phase: ${phase.name}`);
 
-    const creatorActorId = await this.registration.projectManagerActorId(input.projectId);
     const queued: Array<{ ticket: Ticket; order: number }> = [];
     for (const report of deduplicateReports(input.reports)) {
-      const target = reportTarget(steps, acceptance, report);
+      let target = reportTarget(steps, acceptance, report);
+      const verification = STEP_TYPE_ORDER[target.type] >= STEP_TYPE_ORDER.UNIT_TEST
+        ? target : steps.find(step => step.id === target.pairedStepId);
+      if (!verification) throw new Error('PM problem intake needs the matching verification Step');
+      const creatorActorId = await this.registration.discovererActorIdForStep(verification.id);
+      let saved = await this.retainProblem(phase, input, report, verification, creatorActorId);
+      if (saved.ticketIds) {
+        for (const id of saved.ticketIds) {
+          const previous = await this.repository.read(id);
+          if (previous.objectType !== 'ticket') throw new Error('Confirmed problem references non-Ticket');
+          queued.push({ ticket: previous, order: STEP_TYPE_ORDER[target.type] });
+        }
+        continue;
+      }
+      saved = await this.confirmProblem(phase.id, saved, steps);
+      const verdict = saved.rounds.at(-1)!.verdict!;
+      if (verdict.decision === 'dismissed') {
+        await this.saveProblem(phase.id, { ...saved, ticketIds: [] });
+        continue;
+      }
+      if (verdict.decision !== 'confirmed') throw new Error('Verification Actor still needs evidence for the PM finding');
+      target = steps.find(step => step.id === verdict.targetStepId)!;
+      if (!target) throw new Error('Problem confirmation selected a Step outside the Phase');
+      const externalId = `confirmed-problem:${saved.id}`;
+      const existing = (await this.repository.list({ objectType: 'ticket', projectId: phase.projectId })).find((object): object is Ticket =>
+        object.objectType === 'ticket' && object.source.externalId === externalId);
+      if (existing) {
+        await this.saveProblem(phase.id, { ...saved, ticketIds: [existing.id] });
+        queued.push({ ticket: existing, order: STEP_TYPE_ORDER[target.type] });
+        continue;
+      }
       const reportText = renderProblemReport(input.origin, report);
       let ticket: Ticket;
-      if (report.category === 'change-request') {
+      if (verdict.ticketType === 'change-request' && report.category !== 'dependency') {
         ticket = await this.corrective.routeContractChange({
-          reportingStepId: acceptance.id,
+          reportingStepId: verification.id,
           targetStepId: target.id,
           summary: report.summary,
           evidence: report.evidence,
@@ -160,32 +208,35 @@ export class ProjectManagerIntakeService {
           // The finding's stable code, so the Change Request can be traced back to what raised it
           // and a recurrence recognised as the same problem rather than a second one. Without it
           // every Change Request in a Phase carried the same external id.
-          sourceExternalId: `${input.origin}:${phase.name}:${report.code}`,
+          sourceExternalId: externalId,
         });
+        await this.saveProblem(phase.id, { ...saved, ticketIds: [ticket.id] });
         queued.push({ ticket, order: STEP_TYPE_ORDER[target.type] });
         continue;
       }
-      if (report.category === 'dependency') {
+      if (verdict.ticketType === 'change-request' && report.category === 'dependency') {
         ticket = await this.corrective.routeDependencyChange({
-          requestingStepId: acceptance.id,
+          requestingStepId: verification.id,
           packages: report.dependencyPackages,
           reason: reportText,
           creatorActorId,
           correlationId: input.correlationId,
           sourceKind: 'pm-intake',
-          sourceExternalId: `${input.origin}:${phase.name}`,
+          sourceExternalId: externalId,
         });
+        await this.saveProblem(phase.id, { ...saved, ticketIds: [ticket.id] });
         queued.push({ ticket, order: Number.MAX_SAFE_INTEGER });
         continue;
       }
-      if (report.category === 'test-defect' || report.category === 'product-defect') {
+      {
         ticket = await this.corrective.routeFailure({
           creatorActorId,
-          failedStepId: target.id,
+          failedStepId: verification.id,
           targetStepId: target.id,
           message: reportText,
           summary: report.summary,
-          bugKind: 'delivery-gate',
+          workspaceBinding: saved.workspaceBinding,
+          bugKind: input.origin === 'phase-delivery-gate' ? 'delivery-gate' : 'quality-gate',
           failure: {
             kind: 'execution',
             category: report.category === 'test-defect' ? 'contract' : 'test',
@@ -203,27 +254,12 @@ export class ProjectManagerIntakeService {
           },
           correlationId: input.correlationId,
           sourceKind: 'pm-intake',
-          sourceExternalId: `${input.origin}:${phase.name}`,
+          sourceExternalId: externalId,
           tool: report.scene?.scenario.operation,
           affectedArtifacts: report.affectedArtifacts,
         });
-      } else {
-        ticket = await this.corrective.routeQualityGap({
-          creatorActorId,
-          sourceStepId: target.id,
-          targetStepId: target.id,
-          finding: reportText,
-          affectedArtifacts: report.affectedArtifacts ?? [],
-          kind: report.category === 'test-incomplete'
-            ? 'test-incomplete'
-            : report.category === 'deliverable-defect'
-              ? 'functional-gap'
-              : 'quality-shortfall',
-          correlationId: input.correlationId,
-          sourceKind: 'pm-intake',
-          sourceExternalId: `${input.origin}:${phase.name}`,
-        });
       }
+      await this.saveProblem(phase.id, { ...saved, ticketIds: [ticket.id] });
       queued.push({ ticket, order: STEP_TYPE_ORDER[target.type] });
     }
 
@@ -232,6 +268,59 @@ export class ProjectManagerIntakeService {
     );
     return registered;
   }
+
+  private async retainProblem(phase: Phase, input: ProjectManagerProblemIntake, report: DeliveryGateFinding, verification: Step, reporterActorId: ObjectId): Promise<ProblemReview> {
+    const current = await this.repository.read(phase.id);
+    if (current.objectType !== 'phase') throw new Error('Problem review requires a Phase');
+    const candidateIdentity = input.candidateIdentity ?? input.correlationId;
+    const existing = current.problemReviews.find(record => record.origin === input.origin && record.candidateIdentity === candidateIdentity &&
+      canonicalRuleJson(record.report) === canonicalRuleJson(DeliveryGateFindingSchema.parse(report)));
+    if (existing) return existing;
+    if (input.origin === 'external-usage') throw new Error('External intake is not enabled');
+    const record: ProblemReview = {
+      id: createObjectId(), origin: input.origin, candidateIdentity, report,
+      reporterActorId, verificationStepId: verification.id, correlationId: input.correlationId, sourceTicketId: input.sourceTicketId, workspaceBinding: input.workspaceBinding,
+      rounds: [{ requestId: createObjectId(), evidence: [{ ref: 'original-finding', content: JSON.stringify(report) }] }],
+    };
+    await this.saveProblem(phase.id, record);
+    return record;
+  }
+
+  private async confirmProblem(phaseId: ObjectId, record: ProblemReview, steps: readonly Step[]): Promise<ProblemReview> {
+    const actor = await this.registration.actorById(record.reporterActorId);
+    for (;;) {
+      const round = record.rounds.at(-1)!;
+      if (!round.verdict) {
+        if (!this.review.reviewTicket) throw new Error('Verification Actor problem confirmation is not configured');
+        const payload = {
+          kind: 'problem-confirmation' as const, projectId: actor.projectId, phaseId, subjectId: record.id,
+          candidateIdentity: record.candidateIdentity,
+          evidence: [...round.evidence, { ref: 'phase-step-contracts', content: JSON.stringify(steps.map(step => ({ id: step.id, type: step.type, outputs: step.outputs, acceptance: step.acceptance }))) }],
+        };
+        const verdict = ProblemConfirmationVerdictSchema.parse(await this.review.reviewTicket({
+          logicalRequestId: round.requestId,
+          actor: { actorId: actor.id, role: actor.roleId, roleVersion: actor.roleVersion, modelPool: actor.modelPool }, payload,
+        }));
+        if (verdict.evidenceRefs.some(ref => !payload.evidence.some(item => item.ref === ref)) ||
+          (verdict.targetStepId && !steps.some(step => step.id === verdict.targetStepId))) throw new Error('Problem confirmation has invalid evidence or target');
+        record = { ...record, rounds: [...record.rounds.slice(0, -1), { ...round, verdict }] };
+        await this.saveProblem(phaseId, record);
+      }
+      if (record.rounds.at(-1)!.verdict!.decision !== 'needs-evidence') return record;
+      if (record.rounds.length === 2 || !this.review.retestProblem) throw new Error('Verification Actor requested more evidence; no further automatic replay is available');
+      const evidence = await this.review.retestProblem(record, phaseId);
+      record = { ...record, rounds: [...record.rounds, { requestId: createObjectId(), evidence: [...round.evidence, ...evidence] }] };
+      await this.saveProblem(phaseId, record);
+    }
+  }
+
+  private async saveProblem(phaseId: ObjectId, review: ProblemReview): Promise<void> {
+    const phase = await this.repository.read(phaseId);
+    if (phase.objectType !== 'phase') throw new Error('Problem review requires a Phase');
+    const records = phase.problemReviews.filter(record => record.id !== review.id);
+    await this.repository.commit([PhaseSchema.parse({ ...phase, ...reviseObjectEnvelope(phase), problemReviews: [...records, review] })]);
+  }
+
 }
 
 /** Where a person's change would land, or that the same change is already in this Phase. */
