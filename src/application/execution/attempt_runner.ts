@@ -709,11 +709,16 @@ export class DomainAttemptRunner {
           },
         );
       }
+      const downstreamFindings = environment.baselineGateExecution.mode === 'defer' &&
+        input.mode === 'debug' && input.ticket.type === 'bug'
+        ? sourceDeliveryDownstreamFindings(input, scopedAssessment?.findings ?? [])
+        : [];
+      const localAssessment = scopedAssessment && downstreamFindings.length > 0
+        ? { ...scopedAssessment, findings: scopedAssessment.findings?.filter(finding => !downstreamFindings.includes(finding)) }
+        : scopedAssessment;
       const assessment = await this.recordAssessment(
         input.domainStep,
-        scopedAssessment
-          ? mergePairedSourceTestQuality(scopedAssessment, pairedTestInspection)
-          : scopedAssessment,
+        localAssessment ? mergePairedSourceTestQuality(localAssessment, pairedTestInspection) : localAssessment,
         environment.baselineGateExecution.mode === 'defer' ? 'source-delivery' : 'full-step',
       );
       if (!assessment.passed) {
@@ -722,6 +727,7 @@ export class DomainAttemptRunner {
           reason: `Quality gate failed: ${qualityFailure.summary}`,
           failureLog: qualityFailure.detail,
           assessment,
+          gateFindings: [...assessment.findings, ...downstreamFindings],
           failure: {
             kind: 'execution',
             category: 'quality',
@@ -732,6 +738,17 @@ export class DomainAttemptRunner {
           },
           executor: result,
           wikiEntryIds: wikiMatches.map((match) => match.entry.id),
+        });
+      }
+      if (downstreamFindings.length > 0) {
+        await this.options.audit.event('note', `${input.domainStep.name} retains downstream defects for corrective handoff`, {
+          messageId: 'domain.source_delivery_downstream_findings',
+          projectId: input.domainStep.projectId,
+          phaseId: input.domainStep.phaseId,
+          stepId: input.domainStep.id,
+          ticketId: input.ticket.id,
+          qualityAssessmentId: assessment.id,
+          findings: downstreamFindings,
         });
       }
       // A CODE Step that delivers the program's entry has to deliver one that starts. Its unit tests
@@ -803,7 +820,7 @@ export class DomainAttemptRunner {
         wikiEntryIds: wikiMatches.map((match) => match.entry.id),
         executor: result,
         testOutcomes: collectTestOutcomes(result.toolCalls, input.domainStep.type),
-        gateFindings: [],
+        gateFindings: downstreamFindings,
       };
     } catch (error) {
       if (isAttemptCancellation(error, this.options.abortSignal)) {
@@ -927,6 +944,7 @@ export class DomainAttemptRunner {
       feedbackCharBudget: window.feedbackCharBudget,
       readChunkBytes: window.readChunkBytes,
       writeChunkBytes: resolveWriteChunkBytes(window.writeChunkBytes, budgetContext),
+      baselineExecutionDeferred: baselineGateExecution.mode === 'defer' && input.mode === 'debug' && input.ticket.type === 'bug',
       testGateArgs: resolveAttemptTestArgs(verificationScope, input.plan.language),
       supplementalTestRoot,
       inheritedTestAssets: inheritedTests,
@@ -1814,6 +1832,22 @@ function findingBelongsToStep(finding: DeliveryGateFinding, step: Step): boolean
   if (finding.target === 'current-step') return true;
   if (finding.target === 'paired-source') return false;
   return step.type === FINDING_TARGET_STEP_TYPE[finding.target];
+}
+
+/** Only evidence tied to a named downstream owner's outputs can leave the source gate. */
+function sourceDeliveryDownstreamFindings(input: AttemptInput, findings: readonly DeliveryGateFinding[]): DeliveryGateFinding[] {
+  const sourceOrder = STEP_TYPE_ORDER[input.domainStep.type];
+  return findings.filter(finding => {
+    if (finding.category !== 'product-defect' && finding.category !== 'test-defect') return false;
+    if (finding.target === 'current-step' || finding.target === 'paired-source') return false;
+    const target = FINDING_TARGET_STEP_TYPE[finding.target];
+    if (STEP_TYPE_ORDER[target] <= sourceOrder) return false;
+    const owner = input.plan.steps.find(step => step.phase === target && step.iterationId === input.executionStep.iterationId);
+    return owner !== undefined && finding.affectedArtifacts.length > 0 && finding.affectedArtifacts.every(artifact =>
+      !path.posix.isAbsolute(artifact) && !path.win32.isAbsolute(artifact) &&
+      !artifact.includes('\\') && !artifact.split('/').includes('..') &&
+      isAllowedWrite(artifact, owner.outputs) && !isAllowedWrite(artifact, input.executionStep.outputs));
+  });
 }
 
 function dependencyRequestFrom(

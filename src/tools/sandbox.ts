@@ -128,6 +128,9 @@ export const runProgramTool: Tool<
     // prints network-failure text on its way to passing — the same false failure `run_tests` was
     // fixed for, arriving by the other door because that fix keyed on the tool.
     const ranTests = isTestRunnerInvocation(args.args);
+    if (ranTests && ctx.baselineExecutionDeferred) {
+      return { ok: false, code: 'baseline_execution_deferred', error: toolText().runProgram.baselineExecutionDeferred };
+    }
     // A product whose contract specifies a non-zero exit for some input has no other way to show it
     // behaves: a live CODE Step verified "a bad input file exits 1" and then spent five rounds failing
     // to clear that exact call, which only an exit 0 of the same command could resolve.

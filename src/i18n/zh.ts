@@ -676,6 +676,7 @@ const messages: Messages = {
         '多写一个 python 前缀会被忽略。TypeScript：默认 npx tsx <entry>，也支持 npm/npx/node/tsx/tsc 前缀。' +
         '产品的既定契约要求对该输入以非 0 退出（例如文档规定的失败退出码）时，把 expectExitCode 设为该退出码：' +
         '只有程序恰好以该码退出时调用才算成功。不适用于测试运行器。',
+      baselineExecutionDeferred: '本轮源步骤修正暂不执行测试。请静态检查源产物，并保留验证证据交给下游步骤。',
       expectExitCodeInvalid: (value) => `run_program.expectExitCode 必须是 0 到 255 之间的整数退出码；收到的是 ${value}。`,
       expectExitCodeForTestRunner: 'run_program.expectExitCode 只用于产品自身的退出码。测试运行器的非 0 退出是它对测试的结论，' +
         '不能声明为预期；请修正测试或产品。',
@@ -1218,11 +1219,11 @@ ${opts.phasePlan}
       validateDeliverables: '校验所有声明的阶段交付物、与上游的一致性、方案证据，以及配对的基线测试资产。',
       preCodeCorrection: '本次修正仍发生在 S4 建立产品代码之前：更新并静态校验对应的基线测试，但延后它们的执行。',
       contractChange: '本跳在 S4 之前携带契约变更：静态校验基线测试，但延后执行；配对的验证 Step 会在本链路后续的 S4 应用变更之后运行它们。',
-      sourceDelivery: '此次修正负责本阶段的源产物及基线测试静态检查。保留下游失败证据并说明需要向下游传导的变更；产品测试在变更传导后的 S4 及原验证阶段执行。本次源阶段交付不关闭原 Bug。',
+      sourceDelivery: 'Runtime 对本轮延期执行基线，即使旧计划提到已有代码时要执行它。请静态检查本阶段的源产物和基线测试。需要下游处理的缺陷应写成结构化 findings，填写归属步骤、影响路径和证据。原失败范围由原报告验证阶段在修复和下游 CR 验收完成后复验。',
       initialPass: '这是 CODE 之前的首次执行：编写并静态校验基线测试，但不要执行，因为产品代码还不存在。',
       keepTestsExecutable: '让测试源码中规划好的产品导入、调用和行为断言保持可执行。不要把它们注释掉，不要替换成 expect(true)/assert True，也不要在测试里复制规划中的产品行为。产品文件缺失是 CODE 之前的预期情况；惰性测试则不是。',
       onlyExecutionDeferred: '只延后基线测试的执行；交付物、规划、契约和测试资产的检查都不跳过。',
-      blockedByNotGaps: '不要把无法获得的配对测试指标当作测得值报告。如果 completion=1 且唯一剩下的条件是 S4 负责的产品代码，只把它写进 blockedBy，gaps=[]；同时写进 gaps 是自相矛盾的质量报告，Runtime 会在 PM 接收之前拒绝它。',
+      blockedByNotGaps: '不要把无法获得的配对测试指标当作测得值报告。下游前置条件写入 blockedBy，具体缺陷用结构化 findings 记录，gaps 只记录本步骤负责的工作缺口。',
     },
     invalidSupplementRepair: (root, files, language) => [
       `本 Step 补充测试目录（${root}）下的以下文件不是可执行测试：`,

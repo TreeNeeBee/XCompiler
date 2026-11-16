@@ -85,14 +85,21 @@ export class AttemptResultProcessor {
     } else if (mode === 'normal') {
       await this.options.controller.deliverNormal(work, result.assessment.id);
     } else if (work.ticket.type === 'bug' || work.ticket.type === 'enhancement') {
-      const affectedArtifacts = correctiveAffectedArtifacts(steps, work.step, result);
+      const downstreamFindings = work.ticket.type === 'bug' && result.assessment.scope === 'source-delivery'
+        ? deduplicateGateFindings(result.gateFindings ?? [])
+        : [];
+      const affectedArtifacts = [...new Set([
+        ...correctiveAffectedArtifacts(steps, work.step, result),
+        ...downstreamFindings.flatMap(finding => finding.affectedArtifacts),
+      ])];
       const project = await this.options.repository.read(work.step.projectId);
       if (project.objectType !== 'project') {
         return { action: 'stop', reason: `Step ${work.step.name} has no Project` };
       }
-      const affected = correctivePropagationStepIds(
-        steps, work.step, affectedArtifacts, project.language,
-      );
+      // A known downstream defect can require CODE even when the source only changed its tests.
+      const affected = downstreamFindings.length > 0
+        ? downstreamStepIds(steps, work.step)
+        : correctivePropagationStepIds(steps, work.step, affectedArtifacts, project.language);
       const solution = correctiveSolution(work, result.solutionPlan, result.changedFiles, result.commit);
       // No downstream change hands the repair to its original reporter; same-Step repairs can
       // also supply the original verification in this attempt.
@@ -119,7 +126,8 @@ export class AttemptResultProcessor {
         affectedStepIds: affected,
         contractDelta: {
           summary: result.solutionPlan ?? `Apply verified correction from ${work.step.name}.`,
-          before: [work.ticket.description],
+          before: [work.ticket.description, ...downstreamFindings.map(finding =>
+            renderFindingMessage(`${finding.target} / ${finding.code}: ${finding.summary}`, finding.evidence))],
           after: work.ticket.acceptance,
           affectedArtifacts,
         },
@@ -811,7 +819,7 @@ function correctiveSolution(
   return {
     status: 'proposed',
     approach: plan ?? `Repair ${work.ticket.description}`,
-    rationale: `The ${work.ticket.type} was reproduced and corrected in ${work.step.name}.`,
+    rationale: `Corrective work passed its own delivery gate in ${work.step.name}.`,
     changes: [...changedFiles, ...(commit ? [`commit:${commit}`] : [])],
     verification: [],
     updatedAt: new Date().toISOString(),

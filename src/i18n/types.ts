@@ -398,6 +398,7 @@ export interface Messages {
     analyzeError: { description: string; missingModule: (name: string) => string; failedTests: (count: number) => string };
     runProgram: {
       description: string;
+      baselineExecutionDeferred: string;
       expectExitCodeInvalid: (value: string) => string;
       expectExitCodeForTestRunner: string;
       expectedExitMismatch: (expected: number, actual: number) => string;

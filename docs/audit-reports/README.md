@@ -39,6 +39,7 @@
 | 2026-11-15 | [2026-11-15-ticket-responsibility-change-report.md](2026-11-15-ticket-responsibility-change-report.md) | 变更报告 | Codex | Ticket 职责、CR 独立验收、Bug 原范围复验、旧票迁移与中断恢复 |
 | 2026-11-15 | [2026-11-15-ticket-responsibility-codex-audit-report.md](2026-11-15-ticket-responsibility-codex-audit-report.md) | 独立审计 | Codex | `9bdb79f..d780e87`；TR-01 CR 交付前中断失去排程、TR-02 Bug 待合入修复未恢复；138 项定向测试通过 |
 | 2026-11-16 | [2026-11-16-ticket-recovery-fix-report.md](2026-11-16-ticket-recovery-fix-report.md) | 审计修复报告 | Codex | TR-01 CR 交付恢复、TR-02 原 reporter 派发前恢复 Bug 合入 |
+| 2026-11-16 | [2026-11-16-source-bug-delivery-gate-fix-report.md](2026-11-16-source-bug-delivery-gate-fix-report.md) | 变更报告 | Codex | S3 本地门禁与下游发现分离、PM 交接和原 reporter 复验 |
 
 ## 约定
 

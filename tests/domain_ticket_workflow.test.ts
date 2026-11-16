@@ -6,6 +6,7 @@ import type { TicketReviewPort } from '../src/application/execution/ticket_revie
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
+import { AttemptResultProcessor } from '../src/application/project_management/attempt_result_processor.js';
 import { CorrectiveWorkflowService } from '../src/application/project_management/corrective_workflow_service.js';
 import { ProjectStateService } from '../src/application/project_management/project_state_service.js';
 import { ProjectManagerIntakeService } from '../src/application/project_management/project_manager_intake.js';
@@ -150,15 +151,31 @@ describe('TicketWorkflow', () => {
     });
     const assigned = await registration.routeAndAssign(bug.id);
     const repair = await controller.start({ phase: graph.phases[0]!, step: design, ticket: assigned.ticket });
-    const request = await controller.propagateCorrectiveChange({
-      work: repair, qualityAssessmentId: await passingAssessment(repository, repair.step),
-      solution: { status: 'proposed', approach: 'Repair the interface design', rationale: 'Preserve the original failure for S6', changes: ['docs/design.md'], verification: [], updatedAt: new Date().toISOString() },
-      sourceChange: { summary: 'Design repaired', entries: [{ path: 'docs/design.md', operation: 'update' }], commit: 'a'.repeat(40), verification: ['Own static checks passed'] },
-      affectedStepIds: [coding.id], contractDelta: { summary: 'Implement the repaired interface', before: ['Original failure'], after: ['Correct interface'], affectedArtifacts: ['src/main.ts'] },
-      implementationPlan: ['Implement the interface'], verificationGate: ['Code gate passes'],
+    const processor = new AttemptResultProcessor({ repository, controller, tickets: registration,
+      audit: { event: async () => undefined } as unknown as ConstructorParameters<typeof AttemptResultProcessor>[0]['audit'],
+      onTransition: async () => undefined,
     });
-    expect(request).toBeDefined();
-    expect(asTicket(await repository.read(bug.id), 'bug')).toMatchObject({ state: 'pending', pendingReason: 'change-request', reporterActorId: reporter, verificationRecords: [] });
+    const assessmentIdAtSource = await passingAssessment(repository, repair.step, 'source-delivery');
+    const assessmentAtSource = asObject(await repository.read(assessmentIdAtSource), 'quality-assessment');
+    const patch = 'tests/integration/contract.test.ts';
+    const downstreamEvidence = 'The implementation still calls the old interface.';
+    const steps = await Promise.all(graph.steps.map(async step => asObject(await repository.read(step.id), 'step')));
+    expect(await processor.process({ phase: graph.phases[0]!, work: repair, steps,
+      result: { ok: true, assessment: assessmentAtSource, changedFiles: [patch], commit: 'a'.repeat(40),
+        solutionPlan: 'Align the integration contract and carry the implementation correction forward.',
+        wikiEntryIds: [], testOutcomes: [], gateFindings: [{ category: 'product-defect', code: 'old_interface',
+          target: 'code', summary: 'The implementation needs the corrected interface', evidence: [downstreamEvidence],
+          affectedArtifacts: coding.outputs, dependencyPackages: [],
+        }],
+      },
+    })).toEqual({ action: 'continue' });
+    const parked = asTicket(await repository.read(bug.id), 'bug');
+    expect(parked).toMatchObject({ state: 'pending', pendingReason: 'change-request', reporterActorId: reporter, verificationRecords: [] });
+    expect(await repository.read(design.id)).toMatchObject({ state: 'delivered', qualityAssessmentId: assessmentIdAtSource });
+    const request = asTicket(await repository.read(parked.changeRequestTicketIds[0]!), 'change-request');
+    expect(request).toMatchObject({ changeKind: 'corrective', targetStepId: coding.id });
+    expect(request.contractDelta.affectedArtifacts).toEqual([patch, ...coding.outputs]);
+    expect(request.contractDelta.before.join('\n')).toContain(downstreamEvidence);
     await repository.load();
     expect((await controller.next(graph.phases[0]!.id))?.ticket.id).toBe(request!.id);
     const codeOwner = await registration.routeAndAssign(request!.id);
@@ -1962,10 +1979,11 @@ async function setup() {
   return { graph, repository, registration, workflow: new TicketWorkflow(repository) };
 }
 
-async function passingAssessment(repository: DomainObjectRepository, step: Step) {
+async function passingAssessment(repository: DomainObjectRepository, step: Step, scope?: 'source-delivery') {
   const kpis = await Promise.all(step.kpiIds.map((id) => repository.read(id)));
   const assessment = await new QualityAssessmentService(repository).assessStep({
     step,
+    scope,
     metrics: kpis.flatMap((object) => object.objectType === 'kpi'
       ? [{ metric: object.metric, value: 1 }]
       : []),

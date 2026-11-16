@@ -124,6 +124,8 @@ export interface ToolContext {
   readChunkBytes?: number;
   /** Runtime-owned executable gate. Model-provided selectors cannot replace or widen this scope. */
   testGateArgs?: string[];
+  /** The source repair cannot execute the downstream Bug's verification in this attempt. */
+  baselineExecutionDeferred?: boolean;
   /** Verification-owned directory scanned at run_tests time and appended to the baseline gate. */
   supplementalTestRoot?: string;
   /** Earlier Phases' tests this Step inherited and may update: files, or supplement roots ending in `/`. */
@@ -188,6 +190,7 @@ export type ToolFailureCode =
   | 'product_not_implemented'
   /** The test runner started but reached no verdict: the invocation was rejected or found no tests. */
   | 'test_run_without_verdict'
+  | 'baseline_execution_deferred'
   /** run_tests refused: this Step's own declared test files are not written yet. */
   | 'declared_tests_unwritten'
   /** The call's arguments are malformed: a wrong type or a missing required value. */
@@ -227,12 +230,12 @@ export function isUnownedStepFailure(code: ToolFailureCode | undefined): boolean
 /**
  * Whether a failed test run is no evidence about the product: no test ran to a verdict.
  *
- * Both causes are the Step's own to repair — its invocation or its unwritten files — so neither is
- * unowned. But neither says the product failed a test either, and a live UNIT_TEST Step whose first
- * invocation pytest rejected as a usage error was handed to CODE as a product validation defect.
+ * Rejected invocations, unwritten files and an explicitly deferred baseline cannot support a
+ * verdict. A live UNIT_TEST Step whose first invocation pytest rejected as a usage error was
+ * handed to CODE as if it had demonstrated a product defect.
  */
 export function isTestRunWithoutVerdict(code: ToolFailureCode | undefined): boolean {
-  return code === 'test_run_without_verdict' || code === 'declared_tests_unwritten';
+  return code === 'test_run_without_verdict' || code === 'declared_tests_unwritten' || code === 'baseline_execution_deferred';
 }
 
 /** 单次工具调用的结果统一结构。 */

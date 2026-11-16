@@ -141,6 +141,10 @@ only authority that changes Ticket state.
   after S4. The accepted default defers that executable baseline, preserving validation of owned
   artifacts and source evidence as `source-delivery`, never `full-step`. An explicit required gate
   remains required. CODE executes its own baseline, and S5-S8 perform full verification.
+  During a deferred Bug repair, a typed downstream product or test defect with confirmed artifact
+  ownership is retained as correction evidence. The source's gate evaluates local work, and its
+  corrective CR carries the downstream evidence. Runtime does not execute the Bug's original
+  verification in that source attempt, including through a recognized test command in `run_program`.
 - Step completion checks local responsibility: S1-S4 finish or hand off their current processing
   work; S5-S8 finish their acceptance work. PM-held and other-Step Tickets do not prevent completion
   of the local responsibility. Newly reported Bugs can trigger a V-model return.

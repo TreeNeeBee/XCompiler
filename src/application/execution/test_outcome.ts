@@ -47,7 +47,7 @@ export function collectTestOutcomes(
       : [];
     return {
       status: call.executionStatus === 'permission-blocked' ? 'denied'
-        : call.executionStatus === 'tool-not-allowed' ? 'skipped'
+        : call.executionStatus === 'tool-not-allowed' || call.code === 'baseline_execution_deferred' ? 'skipped'
         : timedOut ? 'timed_out' : call.ok ? 'passed'
         : isTestRunWithoutVerdict(call.code) ? 'incomplete' : 'failed',
       stepType,

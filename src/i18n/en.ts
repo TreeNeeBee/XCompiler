@@ -682,6 +682,7 @@ const messages: Messages = {
         'an extra python prefix is ignored. TypeScript: npx tsx <entry> by default; npm, npx, node, tsx and tsc prefixes also work. ' +
         'When the product\'s specified contract requires a non-zero exit for this input (for example a documented failure exit code), ' +
         'set expectExitCode to that code: the call then succeeds only if the program exits with exactly it. Not for test runners.',
+      baselineExecutionDeferred: 'This source repair defers test execution. Check the source artifacts statically and carry verification evidence to the downstream Steps.',
       expectExitCodeInvalid: (value) => `run_program.expectExitCode must be an integer exit code from 0 to 255; got ${value}.`,
       expectExitCodeForTestRunner: 'run_program.expectExitCode is for the product\'s own exit codes. A test runner\'s non-zero exit is its ' +
         'verdict on the tests and cannot be declared expected; fix the tests or the product instead.',
@@ -1257,11 +1258,11 @@ Return strict JSON StepPlan for the current phase only.`,
       validateDeliverables: 'Validate all declared stage deliverables, upstream alignment, solution evidence, and paired baseline test assets.',
       preCodeCorrection: 'This correction still occurs before S4 has established product code: update and statically validate the exact baseline tests, but defer their executable run.',
       contractChange: 'This hop carries a contract change ahead of S4: statically validate the baseline tests, but defer their executable run; the paired verification Step runs them after S4 applies the change later in this chain.',
-      sourceDelivery: 'This correction owns source-stage artifacts and static baseline checks. Preserve the downstream failure evidence and identify required downstream changes; product tests run at S4 and the original verification stage after the change is propagated. This source delivery does not close the original Bug.',
+      sourceDelivery: 'This Runtime decision defers the executable baseline for this attempt, including when an earlier plan describes executing it after CODE exists. Validate the source-stage artifacts and baseline tests statically. Report actionable downstream defects as typed findings with the owning Step, affected paths, and evidence. Run the original failed scope only at its reporting verification Step after correction and downstream CR acceptance.',
       initialPass: 'This is the initial pre-CODE pass: author and statically validate the baseline tests, but do not execute them because product code does not exist yet.',
       keepTestsExecutable: 'Keep planned product imports, calls, and behavioral assertions executable in the test source. Do not comment them out, replace them with expect(true)/assert True, or duplicate the planned product behavior inside the test. Missing product files are an expected pre-CODE condition; an inert test is not.',
       onlyExecutionDeferred: 'Only executable baseline execution is deferred; no deliverable, plan, contract, or test-asset check is skipped.',
-      blockedByNotGaps: 'Do not report unavailable paired-test metrics as measured values. If completion=1 and the only remaining condition is product code owned by S4, put it only in blockedBy with gaps=[]; duplicating it in gaps is a contradictory quality report and Runtime will reject it before PM intake.',
+      blockedByNotGaps: 'Do not report unavailable paired-test metrics as measured values. Record downstream preconditions in blockedBy, and include concrete defects as typed findings. The gaps list is for shortfalls in work this Step owns.',
     },
     invalidSupplementRepair: (root, files, language) => [
       `These files under this Step's verification supplement root (${root}) are not executable tests:`,

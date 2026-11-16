@@ -304,7 +304,7 @@ export function baselineDeliveryGate(
       'Validate that every declared deliverable and paired baseline test asset exists, is complete, and is reviewable.',
       stage === 'CODE'
         ? 'Execute the paired unit baseline tests and require them to pass before delivery.'
-        : 'Execute the paired baseline tests when product code exists; defer execution only on the initial pre-CODE pass and record that deferral explicitly.',
+        : 'Follow the Runtime baseline execution policy. When execution is deferred, validate the paired test assets statically and record the deferral.',
     ],
     validationTypes: ['deliverable-validation', 'baseline-test'],
     baselineExecutionPolicy: stage === 'CODE' ? 'required' : 'defer-until-code',

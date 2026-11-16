@@ -61,7 +61,7 @@ describe('domain plan compiler', () => {
     expect(graph.steps[2]?.deliveryGate?.checks.join(' ')).toContain('implementation solution');
     expect(graph.steps[3]?.deliveryGate?.checks.join(' ')).toContain('build/static checks');
     expect(graph.steps.slice(0, 3).every((step) =>
-      step.deliveryGate?.checks.some((check) => check.includes('initial pre-CODE pass'))
+      step.deliveryGate?.checks.some((check) => check.includes('validate the paired test assets statically'))
     )).toBe(true);
     expect(graph.steps[3]?.deliveryGate?.checks.some((check) =>
       check.includes('Execute the paired unit baseline tests')

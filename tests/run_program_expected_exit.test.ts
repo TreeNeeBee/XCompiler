@@ -70,6 +70,16 @@ describe('run_program expectExitCode', () => {
     expect(failing.error ?? '').not.toContain('expectExitCode');
   });
 
+  it('defers the test runner while allowing a source repair to check its syntax', async () => {
+    const source = { ...ctx(0), baselineExecutionDeferred: true };
+    const tests = await runProgramTool.run({ args: ['-m', 'pytest', 'tests/integration'] }, source);
+    expect(tests).toMatchObject({ ok: false, code: 'baseline_execution_deferred' });
+    expect(calls).toEqual([]);
+    const staticCheck = await runProgramTool.run({ args: ['-m', 'py_compile', 'tests/integration/test_contract.py'] }, source);
+    expect(staticCheck.ok).toBe(true);
+    expect(calls).toEqual([['-m', 'py_compile', 'tests/integration/test_contract.py']]);
+  });
+
   it('refuses a value that is not an exit code', async () => {
     const result = await runProgramTool.run({ args: ['src/main.py'], expectExitCode: 1.5 }, ctx(1));
     expect(result.ok).toBe(false);
