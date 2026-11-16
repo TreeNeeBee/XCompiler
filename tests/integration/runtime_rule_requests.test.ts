@@ -800,7 +800,7 @@ describe('Runtime review evidence: live reuse trusts the state store, recovery c
     vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
       const handle = await open(...args);
       const close = handle.close.bind(handle);
-      vi.spyOn(handle, 'readFile').mockRejectedValueOnce(readFailure);
+      vi.spyOn(handle, 'read').mockRejectedValueOnce(readFailure);
       vi.spyOn(handle, 'close').mockImplementationOnce(async () => { await close(); throw closeFailure; });
       return handle;
     });

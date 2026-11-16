@@ -5,19 +5,20 @@ import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
 import { FileTreeService } from './file_tree_service.js';
 
 /**
- * One canonical `FileTreeService` per Project, for the lifetime of the process.
+ * One canonical `FileTreeService` per Project within its owning repository instance.
  *
  * The lock lives on the service instance, so a service built per attempt would give every attempt
- * its own lock and serialize nothing — the mutual exclusion would exist in the type system and not
- * in the run. Sharing the instance is what makes the lock a lock.
+ * its own lock. Sharing a service across Runs would retain the previous repository's registry
+ * sequence while the new Run writes through its own repository.
  */
-const services = new Map<string, FileTreeService>();
-const resolving = new Map<string, Promise<FileTreeService>>();
+let fileTreeServices = new WeakMap<DomainObjectRepositoryPort, {
+  services: Map<ObjectId, FileTreeService>;
+  resolving: Map<ObjectId, Promise<FileTreeService>>;
+}>();
 
-/** Test seam: a process that reuses ids across cases must not inherit another case's instance. */
+/** Drop cached instances between tests that exercise initialization with the same repository. */
 export function resetFileTreeServices(): void {
-  services.clear();
-  resolving.clear();
+  fileTreeServices = new WeakMap();
 }
 
 /**
@@ -33,11 +34,21 @@ export async function resolveFileTreeService(
   projectId: ObjectId,
   workspaceRoot: string,
 ): Promise<FileTreeService> {
+  let cache = fileTreeServices.get(repository);
+  if (!cache) {
+    cache = { services: new Map(), resolving: new Map() };
+    fileTreeServices.set(repository, cache);
+  }
+  const { services, resolving } = cache;
   const cached = services.get(projectId);
   if (cached) return cached;
   const pending = resolving.get(projectId);
   if (pending) return pending;
   const resolution = resolveCanonicalFileTree(repository, projectId, workspaceRoot)
+    .then(service => {
+      services.set(projectId, service);
+      return service;
+    })
     .finally(() => resolving.delete(projectId));
   resolving.set(projectId, resolution);
   return resolution;
@@ -55,18 +66,14 @@ async function resolveCanonicalFileTree(
   }
   const existing = trees[0];
   if (existing) {
-    const service = new FileTreeService(repository, workspaceRoot, existing.id);
-    services.set(projectId, service);
     await recordOwnership(repository, projectId, existing.id);
-    return service;
+    return new FileTreeService(repository, workspaceRoot, existing.id);
   }
 
   const tree = FileTreeService.create({ projectId });
   await repository.commit([tree]);
   await recordOwnership(repository, projectId, tree.id);
-  const service = new FileTreeService(repository, workspaceRoot, tree.id);
-  services.set(projectId, service);
-  return service;
+  return new FileTreeService(repository, workspaceRoot, tree.id);
 }
 
 /**

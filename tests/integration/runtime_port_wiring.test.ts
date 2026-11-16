@@ -1,5 +1,6 @@
 import { setPromptTranslation } from '../../src/i18n/index.js';
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
@@ -41,6 +42,7 @@ import { phaseDeliveryGate } from '../../src/domain/quality/delivery_gate.js';
 import { FileDebugWiki } from '../../src/infrastructure/knowledge/file_debug_wiki.js';
 import { FilePlanStore } from '../../src/infrastructure/planning/file_plan_store.js';
 import { DomainObjectRepository } from '../../src/infrastructure/repository/domain_object_repository.js';
+import { runRunCommand } from '../../src/runtime/commands.js';
 import { runExecute } from '../../src/runtime/run.js';
 import { silentRuntimeIO } from '../../src/runtime/io.js';
 import { createSandbox } from '../../src/sandbox/factory.js';
@@ -58,7 +60,7 @@ vi.mock('../../src/llm/preflight.js', () => ({
 vi.mock('../../src/sandbox/factory.js', () => ({ createSandbox: vi.fn() }));
 
 describe('Runtime initializes the configured knowledge store', () => {
-  it.each(['after-application', 'before-delivery', 'after-delivery', 'before-review'] as const)(
+  it.each(['after-application', 'before-delivery', 'after-delivery', 'before-review', 'after-failed-review'] as const)(
     'resumes a CR through its reporter model and immutable Git candidate at the Run boundary (%s)', async interruptionPoint => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-review-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
@@ -73,6 +75,11 @@ describe('Runtime initializes the configured knowledge store', () => {
         calls.push(parsed);
         const payload = JSON.parse(parsed.messages.at(-1)!.content) as TicketReviewPayload;
         response.writeHead(200, { 'content-type': 'application/json' });
+        if (interruptionPoint === 'after-failed-review' && calls.length === 1) {
+          response.end(JSON.stringify({ model: parsed.model, choices: [{ index: 0,
+            message: { content: null, reasoning: 'Unfinished reasoning' }, finish_reason: 'length' }] }));
+          return;
+        }
         response.end(JSON.stringify({ model: parsed.model, choices: [{ index: 0, message: { content: JSON.stringify({
           kind: 'ticket-acceptance', decision: 'accept', reason: 'The candidate implements the accepted delta',
           evidenceRefs: [payload.subjectId], propagation: null,
@@ -164,12 +171,27 @@ describe('Runtime initializes the configured knowledge store', () => {
         exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution });
       const stop = new Error('Stop before subsequent Step execution');
       vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(stop);
-      const result = await runExecute({ workspace: container.root, planPath, configPath,
-        debugWikiPath: path.join(root, 'debug-wiki'), io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' });
+      const command = { workspace: container.root, planArg: planPath, configPath,
+        debugWikiPath: path.join(root, 'debug-wiki'), io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' } as const;
+      const failedRequestId = interruptionPoint === 'after-failed-review' ? interrupted.deliveries[0]!.requestId : undefined;
+      if (failedRequestId) {
+        expect(await runRunCommand(command)).toMatchObject({ status: 'error', message: expect.stringContaining('only reasoning') });
+        expect(await runRunCommand(command)).toMatchObject({ status: 'error', message: expect.stringContaining(failedRequestId) });
+        const unrelated = randomUUID();
+        expect(await runRunCommand({ ...command, retryCrReviewRequestId: unrelated })).toMatchObject({
+          status: 'error', exitCode: 7, message: expect.stringContaining(unrelated),
+        });
+        expect(calls).toHaveLength(1);
+        await repository.load();
+        expect(await repository.read(ticket.id)).toMatchObject({ state: 'deliver', attempts: interrupted.attempts,
+          deliveries: interrupted.deliveries, acceptanceRecords: [] });
+      }
+      const result = await runRunCommand({ ...command, retryCrReviewRequestId: failedRequestId });
       expect(result).toMatchObject({ status: 'error', message: stop.message });
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.model).toBe('reporter-model');
-      const payload = JSON.parse(calls[0]!.messages.at(-1)!.content) as TicketReviewPayload;
+      expect(calls).toHaveLength(failedRequestId ? 2 : 1);
+      expect(calls.every(call => call.model === 'reporter-model')).toBe(true);
+      if (failedRequestId) expect(calls[1]!.messages).toEqual(calls[0]!.messages);
+      const payload = JSON.parse(calls.at(-1)!.messages.at(-1)!.content) as TicketReviewPayload;
       expect(payload).toMatchObject({ subjectId: ticket.id, candidateIdentity: revision });
       expect(payload.evidence).toContainEqual({ ref: `${revision}:src/main.py`, content: 'print("accepted candidate")\n' });
       await repository.load();
@@ -184,6 +206,12 @@ describe('Runtime initializes the configured knowledge store', () => {
         applications: interrupted.applications,
         acceptanceRecords: [{ requestId: delivery.requestId, reporterActorId: reporter.id, verdict: { decision: 'accept' } }],
       });
+      if (failedRequestId) {
+        expect(await runRunCommand({ ...command, retryCrReviewRequestId: failedRequestId })).toMatchObject({
+          status: 'error', exitCode: 7, message: expect.stringContaining(failedRequestId),
+        });
+        expect(calls).toHaveLength(2);
+      }
       expect(unexpectedExecution).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();

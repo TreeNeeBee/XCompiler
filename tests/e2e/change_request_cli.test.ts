@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -58,6 +59,19 @@ describe('--change-request (real CLI process)', () => {
     const result = await cli(entry, ...command, planPath, '-w', container.root, '-c', configPath, '--dry-run', '--change-request', missing);
     // Exit 7 and this path: the option arrived, and the run read it before anything else.
     expect(result.output).toContain(missing);
+    expect(result.code).toBe(7);
+  }, 60_000);
+});
+
+describe('--retry-cr-review (real CLI process)', () => {
+  it.each([
+    ['xcompiler run', 'src/cli/xcompiler.ts', ['run']],
+    ['xcompiler_run', 'src/cli/xcompiler_run.ts', []],
+  ])('passes the failed request ID to scope validation through %s', async (_name, entry, command) => {
+    const { container, planPath, configPath } = await project();
+    const unknownRequest = randomUUID();
+    const result = await cli(entry, ...command, planPath, '-w', container.root, '-c', configPath, '--dry-run', '--retry-cr-review', unknownRequest);
+    expect(result.output).toContain(unknownRequest);
     expect(result.code).toBe(7);
   }, 60_000);
 });

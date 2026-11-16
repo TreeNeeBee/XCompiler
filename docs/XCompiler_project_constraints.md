@@ -105,6 +105,11 @@ only authority that changes Ticket state.
   Each CR closes independently of its source Bug, avoiding mutual waits. Rejection reopens the same
   CR. Accepted responses are recovered by exact request identity; absent adoption is not proof that
   a model request was never sent and cannot authorize silent resend.
+  An operator may explicitly retry a known terminal model failure on the current delivered CR in
+  the active Phase. Required evidence binds the original input and final provider attempt to a
+  terminal router failure without a response candidate. The retry uses a new, linked logical request
+  under the same reporter's model-pool policy and retains the original delivery, candidate, and
+  acceptance identity. Each failed request can have one explicitly authorized successor.
   An interrupted submission resumes from its latest unsubmitted passing application and retains
   the candidate and assessment. A rejected delivery remains in history and cannot be resubmitted
   as the replacement application.

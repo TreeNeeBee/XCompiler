@@ -180,6 +180,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run <phasePlan.json>` | Execute the active phase plan |
 | `xcompiler run --debug-wiki-path <dir>` | Reuse and update a shared layered debug wiki path |
 | `xcompiler run --change-request <file>` | Open a contract change in the Phase in progress, then continue it |
+| `xcompiler run --retry-cr-review <request-id>` | Retry a proved model failure for the current CR delivery, then continue the Phase |
 | `xcompiler load <name.xc>` | Load project config/progress and continue |
 | `xcompiler append <name.xc> -i <file>` | Add a new requirement to an existing project |
 | `xcompiler evolve -w <workspace> -i <file>` | Build and run an incremental change |
@@ -224,6 +225,15 @@ becomes an ordinary Change Request: it starts at `target`, passes through every 
 and the Phase gate, and each Step changes only the listed artifacts it owns. Only a Phase in
 progress accepts one, and an `id` already used with different content is refused rather than
 replaced.
+
+### Retrying an independent CR review
+
+Use the failed logical model request ID from the run diagnostics or audit log as the argument to
+`xcompiler run --retry-cr-review <request-id>`. The command checks the active Phase, the CR's
+current delivery, and evidence that the model request ended in failure. A retry retains the
+candidate and reporter and creates a linked logical request. Its reply goes through independent
+acceptance before the CR can close. If a retry itself ends in a proved failure, use that failed
+request's ID for a further explicit retry. A plain `run` restores an adopted reply by identity.
 
 ## Runtime Defaults
 

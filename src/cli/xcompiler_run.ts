@@ -24,6 +24,7 @@ program
   .option('--force', t().cli.optForce, false)
   .option('--project-file <file>', t().cli.optProjectFile)
   .option('--change-request <file>', t().cli.optChangeRequest)
+  .option('--retry-cr-review <request-id>', t().cli.optRetryCrReview)
   .option('--debug-wiki-path <dir>', t().cli.optDebugWikiPath)
   .option('--record-replay <mode>', t().cli.optRecordReplay, parseRecordReplayMode)
   .option('--record-replay-path <dir>', t().cli.optRecordReplayPath)
@@ -39,6 +40,7 @@ program
       force: !!opts.force,
       projectFilePath: opts.projectFile,
       changeRequestPath: opts.changeRequest,
+      retryCrReviewRequestId: opts.retryCrReview,
       debugWikiPath: opts.debugWikiPath,
       recordReplayMode: opts.recordReplay,
       recordReplayPath: opts.recordReplayPath,

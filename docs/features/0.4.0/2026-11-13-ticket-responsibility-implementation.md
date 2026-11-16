@@ -45,6 +45,8 @@
 
 请求恢复边界沿用既有保留请求合同：只有原始输入、尚无 caller-adopted response 时，不能推断请求未发出，也不能自动采纳裸回复或静默重发。本次验收入口明确报出该身份状态；这类中断仍需先检查原请求证据再决定重发，不授予新的自动重发政策。
 
+2026-11-16 后续实现支持 `run --retry-cr-review <request-id>`。它只为有明确终止失败证据的当前 CR 交付登记新的验收请求，按原候选及 reporter 走独立验收。见 [CR 验收恢复报告](../../audit-reports/2026-11-16-cr-review-retry-report.md)。
+
 ## 验证
 
 最终门禁通过。`npx vitest run --maxWorkers=2` 合计 210 个文件 / 4,040 个用例，包含 core 136 / 2,370、integration 70 / 1,643 和 e2e 4 / 27。typecheck、lint、build、version:check 和差异检查通过。集成测试包含 npm 包资源清单检查。

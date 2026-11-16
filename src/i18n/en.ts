@@ -435,6 +435,7 @@ const messages: Messages = {
     optBaselinePlan: 'existing baseline phasePlan.json path (default <workspace>/phasePlan.json)',
     optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
     optChangeRequest: 'YAML file with a contract change for the Phase in progress; it is opened before work resumes',
+    optRetryCrReview: 'Explicitly retry a failed model request for the current delivery of a change request',
     optDebugWikiPath: 'debug wiki root directory path (default <XCompiler path>/.xcompiler/debug-wiki)',
     optRecordReplay: 'external interaction mode: off, record, replay, auto, or refresh',
     optRecordReplayPath: 'workspace-relative record/replay fixture directory',

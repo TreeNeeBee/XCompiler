@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { appendFileSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditLogger, protectAuditContent } from '../../src/audit/audit.js';
 import {
   createBusinessRequestAttemptRecord, validateBusinessRequestAttempt,
@@ -11,6 +11,7 @@ import {
 import { ruleBusinessRequestDigest } from '../../src/application/rules/rule_request_binding.js';
 import { BusinessRequestAttemptAuditAdapter } from '../../src/infrastructure/llm/business_request_attempt_audit.js';
 import { FileBusinessRequestAttemptStore } from '../../src/infrastructure/llm/file_business_request_attempt_store.js';
+import { readRawLLMAudit } from '../../src/infrastructure/llm/raw_llm_audit.js';
 import {
   normalizeRoutedResponseEvidence, recordedResponseEvidenceDigest, type RoutedResponseEvidence,
 } from '../../src/llm/response_evidence.js';
@@ -124,6 +125,26 @@ describe('prepared business attempt audit and exact response recovery', () => {
     if (recovered.status === 'recovered') expect(Object.isFrozen(recovered.response.capture)).toBe(true);
     expect(recovered.request.messages[1]?.content).toContain('Plugin material');
     expect(await fs.readFile(auditPath, 'utf8')).toBe(before);
+  });
+
+  it('recovers exact evidence when the ledger cannot be read as one string', async () => {
+    const current = await fixture('场景🚗'.repeat(20_000));
+    const produced = await appendResponse(current.logger, current.request);
+    const lines = (await fs.readFile(auditPath, 'utf8')).trimEnd().split('\n');
+    await fs.writeFile(auditPath, lines.join('\r\n'));
+
+    const realOpen = fs.open.bind(fs);
+    const open = vi.spyOn(fs, 'open').mockImplementationOnce(async (file, ...options) => {
+      const handle = await realOpen(file, ...options);
+      vi.spyOn(handle, 'readFile').mockRejectedValue(new RangeError('Invalid string length'));
+      return handle;
+    });
+    try {
+      expect(await current.audit.recover(current.record)).toEqual({ status: 'recovered', request: current.request, response: produced });
+      expect(open).toHaveBeenCalledWith(auditPath, expect.any(Number));
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it('recovers only the requested provider attempt rather than selecting the latest response', async () => {
@@ -321,5 +342,41 @@ describe('prepared business attempt audit and exact response recovery', () => {
     await expect(current.audit.write(record, material, controller.signal)).rejects.toBe(reason);
     await expect(current.audit.recover(record, controller.signal)).rejects.toBe(reason);
     expect(await fs.readdir(container)).toEqual([]);
+  });
+});
+
+describe('raw ledger scan boundary', () => {
+  const read = (accept: (event: unknown) => boolean, signal?: AbortSignal) => readRawLLMAudit({
+    root: auditRoot, containerRoot: container, eventKind: 'llm.request', messageId: 'llm.business_request_attempt',
+    reference: { logicalRequestId, providerAttemptId }, accept,
+  }, signal);
+
+  it('validates only the file prefix present when the scan starts', async () => {
+    await fs.mkdir(auditRoot, { recursive: true });
+    const first = { id: 'first' };
+    const last = { id: 'last', text: '中'.repeat(50_000) };
+    await fs.writeFile(auditPath, `${JSON.stringify(first)}\n${JSON.stringify(last)}\n`);
+    let added = false;
+    expect(await read(() => {
+      if (!added) {
+        added = true;
+        appendFileSync(auditPath, '{invalid-appended-event\n');
+      }
+      return true;
+    })).toEqual([first, last]);
+    await expect(read(() => true)).rejects.toMatchObject({
+      code: 'evidence_persistence_failed', failure: { operation: 'validate-jsonl' }, record: { line: 3 },
+    });
+  });
+
+  it('stops scanning when cancelled instead of evaluating later ledger lines', async () => {
+    await fs.mkdir(auditRoot, { recursive: true });
+    await fs.writeFile(auditPath, '{}\n{invalid-later-event\n');
+    const controller = new AbortController();
+    const cancelled = new Error('scan cancelled');
+    await expect(read(() => {
+      controller.abort(cancelled);
+      return true;
+    }, controller.signal)).rejects.toBe(cancelled);
   });
 });

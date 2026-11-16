@@ -429,6 +429,7 @@ const messages: Messages = {
     optBaselinePlan: '已有基线 phasePlan.json 路径（默认 <workspace>/phasePlan.json）',
     optProjectFile: 'XXX.xc 工程文件路径（默认 <workspace>/<name>.xc）',
     optChangeRequest: '描述契约变更的 YAML 文件，作用于进行中的 Phase，在恢复工作前开单',
+    optRetryCrReview: '显式重试变更请求当前交付中已确认失败的验收模型请求',
     optDebugWikiPath: 'debug wiki 根目录路径（默认 <XCompiler path>/.xcompiler/debug-wiki）',
     optRecordReplay: '外部交互模式：off、record、replay、auto 或 refresh',
     optRecordReplayPath: '工作区内的 record/replay fixture 相对目录',

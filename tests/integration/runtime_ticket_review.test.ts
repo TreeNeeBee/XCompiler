@@ -32,7 +32,7 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function fixture() {
+async function fixture(reasoningOnlyCalls = 0) {
   const calls: Array<{ messages: ChatMessage[] }> = [];
   const subjectId: string = createObjectId();
   const verdict = { kind: 'ticket-acceptance', decision: 'accept', reason: 'Candidate satisfies its accepted contract', evidenceRefs: [subjectId], propagation: null };
@@ -42,7 +42,9 @@ async function fixture() {
     request.on('end', () => {
       calls.push(JSON.parse(body));
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ model: 'review-model', choices: [{ index: 0, message: { content: JSON.stringify(verdict) }, finish_reason: 'stop' }] }));
+      const message = calls.length <= reasoningOnlyCalls
+        ? { content: null, reasoning: 'No final answer' } : { content: JSON.stringify(verdict) };
+      response.end(JSON.stringify({ model: 'review-model', choices: [{ index: 0, message, finish_reason: 'stop' }] }));
     });
   });
   servers.push(server);
@@ -88,6 +90,48 @@ describe('Runtime reporter acceptance', () => {
     const current = await fixture();
     current.verdict.evidenceRefs = ['another-delivery'];
     await expect(judgeRuntimeTicketReview(current.input)).rejects.toThrow('evidence references do not match');
+    expect(current.calls).toHaveLength(1);
+  });
+
+  it('retries a proved provider failure only for the exact retained delivery and restores the adopted retry', async () => {
+    const current = await fixture(2);
+    const failedRequestId = current.input.logicalRequestId;
+    const originalInput = current.container.state.abs('llm', 'business-inputs', 'requests', `${failedRequestId}.json`);
+    const retryRoot = current.container.state.abs('llm', 'business-inputs', 'ticket-review-retries');
+    await expect(judgeRuntimeTicketReview(current.input)).rejects.toMatchObject({ failure: { code: 'all_providers_failed' } });
+    const original = await fs.readFile(originalInput);
+    await expect(judgeRuntimeTicketReview(current.input)).rejects.toMatchObject({ details: { field: 'ticket_review_unfinished_request' } });
+    const requested = { ...current.input, retryFailedRequestId: failedRequestId };
+    await expect(judgeRuntimeTicketReview({ ...requested, payload: { ...requested.payload, candidateIdentity: 'b'.repeat(40) } }))
+      .rejects.toMatchObject({ details: { field: 'ticket_review_delivery' } });
+    expect(current.calls).toHaveLength(1);
+
+    await expect(judgeRuntimeTicketReview(requested)).rejects.toMatchObject({ failure: { code: 'all_providers_failed' } });
+    const firstRetry = JSON.parse(await fs.readFile(path.join(retryRoot, `${failedRequestId}.json`), 'utf8'));
+    expect(firstRetry).toMatchObject({ deliveryRequestId: failedRequestId, failedRequestId });
+    expect(firstRetry.retryRequestId).not.toBe(failedRequestId);
+    await expect(judgeRuntimeTicketReview(requested)).rejects.toMatchObject({ details: { logicalRequestId: firstRetry.retryRequestId } });
+    expect(current.calls).toHaveLength(2);
+
+    expect(await judgeRuntimeTicketReview({ ...requested, retryFailedRequestId: firstRetry.retryRequestId })).toEqual(current.verdict);
+    expect(current.calls).toHaveLength(3);
+    expect(current.calls[1]!.messages).toEqual(current.calls[0]!.messages);
+    expect(current.calls[2]!.messages).toEqual(current.calls[0]!.messages);
+    expect(await fs.readFile(originalInput)).toEqual(original);
+    expect(await judgeRuntimeTicketReview(current.input)).toEqual(current.verdict);
+    expect(await judgeRuntimeTicketReview(requested)).toEqual(current.verdict);
+    expect(current.calls).toHaveLength(3);
+  });
+
+  it('does not dispatch for a retained input whose request completion is unknown', async () => {
+    const current = await fixture(1);
+    await expect(judgeRuntimeTicketReview(current.input)).rejects.toMatchObject({ failure: { code: 'all_providers_failed' } });
+    const ledger = current.container.state.abs('audit', 'audit.jsonl');
+    const events = (await fs.readFile(ledger, 'utf8')).trimEnd().split('\n');
+    // A crash before the outer failure is persisted leaves an attempt with no authoritative outcome.
+    await fs.writeFile(ledger, `${events.filter(line => JSON.parse(line).messageId !== 'audit.llm_error').join('\n')}\n`);
+    await expect(judgeRuntimeTicketReview({ ...current.input, retryFailedRequestId: current.input.logicalRequestId }))
+      .rejects.toMatchObject({ details: { field: 'ticket_review_failure_unproven' } });
     expect(current.calls).toHaveLength(1);
   });
 

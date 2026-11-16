@@ -33,14 +33,14 @@ import {
 } from '../infrastructure/knowledge/file_debug_wiki.js';
 import { runProjectAudit } from '../application/delivery/project_audit.js';
 import { earlierPhaseTestOwners } from '../application/execution/earlier_phase_test_owners.js';
-import { createObjectId } from '../domain/identity/object_id.js';
+import { createObjectId, type ObjectId } from '../domain/identity/object_id.js';
 import { tagPhaseRelease } from '../application/project_management/phase_release_tag.js';
 import {
   ProjectManagerIntakeService, type UserChangeRequestInput,
 } from '../application/project_management/project_manager_intake.js';
 import { parseUserChangeRequest, UserChangeRequestError } from '../application/project_management/user_change_request.js';
 import { judgeRuntimeContractBasis } from './contract_basis_judgement.js';
-import { judgeRuntimeTicketReview, readTicketReviewArtifacts } from './ticket_review.js';
+import { judgeRuntimeTicketReview, readTicketReviewArtifacts, resolveRuntimeCrReviewRetry } from './ticket_review.js';
 import {
   frozenRequirementsFor, isScenarioOutcomeJudgementError, scenarioArtifactText,
 } from '../application/execution/scenario_outcome_judge.js';
@@ -122,6 +122,8 @@ export interface ExecuteOptions {
   permissionMode?: import('./io.js').RuntimePermissionPolicy;
   /** A contract change for the Phase in progress, opened before its work resumes. */
   changeRequestPath?: string;
+  /** Explicitly retry a proven failed model request for the current immutable CR delivery. */
+  retryCrReviewRequestId?: string;
 }
 
 export interface ExecuteResult {
@@ -197,6 +199,22 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   );
   if (!domainPhase || domainPhase.objectType !== 'phase') {
     throw new Error(`Canonical Phase ${plan.phaseId} is missing from Project ${domainProject.name}`);
+  }
+  let retryCrReviewTicketId: ObjectId | undefined;
+  if (opts.retryCrReviewRequestId !== undefined) {
+    try {
+      if (domainProject.currentPhaseId !== domainPhase.id) throw new Error('CR review retry requires the active Phase');
+      retryCrReviewTicketId = await resolveRuntimeCrReviewRetry({
+        requestId: opts.retryCrReviewRequestId, container, repository: domainRepository,
+        projectId: domainProject.id, phaseId: domainPhase.id,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await runtimeLog(io, 'error', message);
+      await audit.end({ status: 'error', stage: 'ticket-review-retry', message });
+      await runtimeResult(io, 'run', 'error', { message, exitCode: 7 });
+      return { status: 'error', message, exitCode: 7 };
+    }
   }
   if (domainPhase.stepIds.length === 0) {
     await new PhaseMaterializationService(domainRepository).materialize({
@@ -607,6 +625,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   const engine = new ProjectOrchestrator({
     reviewTicket: (request) => judgeRuntimeTicketReview({
       ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,
+      retryFailedRequestId: request.payload.subjectId === retryCrReviewTicketId ? opts.retryCrReviewRequestId : undefined,
     }),
     readReviewArtifacts: async (ticket, delivery) => {
       const change = await domainRepository.read(delivery.changelistId);

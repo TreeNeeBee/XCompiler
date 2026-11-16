@@ -192,6 +192,7 @@ export interface Messages {
     optBaselinePlan: string;
     optProjectFile: string;
     optChangeRequest: string;
+    optRetryCrReview: string;
     optDebugWikiPath: string;
     optRecordReplay: string;
     optRecordReplayPath: string;
