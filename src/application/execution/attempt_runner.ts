@@ -255,6 +255,8 @@ export interface AttemptResult {
   changedFiles: string[];
   changes?: Changelist['entries'];
   commit?: string;
+  /** Revision inspected by a retained CR diagnosis, including an unchanged attempt. */
+  diagnosisRevision?: string;
   /** Candidate inherited by any corrective Ticket routed from this rejected attempt. */
   workspaceBinding?: TicketWorkspaceBinding;
   solutionPlan?: string;
@@ -597,6 +599,7 @@ export class DomainAttemptRunner {
           failureKind,
           failure,
           executor: result,
+          changeRequestDisposition: result.changeRequestDisposition,
           dependencyRequest: dependencyRequestFrom(result.toolCalls),
           wikiEntryIds: wikiMatches.map((match) => match.entry.id),
         });
@@ -1642,6 +1645,9 @@ export class DomainAttemptRunner {
     const commit = preserveCandidate
       ? await this.recordTicketCommit(scope, input, 'attempt', 'rejected candidate')
       : undefined;
+    const diagnosisRevision = failure.changeRequestDisposition?.reasonCategory === 'diagnosis-contradicted'
+      ? commit ?? (changedFiles.length === 0 ? baseline : undefined)
+      : undefined;
     // Same question as the file-tree gate, and it must have the same answer: the scope says which
     // working copy it is, rather than two roots being compared through a resolver that does not
     // follow symlinks.
@@ -1701,6 +1707,8 @@ export class DomainAttemptRunner {
         failureLog: failure.failureLog,
         failureCategory: brief.category,
         structuredFailure: classified,
+        changeRequestDisposition: failure.changeRequestDisposition,
+        diagnosisRevision,
         testOutcomes,
         failureSignature,
         // Which build produced this failure. The retry policy uses it to tell "the same failure
@@ -1724,6 +1732,8 @@ export class DomainAttemptRunner {
         stepId: input.domainStep.id,
         ticketId: input.ticket.id,
         failure: classified,
+        changeRequestDisposition: failure.changeRequestDisposition,
+        diagnosisRevision,
         testOutcomes,
         gateFindings: failure.gateFindings ?? failure.assessment?.findings ?? [],
         workspaceDisposition: preserveCandidate && (!isCanonical || workspaceBinding)
@@ -1742,6 +1752,7 @@ export class DomainAttemptRunner {
       workspaceBinding,
       wikiEntryIds: [],
       ...failure,
+      diagnosisRevision,
       failure: classified,
       failureKind,
       testOutcomes,

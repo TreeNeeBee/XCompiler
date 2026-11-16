@@ -546,6 +546,7 @@ export interface Messages {
     mergeConflict: (branch: string, files: string) => string;
     mergeAuthorizationRequired: () => string;
     noDownstreamVerification: (ticket: string) => string;
+    crDiagnosisReviewUnresolved: (ticket: string, detail: string) => string;
     evidenceStorageFailed: (ticket: string, detail: string) => string;
     permissionBlocked: (ticket: string, detail: string) => string;
     infrastructureFailure: (ticket: string, detail: string) => string;

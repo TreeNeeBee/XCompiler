@@ -222,6 +222,160 @@ describe('Runtime initializes the configured knowledge store', () => {
     }
   });
 
+  it('resumes a CR diagnosis review and replays its original selectors in the detached candidate', async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-cr-diagnosis-replay-')));
+    const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+    const previous = envKeys.map(key => process.env[key]);
+    const calls: Array<{ model: string; payload: TicketReviewPayload }> = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        if (!body) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
+        const input = JSON.parse(body) as { model: string; messages: Array<{ content: string }> };
+        const payload = JSON.parse(input.messages.at(-1)!.content) as TicketReviewPayload;
+        calls.push({ model: input.model, payload });
+        const proof = payload.evidence.find(item => item.ref.startsWith('verification-replay:'));
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ model: input.model, choices: [{ index: 0, finish_reason: 'stop',
+          message: { content: JSON.stringify({ kind: 'problem-confirmation', decision: 'dismissed',
+            reason: 'The replay does not verify the development claim.',
+            evidenceRefs: [proof?.ref ?? 'original-finding'], ticketType: null, targetStepId: null }) },
+        }] }));
+      });
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+      process.env.XC_PATH = path.join(root, 'installation');
+      process.env.XCOMPILER_PATH = process.env.XC_PATH;
+      process.env.GIT_CONFIG_GLOBAL = path.join(root, 'empty-git-config');
+      process.env.GIT_CONFIG_NOSYSTEM = '1';
+      await fs.writeFile(process.env.GIT_CONFIG_GLOBAL, '');
+      const container = new ProjectContainer(path.join(root, 'project'));
+      const workspace = container.canonical().workspace;
+      const testFile = 'tests/test_integration_p1.py';
+      const exactSelector = `${testFile}::test_output_contract`;
+      const candidateText = 'def test_output_contract():\n    assert False, "candidate marker"\n';
+      const mainText = 'def test_output_contract():\n    assert True\n';
+      const gitAt = async (directory: string, ...args: string[]) => (await promisify(execFile)('git', ['-C', directory, ...args])).stdout.trim();
+      await workspace.ensure('tests');
+      await workspace.writeFile(testFile, candidateText);
+      await gitAt(workspace.root, 'init', '-b', 'master');
+      await gitAt(workspace.root, 'config', 'user.name', 'Runtime replay fixture');
+      await gitAt(workspace.root, 'config', 'user.email', 'fixture@example.invalid');
+      await gitAt(workspace.root, 'add', testFile);
+      await gitAt(workspace.root, 'commit', '-m', 'Candidate requiring original replay');
+      const revision = await gitAt(workspace.root, 'rev-parse', 'HEAD');
+      await workspace.writeFile(testFile, mainText);
+      await gitAt(workspace.root, 'commit', '-am', 'Advance canonical away from candidate');
+      const mainRevision = await gitAt(workspace.root, 'rev-parse', 'HEAD');
+
+      const draft = runtimePlan();
+      const graph = materializeProjectGraph({ draft, topic: 'Deliver a small reporting utility.', projectName: 'runtime-replay' });
+      const phase = graph.phases[0]!;
+      const sourceStep = graph.steps.find(step => step.type === 'DETAILED_DESIGN')!;
+      const code = graph.steps.find(step => step.type === 'CODE')!;
+      const verifier = graph.steps.find(step => step.type === 'INTEGRATION_TEST')!;
+      const repository = new DomainObjectRepository(container.state);
+      await repository.load();
+      await new ProjectGraphPersistenceService(repository).persistGraph(graph);
+      const registration = new TicketRegistrationService(repository);
+      const reporter = await registration.actorById(await registration.discovererActorIdForStep(verifier.id));
+      await repository.update(reviseActor(reporter, { modelPool: 'reporter' }), reporter.state);
+      const workflow = new TicketWorkflow(repository);
+      const originalFailure = { category: 'test' as const, code: 'test_command_failed', operation: 'run_tests', testSelectors: [exactSelector] };
+      const bug = await workflow.openBug({
+        creatorActorId: reporter.id, failedStep: verifier, targetStep: sourceStep, verificationStep: verifier,
+        kind: 'test-failure', severity: 'high', message: 'The original integration test did not pass.',
+        summary: 'The original integration test did not pass.', category: originalFailure.category,
+        code: originalFailure.code, retryable: true, switchProvider: false, correlationId: createObjectId(),
+        ...bugContracts(verifier, sourceStep, verifier, originalFailure),
+      });
+      const request = await workflow.openChangeRequest({
+        changeKind: 'work-correction', creatorActorId: reporter.id, sourceTicketIds: [bug.id],
+        triggerStepId: verifier.id, sourceStepId: sourceStep.id, targetStepId: code.id, propagationStepIds: [code.id],
+        contractDelta: { summary: 'Resolve the failed integration contract', before: ['Failed original case'],
+          after: ['Corrected original case'], affectedArtifacts: ['src/main.py'] },
+        implementationPlan: ['Implement the declared output'], verificationGate: ['The output matches the contract'],
+      });
+      const interrupted = new Error('Stop before the executable replay');
+      const pendingController = new ProjectController(repository, {
+        reviewTicket: async () => ({ kind: 'problem-confirmation', decision: 'needs-evidence', reason: 'Original executable replay is needed.',
+          evidenceRefs: ['original-finding'], ticketType: null, targetStepId: null }),
+        retestProblem: async () => { throw interrupted; },
+      });
+      await expect(pendingController.intakeProblems({ projectId: graph.project.id, phaseId: phase.id,
+        origin: 'change-request-contradiction', sourceTicketId: request.id, candidateIdentity: revision,
+        correlationId: request.source.correlationId, reports: [{
+          category: 'test-defect', code: 'validation_contract_defect', target: 'integration-test',
+          summary: 'Development questions the original test.', evidence: ['Compare the retained gate against the immutable candidate.'],
+          affectedArtifacts: [], dependencyPackages: [],
+        }],
+      })).rejects.toBe(interrupted);
+      const pending = await repository.read(phase.id);
+      if (pending.objectType !== 'phase') throw new Error('Missing pending review Phase');
+      const [review] = pending.problemReviews;
+      expect(review?.rounds[0]?.verdict?.decision).toBe('needs-evidence');
+
+      const planPath = container.control.abs('plan.P1.json');
+      await new FilePlanStore().savePlan(planPath, draft);
+      const configPath = await writeConfig(root, `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
+      const config = YAML.parse(await fs.readFile(configPath, 'utf8'));
+      config.llm.providers.reporter = { ...config.llm.providers.local, model: 'original-verifier' };
+      config.llm.pools.reporter = ['reporter'];
+      await fs.writeFile(configPath, YAML.stringify(config));
+
+      const observations: Array<{ root: string; head: string; branch: string; text: string; args: string[] }> = [];
+      const noOtherExecution = vi.fn(async (): Promise<never> => { throw new Error('Unexpected project execution in replay fixture'); });
+      vi.mocked(createSandbox).mockImplementation((_config, candidate) => ({
+        kind: 'subprocess',
+        build: async () => ({ rebuilt: false, reason: 'Installation is outside the replay fixture' }),
+        runTests: async (args = []) => {
+          observations.push({ root: candidate.root, head: await gitAt(candidate.root, 'rev-parse', 'HEAD'),
+            branch: await gitAt(candidate.root, 'rev-parse', '--abbrev-ref', 'HEAD'),
+            text: await candidate.readFile(testFile), args });
+          return { exitCode: 1, stdout: 'Candidate marker from the original test', stderr: '', timedOut: false, durationMs: 0 };
+        },
+        exec: noOtherExecution, runProgram: noOtherExecution, installDeps: noOtherExecution,
+      }));
+      vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(new Error('Stop after replaying the retained review'));
+      await runRunCommand({ workspace: container.root, planArg: planPath, configPath, debugWikiPath: path.join(root, 'debug-wiki'),
+        io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' });
+      expect(noOtherExecution).not.toHaveBeenCalled();
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({ head: revision, branch: 'HEAD', text: candidateText, args: [exactSelector] });
+      const checkout = observations[0]!.root;
+      expect(path.relative(container.worktreesRoot, checkout)).toMatch(/^gates\//u);
+      await expect(fs.stat(checkout)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await gitAt(workspace.root, 'rev-parse', 'HEAD')).toBe(mainRevision);
+      expect(await workspace.readFile(testFile)).toBe(mainText);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ model: 'original-verifier', payload: {
+        kind: 'problem-confirmation', subjectId: review!.id, candidateIdentity: revision,
+      } });
+      const evidence = calls[0]!.payload.evidence.find(item => item.ref === `verification-replay:${revision}`);
+      expect(evidence).toBeDefined();
+      expect(JSON.parse(evidence!.content)).toMatchObject({
+        revision, requestedSelectors: [exactSelector], executedArgs: [exactSelector], exitCode: 1,
+        output: expect.stringContaining('Candidate marker from the original test'),
+      });
+      await repository.load();
+      expect(await repository.read(phase.id)).toMatchObject({
+        problemReviews: [{ id: review!.id, reporterActorId: reporter.id, ticketIds: [], rounds: [
+          { requestId: review!.rounds[0]!.requestId, verdict: { decision: 'needs-evidence' } },
+          { verdict: { decision: 'dismissed', evidenceRefs: [evidence!.ref] } },
+        ] }],
+      });
+    } finally {
+      vi.restoreAllMocks();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      envKeys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['normal', 'debug'] as const)('composes the retained execution port and Actor model pool through real Run and %s attempt before the real Tool boundary', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-runtime-executor-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;

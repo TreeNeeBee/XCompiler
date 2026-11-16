@@ -897,6 +897,7 @@ const messages: Messages = {
       '请在该分支上解决冲突，或放弃该分支并重做其改动',
     mergeAuthorizationRequired: () => '需要先授权合并，才能执行后续 Step',
     noDownstreamVerification: (ticket) => `${ticket} 没有后续验证路径`,
+    crDiagnosisReviewUnresolved: (ticket, detail) => `${ticket} 等待处理诊断复核结果。${detail}`,
     evidenceStorageFailed: (ticket, detail) => `必需的证据存储失败；${ticket} 已挂起，未创建缺陷 Ticket：${detail}`,
     permissionBlocked: (ticket, detail) => `授权受阻；${ticket} 已挂起，未创建缺陷 Ticket：${detail}`,
     infrastructureFailure: (ticket, detail) => `LLM 基础设施失败；${ticket} 已挂起，等待重试：${detail}`,
@@ -1128,7 +1129,7 @@ ${opts.phasePlan}
       crConvergence:
         '变更请求收敛：如果检查到的证据否定了原始失败诊断，停止探查，也不要修改无关文件。返回 actions=[]、done=true 和 ' +
         'changeRequestDisposition={outcome:"not-applicable",reasonCategory:"diagnosis-contradicted",' +
-        'rationale,inspectedArtifacts,evidence}。Runtime 会把这些证据转成由发现方角色负责的 Bug，由 PM 派发。' +
+        'rationale,inspectedArtifacts,evidence}。PM 路由留存证据，S1～S4 的报告交原验证 Actor 复核。' +
         '否则，应用实际的契约增量，或报告另一种有证据支持的 not-applicable 类别。',
       outputProgressStalled: (rounds, missing) =>
         `产出进度警告：必需产出已连续 ${rounds} 个写入/进展轮次没有减少。` +

@@ -135,6 +135,13 @@ only authority that changes Ticket state.
   delivered merely because its earlier CRs are closed.
 - Bug, Enhancement, Change Request, dependency, permission, and environment outcomes remain distinct
   for lifecycle, audit, metrics, and model scoring.
+- An S1–S4 CR processor can submit a structured contradiction of the original failure diagnosis.
+  PM retains the current candidate and original failure selectors and asks the original verification
+  reporter to confirm. A confirmed verification defect may open a Bug linked to the original CR.
+  A verdict without authorized corrective work stops the current run with the CR open. The review
+  leaves the original CR scope and its independent acceptance records intact. If the verifier asks
+  for more evidence, the Runtime may replay the retained test scope in a detached candidate worktree.
+  The replay supports the review and supplies no Ticket closure proof.
 
 ## Phase and V-model invariants
 

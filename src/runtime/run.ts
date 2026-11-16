@@ -3,7 +3,7 @@ import path from 'node:path';
 import { FilePlanStore } from '../infrastructure/planning/file_plan_store.js';
 import type { PlanStorePort } from '../domain/ports/plan_store.js';
 import { topoSort } from '../domain/planning/plan_lint.js';
-import { AuditLogger } from '../audit/audit.js';
+import { AuditLogger, redactCredentialText } from '../audit/audit.js';
 import { Workspace } from '../workspace/workspace.js';
 import { ProjectContainer } from '../workspace/project_container.js';
 import { GitService } from '../workspace/git.js';
@@ -24,6 +24,7 @@ import { MergeIntegrationService } from '../application/workspace/merge_integrat
 import { prepareScopeEnvironment } from '../application/execution/scope_environment.js';
 import { runMergeGateChecks } from '../application/workspace/merge_gate_checks.js';
 import { containerOwnershipRecord, GitRepositoryService } from '../infrastructure/git/git_repository_service.js';
+import { assertArtifactRoot } from '../infrastructure/persistence/immutable_json_artifact.js';
 import { acquireLock, LockError } from '../infrastructure/locking/file_lock.js';
 import { calibratePythonRequirements } from '../agents/calibration.js';
 import { getLanguageProfile } from '../application/execution/language_support.js';
@@ -34,6 +35,7 @@ import {
 import { runProjectAudit } from '../application/delivery/project_audit.js';
 import { earlierPhaseTestOwners } from '../application/execution/earlier_phase_test_owners.js';
 import { createObjectId, type ObjectId } from '../domain/identity/object_id.js';
+import { testSelectorPath } from '../domain/tickets/failure_identity.js';
 import { tagPhaseRelease } from '../application/project_management/phase_release_tag.js';
 import {
   ProjectManagerIntakeService, type UserChangeRequestInput,
@@ -627,6 +629,53 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
       ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,
       retryFailedRequestId: request.payload.subjectId === retryCrReviewTicketId ? opts.retryCrReviewRequestId : undefined,
     }),
+    retestProblem: async (review, phaseId) => {
+      opts.abortSignal?.throwIfAborted();
+      const revision = review.candidateIdentity;
+      if (review.origin !== 'change-request-contradiction' || !review.sourceTicketId || !/^[a-f0-9]{7,40}$/u.test(revision)) {
+        throw new Error('Original CR verification replay requires a retained candidate revision');
+      }
+      const source = await domainRepository.read(review.sourceTicketId);
+      if (source.objectType !== 'ticket' || source.type !== 'change-request' || source.phaseId !== phaseId ||
+        source.originFailures.some(failure => failure.verificationStepId !== review.verificationStepId)) {
+        throw new Error('Original CR verification replay does not match its source and verifier');
+      }
+      const selectors = [...new Set(source.originFailures.flatMap(failure => failure.identity.testSelectors))];
+      const files = selectors.map(testSelectorPath);
+      if (selectors.length === 0 || files.some(file => !file || file.startsWith('-') || path.isAbsolute(file) ||
+        file.includes('\\') || file.includes('\0') || file.split('/').includes('..'))) {
+        throw new Error('Original CR verification replay requires project-relative test selectors');
+      }
+      const testArgs = plan.language === 'python' ? selectors : [...new Set(files)];
+      const authorization = await requestPermission({ operationType: 'test_command',
+        target: `${source.name} original verification at ${revision}`, reason: 'The original verifier requested executable evidence.',
+        risk: 'The configured test runner executes generated project code.', scope: 'detached candidate sandbox',
+        skippable: false, denyBehavior: 'stop' });
+      if (!authorization.approved) throw new Error(`Original CR verification replay was not authorized for ${source.name}`);
+      const candidate = container.gate(review.id, createObjectId(), '').workspace;
+      const parent = path.dirname(candidate.root);
+      await assertArtifactRoot(parent, container.root);
+      await container.control.ensure(path.relative(container.root, parent));
+      await assertArtifactRoot(parent, container.root);
+      opts.abortSignal?.throwIfAborted();
+      await git.raw().raw(['worktree', 'add', '--detach', candidate.root, revision]);
+      try {
+        const replaySandbox = withRecordReplaySandbox(createSandbox(cfg, candidate,
+          sandboxEnvironmentPath(container.state.root, { scope: 'gate', projectId: domainProject.id, phaseId }),
+          audit, plan.language, downloadCacheRoot), recordReplay);
+        await replaySandbox.build(profile.manifestFile);
+        const result = await replaySandbox.runTests(testArgs);
+        opts.abortSignal?.throwIfAborted();
+        const observed = { revision, requestedSelectors: selectors, executedArgs: testArgs,
+          exitCode: result.exitCode, timedOut: result.timedOut, output: redactCredentialText(result.stdout + '\n' + result.stderr) };
+        await audit.event('note', `${source.name} original verification replay completed`, {
+          messageId: 'domain.cr_diagnosis_replay', ticketId: source.id, phaseId, reviewId: review.id, ...observed,
+        }, { persistence: 'required' });
+        return [{ ref: `verification-replay:${revision}`, content: JSON.stringify({ ...observed, output: observed.output.slice(-12_000) }) }];
+      } finally {
+        await repositoryGit.removeWorktree(candidate.root, { force: true });
+      }
+    },
     readReviewArtifacts: async (ticket, delivery) => {
       const change = await domainRepository.read(delivery.changelistId);
       if (change.objectType !== 'changelist' || !delivery.candidateRevision) throw new Error('Ticket acceptance requires a retained candidate revision');

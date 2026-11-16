@@ -7,13 +7,13 @@ import {
   type TicketWorkspaceBinding,
 } from '../../domain/tickets/ticket.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
-import type { AuditLogger } from '../../audit/audit.js';
+import { redactCredentialText, type AuditLogger } from '../../audit/audit.js';
 import { changelistEntries, type AttemptResult } from '../execution/attempt_runner.js';
 import { isEvidencePersistenceFailure } from '../execution/failure_classification.js';
 import type { ProjectController, ScheduledWork } from './project_controller.js';
 import { workModeFor } from './work_scheduler.js';
 import type { TicketRegistrationService } from './ticket_registration_service.js';
-import { FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
+import { findingTargetForStepType, FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
@@ -283,6 +283,35 @@ export class AttemptResultProcessor {
       ...(result.gateFindings ?? []),
       ...(result.assessment?.findings ?? []),
     ]);
+    const diagnosis = result.changeRequestDisposition;
+    if (STEP_TYPE_ORDER[work.step.type] <= STEP_TYPE_ORDER.CODE && work.ticket.type === 'change-request' &&
+      result.executor?.validationDefectSource === 'role-asserted' && diagnosis?.outcome === 'not-applicable' &&
+      diagnosis.reasonCategory === 'diagnosis-contradicted') {
+      const source = work.ticket;
+      const verifierIds = new Set(source.originFailures.map(failure => failure.verificationStepId));
+      const verifier = verifierIds.size === 1 ? steps.find(step => verifierIds.has(step.id)) : undefined;
+      if (!verifier || STEP_TYPE_ORDER[verifier.type] < STEP_TYPE_ORDER.UNIT_TEST) {
+        return stopFor({ code: 'cr_diagnosis_review_unresolved', ticketName: source.name,
+          detail: 'The retained failure does not identify a single original verification Step.' });
+      }
+      const binding = result.workspaceBinding ?? source.workspaceBinding;
+      const tickets = await this.options.controller.intakeProblems({
+        origin: 'change-request-contradiction', projectId: phase.projectId, phaseId: phase.id,
+        sourceTicketId: source.id, correlationId: source.source.correlationId,
+        candidateIdentity: result.diagnosisRevision ?? result.commit ?? binding?.revision ?? source.baselineRevision ?? source.id,
+        workspaceBinding: binding,
+        reports: [{ category: 'test-defect', code: VALIDATION_CONTRACT_DEFECT_CODE,
+          target: findingTargetForStepType(verifier.type), summary: redactCredentialText(diagnosis.rationale),
+          evidence: [
+            ...diagnosis.evidence,
+            JSON.stringify({ sourceRequest: source.id, contractDelta: source.contractDelta, inspectedArtifacts: diagnosis.inspectedArtifacts }),
+            JSON.stringify({ originFailures: source.originFailures, observedTests: result.testOutcomes }),
+          ].map(redactCredentialText), affectedArtifacts: [], dependencyPackages: [] }],
+      });
+      if (tickets.some(ticket => ticket.state !== 'closed' && ticket.state !== 'cancelled')) return { action: 'continue' };
+      return stopFor({ code: 'cr_diagnosis_review_unresolved', ticketName: source.name,
+        detail: 'The original verifier issued no open corrective Ticket for this candidate.' });
+    }
     // Development work is not a verifier's defect report. The original Ticket already owns this
     // failed attempt and its candidate; another Bug/Enhancement would block it behind itself.
     if (STEP_TYPE_ORDER[work.step.type] <= STEP_TYPE_ORDER.CODE) {

@@ -234,6 +234,7 @@ export class CorrectiveWorkflowService {
     sourceExternalId?: string;
     workspaceBinding?: TicketWorkspaceBinding;
     testOutcomes?: readonly TestOutcome[];
+    verificationSelectors?: readonly string[];
     affectedArtifacts?: readonly string[];
   }): Promise<BugTicket> {
     let failed = await this.state.requireStep(input.failedStepId);
@@ -265,6 +266,7 @@ export class CorrectiveWorkflowService {
       exitCode: input.exitCode,
       statusCode: input.statusCode,
       testOutcomes: input.testOutcomes,
+      verificationSelectors: input.verificationSelectors,
       artifactTargets: input.affectedArtifacts,
     });
     // The gate that was going to confirm this repair has just failed on the same thing instead. That

@@ -472,10 +472,17 @@ describe('StepExecutor system prompt assembly', () => {
 
     expect(result.success).toBe(false);
     expect(result.validationDefect).toContain('CR premise is false');
+    expect(result.changeRequestDisposition).toEqual({
+      outcome: 'not-applicable',
+      reasonCategory: 'diagnosis-contradicted',
+      rationale: 'The CR premise is false: src/cli.ts is implemented, while the acceptance test depends on live HTTP instead of deterministic fixtures.',
+      inspectedArtifacts: ['src/cli.ts'],
+      evidence: ['The current CLI exports the required entrypoint and the failing test invokes live public URLs.'],
+    });
     expect(llm.lastUser).toContain(
       'original failed gates:\n- FUNCTIONAL_TEST [test_command_failed]: functional test failed',
     );
-    expect(llm.lastUser).toContain('Runtime will make the discovering role create a Bug');
+    expect(llm.lastUser).toContain('An S1–S4 report goes to the original verification Actor');
   });
 
   it('converts a CR read-only warning into the structured diagnosis-contradicted path', async () => {

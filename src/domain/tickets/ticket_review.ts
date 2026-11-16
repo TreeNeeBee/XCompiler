@@ -45,7 +45,7 @@ export type TicketReviewVerdict = z.infer<typeof TicketReviewVerdictSchema>;
 
 export const ProblemReviewSchema = z.object({
   id: ObjectIdSchema,
-  origin: z.enum(['phase-delivery-gate', 'merge-gate']),
+  origin: z.enum(['phase-delivery-gate', 'merge-gate', 'change-request-contradiction']),
   candidateIdentity: z.string().min(1),
   report: DeliveryGateFindingSchema,
   reporterActorId: ObjectIdSchema,

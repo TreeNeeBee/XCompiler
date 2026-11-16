@@ -914,6 +914,7 @@ const messages: Messages = {
       'resolve the conflict on that branch, or abandon the branch and redo its work',
     mergeAuthorizationRequired: () => 'merge authorization is required before downstream execution',
     noDownstreamVerification: (ticket) => `${ticket} has no downstream verification path`,
+    crDiagnosisReviewUnresolved: (ticket, detail) => `${ticket} is waiting for a resolution of its diagnosis review. ${detail}`,
     evidenceStorageFailed: (ticket, detail) =>
       `Required evidence storage failed; ${ticket} is pending without a defect Ticket: ${detail}`,
     permissionBlocked: (ticket, detail) => `Permission blocked; ${ticket} is pending without a defect Ticket: ${detail}`,
@@ -1150,8 +1151,7 @@ Return strict JSON StepPlan for the current phase only.`,
         'Change Request convergence: if the inspected evidence disproves the original failure diagnosis, ' +
         'stop probing and do not mutate unrelated files. Return actions=[], done=true and ' +
         'changeRequestDisposition={outcome:"not-applicable",reasonCategory:"diagnosis-contradicted",' +
-        'rationale,inspectedArtifacts,evidence}. Runtime will turn that evidence into a Bug owned by the ' +
-        'discovering role and PM will route it. Otherwise apply the actual contract delta or report a ' +
+        'rationale,inspectedArtifacts,evidence}. PM will route the retained evidence. For an S1–S4 report, the original verification Actor confirms it. Otherwise apply the actual contract delta or report a ' +
         'different evidence-backed not-applicable category.',
       outputProgressStalled: (rounds, missing) =>
         `Output progress warning: required outputs have not decreased for ${rounds} write/progress rounds. ` +

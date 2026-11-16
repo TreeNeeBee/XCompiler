@@ -1435,8 +1435,8 @@ export class StepExecutor {
         };
       }
       const reportedValidationDefect = extractValidationDefect(turn);
-      const validationDefect = reportedValidationDefect ??
-        validationDefectFromChangeRequestDisposition(inp, changeRequestDisposition);
+      const contradictedChangeRequest = validationDefectFromChangeRequestDisposition(inp, changeRequestDisposition);
+      const validationDefect = reportedValidationDefect ?? contradictedChangeRequest?.message;
       const currentExecutableFailure = calls.some((call) => !call.ok && call.tool === 'run_tests');
       const supportedValidationDefect = validationDefect && (
         ((V_MODEL_TEST_PHASES as readonly string[]).includes(inp.step.phase) &&
@@ -1474,6 +1474,7 @@ export class StepExecutor {
           toolCalls: calls,
           finalThought,
           bugResolutionPlan,
+          changeRequestDisposition: contradictedChangeRequest?.disposition,
           validationDefect,
           validationDefectSource: 'role-asserted',
           error: `validation defect reported: ${validationDefect}`,
@@ -1878,8 +1879,7 @@ export class StepExecutor {
         const targets = actions.flatMap((action) => actionTargetPaths(action.tool, action.args)).join(', ');
         const changeRequestRecovery = (inp.changeRequest?.originFailures.length ?? 0) > 0
           ? ' If inspection disproves the original CR diagnosis, stop with actions=[], done=true and ' +
-            'changeRequestDisposition reasonCategory="diagnosis-contradicted" so Runtime can route the ' +
-            'discovering role\'s Bug through PM.'
+            'changeRequestDisposition reasonCategory="diagnosis-contradicted" so PM can route the retained evidence.'
           : '';
         const error =
           (readOnlyRecoveryViolation
@@ -2576,17 +2576,20 @@ export function validationDefectFromTestFailure(
 function validationDefectFromChangeRequestDisposition(
   input: ExecutorRunInput,
   disposition: ChangeRequestDisposition | undefined,
-): string | undefined {
+): { disposition: ChangeRequestDisposition; message: string } | undefined {
   if (
     !input.changeRequest?.originFailures.length ||
     disposition?.outcome !== 'not-applicable' ||
     disposition.reasonCategory !== 'diagnosis-contradicted'
   ) return undefined;
-  return [
-    `Change Request ${input.changeRequest.name} diagnosis was contradicted at ${input.step.id}.`,
-    disposition.rationale,
-    ...disposition.evidence.map((item) => `Evidence: ${item}`),
-  ].join('\n');
+  return {
+    disposition,
+    message: [
+      `Change Request ${input.changeRequest.name} diagnosis was contradicted at ${input.step.id}.`,
+      disposition.rationale,
+      ...disposition.evidence.map((item) => `Evidence: ${item}`),
+    ].join('\n'),
+  };
 }
 
 function normalizeDeferredVerificationAssessment(

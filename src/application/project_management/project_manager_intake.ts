@@ -11,7 +11,7 @@ import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.j
 import { DeliveryGateFindingSchema, FINDING_TARGET_STEP_TYPE, type DeliveryGateFinding } from '../../domain/quality/delivery_gate.js';
 import { inheritedTestAssets } from '../../domain/quality/test_assets.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
-import type { Ticket, TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
+import type { BugTicket, ChangeRequestTicket, Ticket, TicketWorkspaceBinding } from '../../domain/tickets/ticket.js';
 import { t } from '../../i18n/index.js';
 import { earlierPhaseTestOwners } from '../execution/earlier_phase_test_owners.js';
 import { ownedAffectedArtifacts } from '../execution/execution_context.js';
@@ -25,6 +25,7 @@ import {
 export const PROJECT_MANAGER_PROBLEM_ORIGINS = [
   'phase-delivery-gate',
   'merge-gate',
+  'change-request-contradiction',
   // Reserved for the post-delivery Runtime boundary. It still requires a selected/reopened Phase.
   'external-usage',
 ] as const;
@@ -158,6 +159,7 @@ export class ProjectManagerIntakeService {
     });
     const acceptance = steps.find((step) => step.type === 'FUNCTIONAL_TEST');
     if (!acceptance) throw new Error(`PM intake requires a complete V-model Phase: ${phase.name}`);
+    const source = input.origin === 'change-request-contradiction' ? await this.contradictedRequest(input) : undefined;
 
     const queued: Array<{ ticket: Ticket; order: number }> = [];
     for (const report of deduplicateReports(input.reports)) {
@@ -165,8 +167,13 @@ export class ProjectManagerIntakeService {
       const verification = STEP_TYPE_ORDER[target.type] >= STEP_TYPE_ORDER.UNIT_TEST
         ? target : steps.find(step => step.id === target.pairedStepId);
       if (!verification) throw new Error('PM problem intake needs the matching verification Step');
-      const creatorActorId = await this.registration.discovererActorIdForStep(verification.id);
+      const creatorActorId = source
+        ? await this.originalVerifier(source, verification)
+        : await this.registration.discovererActorIdForStep(verification.id);
       let saved = await this.retainProblem(phase, input, report, verification, creatorActorId);
+      if (source && (saved.reporterActorId !== creatorActorId || saved.verificationStepId !== verification.id)) {
+        throw new Error('Retained CR diagnosis review has a different original verifier');
+      }
       if (saved.ticketIds) {
         for (const id of saved.ticketIds) {
           const previous = await this.repository.read(id);
@@ -182,6 +189,10 @@ export class ProjectManagerIntakeService {
         continue;
       }
       if (verdict.decision !== 'confirmed') throw new Error('Verification Actor still needs evidence for the PM finding');
+      if (source && verdict.ticketType !== 'bug') {
+        await this.saveProblem(phase.id, { ...saved, ticketIds: [] });
+        continue;
+      }
       target = steps.find(step => step.id === verdict.targetStepId)!;
       if (!target) throw new Error('Problem confirmation selected a Step outside the Phase');
       const externalId = `confirmed-problem:${saved.id}`;
@@ -192,13 +203,13 @@ export class ProjectManagerIntakeService {
         queued.push({ ticket: existing, order: STEP_TYPE_ORDER[target.type] });
         continue;
       }
-      const reportText = renderProblemReport(input.origin, report);
+      const reportText = renderProblemReport(input.origin, saved.report);
       let ticket: Ticket;
       if (verdict.ticketType === 'change-request' && report.category !== 'dependency') {
         ticket = await this.corrective.routeContractChange({
           reportingStepId: verification.id,
           targetStepId: target.id,
-          summary: report.summary,
+          summary: saved.report.summary,
           evidence: report.evidence,
           expected: report.scene?.scenario.expected ?? report.summary,
           affectedArtifacts: report.affectedArtifacts ?? [],
@@ -236,7 +247,7 @@ export class ProjectManagerIntakeService {
           message: reportText,
           summary: report.summary,
           workspaceBinding: saved.workspaceBinding,
-          bugKind: input.origin === 'phase-delivery-gate' ? 'delivery-gate' : 'quality-gate',
+          bugKind: source ? 'test-failure' : input.origin === 'phase-delivery-gate' ? 'delivery-gate' : 'quality-gate',
           failure: {
             kind: 'execution',
             category: report.category === 'test-defect' ? 'contract' : 'test',
@@ -253,6 +264,8 @@ export class ProjectManagerIntakeService {
             },
           },
           correlationId: input.correlationId,
+          ...(source ? { parentChangeRequestId: source.id, causationId: source.id, discoveringStepId: source.targetStepId,
+            verificationSelectors: source.originFailures.flatMap(failure => failure.identity.testSelectors) } : {}),
           sourceKind: 'pm-intake',
           sourceExternalId: externalId,
           tool: report.scene?.scenario.operation,
@@ -269,12 +282,37 @@ export class ProjectManagerIntakeService {
     return registered;
   }
 
+  private async contradictedRequest(input: ProjectManagerProblemIntake): Promise<ChangeRequestTicket> {
+    const source = input.sourceTicketId && await this.repository.read(input.sourceTicketId);
+    if (!source || source.objectType !== 'ticket' || source.type !== 'change-request' ||
+      source.phaseId !== input.phaseId || source.projectId !== input.projectId || source.originFailures.length === 0 ||
+      source.state === 'closed' || source.state === 'cancelled') {
+      throw new Error('CR diagnosis review requires an active Change Request with a retained original failure');
+    }
+    return source;
+  }
+
+  private async originalVerifier(source: ChangeRequestTicket, verification: Step): Promise<ObjectId> {
+    if (source.originFailures.some(failure => failure.verificationStepId !== verification.id) ||
+      STEP_TYPE_ORDER[verification.type] < STEP_TYPE_ORDER.UNIT_TEST) {
+      throw new Error('CR diagnosis review must be sent to its original verification Step');
+    }
+    const originalBugs = (await Promise.all(source.sourceTicketIds.map(id => this.repository.read(id))))
+      .filter((ticket): ticket is BugTicket => ticket.objectType === 'ticket' && ticket.type === 'bug' &&
+        ticket.verificationContract.verificationStepId === verification.id);
+    const reporters = new Set(originalBugs.map(bug => bug.reporterActorId));
+    const reporter = reporters.size === 1 ? [...reporters][0] : undefined;
+    if (!reporter) throw new Error('CR diagnosis review requires an unambiguous registered reporter for its original Bug');
+    return reporter;
+  }
+
   private async retainProblem(phase: Phase, input: ProjectManagerProblemIntake, report: DeliveryGateFinding, verification: Step, reporterActorId: ObjectId): Promise<ProblemReview> {
     const current = await this.repository.read(phase.id);
     if (current.objectType !== 'phase') throw new Error('Problem review requires a Phase');
     const candidateIdentity = input.candidateIdentity ?? input.correlationId;
     const existing = current.problemReviews.find(record => record.origin === input.origin && record.candidateIdentity === candidateIdentity &&
-      canonicalRuleJson(record.report) === canonicalRuleJson(DeliveryGateFindingSchema.parse(report)));
+      (input.origin === 'change-request-contradiction' ? record.sourceTicketId === input.sourceTicketId
+        : canonicalRuleJson(record.report) === canonicalRuleJson(DeliveryGateFindingSchema.parse(report))));
     if (existing) return existing;
     if (input.origin === 'external-usage') throw new Error('External intake is not enabled');
     const record: ProblemReview = {
@@ -295,6 +333,7 @@ export class ProjectManagerIntakeService {
         const payload = {
           kind: 'problem-confirmation' as const, projectId: actor.projectId, phaseId, subjectId: record.id,
           candidateIdentity: record.candidateIdentity,
+          ...(record.origin === 'change-request-contradiction' ? { confirmationMode: record.origin } : {}),
           evidence: [...round.evidence, { ref: 'phase-step-contracts', content: JSON.stringify(steps.map(step => ({ id: step.id, type: step.type, outputs: step.outputs, acceptance: step.acceptance }))) }],
         };
         const verdict = ProblemConfirmationVerdictSchema.parse(await this.review.reviewTicket({

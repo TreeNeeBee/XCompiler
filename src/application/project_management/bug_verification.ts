@@ -20,6 +20,8 @@ export function buildBugFailureContracts(input: {
   exitCode?: number;
   statusCode?: number;
   testOutcomes?: readonly TestOutcome[];
+  /** Verified routing may carry selectors from the immutable original gate. */
+  verificationSelectors?: readonly string[];
   artifactTargets?: readonly string[];
 }): { identity: FailureIdentity; verificationContract: BugVerificationContract } {
   const failedOutcomes = (input.testOutcomes ?? []).filter((outcome) =>
@@ -32,9 +34,9 @@ export function buildBugFailureContracts(input: {
   // can actually be executed again.
   const replayableFailedTests = exactFailedTests.filter(hasExecutableTestPath);
   const testSelectors = canonicalStrings(
-    replayableFailedTests.length > 0
+    input.verificationSelectors ?? (replayableFailedTests.length > 0
       ? replayableFailedTests
-      : failedOutcomes.flatMap((outcome) => outcome.args.filter((arg) => !arg.startsWith('-'))),
+      : failedOutcomes.flatMap((outcome) => outcome.args.filter((arg) => !arg.startsWith('-')))),
     normalizeSelector,
   );
   const artifactTargets = canonicalStrings(input.artifactTargets ?? [], normalizePath);

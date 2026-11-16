@@ -188,6 +188,10 @@ export class ProjectOrchestrator {
         return { passed: gate.ok, assessmentId: assessment.id, findings: gate.findings ?? [], reason: gate.reason, stop: gate.stop, blockingTicketIds: blockers.map(ticket => ticket.id) };
       },
       retestProblem: async (report, phaseId) => {
+        if (report.origin === 'change-request-contradiction') {
+          if (!this.options.retestProblem) throw new Error('Original CR verification replay is not available for this candidate');
+          return this.options.retestProblem(report, phaseId);
+        }
         if (report.origin === 'phase-delivery-gate') {
           if (!this.options.finalGate) throw new Error('Phase gate replay is not configured');
           return [{ ref: 'verification-replay', content: JSON.stringify(await this.options.finalGate()) }];

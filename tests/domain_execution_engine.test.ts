@@ -19,7 +19,7 @@ import { FileProjectProjectionWriter } from '../src/infrastructure/projections/f
 import { PluginHost } from '../src/plugins/host.js';
 import { Workspace } from '../src/workspace/workspace.js';
 import { reviseActor } from '../src/domain/project_management/index.js';
-import { TicketSchema, VALIDATION_CONTRACT_DEFECT_CODE } from '../src/domain/tickets/ticket.js';
+import { TicketSchema, VALIDATION_CONTRACT_DEFECT_CODE, type BugTicket, type ChangeRequestTicket } from '../src/domain/tickets/ticket.js';
 import { failedTestOutcome, passedTestOutcome } from './helpers/ticket_fixtures.js';
 import { AuditPersistenceError } from '../src/audit/errors.js';
 import { classifyFailure } from '../src/application/execution/failure_classification.js';
@@ -1245,6 +1245,108 @@ describe('ProjectOrchestrator', () => {
     // reopened and schedule a second full detailed-design pass before the parent CR resumes.
     expect(calls.filter((call) => call === 'P1-S003:normal')).toHaveLength(1);
   });
+
+  it.each(['dismissed', 'confirmed'] as const)(
+    'routes a development CR diagnosis to the original verifier before rescheduling work (%s)',
+    async decision => {
+      const { workspace, repository, graph, plan } = await fixture();
+      const phaseId = graph.phases[0]!.id;
+      const verifier = graph.steps.find(step => step.type === 'INTEGRATION_TEST')!;
+      const selector = 'tests/integration/contract.test.ts > reports an invalid record';
+      const originalFailure = 'Integration gate observed a missing observable response.';
+      const candidate = 'f'.repeat(40);
+      const childStarted = new Error('Stop the fixture before executing the confirmed repair');
+      let failedIntegration = false;
+      let originalBug: BugTicket | undefined;
+      let disputed: ChangeRequestTicket | undefined;
+      const runner = {
+        initialize: async () => undefined,
+        run: async (input: AttemptInput): Promise<AttemptResult> => {
+          const { ticket, domainStep: step, mode } = input;
+          if (!failedIntegration && step.id === verifier.id && mode === 'normal') {
+            failedIntegration = true;
+            return {
+              ok: false, reason: originalFailure, failureLog: originalFailure,
+              changedFiles: [], wikiEntryIds: [], testOutcomes: [failedTestOutcome(verifier, [selector])],
+            };
+          }
+          if (mode === 'debug' && ticket.type === 'bug') {
+            if (originalBug && ticket.id !== originalBug.id) throw childStarted;
+            originalBug = ticket;
+          }
+          if (ticket.type === 'change-request' && step.type === 'CODE') {
+            if (disputed) throw new Error('CODE received the unchanged CR again before independent resolution');
+            disputed = ticket;
+            return {
+              ok: false, reason: 'Ownership evidence requires a separate decision.', commit: candidate,
+              changedFiles: [], wikiEntryIds: [], testOutcomes: [],
+              changeRequestDisposition: {
+                outcome: 'not-applicable', reasonCategory: 'diagnosis-contradicted',
+                rationale: 'The recorded integration check never exercised the claimed product path.',
+                inspectedArtifacts: [...ticket.contractDelta.affectedArtifacts],
+                evidence: ['The check itself produces the observable response.'],
+              },
+              executor: {
+                success: false, rounds: 1, toolCalls: [],
+                validationDefect: 'The check itself produces the observable response.',
+                validationDefectSource: 'role-asserted',
+                metrics: { rounds: 1, parseFailures: 0, repeatedTurns: 0, toolFailRatio: 0, progressRatio: 1, healthScore: 1, providers: ['test'] },
+              },
+            };
+          }
+          return passingAttempt(repository, step);
+        },
+      };
+      const defaultOptions = options(workspace, repository, runner);
+      const reviewTicket = vi.fn<NonNullable<ProjectOrchestratorOptions['reviewTicket']>>(async request => {
+        if (request.payload.kind !== 'problem-confirmation') return defaultOptions.reviewTicket!(request);
+        return {
+          kind: 'problem-confirmation', decision, reason: 'Independently reviewed the supplied verification evidence.',
+          evidenceRefs: [request.payload.evidence[0]!.ref],
+          ticketType: decision === 'confirmed' ? 'bug' : null,
+          targetStepId: decision === 'confirmed' ? verifier.id : null,
+        };
+      });
+      const engine = new ProjectOrchestrator({ ...defaultOptions, reviewTicket }, plan);
+      if (decision === 'confirmed') await expect(engine.run(phaseId)).rejects.toBe(childStarted);
+      else expect(await engine.run(phaseId)).toMatchObject({ stop: { code: 'cr_diagnosis_review_unresolved' } });
+
+      expect(originalBug).toBeDefined();
+      expect(disputed).toBeDefined();
+      const confirmations = reviewTicket.mock.calls.map(([request]) => request).filter(request =>
+        request.payload.kind === 'problem-confirmation');
+      expect(confirmations).toHaveLength(1);
+      const [confirmation] = confirmations;
+      expect(confirmation!.actor.actorId).toBe(originalBug!.reporterActorId);
+      expect(confirmation!.payload.candidateIdentity).toBe(candidate);
+      const evidence = JSON.stringify(confirmation!.payload.evidence);
+      expect(evidence).toContain(originalFailure);
+      expect(evidence).toContain(selector);
+      expect(evidence).toContain('The check itself produces the observable response.');
+
+      const phase = await repository.read(phaseId);
+      expect(phase).toMatchObject({ problemReviews: [{
+        origin: 'change-request-contradiction', sourceTicketId: disputed!.id, verificationStepId: verifier.id,
+        rounds: [{ requestId: confirmation!.logicalRequestId, verdict: { decision } }],
+      }] });
+      const current = await repository.read(disputed!.id);
+      expect(current).toMatchObject({ contractDelta: disputed!.contractDelta, attempts: 1 });
+      const bugs = (await repository.list({ objectType: 'ticket', projectId: graph.project.id }))
+        .filter((ticket): ticket is BugTicket => ticket.objectType === 'ticket' && ticket.type === 'bug');
+      if (decision === 'confirmed') {
+        const child = bugs.find(ticket => ticket.parentTicketId === disputed!.id);
+        expect(bugs).toHaveLength(2);
+        expect(child).toMatchObject({
+          creatorActorId: originalBug!.reporterActorId, reporterActorId: originalBug!.reporterActorId,
+          verificationContract: { verificationStepId: verifier.id, testSelectors: [selector] },
+        });
+        expect(current).toMatchObject({ state: 'pending', blockedByTicketIds: expect.arrayContaining([child!.id]) });
+      } else {
+        expect(bugs).toHaveLength(1);
+        expect(current).not.toMatchObject({ state: 'closed' });
+      }
+    },
+  );
 
   it('routes a CR diagnosis contradiction from its discoverer back through the original failed gate', async () => {
     const setup = await fixture();
