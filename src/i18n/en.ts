@@ -436,6 +436,7 @@ const messages: Messages = {
     optProjectFile: 'XXX.xc project file path (default <workspace>/<name>.xc)',
     optChangeRequest: 'YAML file with a contract change for the Phase in progress; it is opened before work resumes',
     optRetryCrReview: 'Explicitly retry a failed model request for the current delivery of a change request',
+    optRecheckCrDiagnosis: 'Collect candidate evidence and recheck a dismissed CR diagnosis once with its original verifier',
     optDebugWikiPath: 'debug wiki root directory path (default <XCompiler path>/.xcompiler/debug-wiki)',
     optRecordReplay: 'external interaction mode: off, record, replay, auto, or refresh',
     optRecordReplayPath: 'workspace-relative record/replay fixture directory',
@@ -703,6 +704,9 @@ const messages: Messages = {
         'Author each file with its real assertions against the product module it verifies.',
       refusedOptions: (options) => `Not passed to the runner, because Runtime decides which tests this gate runs: ${options}. ` +
         'Only output options such as -v, -q, --tb and -p no:cacheprovider are passed on.',
+      scopeNotAllowed: (requested, gate) => `No tests executed: ${requested} is outside this Runtime-owned gate (${gate}). ` +
+        'Use the declared gate or omit selectors. Verification of another scope must be routed to its owning verifier; ' +
+        'a passing gate is not evidence that the requested tests passed.',
       pytestWithoutVerdict: {
         3: 'pytest stopped on an internal error before any test reached a verdict. No test failed; ' +
           'read the error above (often a conftest.py or plugin problem) and fix that before running again.',

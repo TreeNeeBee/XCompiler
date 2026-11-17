@@ -259,6 +259,13 @@ export const runTestsTool: Tool<
       ...await appendVerificationSupplements(ctx, ctx.testGateArgs ?? []),
       ...await ctx.inheritedGateTests?.() ?? [],
     ])];
+    const gateSelectors = testSelectors(gateArgs);
+    const outside = gateSelectors.length > 0
+      ? testSelectors(requestedEffectiveArgs).filter(selector => !gateSelectors.includes(selector)) : [];
+    if (outside.length > 0) {
+      return { ok: false, code: 'test_scope_not_allowed',
+        error: toolText().runTests.scopeNotAllowed(outside.join(', '), gateSelectors.join(', ')) };
+    }
     // A selector naming a file the Step has not written yet describes a run that cannot pass, and
     // the runner reports it as a usage error — `file or directory not found`, which reads as a
     // broken environment rather than as unfinished work. A live CODE Step spent all ten of its

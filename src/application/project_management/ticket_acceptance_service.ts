@@ -15,6 +15,7 @@ import type { RunStop } from './run_stop.js';
 export interface TicketAcceptanceOptions {
   reviewTicket?: TicketReviewPort;
   readReviewArtifacts?: (ticket: ChangeRequestTicket, delivery: TicketDelivery) => Promise<TicketReviewPayload['evidence']>;
+  readProblemArtifacts?: (review: ProblemReview, source: ChangeRequestTicket, steps: readonly Step[]) => Promise<TicketReviewPayload['evidence']>;
   retestProblem?: (report: ProblemReview, phaseId: ObjectId) => Promise<TicketReviewPayload['evidence']>;
   replayBugGate?: (bug: BugTicket) => Promise<{ passed: boolean; assessmentId: ObjectId; findings: readonly DeliveryGateFinding[]; reason?: string; stop?: RunStop; blockingTicketIds?: readonly ObjectId[] }>;
 }

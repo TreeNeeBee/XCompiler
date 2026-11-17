@@ -430,6 +430,7 @@ const messages: Messages = {
     optProjectFile: 'XXX.xc 工程文件路径（默认 <workspace>/<name>.xc）',
     optChangeRequest: '描述契约变更的 YAML 文件，作用于进行中的 Phase，在恢复工作前开单',
     optRetryCrReview: '显式重试变更请求当前交付中已确认失败的验收模型请求',
+    optRecheckCrDiagnosis: '补充候选版本证据，由原验证方对已驳回的 CR 诊断进行一次复核',
     optDebugWikiPath: 'debug wiki 根目录路径（默认 <XCompiler path>/.xcompiler/debug-wiki）',
     optRecordReplay: '外部交互模式：off、record、replay、auto 或 refresh',
     optRecordReplayPath: '工作区内的 record/replay fixture 相对目录',
@@ -696,6 +697,8 @@ const messages: Messages = {
         '每个文件都要写出针对它所验证的产品模块的真实断言。',
       refusedOptions: (options) => `以下参数没有传给测试运行器，因为本门禁运行哪些测试由 Runtime 决定：${options}。` +
         '只传递输出类参数，例如 -v、-q、--tb 和 -p no:cacheprovider。',
+      scopeNotAllowed: (requested, gate) => `未执行任何测试：${requested} 不属于 Runtime 固定的本步门禁（${gate}）。` +
+        '请使用声明的门禁或省略选择器；其他范围的复测须交对应验证方处理。门禁通过不代表本次请求的测试通过。',
       pytestWithoutVerdict: {
         3: 'pytest 在任何测试得出结论之前因内部错误停止。没有测试失败；' +
           '请阅读上面的错误（通常是 conftest.py 或插件的问题），修好后再运行。',

@@ -142,6 +142,12 @@ only authority that changes Ticket state.
   leaves the original CR scope and its independent acceptance records intact. If the verifier asks
   for more evidence, the Runtime may replay the retained test scope in a detached candidate worktree.
   The replay supports the review and supplies no Ticket closure proof.
+  New reviews include relevant contracts, implementation and tests read from that immutable Git
+  candidate, distinguishing historical failures and processor assertions from current execution.
+  An operator may explicitly reopen a dismissed first-round diagnosis for its one remaining evidence
+  round, only in the current active Phase with the same active CR, candidate and original reporter.
+  Authorization persists before replay; candidate artifacts, replay and a new logical request are
+  retained before model review. Recovery preserves both rounds and cannot authorize a third one.
 
 ## Phase and V-model invariants
 
@@ -223,6 +229,11 @@ only authority that changes Ticket state.
 - Every delivery-gate finding carries a stable machine code. Findings with the same category, target,
   and code merge evidence; findings with different codes remain independent even when their rendered
   summaries happen to match.
+- A cached test receipt is reusable only for an identical request with no intervening executable
+  change; feedback retains its actual result and original call identity. A different requested
+  selector outside the Runtime-owned gate is an explicit refusal with no executed test verdict,
+  never a substituted gate pass. A corrected invocation can resolve this misuse without erasing
+  any real test failure or its audit evidence.
 - Phase delivery gates validate complete deliverables and real user scenarios, including real network
   behavior when the scenario requires it. External gate findings go to PM problem intake, which may
   request verification-Actor confirmation for multiple independent Tickets and restart corrective V-model work.

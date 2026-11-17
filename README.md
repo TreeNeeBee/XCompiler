@@ -181,6 +181,7 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run --debug-wiki-path <dir>` | Reuse and update a shared layered debug wiki path |
 | `xcompiler run --change-request <file>` | Open a contract change in the Phase in progress, then continue it |
 | `xcompiler run --retry-cr-review <request-id>` | Retry a proved model failure for the current CR delivery, then continue the Phase |
+| `xcompiler run --recheck-cr-diagnosis <review-id>` | Collect candidate evidence and recheck a dismissed CR diagnosis once with its original verifier |
 | `xcompiler load <name.xc>` | Load project config/progress and continue |
 | `xcompiler append <name.xc> -i <file>` | Add a new requirement to an existing project |
 | `xcompiler evolve -w <workspace> -i <file>` | Build and run an incremental change |
@@ -234,6 +235,23 @@ current delivery, and evidence that the model request ended in failure. A retry 
 candidate and reporter and creates a linked logical request. Its reply goes through independent
 acceptance before the CR can close. If a retry itself ends in a proved failure, use that failed
 request's ID for a further explicit retry. A plain `run` restores an adopted reply by identity.
+
+### Rechecking a dismissed CR diagnosis
+
+When an S1–S4 processor disputes the original failure diagnosis, the original verification reporter
+reviews the claim. New reviews include the immutable candidate's relevant contracts, implementation
+and test files; historical failures are identified separately from current execution evidence.
+
+For a dismissed first-round diagnosis, use the ID in the active Phase's `problemReviews`:
+`xcompiler run --recheck-cr-diagnosis <review-id>`. The CR must remain active and bound to that same
+candidate. The command records explicit authorization, reads its Git artifacts, replays the retained
+original test selectors in an isolated candidate, and submits one additional review to the same
+reporter. The first verdict stays intact. This uses the existing two-round limit; a second dismissal
+or request for more evidence never authorizes a third round. An interrupted recheck resumes with a
+plain `run`, retaining its new logical request identity. `--dry-run` only validates eligibility.
+
+Recheck evidence is diagnostic: it does not close the CR or its source Bug. Confirmed corrective work
+still follows ordinary ownership, CR acceptance, and the original Bug reporter's final verification.
 
 ## Runtime Defaults
 

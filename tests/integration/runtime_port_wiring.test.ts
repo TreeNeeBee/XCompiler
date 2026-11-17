@@ -21,6 +21,9 @@ import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/ph
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
 import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
 import { TicketRegistrationService } from '../../src/application/project_management/ticket_registration_service.js';
+import { ProjectManagerIntakeService } from '../../src/application/project_management/project_manager_intake.js';
+import { ProjectStateService } from '../../src/application/project_management/project_state_service.js';
+import { bindTicketWorkspace } from '../../src/domain/tickets/ticket.js';
 import { ProjectController } from '../../src/application/project_management/project_controller.js';
 import { QualityAssessmentService } from '../../src/application/execution/quality_assessment_service.js';
 import type { TicketReviewPayload } from '../../src/application/execution/ticket_review_request.js';
@@ -222,7 +225,7 @@ describe('Runtime initializes the configured knowledge store', () => {
     }
   });
 
-  it('resumes a CR diagnosis review and replays its original selectors in the detached candidate', async () => {
+  it.each(['needs-evidence', 'dismissed', 'interrupted-recheck'] as const)('resumes a %s CR diagnosis with original selectors and immutable candidate artifacts', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-cr-diagnosis-replay-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
@@ -298,24 +301,39 @@ describe('Runtime initializes the configured knowledge store', () => {
           after: ['Corrected original case'], affectedArtifacts: ['src/main.py'] },
         implementationPlan: ['Implement the declared output'], verificationGate: ['The output matches the contract'],
       });
+      await new ProjectStateService(repository).transitionPhase(phase, 'in_progress');
+      await repository.update(bindTicketWorkspace(request, { kind: 'ticket', relativePath: 'worktrees/tickets/candidate',
+        branch: 'candidate', revision, reason: 'initial', boundAt: new Date().toISOString() }), request.state);
+      const initialDecision = mode === 'needs-evidence' ? 'needs-evidence' : 'dismissed';
       const interrupted = new Error('Stop before the executable replay');
       const pendingController = new ProjectController(repository, {
-        reviewTicket: async () => ({ kind: 'problem-confirmation', decision: 'needs-evidence', reason: 'Original executable replay is needed.',
+        reviewTicket: async () => ({ kind: 'problem-confirmation', decision: initialDecision, reason: 'Original diagnosis verdict.',
           evidenceRefs: ['original-finding'], ticketType: null, targetStepId: null }),
         retestProblem: async () => { throw interrupted; },
       });
-      await expect(pendingController.intakeProblems({ projectId: graph.project.id, phaseId: phase.id,
+      const intake = pendingController.intakeProblems({ projectId: graph.project.id, phaseId: phase.id,
         origin: 'change-request-contradiction', sourceTicketId: request.id, candidateIdentity: revision,
         correlationId: request.source.correlationId, reports: [{
           category: 'test-defect', code: 'validation_contract_defect', target: 'integration-test',
           summary: 'Development questions the original test.', evidence: ['Compare the retained gate against the immutable candidate.'],
           affectedArtifacts: [], dependencyPackages: [],
         }],
-      })).rejects.toBe(interrupted);
+      });
+      if (mode === 'needs-evidence') await expect(intake).rejects.toBe(interrupted);
+      else expect(await intake).toEqual([]);
       const pending = await repository.read(phase.id);
       if (pending.objectType !== 'phase') throw new Error('Missing pending review Phase');
       const [review] = pending.problemReviews;
-      expect(review?.rounds[0]?.verdict?.decision).toBe('needs-evidence');
+      expect(review?.rounds[0]?.verdict?.decision).toBe(initialDecision);
+      if (mode === 'interrupted-recheck') {
+        await expect(new ProjectManagerIntakeService(repository, {
+          readProblemArtifacts: async () => [], retestProblem: async () => { throw interrupted; },
+        }).recheckDiagnosis(phase.id, review!.id)).rejects.toBe(interrupted);
+        await repository.load();
+        expect(await repository.read(phase.id)).toMatchObject({ problemReviews: [{
+          recheck: { afterRequestId: review!.rounds[0]!.requestId }, rounds: review!.rounds,
+        }] });
+      }
 
       const planPath = container.control.abs('plan.P1.json');
       await new FilePlanStore().savePlan(planPath, draft);
@@ -338,9 +356,17 @@ describe('Runtime initializes the configured knowledge store', () => {
         },
         exec: noOtherExecution, runProgram: noOtherExecution, installDeps: noOtherExecution,
       }));
-      vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(new Error('Stop after replaying the retained review'));
+      const runAttempt = vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(new Error('Stop after replaying the retained review'));
       await runRunCommand({ workspace: container.root, planArg: planPath, configPath, debugWikiPath: path.join(root, 'debug-wiki'),
-        io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' });
+        io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off',
+        recheckCrDiagnosisId: mode === 'dismissed' ? review!.id : undefined });
+      if (mode !== 'needs-evidence') {
+        expect(runAttempt).not.toHaveBeenCalled();
+        // A plain restart retains the stop; it does not send the review or consume an S4 attempt.
+        await runRunCommand({ workspace: container.root, planArg: planPath, configPath, debugWikiPath: path.join(root, 'debug-wiki'),
+          io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' });
+        expect(runAttempt).not.toHaveBeenCalled();
+      }
       expect(noOtherExecution).not.toHaveBeenCalled();
       expect(observations).toHaveLength(1);
       expect(observations[0]).toMatchObject({ head: revision, branch: 'HEAD', text: candidateText, args: [exactSelector] });
@@ -354,6 +380,8 @@ describe('Runtime initializes the configured knowledge store', () => {
       expect(calls[0]).toMatchObject({ model: 'original-verifier', payload: {
         kind: 'problem-confirmation', subjectId: review!.id, candidateIdentity: revision,
       } });
+      expect(calls[0]!.payload.evidence).toContainEqual({ ref: `${revision}:${testFile}`, content: candidateText });
+      expect(calls[0]!.payload.evidence.find(item => item.ref === 'candidate-provenance')).toBeDefined();
       const evidence = calls[0]!.payload.evidence.find(item => item.ref === `verification-replay:${revision}`);
       expect(evidence).toBeDefined();
       expect(JSON.parse(evidence!.content)).toMatchObject({
@@ -363,10 +391,17 @@ describe('Runtime initializes the configured knowledge store', () => {
       await repository.load();
       expect(await repository.read(phase.id)).toMatchObject({
         problemReviews: [{ id: review!.id, reporterActorId: reporter.id, ticketIds: [], rounds: [
-          { requestId: review!.rounds[0]!.requestId, verdict: { decision: 'needs-evidence' } },
+          review!.rounds[0],
           { verdict: { decision: 'dismissed', evidenceRefs: [evidence!.ref] } },
         ] }],
       });
+      const resumed = new ProjectManagerIntakeService(repository, {
+        reviewTicket: async () => { throw new Error('A retained verdict must never be resent'); },
+        readProblemArtifacts: async () => { throw new Error('No new evidence round is authorized'); },
+        retestProblem: async () => { throw new Error('No new replay is authorized'); },
+      });
+      await resumed.resume(phase.id);
+      if (mode !== 'needs-evidence') await resumed.recheckDiagnosis(phase.id, review!.id);
     } finally {
       vi.restoreAllMocks();
       server.closeAllConnections();

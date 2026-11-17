@@ -193,6 +193,7 @@ export interface Messages {
     optProjectFile: string;
     optChangeRequest: string;
     optRetryCrReview: string;
+    optRecheckCrDiagnosis: string;
     optDebugWikiPath: string;
     optRecordReplay: string;
     optRecordReplayPath: string;
@@ -410,6 +411,7 @@ export interface Messages {
       declaredTestsUnwritten: (files: string) => string;
       coverageReportOutside: (report: string) => string;
       refusedOptions: (options: string) => string;
+      scopeNotAllowed: (requested: string, gate: string) => string;
       /** Why a pytest exit reached no verdict, by exit code. */
       pytestWithoutVerdict: Readonly<Record<3 | 4 | 5, string>>;
       importDepth: (specifier: string, testPath: string, directory: string, prefix: string) => string;

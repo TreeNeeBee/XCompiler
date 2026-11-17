@@ -67,10 +67,66 @@ export class ProjectManagerIntakeService {
   async resume(phaseId: ObjectId): Promise<void> {
     const phase = await this.repository.read(phaseId);
     if (phase.objectType !== 'phase') throw new Error('Problem confirmation recovery requires a Phase');
-    for (const record of phase.problemReviews.filter(record => record.ticketIds === undefined)) {
+    for (const record of phase.problemReviews) {
+      if (record.recheck && record.rounds.length === 1) {
+        await this.recheckDiagnosis(phaseId, record.id);
+        continue;
+      }
+      if (record.ticketIds !== undefined) continue;
       await this.accept({ projectId: phase.projectId, phaseId, origin: record.origin, reports: [record.report],
         correlationId: record.correlationId, candidateIdentity: record.candidateIdentity, sourceTicketId: record.sourceTicketId, workspaceBinding: record.workspaceBinding });
     }
+  }
+
+  /** Read-only validation also used by Runtime before accepting an operator command. */
+  async checkDiagnosisRecheck(phaseId: ObjectId, reviewId: string): Promise<ProblemReview> {
+    const phase = await this.repository.read(phaseId);
+    if (phase.objectType !== 'phase' || phase.state !== 'in_progress') throw new Error('Diagnosis recheck requires an active Phase');
+    const project = await this.repository.read(phase.projectId);
+    if (project.objectType !== 'project' || project.currentPhaseId !== phaseId) throw new Error('Diagnosis recheck requires the current Phase');
+    const record = phase.problemReviews.find(review => review.id === reviewId);
+    if (!record || record.origin !== 'change-request-contradiction' || !record.sourceTicketId ||
+      record.rounds[0]?.verdict?.decision !== 'dismissed') throw new Error('Diagnosis recheck requires a retained dismissed CR review');
+    if (!record.recheck && (record.rounds.length !== 1 || (record.ticketIds?.length ?? 0) > 0)) {
+      throw new Error('This diagnosis review has already used its additional evidence round');
+    }
+    if (record.recheck && record.recheck.afterRequestId !== record.rounds[0].requestId) throw new Error('Diagnosis recheck identity does not match its original verdict');
+    const source = await this.repository.read(record.sourceTicketId);
+    if (source.objectType !== 'ticket' || source.type !== 'change-request' || source.phaseId !== phaseId ||
+      source.state === 'closed' || source.state === 'cancelled' || source.workspaceBinding?.revision !== record.candidateIdentity) {
+      throw new Error('Diagnosis recheck requires the same active CR and retained candidate');
+    }
+    const verification = await this.repository.read(record.verificationStepId);
+    if (verification.objectType !== 'step' || verification.phaseId !== phaseId ||
+      await this.originalVerifier(source, verification) !== record.reporterActorId) {
+      throw new Error('Diagnosis recheck must retain the original verification reporter');
+    }
+    return record;
+  }
+
+  async recheckDiagnosis(phaseId: ObjectId, reviewId: string): Promise<void> {
+    let record = await this.checkDiagnosisRecheck(phaseId, reviewId);
+    if (!this.review.retestProblem || !this.review.readProblemArtifacts) throw new Error('Diagnosis recheck requires candidate artifacts and executable replay');
+    if (!record.recheck) {
+      record = { ...record, recheck: { afterRequestId: record.rounds[0]!.requestId, requestedAt: new Date().toISOString() } };
+      await this.saveProblem(phaseId, record);
+    }
+    if (record.rounds.length === 1) {
+      const phase = await this.repository.read(phaseId);
+      if (phase.objectType !== 'phase') throw new Error('Diagnosis recheck requires a Phase');
+      const source = await this.contradictedRequest({ projectId: phase.projectId, phaseId, origin: record.origin,
+        correlationId: record.correlationId, sourceTicketId: record.sourceTicketId, reports: [record.report] });
+      const steps = (await Promise.all(phase.stepIds.map(id => this.repository.read(id))))
+        .filter((step): step is Step => step.objectType === 'step');
+      const artifacts = await this.review.readProblemArtifacts(record, source, steps);
+      const replay = await this.review.retestProblem(record, phaseId);
+      record = { ...record, ticketIds: undefined, rounds: [...record.rounds, { requestId: createObjectId(),
+        evidence: mergeReviewEvidence(record.rounds[0]!.evidence,
+          [{ ref: 'prior-review', content: JSON.stringify({ ...record.recheck, verdict: record.rounds[0]!.verdict }) }], artifacts, replay),
+      }] };
+      await this.saveProblem(phaseId, record);
+    }
+    await this.resume(phaseId);
   }
 
   /**
@@ -320,6 +376,12 @@ export class ProjectManagerIntakeService {
       reporterActorId, verificationStepId: verification.id, correlationId: input.correlationId, sourceTicketId: input.sourceTicketId, workspaceBinding: input.workspaceBinding,
       rounds: [{ requestId: createObjectId(), evidence: [{ ref: 'original-finding', content: JSON.stringify(report) }] }],
     };
+    if (input.origin === 'change-request-contradiction' && this.review.readProblemArtifacts) {
+      const source = await this.contradictedRequest(input);
+      const steps = (await Promise.all(current.stepIds.map(id => this.repository.read(id))))
+        .filter((step): step is Step => step.objectType === 'step');
+      record.rounds[0]!.evidence.push(...await this.review.readProblemArtifacts(record, source, steps));
+    }
     await this.saveProblem(phase.id, record);
     return record;
   }
@@ -347,8 +409,12 @@ export class ProjectManagerIntakeService {
       }
       if (record.rounds.at(-1)!.verdict!.decision !== 'needs-evidence') return record;
       if (record.rounds.length === 2 || !this.review.retestProblem) throw new Error('Verification Actor requested more evidence; no further automatic replay is available');
+      const source = record.origin === 'change-request-contradiction' && record.sourceTicketId
+        ? await this.repository.read(record.sourceTicketId) : undefined;
+      const artifacts = source?.objectType === 'ticket' && source.type === 'change-request'
+        ? await this.review.readProblemArtifacts?.(record, source, steps) ?? [] : [];
       const evidence = await this.review.retestProblem(record, phaseId);
-      record = { ...record, rounds: [...record.rounds, { requestId: createObjectId(), evidence: [...round.evidence, ...evidence] }] };
+      record = { ...record, rounds: [...record.rounds, { requestId: createObjectId(), evidence: mergeReviewEvidence(round.evidence, artifacts, evidence) }] };
       await this.saveProblem(phaseId, record);
     }
   }
@@ -360,6 +426,15 @@ export class ProjectManagerIntakeService {
     await this.repository.commit([PhaseSchema.parse({ ...phase, ...reviseObjectEnvelope(phase), problemReviews: [...records, review] })]);
   }
 
+}
+
+function mergeReviewEvidence(...groups: ProblemReview['rounds'][number]['evidence'][]): ProblemReview['rounds'][number]['evidence'] {
+  const entries = new Map<string, string>();
+  for (const { ref, content } of groups.flat()) {
+    if (entries.has(ref) && entries.get(ref) !== content) throw new Error(`Review evidence changed for retained reference ${ref}`);
+    entries.set(ref, content);
+  }
+  return [...entries].map(([ref, content]) => ({ ref, content }));
 }
 
 /** Where a person's change would land, or that the same change is already in this Phase. */

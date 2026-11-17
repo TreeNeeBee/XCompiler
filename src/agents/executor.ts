@@ -381,7 +381,7 @@ export class StepExecutor {
     const actionFingerprints = new Map<string, number>();
     const unresolvedToolFailures = new Map<string, UnresolvedToolFailure>();
     const failedVerificationAttempts = new Map<string, number>();
-    const failedExactVerificationAttempts = new Map<string, string>();
+    const failedExactVerificationAttempts = new Map<string, ToolResult>();
     const failedMutationAttempts = new Map<string, number>();
     let mutationGeneration = 0;
     let verifiedMutationGeneration = 0;
@@ -389,6 +389,7 @@ export class StepExecutor {
     // verification generation let an old run_tests result become current again after a later
     // run_program succeeded. Keep the executable baseline generation independent.
     let baselineTestVerifiedMutationGeneration = -1;
+    let successfulTestRequest: { generation: number; args: string; callId: string; result: ToolResult } | undefined;
     let actualRounds = 0;
     let consecutiveReadOnlyRounds = 0;
     let consecutiveNoProgressRounds = 0;
@@ -1028,11 +1029,13 @@ export class StepExecutor {
       for (const [actionIndex, a] of actions.entries()) {
         if (
           a.tool === 'run_tests' &&
-          baselineTestVerifiedMutationGeneration === mutationGeneration
+          successfulTestRequest?.generation === mutationGeneration &&
+          successfulTestRequest.args === stableActionValue(a.args)
         ) {
-          const summary =
-            'run_tests reused: the current mutation generation already passed the mandatory executable gate';
-          turnResults.push({ tool: a.tool, ok: true, summary });
+          const summary = `Reused run_tests receipt ${successfulTestRequest.callId} for the identical request: ` +
+            (successfulTestRequest.result.summary ?? 'See the retained execution result.');
+          updateUnresolvedToolFailures(unresolvedToolFailures, a, successfulTestRequest.result, advisoryFailureTools, advisoryFailureRules);
+          turnResults.push({ ...successfulTestRequest.result, tool: a.tool, summary });
           await inp.ctx.audit?.event('note', summary, {
             messageId: 'audit.executor_redundant_test_gate_reused',
             stepId: inp.step.id,
@@ -1040,6 +1043,7 @@ export class StepExecutor {
             round,
             mutationGeneration,
             requestedArgs: a.args,
+            originalCallId: successfulTestRequest.callId,
           });
           continue;
         }
@@ -1073,10 +1077,12 @@ export class StepExecutor {
         if (previousExactVerificationFailure) {
           repeatedVerificationFailure =
             `verification command repeated without a successful mutation: ${verificationActionLabel(a)}; ` +
-            `latest failure: ${truncate(previousExactVerificationFailure, 1000)}; ` +
-            'the duplicate command was not executed again; next attempt must patch/write before rerunning this command.' +
+            `latest failure: ${truncate(previousExactVerificationFailure.error ?? previousExactVerificationFailure.summary ?? 'unknown error', 1000)}; ` +
+            'the duplicate command was not executed again; resolve the reported failure before repeating this command.' +
             await owedOutputsSuffix(inp);
+          updateUnresolvedToolFailures(unresolvedToolFailures, a, previousExactVerificationFailure, advisoryFailureTools, advisoryFailureRules);
           turnResults.push({
+            ...previousExactVerificationFailure,
             tool: a.tool,
             ok: false,
             error: repeatedVerificationFailure,
@@ -1209,6 +1215,7 @@ export class StepExecutor {
           }
           if (baselineWasVerified && !requiresExecutionVerification) {
             baselineTestVerifiedMutationGeneration = mutationGeneration;
+            if (successfulTestRequest) successfulTestRequest.generation = mutationGeneration;
           }
         }
         if (isOutputMutationTool(a.tool)) {
@@ -1234,6 +1241,7 @@ export class StepExecutor {
             verifiedMutationGeneration = mutationGeneration;
             if (a.tool === 'run_tests') {
               baselineTestVerifiedMutationGeneration = mutationGeneration;
+              successfulTestRequest = { generation: mutationGeneration, args: stableActionValue(a.args), callId, result: r };
             }
           } else if (isUnownedStepFailure(r.code)) {
             // Nothing the Step can do makes this command succeed: the manifest is another Step's
@@ -1244,7 +1252,7 @@ export class StepExecutor {
             if (exactVerificationKey) {
               failedExactVerificationAttempts.set(
                 exactVerificationKey,
-                r.error ?? r.summary ?? 'unknown error',
+                r,
               );
             }
             const count = (failedVerificationAttempts.get(verificationKey) ?? 0) + 1;
@@ -2994,6 +3002,12 @@ function updateUnresolvedToolFailures(
   const keys = ran ? [ran.key] : actionResolutionKeys(action);
   if (result.ok) {
     for (const key of keys) unresolved.delete(key);
+    // Correcting a refused invocation resolves its misuse, never a test failure or its evidence.
+    if (action.tool === 'run_tests') {
+      for (const [key, failure] of unresolved) {
+        if (failure.code === 'test_scope_not_allowed') unresolved.delete(key);
+      }
+    }
     // A passing gated run settles every earlier run of tests it covers, however that run was asked for.
     if (ran) {
       for (const key of [...unresolved.keys()]) {

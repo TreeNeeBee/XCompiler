@@ -877,9 +877,9 @@ describe('runTestsTool / runPythonTool summary', () => {
       testGateArgs: ['tests/module/parser.test.ts', '--coverage'],
     };
     const r = await runTestsTool.run({ args: ['run', 'tests/unit'] }, fakeCtx);
-    expect(r.ok).toBe(true);
-    expect(seenArgs).toEqual(['tests/module/parser.test.ts', '--coverage']);
-    expect(r.summary).toBe('npm test exit=0 args=tests/module/parser.test.ts --coverage');
+    expect(r).toMatchObject({ ok: false, code: 'test_scope_not_allowed' });
+    expect(seenArgs).toEqual([]);
+    expect(r.error).toContain('tests/unit');
   });
 
   it('combines TypeScript runner flags with scoped default test args', async () => {
@@ -1173,13 +1173,15 @@ describe('pytest coverage measured by the unit-test gate', () => {
     expect(result.summary).toContain('Runtime decides which tests this gate runs: -k parser, --collect-only, -x');
   });
 
-  it('never takes a selector after an option that has no value', async () => {
+  it('reports an out-of-gate selector after a standalone option without executing other tests', async () => {
     let seenArgs: string[] = [];
-    await runTestsTool.run(
+    const result = await runTestsTool.run(
       { args: ['-v', 'tests/other/test_x.py'] },
       pythonCtx(async (args) => { seenArgs = args; return { exitCode: 0 }; }),
     );
-    expect(seenArgs).toEqual([...gateArgs, '-v']);
+    expect(seenArgs).toEqual([]);
+    expect(result).toMatchObject({ ok: false, code: 'test_scope_not_allowed' });
+    expect(result.error).toContain('tests/other/test_x.py');
   });
 
   it('keeps the gate coverage options when the model asks pytest-cov for its own', async () => {

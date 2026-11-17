@@ -190,6 +190,8 @@ export type ToolFailureCode =
   | 'product_not_implemented'
   /** The test runner started but reached no verdict: the invocation was rejected or found no tests. */
   | 'test_run_without_verdict'
+  /** The requested tests are outside this Runtime-owned gate; none were executed. */
+  | 'test_scope_not_allowed'
   | 'baseline_execution_deferred'
   /** run_tests refused: this Step's own declared test files are not written yet. */
   | 'declared_tests_unwritten'
@@ -235,7 +237,8 @@ export function isUnownedStepFailure(code: ToolFailureCode | undefined): boolean
  * handed to CODE as if it had demonstrated a product defect.
  */
 export function isTestRunWithoutVerdict(code: ToolFailureCode | undefined): boolean {
-  return code === 'test_run_without_verdict' || code === 'declared_tests_unwritten' || code === 'baseline_execution_deferred';
+  return code === 'test_run_without_verdict' || code === 'declared_tests_unwritten' ||
+    code === 'baseline_execution_deferred' || code === 'test_scope_not_allowed';
 }
 
 /** 单次工具调用的结果统一结构。 */

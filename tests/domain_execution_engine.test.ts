@@ -1307,7 +1307,9 @@ describe('ProjectOrchestrator', () => {
           targetStepId: decision === 'confirmed' ? verifier.id : null,
         };
       });
-      const engine = new ProjectOrchestrator({ ...defaultOptions, reviewTicket }, plan);
+      const readProblemArtifacts = vi.fn(async () => [{ ref: `${candidate}:tests/integration/contract.test.ts`,
+        content: 'Immutable candidate test: expected response is produced by the test itself.' }]);
+      const engine = new ProjectOrchestrator({ ...defaultOptions, reviewTicket, readProblemArtifacts }, plan);
       if (decision === 'confirmed') await expect(engine.run(phaseId)).rejects.toBe(childStarted);
       else expect(await engine.run(phaseId)).toMatchObject({ stop: { code: 'cr_diagnosis_review_unresolved' } });
 
@@ -1320,6 +1322,8 @@ describe('ProjectOrchestrator', () => {
       expect(confirmation!.actor.actorId).toBe(originalBug!.reporterActorId);
       expect(confirmation!.payload.candidateIdentity).toBe(candidate);
       const evidence = JSON.stringify(confirmation!.payload.evidence);
+      expect(readProblemArtifacts).toHaveBeenCalledTimes(1);
+      expect(evidence).toContain('Immutable candidate test: expected response is produced by the test itself.');
       expect(evidence).toContain(originalFailure);
       expect(evidence).toContain(selector);
       expect(evidence).toContain('The check itself produces the observable response.');

@@ -97,6 +97,10 @@ export class ProjectController {
     await this.intake.resume(phaseId);
   }
 
+  async recheckDiagnosis(phaseId: ObjectId, reviewId: string) {
+    await this.intake.recheckDiagnosis(phaseId, reviewId);
+  }
+
   async verifyDeliveredBug(input: Parameters<CorrectiveWorkflowService['verifyDeliveredBug']>[0]) {
     return this.corrective.verifyDeliveredBug(input);
   }

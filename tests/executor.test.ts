@@ -767,7 +767,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(result.validationDefectSource).toBe('gate-rendered');
   });
 
-  it('reuses a successful verification gate when the model only changes test arguments', async () => {
+  it('executes a changed verification request instead of guessing argument equivalence', async () => {
     class RepeatingGateLLM implements LLMClient {
       readonly name = 'repeating-gate';
       calls = 0;
@@ -835,8 +835,8 @@ describe('StepExecutor system prompt assembly', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(executions).toBe(1);
-    expect(result.toolCalls.filter((call) => call.tool === 'run_tests')).toHaveLength(1);
+    expect(executions).toBe(2);
+    expect(result.toolCalls.filter((call) => call.tool === 'run_tests')).toHaveLength(2);
   });
 
   // A live MODULE_TEST Step fixed its supplement, the gate Runtime appended passed, and every rerun it
@@ -904,8 +904,8 @@ describe('StepExecutor system prompt assembly', () => {
 
     expect(result.error ?? '', result.error).not.toContain('unresolved tool failures remain');
     expect(result.success, result.error).toBe(true);
-    // The fix's gate ran once; the rerun after it was reused, not executed.
-    expect(executions).toBe(2);
+    // The changed options are executed conservatively; all actual passes settle the same scope.
+    expect(executions).toBe(3);
   });
 
   it('updates skill operation windows when the active LLM provider switches', async () => {
@@ -3017,7 +3017,7 @@ describe('StepExecutor system prompt assembly', () => {
     expect(actualRuns).toBe(1);
     expect(r.error).toContain('verification command repeated without a successful mutation');
     expect(r.error).toContain('duplicate command was not executed again');
-    expect(r.error).toContain('next attempt must patch/write');
+    expect(r.error).toContain('TS2339 missing API');
   });
 
   // A live CODE Step sent a malformed patch and run_tests in one reply, twice: the patch failed, the

@@ -126,6 +126,8 @@ export interface ExecuteOptions {
   changeRequestPath?: string;
   /** Explicitly retry a proven failed model request for the current immutable CR delivery. */
   retryCrReviewRequestId?: string;
+  /** Explicitly collect current evidence and recheck a dismissed CR diagnosis once. */
+  recheckCrDiagnosisId?: string;
 }
 
 export interface ExecuteResult {
@@ -203,6 +205,17 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     throw new Error(`Canonical Phase ${plan.phaseId} is missing from Project ${domainProject.name}`);
   }
   let retryCrReviewTicketId: ObjectId | undefined;
+  if (opts.recheckCrDiagnosisId !== undefined) {
+    try {
+      await new ProjectManagerIntakeService(domainRepository).checkDiagnosisRecheck(domainPhase.id, opts.recheckCrDiagnosisId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await runtimeLog(io, 'error', message);
+      await audit.end({ status: 'error', stage: 'cr-diagnosis-recheck', message });
+      await runtimeResult(io, 'run', 'error', { message, exitCode: 7 });
+      return { status: 'error', message, exitCode: 7 };
+    }
+  }
   if (opts.retryCrReviewRequestId !== undefined) {
     try {
       if (domainProject.currentPhaseId !== domainPhase.id) throw new Error('CR review retry requires the active Phase');
@@ -625,10 +638,25 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   let finalProjectAudit: ProjectAuditResult | undefined;
   const engine = new ProjectOrchestrator({
+    recheckCrDiagnosisId: opts.recheckCrDiagnosisId,
     reviewTicket: (request) => judgeRuntimeTicketReview({
       ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,
       retryFailedRequestId: request.payload.subjectId === retryCrReviewTicketId ? opts.retryCrReviewRequestId : undefined,
     }),
+    readProblemArtifacts: async (review, source, steps) => {
+      const affected = steps.filter(step => step.id === source.sourceStepId || step.id === source.targetStepId);
+      const artifacts = await readTicketReviewArtifacts({ revision: review.candidateIdentity,
+        paths: [...source.contractDelta.affectedArtifacts,
+          ...source.originFailures.flatMap(failure => failure.identity.testSelectors.map(testSelectorPath)),
+          ...affected.flatMap(step => [...step.inputs, ...step.outputs])],
+        filesAt: revision => repositoryGit.filesAt(revision),
+        readAt: (revision, file) => git.raw().raw(['show', `${revision}:${file}`]),
+      });
+      return [{ ref: 'candidate-provenance', content: JSON.stringify({ candidateIdentity: review.candidateIdentity,
+        artifactRefs: artifacts.map(artifact => artifact.ref),
+        originFailures: 'Historical failure evidence; not an execution result on this candidate.',
+        processorDiagnosis: 'Processor assertions; compare with candidate artifacts and executable evidence.' }) }, ...artifacts];
+    },
     retestProblem: async (review, phaseId) => {
       opts.abortSignal?.throwIfAborted();
       const revision = review.candidateIdentity;

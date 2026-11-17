@@ -53,13 +53,20 @@ export const ProblemReviewSchema = z.object({
   correlationId: ObjectIdSchema,
   sourceTicketId: ObjectIdSchema.optional(),
   workspaceBinding: TicketWorkspaceBindingSchema.optional(),
+  /** Explicit operator authorization for one evidence round after a dismissed first verdict. */
+  recheck: z.object({ afterRequestId: z.uuid(), requestedAt: z.string().datetime({ offset: true }) }).strict().optional(),
   rounds: z.array(z.object({
     requestId: z.uuid(),
     evidence: z.array(z.object({ ref: z.string().min(1), content: z.string() }).strict()).min(1),
     verdict: ProblemConfirmationVerdictSchema.optional(),
   }).strict()).min(1).max(2),
   ticketIds: z.array(ObjectIdSchema).optional(),
-}).strict();
+}).strict().superRefine((review, ctx) => {
+  if (review.recheck && (review.origin !== 'change-request-contradiction' ||
+    review.rounds[0]?.verdict?.decision !== 'dismissed' || review.recheck.afterRequestId !== review.rounds[0]?.requestId)) {
+    ctx.addIssue({ code: 'custom', path: ['recheck'], message: 'A recheck must follow the original dismissed CR diagnosis' });
+  }
+});
 export type ProblemReview = z.infer<typeof ProblemReviewSchema>;
 
 /** One immutable handoff. A new attempt appends a new handoff instead of reusing old acceptance. */

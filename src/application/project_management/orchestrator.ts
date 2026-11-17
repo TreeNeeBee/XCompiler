@@ -73,6 +73,7 @@ type TicketIntegration =
   | { status: 'stopped'; result: ProjectOrchestratorResult };
 
 export interface ProjectOrchestratorOptions extends Omit<AttemptRunnerOptions, 'repository' | 'plugins'>, TicketAcceptanceOptions {
+  recheckCrDiagnosisId?: string;
   repository: DomainObjectRepositoryPort;
   plugins: PluginHost;
   projectionWriter?: ProjectProjectionWriter;
@@ -175,6 +176,7 @@ export class ProjectOrchestrator {
     this.scheduler = new ProjectController(options.repository, {
       reviewTicket: options.reviewTicket,
       readReviewArtifacts: options.readReviewArtifacts,
+      readProblemArtifacts: options.readProblemArtifacts,
       replayBugGate: async bug => {
         if (!this.options.finalGate) throw new Error('Original Phase gate replay is not configured');
         const gate = await this.options.finalGate();
@@ -590,7 +592,21 @@ export class ProjectOrchestrator {
       });
     }
     await this.scheduler.reconcileClosedCorrectiveTickets(phase.projectId);
+    if (this.options.recheckCrDiagnosisId) await this.scheduler.recheckDiagnosis(phase.id, this.options.recheckCrDiagnosisId);
     await this.scheduler.resumeProblemConfirmations(phase.id);
+    // A completed recheck without corrective work cannot authorize another unchanged CR attempt.
+    // Read canonical state so the same stop survives restart without repeating either review.
+    for (const review of (await this.requirePhase(phase.id)).problemReviews) {
+      if (!review.recheck || review.ticketIds?.length !== 0) continue;
+      const source = review.sourceTicketId && await this.options.repository.read(review.sourceTicketId);
+      if (source && source.objectType === 'ticket' && source.type === 'change-request' &&
+        source.state !== 'closed' && source.state !== 'cancelled' && source.workspaceBinding?.revision === review.candidateIdentity) {
+        const target = await this.options.repository.read(source.targetStepId);
+        return this.failure(phase.id, phase.stepIds.length, 0, target.objectType === 'step' ? target : undefined,
+          { code: 'cr_diagnosis_review_unresolved', ticketName: source.name,
+            detail: 'The original verifier issued no open corrective Ticket after the authorized evidence recheck.' });
+      }
+    }
     await this.runner.synchronizeVerifiedBugResolutions?.(phase.projectId);
     // A delivery interrupted after the Phase was recorded as delivered is finished, not repeated; and a
     // release whose tag was never made — the run died first, or the tag failed — is tagged now.

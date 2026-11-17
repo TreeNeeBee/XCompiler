@@ -27,6 +27,85 @@ import { buildBugFailureContracts } from '../src/application/project_management/
 
 describe('TicketWorkflow', () => {
 
+  it.each(['confirmed', 'dismissed', 'needs-evidence'] as const)('explicitly rechecks a dismissed diagnosis once and retains both verdicts (%s)', async decision => {
+    const { repository, graph, request, review, verifier, reporter, bug } = await dismissedDiagnosis();
+    const phaseId = graph.phases[0]!.id;
+    const artifacts = [{ ref: 'candidate-artifact', content: 'Current candidate test and implementation' }];
+    const replay = [{ ref: 'candidate-replay', content: 'Original selectors still fail' }];
+    const readProblemArtifacts = vi.fn(async () => artifacts);
+    const retestProblem = vi.fn(async () => replay);
+    const reviewTicket = vi.fn<TicketReviewPort>(async () => ({ kind: 'problem-confirmation', decision,
+      reason: 'Independent judgement using current evidence', evidenceRefs: ['candidate-artifact', 'candidate-replay'],
+      ticketType: decision === 'confirmed' ? 'bug' : null, targetStepId: decision === 'confirmed' ? verifier.id : null }));
+    const intake = new ProjectManagerIntakeService(repository, { readProblemArtifacts, retestProblem, reviewTicket });
+    // Ordinary recovery of a final verdict never authorizes a new model request.
+    await intake.resume(phaseId);
+    expect(reviewTicket).not.toHaveBeenCalled();
+    const invoke = () => intake.recheckDiagnosis(phaseId, review.id);
+    if (decision === 'needs-evidence') await expect(invoke()).rejects.toThrow('no further automatic replay');
+    else await invoke();
+    const saved = asObject(await repository.read(phaseId), 'phase').problemReviews[0]!;
+    expect(saved.rounds).toHaveLength(2);
+    expect(saved.rounds[0]).toEqual(review.rounds[0]);
+    expect(saved.rounds[1]!.requestId).not.toBe(review.rounds[0]!.requestId);
+    expect(saved.rounds[1]!.evidence).toEqual(expect.arrayContaining([...artifacts, ...replay]));
+    expect(saved.recheck?.afterRequestId).toBe(review.rounds[0]!.requestId);
+    expect(reviewTicket.mock.calls[0]![0]).toMatchObject({ actor: { actorId: reporter },
+      payload: { candidateIdentity: review.candidateIdentity } });
+    if (decision === 'needs-evidence') await expect(invoke()).rejects.toThrow('no further automatic replay');
+    else await invoke();
+    expect(reviewTicket).toHaveBeenCalledTimes(1);
+    expect(retestProblem).toHaveBeenCalledTimes(1);
+    expect(readProblemArtifacts).toHaveBeenCalledTimes(1);
+    expect(asTicket(await repository.read(bug.id), 'bug').verificationRecords).toEqual([]);
+    if (decision === 'confirmed') {
+      expect(saved.ticketIds).toHaveLength(1);
+      expect(await repository.read(saved.ticketIds![0]!)).toMatchObject({ type: 'bug', parentTicketId: request.id,
+        reporterActorId: reporter, verificationContract: { verificationStepId: verifier.id } });
+      expect(await repository.read(request.id)).toMatchObject({ blockedByTicketIds: expect.arrayContaining(saved.ticketIds!) });
+    } else expect(saved.ticketIds).toEqual(decision === 'dismissed' ? [] : undefined);
+  });
+
+  it('resumes an interrupted evidence review with the same second request and never repeats replay', async () => {
+    const { repository, graph, review } = await dismissedDiagnosis();
+    const phaseId = graph.phases[0]!.id;
+    const interrupted = new Error('Stop after capturing the second logical request');
+    const replay = vi.fn(async () => [{ ref: 'replay', content: 'Original scope on the retained candidate' }]);
+    const firstRequest = vi.fn<TicketReviewPort>(async () => { throw interrupted; });
+    await expect(new ProjectManagerIntakeService(repository, {
+      readProblemArtifacts: async () => [{ ref: 'artifact', content: 'Candidate artifact' }], retestProblem: replay, reviewTicket: firstRequest,
+    }).recheckDiagnosis(phaseId, review.id)).rejects.toBe(interrupted);
+    await repository.load();
+    const resumedRequest = vi.fn<TicketReviewPort>(async () => ({ kind: 'problem-confirmation', decision: 'dismissed',
+      reason: 'Resumed verdict', evidenceRefs: ['replay'], ticketType: null, targetStepId: null }));
+    await new ProjectManagerIntakeService(repository, { reviewTicket: resumedRequest, retestProblem: replay }).resume(phaseId);
+    expect(resumedRequest).toHaveBeenCalledTimes(1);
+    expect(resumedRequest.mock.calls[0]![0]).toEqual(firstRequest.mock.calls[0]![0]);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(asObject(await repository.read(phaseId), 'phase').problemReviews[0]!.rounds).toHaveLength(2);
+  });
+
+  it.each(['changed-candidate', 'closed-source', 'inactive-phase', 'other-review'] as const)('refuses diagnosis recheck before recording authorization or executing evidence (%s)', async mode => {
+    const { repository, graph, request, review } = await dismissedDiagnosis();
+    const phaseId = graph.phases[0]!.id;
+    if (mode === 'changed-candidate') {
+      await repository.update(bindTicketWorkspace(request, { ...request.workspaceBinding!, revision: 'b'.repeat(40) }), request.state);
+    } else if (mode === 'closed-source') {
+      // Canonical snapshot of a terminal CR: no remaining work can be authorized by this command.
+      await repository.update(TicketSchema.parse({ ...request, ...reviseObjectEnvelope(request), state: 'cancelled' }), request.state);
+    } else if (mode === 'inactive-phase') {
+      const phase = asObject(await repository.read(phaseId), 'phase');
+      const state = new ProjectStateService(repository);
+      await state.transitionPhase(phase, 'delivered');
+    }
+    const execute = vi.fn(async () => []);
+    const intake = new ProjectManagerIntakeService(repository, { readProblemArtifacts: execute, retestProblem: execute });
+    await expect(intake.recheckDiagnosis(phaseId, mode === 'other-review' ? createObjectId() : review.id)).rejects.toThrow();
+    expect(execute).not.toHaveBeenCalled();
+    expect(asObject(await repository.read(phaseId), 'phase').problemReviews[0]).toEqual(review);
+  });
+
+
   it('delivers an upstream repair without a CR to the original verifier, and refuses a passing sibling case', async () => {
     const { graph, repository, registration, workflow } = await setup();
     const controller = new ProjectController(repository);
@@ -1962,6 +2041,40 @@ async function activeAssignments(
 ): Promise<number> {
   const actor = await repository.read(actorId as never);
   return actor.objectType === 'actor-registration' ? actor.activeAssignmentIds.length : -1;
+}
+
+
+async function dismissedDiagnosis() {
+  const context = await setup();
+  const { repository, graph, workflow, registration } = context;
+  const phase = graph.phases[0]!;
+  await new ProjectStateService(repository).transitionPhase(phase, 'in_progress');
+  const verifier = graph.steps.find(step => step.type === 'INTEGRATION_TEST')!;
+  const source = graph.steps.find(step => step.type === 'DETAILED_DESIGN')!;
+  const target = graph.steps.find(step => step.type === 'CODE')!;
+  const reporter = await registration.discovererActorIdForStep(verifier.id);
+  const bug = await workflow.openBug({ creatorActorId: reporter, failedStep: verifier, targetStep: source,
+    verificationStep: verifier, kind: 'test-failure', severity: 'high', summary: 'Original failure', message: 'Original failed gate',
+    category: 'test', code: 'test_command_failed', retryable: true, switchProvider: false, correlationId: createObjectId(),
+    ...bugContracts(verifier, source, verifier, { category: 'test', code: 'test_command_failed', testSelectors: ['tests/integration.test.ts'] }),
+  });
+  let request = await workflow.openChangeRequest({ changeKind: 'work-correction', creatorActorId: reporter,
+    sourceTicketIds: [bug.id], sourceStepId: source.id, triggerStepId: verifier.id, targetStepId: target.id, propagationStepIds: [target.id],
+    contractDelta: { summary: 'Implement the corrected design', before: ['Failed output'], after: ['Required output'], affectedArtifacts: ['src/main.ts'] },
+    implementationPlan: ['Implement corrected behavior'], verificationGate: ['Own baseline passes'],
+  });
+  request = bindTicketWorkspace(request, { kind: 'ticket', relativePath: 'worktrees/tickets/candidate', branch: 'candidate',
+    revision: 'a'.repeat(40), reason: 'initial', boundAt: new Date().toISOString() });
+  await repository.update(request, request.state);
+  await new ProjectManagerIntakeService(repository, { reviewTicket: async () => ({ kind: 'problem-confirmation', decision: 'dismissed',
+    reason: 'Historical evidence alone did not establish the claimed test defect', evidenceRefs: ['original-finding'], ticketType: null, targetStepId: null }),
+  }).accept({ projectId: graph.project.id, phaseId: phase.id, origin: 'change-request-contradiction', sourceTicketId: request.id,
+    candidateIdentity: request.workspaceBinding!.revision, correlationId: request.source.correlationId,
+    reports: [{ category: 'test-defect', code: 'validation_contract_defect', target: 'integration-test', summary: 'Processor disputes the original test',
+      evidence: ['Original failure and processor assertion'], affectedArtifacts: [], dependencyPackages: [] }],
+  });
+  const review = asObject(await repository.read(phase.id), 'phase').problemReviews[0]!;
+  return { ...context, request, review, verifier, reporter, bug };
 }
 
 async function setup() {

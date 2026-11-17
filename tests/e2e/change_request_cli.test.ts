@@ -75,3 +75,16 @@ describe('--retry-cr-review (real CLI process)', () => {
     expect(result.code).toBe(7);
   }, 60_000);
 });
+
+describe('--recheck-cr-diagnosis (real CLI process)', () => {
+  it.each([
+    ['xcompiler run', 'src/cli/xcompiler.ts', ['run']],
+    ['xcompiler_run', 'src/cli/xcompiler_run.ts', []],
+  ])('validates the diagnosis scope before dry-run exits through %s', async (_name, entry, command) => {
+    const { container, planPath, configPath } = await project();
+    const result = await cli(entry, ...command, planPath, '-w', container.root, '-c', configPath,
+      '--dry-run', '--recheck-cr-diagnosis', randomUUID());
+    expect(result.output).toContain('Diagnosis recheck requires an active Phase');
+    expect(result.code).toBe(7);
+  }, 60_000);
+});
