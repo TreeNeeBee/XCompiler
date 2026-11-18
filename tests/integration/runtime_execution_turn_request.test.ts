@@ -73,6 +73,7 @@ async function endpoint(reply: (call: number) => { output: string; finish?: stri
   const server = createServer((request, response) => {
     if (request.method === 'GET') { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"data":[]}'); return; }
     let body = '';
+    request.setEncoding('utf8');
     request.on('data', chunk => { body += String(chunk); });
     request.on('end', () => {
       const input = JSON.parse(body) as WireRequest;
@@ -112,7 +113,8 @@ function plugin(hooks: {
 }
 
 async function fixture(url: string, options: { plugins?: PluginHost; currentScope?: ExecutionRequestScope;
-  secondary?: { url: string; window?: number }; primaryWindow?: number; globalFallbacks?: string[] } = {}) {
+  secondary?: { url: string; window?: number }; primaryWindow?: number; globalFallbacks?: string[];
+  onContextWarning?: (message: string) => void | Promise<void> } = {}) {
   const container = new ProjectContainer(path.join(root, randomUUID()));
   const ws = container.canonical().workspace;
   await ws.ensure('.');
@@ -140,7 +142,8 @@ async function fixture(url: string, options: { plugins?: PluginHost; currentScop
     async () => ({ ok: true, latencyMs: 0, detail: 'Loopback fixture' }), recordReplay);
   const currentScope = options.currentScope ?? scope;
   const forPool = vi.spyOn(router, 'forPool');
-  const port = createRuntimeExecutionTurnRequestPort({ config: config.rules, container, recordReplay, router, audit, scope: currentScope });
+  const port = createRuntimeExecutionTurnRequestPort({ config: config.rules, container, recordReplay, router, audit, scope: currentScope,
+    onContextWarning: options.onContextWarning });
   const ctx: ToolContext = { ws, sandbox: undefined as never, audit, allowedWrites: ['src/'], stepId: scope.stepId };
   return { container, ws, config, audit, boost, decay, router, forPool, port, ctx, recordReplay,
     events: async (): Promise<AuditEvent[]> => (await container.state.readFile('audit/audit.jsonl')).split('\n')
@@ -750,6 +753,58 @@ describe('Runtime retained Executor requests', () => {
       .toEqual(windows.map(window => window.responseTokenBudget));
     expect(current.boost).not.toHaveBeenCalled();
     expect(current.decay).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([131072, 32768])('uses provider capacity %i for optional inline evidence and warns before sending only if it needs extra compression', async primaryWindow => {
+    const server = await endpoint();
+    const onContextWarning = vi.fn(() => { expect(server.calls).toHaveLength(0); });
+    const current = await fixture(server.url, { primaryWindow, onContextWarning });
+    const required = 'The latest rejection requires both delivered files to match their actual behavior.';
+    const supporting = Array.from({ length: 700 }, (_, index) => `${index} ${'旧交付摘录'.repeat(16)}`).join('\n') + '\nEnd of optional evidence.';
+    const base = request();
+    const original = request({ promptContext: { ...base.payload.promptContext, runtimeEvidence: 'adaptive-v1', contextSnippets: [
+      { source: 'runtime', priority: 'required', path: '.xcompiler/retry/CR-001.md', content: required },
+      { source: 'runtime', priority: 'supporting', path: '.xcompiler/archive/CR-001.md', content: supporting },
+    ] } });
+    await current.port.send(original);
+    expect(server.calls).toHaveLength(1);
+    const sent = server.calls[0]!.messages.find(message => message.role === 'user')!.content;
+    expect(sent).toContain(required);
+    const events = await current.events();
+    expect(retainedInput(events).messages).toEqual(original.messages);
+    const warnings = events.filter(event => event.messageId === 'llm.execution_context_compressed');
+    if (primaryWindow === 131072) {
+      expect(sent).toContain(supporting);
+      expect(warnings).toHaveLength(0);
+      expect(onContextWarning).not.toHaveBeenCalled();
+    } else {
+      expect(sent).not.toContain(supporting);
+      expect(warnings).toHaveLength(1);
+      expect(onContextWarning).toHaveBeenCalledExactlyOnceWith(warnings[0]!.message);
+      expect(warnings[0]!.data).toMatchObject({ provider: 'primary', contextWindowTokens: primaryWindow, fits: true });
+      expect(Number(warnings[0]!.data!.afterPromptTokens)).toBeLessThan(Number(warnings[0]!.data!.beforePromptTokens));
+      const prepared = events.findIndex(event => event.messageId === 'llm.business_request_attempt');
+      expect(prepared).toBeGreaterThan(events.indexOf(warnings[0]!));
+    }
+  });
+
+  it('warns and retains an over-capacity projection when required evidence cannot fit', async () => {
+    const server = await endpoint();
+    const onContextWarning = vi.fn();
+    const current = await fixture(server.url, { primaryWindow: 32768, onContextWarning });
+    const base = request();
+    const required = '前一轮需要修正的证据'.repeat(5_000);
+    const original = request({ promptContext: { ...base.payload.promptContext, runtimeEvidence: 'adaptive-v1', contextSnippets: [
+      { source: 'runtime', priority: 'required', path: '.xcompiler/retry/CR-001.md', content: required },
+    ] } });
+    await expect(current.port.send(original)).rejects.toMatchObject({ code: 'provider_capacity_exhausted' });
+    expect(server.calls).toHaveLength(0);
+    const events = await current.events();
+    const warning = events.find(event => event.messageId === 'llm.execution_context_compressed');
+    expect(warning?.data).toMatchObject({ provider: 'primary', fits: false, removedSnippets: 0, shortenedSnippets: 0 });
+    expect(onContextWarning).toHaveBeenCalledExactlyOnceWith(warning?.message);
+    expect(retainedInput(events).messages[1]!.content).toContain(required);
+    expect(events.some(event => event.messageId === 'llm.business_request_attempt')).toBe(false);
   });
 
   it('projects the window from Chinese history at about a token a character', async () => {

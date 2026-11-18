@@ -718,6 +718,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     },
     executionRequests: (scope) => createRuntimeExecutionTurnRequestPort({
       config: cfg.rules, container, recordReplay, router, audit, scope,
+      onContextWarning: message => runtimeLog(io, 'warning', message),
     }),
     judgeContractBasis: async (judgement, signal) => judgeRuntimeContractBasis({
       config: cfg.rules, container, recordReplay, router, audit, projectId: domainProject.id, phaseId: domainPhase.id,

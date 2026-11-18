@@ -336,7 +336,7 @@ export class StepExecutor {
       ? prompts.executorContextBlock(inp.layeredContext.trim())
       : '';
     const stepBlock = prompts.executorStepBlock(inp.step.systemPrompt.trim());
-    const userPrompt = renderExecutionUserPrompt({ ...inp, work }, toolDocs, initialMissingOutputs, locale);
+    const userPrompt = renderExecutionUserPrompt({ ...inp, work, runtimeEvidence: 'adaptive-v1' }, toolDocs, initialMissingOutputs, locale);
     const profile = inp.languageProfile ?? getLanguageProfile('python');
 
     const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -513,6 +513,7 @@ export class StepExecutor {
           schemaVersion: 1, kind: 'step-execution-turn', templateVersion: EXECUTION_TURN_TEMPLATE_VERSION,
           locale, outputLocale: getLocale(), parseContext: { language: (inp.languageProfile ?? getLanguageProfile('python')).id }, round,
           promptContext: {
+            runtimeEvidence: 'adaptive-v1',
             step: inp.step, work, ...(inp.role ? { role: inp.role } : {}), ...(inp.project ? { project: inp.project } : {}),
             baselineTestExecution: inp.baselineTestExecution,
             baselineTestExecutionReason: inp.baselineTestExecutionReason, contextSnippets: projectedHistory.snippets,

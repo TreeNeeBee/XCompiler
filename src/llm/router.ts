@@ -493,6 +493,7 @@ class FallbackClient implements LLMClient {
         let projectedMessages = providerMessages;
         let projectedMaxTokens: number | undefined;
         let projectedWindow: ReturnType<typeof resolveSkillOperationWindow> | undefined;
+        let reportCompression: (() => Promise<void>) | undefined;
         if (options?.prepareProviderRequest) {
           options.signal?.throwIfAborted();
           const projected = options.prepareProviderRequest({
@@ -508,6 +509,7 @@ class FallbackClient implements LLMClient {
           projectedWindow = { ...projected.window };
           projectedMessages = projected.messages.map(message => ({ ...message }));
           projectedMaxTokens = projected.maxTokens;
+          reportCompression = projected.reportCompression;
           options.signal?.throwIfAborted();
         }
         const operationWindow = projectedWindow ?? resolveSkillOperationWindow({
@@ -565,6 +567,7 @@ class FallbackClient implements LLMClient {
         // Protocol correction is pinned to its original producer and must not move.
         let rawBinding: unknown;
         try {
+          await reportCompression?.();
           rawBinding = await options?.beforeProviderRequest?.({
             logicalRequestId, providerAttemptId, provider: c.name, model: c.client.name,
             messages: attemptMessages, contextWindowTokens: c.contextWindowTokens, maxTokens: providerOptions.maxTokens!,

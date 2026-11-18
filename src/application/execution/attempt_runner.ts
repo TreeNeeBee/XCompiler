@@ -48,6 +48,7 @@ import {
   mergePairedSourceTestQuality,
 } from './paired_test_contract.js';
 import { normalizeGitPath } from './v_model_policy.js';
+import { latestChangeRequestRejection, ticketContextSnapshot } from './ticket_prompt_context.js';
 import { TEST_FIXTURE_DIR } from '../../domain/quality/external_dependency.js';
 import { getLanguageProfile, type LanguageProfile } from './language_support.js';
 import { inspectLanguageProjectContract } from './language_project_contract.js';
@@ -438,9 +439,10 @@ export class DomainAttemptRunner {
 
       const environment = await this.buildEnvironment(scope, input, baseline, debugContext?.suggestions);
       if (verificationInspection && verificationInspection.invalidSupplements.length > 0) {
-        // First, so the renderer's per-snippet cap never cuts it: it is what this attempt must fix.
+        // The defects found in the current candidate are part of what this attempt must repair.
         environment.snippets.unshift({
           source: 'runtime',
+          priority: 'required',
           path: `.xcompiler/verification/${input.domainStep.name}-supplements.md`,
           content: renderInvalidSupplementRepair(
             this.testValidator(scope).supplementalRoot(input.executionStep),
@@ -1014,21 +1016,31 @@ export class DomainAttemptRunner {
       'docs/02-high-level-design.md',
       'docs/03-detailed-design.md',
     ]);
-    // Top of the stack first, then the Ticket. The renderer caps each snippet, so whichever comes
-    // first is what survives: a live Bug's Ticket carried 43KB of the pytest output from the day it
-    // was opened, the cap kept the first 3000 characters of that, and the failure actually in hand
-    // reached the model only as a one-line summary further down. The Ticket still travels — its
-    // state, acceptance and routing are needed — with the prose that crowded them out bounded.
+    // A verdict lives in the immutable delivery record rather than in the execution-error log.
+    // Keep it alongside live retry evidence instead of burying it in a growing Ticket snapshot.
     const snippets: NonNullable<ExecutionPromptContext['contextSnippets']> = [];
+    const rejection = input.mode === 'change-request' && input.ticket.type === 'change-request'
+      ? latestChangeRequestRejection(input.ticket, input.domainStep.id)
+      : undefined;
+    if (rejection) {
+      snippets.push({
+        source: 'runtime',
+        priority: 'required',
+        path: `.xcompiler/acceptance/${input.ticket.name}-latest.json`,
+        content: JSON.stringify(rejection, null, 2),
+      });
+    }
     if (retryFeedback) {
       snippets.push({
         source: 'runtime',
+        priority: 'required',
         path: `.xcompiler/retry/${input.ticket.name}.md`,
         content: retryFeedback,
       });
     }
     snippets.push({
       source: 'runtime',
+      priority: 'required',
       path: `.xcompiler/objects/ticket/${input.ticket.id}.json`,
       content: JSON.stringify(ticketContextSnapshot(input.ticket), null, 2),
     });
@@ -1040,6 +1052,8 @@ export class DomainAttemptRunner {
               input.ticket.contractDelta.summary,
               ...input.ticket.contractDelta.before,
               ...input.ticket.contractDelta.affectedArtifacts,
+              rejection?.reason ?? '',
+              ...(rejection?.evidenceRefs ?? []),
               retryFeedback ?? '',
             ].join('\n')
           : retryFeedback;
@@ -1059,12 +1073,16 @@ export class DomainAttemptRunner {
     if ((input.plan.architectureModules?.length ?? 0) > 0) {
       snippets.push({
         source: 'runtime',
+        priority: 'required',
         path: '.xcompiler/architecture-contract.json',
         content: JSON.stringify({ architectureModules: input.plan.architectureModules }, null, 2),
       });
     }
     const downstream = buildDownstreamContextSnippet(input.plan, input.executionStep);
-    if (downstream) snippets.push({ source: 'runtime', path: `.xcompiler/downstream/${input.domainStep.name}.md`, content: downstream });
+    if (downstream) snippets.push({
+      source: 'runtime', priority: 'supporting',
+      path: `.xcompiler/downstream/${input.domainStep.name}.md`, content: downstream,
+    });
     for (const candidate of candidates) {
       if (!candidate || candidate.endsWith('/') || !(await scope.workspace.exists(candidate))) continue;
       snippets.push({ source: 'workspace', path: candidate, content: await scope.workspace.readFile(candidate) });
@@ -1880,52 +1898,6 @@ function gitChangeOperation(index: string, workingDirectory: string): Changelist
   if (status.includes('R')) return 'rename';
   if (status.includes('A') || status.includes('?')) return 'create';
   return 'update';
-}
-
-/** Prose fields on a Ticket that carry a captured failure rather than a description of one. */
-const TICKET_PROSE_FIELDS = ['description', 'summary', 'message', 'failureLog', 'finding'] as const;
-
-/**
- * How much of one captured failure the Ticket may carry into the prompt.
- *
- * Counting records is not enough on its own: one live Bug held a single 43KB pytest dump, so a
- * per-record cap is what actually bounds it. Head and tail are both kept because a pytest run puts
- * the first error at the top and the summary of what failed at the bottom, and either half alone
- * reads as a different failure.
- */
-const TICKET_PROSE_BUDGET = 1200;
-
-export function ticketContextSnapshot<T>(ticket: T): T {
-  const projected = trimTicketProse(ticket, new Set<unknown>());
-  if (projected && typeof projected === 'object' && 'objectType' in projected && projected.objectType === 'ticket') {
-    const material = projected as Record<string, unknown>;
-    delete material.modelContributions;
-    delete material.modelFinding;
-    delete material.modelFeedbackExcluded;
-  }
-  return projected as T;
-}
-
-function trimTicketProse(value: unknown, seen: Set<unknown>): unknown {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => trimTicketProse(item, seen));
-  if (value === null || typeof value !== 'object') return value;
-  if (seen.has(value)) return value;
-  seen.add(value);
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = typeof item === 'string' && (TICKET_PROSE_FIELDS as readonly string[]).includes(key)
-      ? clampProse(item)
-      : trimTicketProse(item, seen);
-  }
-  return out;
-}
-
-function clampProse(text: string): string {
-  if (text.length <= TICKET_PROSE_BUDGET) return text;
-  const head = text.slice(0, Math.floor(TICKET_PROSE_BUDGET * 0.6));
-  const tail = text.slice(-Math.floor(TICKET_PROSE_BUDGET * 0.4));
-  return `${head}\n... [ticket history trimmed ${text.length - head.length - tail.length} chars]\n${tail}`;
 }
 
 function debugBriefFor(ticket: BugTicket, step: ExecutionStep) {

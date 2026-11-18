@@ -27,13 +27,14 @@ export function renderExecutionUserPrompt(
   const snippetLimit = compactContext ? 900 : 2200;
   const architectureLimit = compactContext ? 3000 : 8000;
   const failureLogLimit = compactContext ? 2200 : 4000;
+  const adaptive = input.runtimeEvidence === 'adaptive-v1';
   const runtimeSnippets = snippets.filter((snippet) => snippet.source === 'runtime');
   const runtimeBlock = runtimeSnippets.length > 0
     ? [
         '## inline runtime evidence',
         'The identifiers below label captured Runtime evidence, not files in the workspace. Use the included content directly; do not read or write these identifiers with file tools. A truncation marker does not imply a readable file exists.',
         ...runtimeSnippets.map((snippet) =>
-          `### evidence identifier: ${snippet.path}\n\`\`\`\n${truncate(snippet.content, architectureLimit)}\n\`\`\``),
+          `### evidence identifier: ${snippet.path}\n\`\`\`\n${adaptive ? snippet.content : truncate(snippet.content, architectureLimit)}\n\`\`\``),
         '',
       ].join('\n\n')
     : '';
@@ -139,6 +140,12 @@ export function renderExecutionUserPrompt(
         '',
       ].join('\n')
     : '';
+  const changeRequest = input.changeRequest;
+  const repeatedDelta = adaptive && changeRequest?.description === changeRequest?.contractDelta.summary;
+  const acceptedOutcomes = changeRequest && (adaptive
+    ? [...new Set(changeRequest.contractDelta.after)].filter(item =>
+      item !== changeRequest.description && item !== changeRequest.contractDelta.summary)
+    : changeRequest.contractDelta.after);
   const changeRequestBlock = input.changeRequest
     ? [
         '## active change-request ticket',
@@ -147,14 +154,18 @@ export function renderExecutionUserPrompt(
         `state: ${input.changeRequest.state}`,
         `source tickets: ${input.changeRequest.sourceTicketIds.join(', ')}`,
         `objective: ${input.changeRequest.description}`,
-        `contract delta: ${input.changeRequest.contractDelta.summary}`,
+        ...(repeatedDelta ? ['contract delta: see objective above.'] : [`contract delta: ${input.changeRequest.contractDelta.summary}`]),
         input.changeRequest.originFailures.length > 0
           ? `original failed gates:\n${renderOriginFailures(input.changeRequest.originFailures)}`
           : 'original failed gate: not recorded (dependency or quality CR)',
         'failing baseline / before:',
         truncate(input.changeRequest.contractDelta.before.join('\n'), 2600),
         'accepted outcome / after:',
-        input.changeRequest.contractDelta.after.map((item) => `- ${item}`).join('\n'),
+        [...(acceptedOutcomes ?? []).map(item => `- ${item}`),
+          ...(adaptive && (acceptedOutcomes?.length ?? 0) < input.changeRequest.contractDelta.after.length &&
+            input.changeRequest.contractDelta.after.some(item => item === changeRequest?.description || item === changeRequest?.contractDelta.summary)
+            ? ['- The matching objective or contract delta above is also an accepted outcome.'] : []),
+        ].join('\n'),
         'affected artifacts:',
         ...input.changeRequest.contractDelta.affectedArtifacts.map((path) => `- ${path}`),
         'This CR carries an accepted upstream contract change. It is not an enhancement finding.',

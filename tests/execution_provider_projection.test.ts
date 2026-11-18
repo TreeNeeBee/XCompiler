@@ -5,6 +5,7 @@ import { describeToolForStep } from '../src/agents/execution/tool_action_normali
 import { validateExecutionTurnPayload, type ExecutionTurnPayload } from '../src/application/execution/execution_turn_request.js';
 import { getLocale, setLocale, tFor } from '../src/i18n/index.js';
 import type { ChatMessage } from '../src/llm/types.js';
+import { estimateMessageTokens } from '../src/llm/window.js';
 
 const initialLocale = getLocale();
 afterEach(() => { setLocale(initialLocale); });
@@ -146,5 +147,66 @@ describe('execution messages projected for the actual provider window', () => {
     expect(withContext.maxTokens).toBeLessThan(ordinary.maxTokens);
     expect(withContext.window.readChunkBytes).toBeLessThan(ordinary.window.readChunkBytes);
     expect(withContext.messages[0]!.content).toHaveLength(40_000);
+  });
+
+  it('keeps an adaptive inline section beyond the old fixed limit when the complete request fits', () => {
+    const material = `${'evidence '.repeat(1100)}LATEST DEFECT EVIDENCE`;
+    const base = payload();
+    const snippet = { source: 'runtime' as const, path: 'current-evidence', content: material };
+    const adaptive = validateExecutionTurnPayload({ ...base, promptContext: { ...base.promptContext,
+      runtimeEvidence: 'adaptive-v1', contextSnippets: [snippet] } });
+    const messages = framework(adaptive);
+    const projected = projectExecutionProviderMessages(adaptive, messages, messages, 32_768);
+    expect(projected.messages[1]!.content).toContain('LATEST DEFECT EVIDENCE');
+    expect(projected.compression).toBeUndefined();
+
+    const retained = validateExecutionTurnPayload({ ...base, promptContext: { ...base.promptContext,
+      contextSnippets: [snippet] } });
+    const legacyMessages = framework(retained);
+    expect(legacyMessages[1]!.content).toContain('[truncated ');
+    expect(legacyMessages[1]!.content).not.toContain('LATEST DEFECT EVIDENCE');
+  });
+
+  it('only compresses supporting material after the selected provider cannot fit the assembled request', () => {
+    const base = payload();
+    const immutable = 'Reporter rejection. Candidate evidence refs: recorded-workbook, failed-document.';
+    const optional = '额外上下文'.repeat(3500);
+    const adaptive = validateExecutionTurnPayload({ ...base, promptContext: { ...base.promptContext,
+      runtimeEvidence: 'adaptive-v1', contextSnippets: [
+        { source: 'runtime', path: 'latest-rejection', content: immutable, priority: 'required' },
+        { source: 'runtime', path: 'older-history', content: optional, priority: 'supporting' },
+        { source: 'workspace', path: 'docs/optional.md', content: 'Last optional file preview.' },
+      ] } });
+    const messages = framework(adaptive);
+    const rules: ChatMessage = { role: 'system', content: 'Pinned Rules. '.repeat(300) };
+    const actual = [rules, ...messages];
+    const small = projectExecutionProviderMessages(adaptive, messages, actual, 8192);
+    expect(small.compression).toMatchObject({ fits: true, removedSnippets: 1, shortenedSnippets: 1, contextWindowTokens: 8192 });
+    expect(small.compression!.afterPromptTokens).toBeLessThan(small.compression!.beforePromptTokens);
+    expect(small.window.promptTokens).toBe(estimateMessageTokens(small.messages));
+    expect(small.window.promptTokens + small.window.safetyTokens + small.maxTokens).toBeLessThanOrEqual(8192);
+    expect(small.messages[2]!.content).toContain(immutable);
+    expect(small.messages[2]!.content).toContain('excerpt shortened');
+    expect(small.messages[2]!.content).not.toContain('Last optional file preview.');
+    expect(small.messages.filter((_, index) => index !== 2)).toEqual(actual.filter((_, index) => index !== 2));
+    expect(messages[1]!.content).toContain(optional);
+    const large = projectExecutionProviderMessages(adaptive, messages, actual, 131_072);
+    expect(large.compression).toBeUndefined();
+    expect(large.messages[2]!.content).toContain(optional);
+  });
+
+  it('reports insufficient capacity with required evidence still present for the final guard', () => {
+    const base = payload();
+    const required = `${'约束'.repeat(5000)}REQUIRED TAIL`;
+    const adaptive = validateExecutionTurnPayload({ ...base, promptContext: { ...base.promptContext,
+      runtimeEvidence: 'adaptive-v1', contextSnippets: [
+        { source: 'runtime', path: 'required-contract', content: required },
+        { source: 'runtime', path: 'optional-note', content: 'An optional note.', priority: 'supporting' },
+      ] } });
+    const messages = framework(adaptive);
+    const projected = projectExecutionProviderMessages(adaptive, messages, messages, 8192);
+    expect(projected.compression).toMatchObject({ fits: false, removedSnippets: 1 });
+    expect(projected.messages[1]!.content).toContain(required);
+    expect(projected.messages[1]!.content).not.toContain('An optional note.');
   });
 });

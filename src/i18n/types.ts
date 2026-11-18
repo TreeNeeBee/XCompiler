@@ -28,6 +28,7 @@ export interface Messages {
     /** What a model is told when its reply was cut off at the response length limit. */
     responseTruncatedGuidance: string;
     providerCallFailed: (role: string, model: string) => string;
+    executionContextCompression: (provider: string, model: string, before: number, after: number, limit: number, fits: boolean) => string;
     scoreReadFailed: (path: string, message: string) => string;
     scoreChanged: (provider: string, score: string, previous: string) => string;
     scorePersistFailed: (message: string) => string;

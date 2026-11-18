@@ -184,7 +184,8 @@ export class LLMRuleBusinessRequest {
       const projected = projection(request);
       const expected = Object.freeze(projected.messages.map(message => Object.freeze({ ...message })));
       projectedMessages.set(request.providerAttemptId.toLowerCase(), expected);
-      return { messages: expected, maxTokens: projected.maxTokens, window: projected.window };
+      return { messages: expected, maxTokens: projected.maxTokens, window: projected.window,
+        reportCompression: projected.reportCompression };
     } : undefined;
     const beforeProviderRequest: NonNullable<ChatOptions['beforeProviderRequest']> = async (request) => {
       input.signal?.throwIfAborted();

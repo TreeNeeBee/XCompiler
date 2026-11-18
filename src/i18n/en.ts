@@ -223,6 +223,9 @@ const messages: Messages = {
       `<rejected-output never-executed="true">\n${rejectedOutput}\n</rejected-output>`,
     responseTruncatedGuidance: RESPONSE_TRUNCATED_GUIDANCE,
     providerCallFailed: (role, model) => `[${role}] provider ${model} failed; trying next`,
+    executionContextCompression: (provider, model, before, after, limit, fits) =>
+      `The execution request for ${provider} (${model}) exceeded the ${limit}-token window budget and triggered additional compression. ` +
+      `Estimated input changed from ${before} to ${after} tokens. ${fits ? 'The request now fits.' : 'Required evidence still exceeds the available window.'}`,
     scoreReadFailed: (p, message) => `failed to read ${p}: ${message}`,
     scoreChanged: (provider, score, previous) => `score(${provider}) = ${score} (was ${previous})`,
     scorePersistFailed: (message) => `failed to persist scores: ${message}`,

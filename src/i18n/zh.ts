@@ -218,6 +218,9 @@ const messages: Messages = {
       `<rejected-output never-executed="true">\n${rejectedOutput}\n</rejected-output>`,
     responseTruncatedGuidance: RESPONSE_TRUNCATED_GUIDANCE,
     providerCallFailed: (role, model) => `[${role}] provider ${model} 调用失败，切换到下一个`,
+    executionContextCompression: (provider, model, before, after, limit, fits) =>
+      `${provider}（${model}）的执行请求超过 ${limit} token 窗口预算，已进行额外压缩。` +
+      `估算输入由 ${before} 调整为 ${after} token。${fits ? '请求已符合窗口预算。' : '必需证据仍超过可用窗口。'}`,
     scoreReadFailed: (p, message) => `读取 ${p} 失败：${message}`,
     scoreChanged: (provider, score, previous) => `评分（${provider}）=${score}（原值 ${previous}）`,
     scorePersistFailed: (message) => `持久化评分失败：${message}`,

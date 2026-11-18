@@ -89,12 +89,15 @@ describe('StepExecutor Runtime request ownership', () => {
       actions: [{ tool: 'write_file', args: { path: 'src/x.py', content: 'retained\r\n' } }], done: true }) }));
     const legacy: ExecutorOptions & { llm: unknown } = { llm: { name: 'bare', chat }, request: { name: 'retained', send }, maxRounds: 1 };
     const result = await new StepExecutor(legacy)
-      .run({ step: baseStep, tools: [writeFileTool], ctx });
+      .run({ step: baseStep, tools: [writeFileTool], ctx, contextSnippets: [{
+        path: 'current evidence', source: 'runtime', content: `${'earlier facts '.repeat(800)}LATEST REQUIRED FACT`,
+      }] });
     expect(result.success).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0]).toMatchObject({ payload: { kind: 'step-execution-turn', round: 1,
       promptContext: { step: { id: baseStep.id, phase: 'CODE', systemPrompt: baseStep.systemPrompt } },
       tools: [{ name: 'write_file', argsSchema: writeFileTool.argsSchema }] } });
+    expect(send.mock.calls[0]![0].messages[1]!.content).toContain('LATEST REQUIRED FACT');
     expect(chat).not.toHaveBeenCalled();
     expect(result.metrics.providers).toEqual(['retained-model']);
     expect(await ws.readFile('src/x.py')).toBe('retained\r\n');

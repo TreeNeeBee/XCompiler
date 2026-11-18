@@ -12,6 +12,7 @@ import { BusinessResponseError } from '../application/execution/business_request
 import type { RecordReplayController } from '../application/record_replay/controller.js';
 import { canonicalRuleJson } from '../application/rules/rule_evidence_encoding.js';
 import type { XCompilerRuleConfig } from '../config/config.js';
+import { t } from '../i18n/index.js';
 import { ResponseValidationRejection } from '../llm/errors.js';
 import { assessJsonProtocolResponse } from '../llm/protocol_candidate.js';
 import { proveJsonProtocolCorrection } from '../llm/protocol_json.js';
@@ -41,8 +42,9 @@ export class ExecutionTurnResponseProtocolError extends Error {
 export function createRuntimeExecutionTurnRequestPort(input: {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
   router: LLMRouter; audit: AuditLogger; scope: ExecutionRequestScope;
+  onContextWarning?: (message: string) => void | Promise<void>;
 }): ExecutionTurnRequestPort {
-  const { config, container, recordReplay, router, audit } = input;
+  const { config, container, recordReplay, router, audit, onContextWarning } = input;
   const scope = validateExecutionRequestScope(input.scope);
   const owner = Object.freeze(StepExecutionOwnerSchema.parse({ kind: 'step-execution', ...scope }));
   const modelPool = Object.freeze({ modelPool: scope.modelPool, inheritFallbacks: scope.inheritFallbacks,
@@ -94,6 +96,7 @@ export function createRuntimeExecutionTurnRequestPort(input: {
       signal?.throwIfAborted();
       // At most one correction per logical request; keyed by the attempt whose reply it corrected.
       const corrections = new Map<string, RuntimeProtocolCorrection>();
+      const compressionReports = new Map<string, Promise<void>>();
       const sent = await sendRuntimeExecutionBusinessRequest({ container, audit, router, options,
         request: { logicalRequestId, owner,
           templateVersion: EXECUTION_TURN_TEMPLATE_VERSION, outputProtocol: EXECUTION_TURN_PROTOCOL,
@@ -103,7 +106,23 @@ export function createRuntimeExecutionTurnRequestPort(input: {
           const projected = projectExecutionProviderMessages(payload, messages, actual.messages, actual.contextWindowTokens);
           onWindow?.(projected.window);
           signal?.throwIfAborted();
-          return { messages: projected.messages, maxTokens: projected.maxTokens, window: projected.window };
+          const compression = projected.compression;
+          const reportCompression = compression && (() => {
+            const existing = compressionReports.get(actual.providerAttemptId);
+            if (existing) return existing;
+            signal?.throwIfAborted();
+            const message = t().llm.executionContextCompression(actual.provider, actual.model,
+              compression.beforePromptTokens, compression.afterPromptTokens, compression.contextWindowTokens, compression.fits);
+            const pending = audit.event('note', message, {
+              messageId: 'llm.execution_context_compressed', logicalRequestId, providerAttemptId: actual.providerAttemptId,
+              provider: actual.provider, model: actual.model, ...compression,
+            }, { persistence: 'required', location: { containerRoot: container.root, auditRoot: container.state.abs('audit') } })
+              .then(() => onContextWarning?.(message));
+            compressionReports.set(actual.providerAttemptId, pending);
+            return pending;
+          });
+          return { messages: projected.messages, maxTokens: projected.maxTokens, window: projected.window,
+            ...(reportCompression ? { reportCompression } : {}) };
         },
         validateResponse: async (response) => {
           let text: string;

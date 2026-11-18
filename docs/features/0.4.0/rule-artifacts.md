@@ -727,8 +727,15 @@ allowance is introduced, and compiler-local failures do not become product Bugs.
 
 The other inventoried instruction sources keep their current authoring sources. The trusted provider projection verifies the captured
 initial user renderer and original protected sequence, renders that one user's existing dynamic
-window values, then protects the exact full projected message array and provider capacity. Other
-messages and selected Rule bytes remain fixed; ToolContext receives that same window. The generic
+window values, then protects the exact full projected message array and provider capacity. New turns
+capture the `adaptive-v1` evidence policy. Their Ticket snapshot contains current metadata and
+contract references, with the latest applicable CR rejection and its evidence in a separate required
+section. Rendering applies no fixed preview limit to these Runtime sections. When the complete
+provider request plus output reservation and safety margin exceeds the selected window, projection
+reduces supporting excerpts and emits a Runtime warning and a scoped audit event. If required
+material still cannot fit, the existing capacity guard refuses that send. Earlier retained turns
+keep their original renderer. Other messages and selected Rule bytes remain fixed. ToolContext
+receives the window of the actual projection. The generic
 Planner/scenario-outcome judgement literal boundary is unchanged. Plugins cannot replace trusted projection, validation,
 identity, cancellation or scoring channels.
 

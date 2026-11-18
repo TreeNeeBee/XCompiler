@@ -44,7 +44,8 @@ export interface ChatOptions {
   prepareProviderRequest?: (request: {
     logicalRequestId: string; providerAttemptId: string; provider: string; model: string;
     messages: readonly Readonly<ChatMessage>[]; contextWindowTokens: number;
-  }) => { messages: readonly Readonly<ChatMessage>[]; maxTokens: number; window: Readonly<SkillOperationWindow> };
+  }) => { messages: readonly Readonly<ChatMessage>[]; maxTokens: number; window: Readonly<SkillOperationWindow>;
+    reportCompression?: () => Promise<void> };
   /** Transport evidence channel owned by Router; not a validation or permission hook. */
   onProviderResponse?: (response: ProviderResponseEvidence) => void;
   /** Final accepted provider candidate, after required evidence persistence. */

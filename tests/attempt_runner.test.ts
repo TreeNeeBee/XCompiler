@@ -2,7 +2,6 @@ import { singlePhaseRepository } from './support/domain_objects.js';
 import { withFixtureExecutionRequests } from './support/execution_request_fixture.js';
 import { describe, expect, it } from 'vitest';
 import { stageAssessment } from './support/quality.js';
-import { present } from './support/domain_objects.js';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,13 +26,15 @@ import {
   isAttemptCancellation,
   DomainAttemptRunner,
   type AttemptInput,
-  ticketContextSnapshot,
   advisoryFailuresForStage,
 } from '../src/application/execution/attempt_runner.js';
 import type { DomainLog } from '../src/domain/observability/records.js';
 import { agentExecutionStallFailure, classifyAttemptFailure, classifyFailure } from '../src/application/execution/failure_classification.js';
 import { PLAN_VERSION, type Plan, type Step } from '../src/domain/planning/execution_plan.js';
-import type { Ticket } from '../src/domain/tickets/ticket.js';
+import { createObjectId } from '../src/domain/identity/object_id.js';
+import { createObjectEnvelope } from '../src/domain/objects/object_envelope.js';
+import { TicketSchema, type Ticket } from '../src/domain/tickets/ticket.js';
+import { ticketContextSnapshot } from '../src/application/execution/ticket_prompt_context.js';
 import { getLanguageProfile } from '../src/application/execution/language_support.js';
 import { computeIncrementalAllowedWrites } from '../src/application/execution/execution_context.js';
 import { Workspace } from '../src/workspace/workspace.js';
@@ -482,6 +483,11 @@ describe('attempt cancellation detection', () => {
 });
 
 describe('attempt retry feedback', () => {
+  const snippetsFor = (workspace: Workspace, input: AttemptInput, retry?: string) =>
+    (contractRunner(workspace) as unknown as {
+      contextSnippets(scope: { workspace: Workspace }, input: AttemptInput, retry?: string): Promise<NonNullable<ExecutionPromptContext['contextSnippets']>>;
+    }).contextSnippets({ workspace }, input, retry);
+
   it('keeps retry, Ticket, architecture and downstream evidence separate from readable files', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-context-origin-'));
     try {
@@ -493,15 +499,13 @@ describe('attempt retry feedback', () => {
       input.plan.architectureModules = [{ id: 'M001', name: 'Core', responsibility: 'Current implementation',
         sourcePaths: ['src/main.ts'], testPaths: ['tests/main.test.ts'], dependencies: [] }];
       input.plan.steps.push({ ...input.executionStep, id: 'S005', phase: 'UNIT_TEST', dependsOn: [input.executionStep.id] });
-      const runner = contractRunner(workspace);
-      const snippets = await (runner as unknown as {
-        contextSnippets(scope: { workspace: Workspace }, input: AttemptInput, retry: string): Promise<NonNullable<ExecutionPromptContext['contextSnippets']>>;
-      }).contextSnippets({ workspace }, input, 'Original failure\n' + 'detail '.repeat(400) + '\nLatest assertion');
+      const snippets = await snippetsFor(workspace, input, 'Original failure\n' + 'detail '.repeat(400) + '\nLatest assertion');
       const inline = snippets.filter(snippet => snippet.source === 'runtime');
       expect(inline.map(snippet => snippet.path)).toEqual([
         '.xcompiler/retry/TASK-001.md', `.xcompiler/objects/ticket/${input.ticket.id}.json`,
         '.xcompiler/architecture-contract.json', `.xcompiler/downstream/${input.domainStep.name}.md`,
       ]);
+      expect(inline.map(snippet => snippet.priority)).toEqual(['required', 'required', 'required', 'supporting']);
       for (const snippet of inline) expect(await workspace.exists(snippet.path)).toBe(false);
       expect(snippets.find(snippet => snippet.path === 'docs/current.md')?.source).toBe('workspace');
       const prompt = renderExecutionUserPrompt({ step: input.executionStep, work: 'code.implement',
@@ -509,6 +513,66 @@ describe('attempt retry feedback', () => {
       expect(prompt).toContain('Latest assertion');
       expect(prompt.split('## context\n')[1]).toContain('Accepted project input');
       expect(prompt.split('## context\n')[1]).not.toContain('.xcompiler/');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['reject', 'needs-evidence'] as const)('loads the bound latest CR %s as required retry evidence and leaves older reports out', async decision => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-acceptance-context-'));
+    try {
+      const workspace = new Workspace(root);
+      const input = contractAttempt('INTEGRATION_TEST');
+      const stepId = createObjectId();
+      const reporter = createObjectId();
+      const now = new Date(0).toISOString();
+      const delivery = (candidateRevision: string) => ({
+        requestId: createObjectId(), stepId, assessmentId: createObjectId(), changelistId: createObjectId(),
+        candidateRevision, submittedByActorId: createObjectId(), submittedAt: now,
+      });
+      const old = delivery('1111111');
+      const latest = delivery('2222222');
+      const reason = `${'latest evidence line\n'.repeat(500)}Update both reports to show the actual call chain.`;
+      const historical = `${'old report detail\n'.repeat(900)}STALE_VERDICT`;
+      const ticket = TicketSchema.parse({
+        ...createObjectEnvelope({ name: 'CR-020', objectType: 'ticket', projectId: createObjectId(), now }),
+        type: 'change-request', state: 'in_progress', phaseId: createObjectId(), creatorActorId: reporter,
+        reporterActorId: reporter, priority: 64, rootTicketId: createObjectId(), description: 'Update the reports.',
+        acceptance: ['Use the current call chain.'], source: { kind: 'runtime', correlationId: createObjectId() }, submittedAt: now,
+        sourceTicketIds: [createObjectId()], triggerStepId: stepId, sourceStepId: createObjectId(), targetStepId: stepId,
+        propagationStepIds: [stepId], contractDelta: { summary: 'Update the reports.' },
+        implementationPlan: ['Update the reports.', 'Confirm both reports match the candidate.'],
+        verificationGate: ['Use the current call chain.', 'Re-run pytest.'], deliveries: [old, latest],
+        acceptanceRecords: [
+          { requestId: old.requestId, reporterActorId: reporter, recordedAt: now, verdict: {
+            kind: 'ticket-acceptance', decision: 'reject', reason: historical, evidenceRefs: ['obsolete'], propagation: null,
+          } },
+          { requestId: latest.requestId, reporterActorId: reporter, recordedAt: now, verdict: {
+            kind: 'ticket-acceptance', decision, reason, evidenceRefs: ['docs/report.md'], propagation: null,
+          } },
+        ],
+      });
+      if (ticket.type !== 'change-request') throw new Error('Expected CR fixture');
+      input.mode = 'change-request';
+      input.ticket = ticket;
+      input.domainStep = { ...input.domainStep, id: stepId };
+      const snippets = await snippetsFor(workspace, input, 'Execution failure under repair');
+      expect(snippets[0]).toMatchObject({ path: '.xcompiler/acceptance/CR-020-latest.json', source: 'runtime', priority: 'required' });
+      expect(JSON.parse(snippets[0]!.content)).toMatchObject({ deliveryRequestId: latest.requestId,
+        candidateRevision: '2222222', decision, reason, evidenceRefs: ['docs/report.md'] });
+      expect(snippets[1]).toMatchObject({ path: '.xcompiler/retry/CR-020.md', priority: 'required' });
+      expect(JSON.parse(snippets[2]!.content)).toMatchObject({ implementationPlan: ['Confirm both reports match the candidate.'],
+        verificationGate: ['Re-run pytest.'] });
+      expect(JSON.stringify(snippets)).not.toContain('STALE_VERDICT');
+      expect(ticket.acceptanceRecords[0]!.verdict.reason).toBe(historical);
+      const prompt = renderExecutionUserPrompt({ step: input.executionStep, work: 'change.apply', ticket,
+        changeRequest: ticket, runtimeEvidence: 'adaptive-v1', contextSnippets: snippets, ctx: { allowedWrites: [] } }, '');
+      expect(prompt).toContain('Update both reports to show the actual call chain.');
+      expect(prompt).not.toContain('STALE_VERDICT');
+
+      // A newly submitted but unreviewed candidate cannot inherit a stale rejection.
+      input.ticket = { ...ticket, deliveries: [...ticket.deliveries, delivery('3333333')] };
+      expect((await snippetsFor(workspace, input)).every(item => !item.path.startsWith('.xcompiler/acceptance/'))).toBe(true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -1419,39 +1483,33 @@ describe('failure in hand', () => {
   });
 });
 
-/**
- * What the Ticket carries into the prompt. The renderer caps each snippet, so the order and the size
- * of what goes in decides what the model actually reads: a live Bug's Ticket held 43KB of the pytest
- * output from the day it was opened, the cap kept the first 3000 characters of that, and the failure
- * in hand reached the model only as a one-line summary further down. It spent 26 attempts re-fixing
- * the ImportError it could read in full.
- */
 describe('ticket context snapshot', () => {
-  const openingDump = ['ImportError: cannot import name validate_args', 'x'.repeat(43_000)].join('\n');
-
-  const snapshot = (ticket: unknown): Record<string, unknown> =>
-    ticketContextSnapshot(ticket) as Record<string, unknown>;
-
-  it('bounds a captured failure so it cannot crowd out the Ticket fields', () => {
-    const trimmed = snapshot({
-      id: 'BUG-1', state: 'in_progress',
-      description: openingDump,
-      acceptance: ['Repair P1-S002 without unrelated rewrites.'],
-      failure: { summary: 'collection failed', message: openingDump, code: 'test_command_failed' },
+  it('retains the Bug identity and executable verification contract without its opening dump or historical records', () => {
+    const now = new Date(0).toISOString();
+    const failed = createObjectId();
+    const target = createObjectId();
+    const openingDump = `Opening collection failure ${'output'.repeat(7_000)}`;
+    const identity = { version: 1, category: 'test', code: 'test_command_failed',
+      failedStepId: failed, targetStepId: target, verificationStepId: failed, testSelectors: ['tests/report.py::test_cli'] };
+    const ticket = TicketSchema.parse({
+      ...createObjectEnvelope({ name: 'BUG-1', objectType: 'ticket', projectId: createObjectId(), now }),
+      type: 'bug', phaseId: createObjectId(), creatorActorId: createObjectId(), rootTicketId: createObjectId(),
+      priority: 64, state: 'in_progress', description: openingDump, acceptance: ['Re-run the failed selector'],
+      submittedAt: now, source: { kind: 'runtime', correlationId: createObjectId() }, bugKind: 'test-failure', severity: 'high',
+      failure: { category: 'test', code: 'test_command_failed', failedStepId: failed, targetStepId: target,
+        verificationStepId: failed, identity,
+        summary: 'collection failed', message: openingDump, retryable: true, switchProvider: false,
+        rawEvidenceRef: 'audit://opening', failedStepType: 'UNIT_TEST', targetStepType: 'CODE', verificationStepType: 'UNIT_TEST' },
+      verificationContract: { kind: 'test-gate', verificationStepId: failed, verificationStepType: 'UNIT_TEST',
+        testSelectors: ['tests/report.py::test_cli'] }, logIds: [createObjectId()],
     });
-    expect(String(trimmed.description).length).toBeLessThan(1400);
-    expect(String(trimmed.description)).toContain('ImportError');
-    expect(String(trimmed.description)).toContain('ticket history trimmed');
-    expect(present((trimmed.failure as Record<string, string>).message, 'failure message').length).toBeLessThan(1400);
-    // The fields the routed role needs survive intact.
-    expect(trimmed.acceptance).toEqual(['Repair P1-S002 without unrelated rewrites.']);
-    expect((trimmed.failure as Record<string, string>).code).toBe('test_command_failed');
-  });
-
-  it('leaves a short failure untouched', () => {
-    const trimmed = snapshot({ description: 'assert None == \'\'', failure: { message: 'short' } });
-    expect(trimmed.description).toBe('assert None == \'\'');
-    expect((trimmed.failure as Record<string, string>).message).toBe('short');
+    const snapshot = ticketContextSnapshot(ticket);
+    expect(snapshot).toMatchObject({ id: ticket.id, state: 'in_progress',
+      failure: { code: 'test_command_failed', rawEvidenceRef: 'audit://opening' },
+      verificationContract: { testSelectors: ['tests/report.py::test_cli'] } });
+    expect(snapshot).not.toHaveProperty('logIds');
+    expect(snapshot).not.toHaveProperty('acceptanceRecords');
+    expect(JSON.stringify(snapshot)).not.toContain(openingDump);
   });
 });
 
