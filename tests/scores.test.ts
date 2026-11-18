@@ -155,3 +155,76 @@ describe('ScoreStore', () => {
     expect(s.get('openrouter_free')).toBe(0.1);
   });
 });
+
+
+describe('durable Ticket outcome scores', () => {
+  const gap = { outcome: 'quality-gap' as const, providers: ['author'], evidenceRefs: [], attribution: 'recorded' as const };
+
+  it('persists the score and receipt together across replay and restart, including at the floor', async () => {
+    const dir = await tmpDir();
+    const config = path.join(dir, 'config.yaml');
+    const first = new ScoreStore(config);
+    await first.load();
+    await first.applyTicketOutcome('event-1', 'ticket', gap);
+    expect(first.get('author')).toBe(0.5);
+    await first.applyTicketOutcome('event-1', 'ticket', gap);
+    expect(first.get('author')).toBe(0.5);
+    const resumed = new ScoreStore(config);
+    await resumed.load();
+    await resumed.applyTicketOutcome('event-1', 'ticket', gap);
+    expect(resumed.get('author')).toBe(0.5);
+    await resumed.applyTicketOutcome('event-2', 'ticket', gap);
+    await resumed.applyTicketOutcome('event-3', 'ticket', gap);
+    expect(resumed.get('author')).toBe(0.1);
+    await resumed.applyTicketOutcome('event-4', 'ticket', { ...gap, outcome: 'repair-verified' });
+    await resumed.applyTicketOutcome('event-3', 'ticket', gap);
+    expect(resumed.get('author')).toBeCloseTo(0.2);
+    await expect(resumed.applyTicketOutcome('event-1', 'ticket', { ...gap, providers: ['other'] })).rejects.toThrow('changed after application');
+  });
+
+  it('records missing attribution without penalizing the finding provider, and keeps user overrides', async () => {
+    const dir = await tmpDir();
+    await fs.writeFile(path.join(dir, LLM_USER_SCORES_FILE), YAML.stringify({ author: 0.8, disabled: 0 }));
+    const store = new ScoreStore(path.join(dir, 'config.yaml'));
+    await store.load();
+    await store.applyTicketOutcome('missing', 'ticket', { ...gap, providers: [], attribution: 'missing' });
+    expect(store.snapshot()).toEqual({});
+    await store.applyTicketOutcome('known', 'ticket', { ...gap, providers: ['author', 'disabled'] });
+    expect(store.get('author')).toBe(0.8);
+    expect(store.snapshot().author).toBe(0.5);
+    expect(store.get('disabled')).toBe(0);
+  });
+
+  it('does not retroactively credit a removed or newly configured provider on event replay', async () => {
+    const dir = await tmpDir();
+    const store = new ScoreStore(path.join(dir, 'config.yaml'));
+    await store.load();
+    await store.applyTicketOutcome('event', 'ticket', gap, []);
+    await store.applyTicketOutcome('event', 'ticket', gap, ['author']);
+    expect(store.snapshot()).toEqual({});
+  });
+
+  it('refuses a stale shared snapshot instead of erasing another project receipt', async () => {
+    const dir = await tmpDir();
+    const a = new ScoreStore(path.join(dir, 'config.yaml'));
+    const b = new ScoreStore(path.join(dir, 'config.yaml'));
+    await a.load(); await b.load();
+    await a.applyTicketOutcome('a', 'ticket-a', gap);
+    await expect(b.applyTicketOutcome('b', 'ticket-b', gap)).rejects.toThrow('another process');
+    const recovered = new ScoreStore(path.join(dir, 'config.yaml'));
+    await recovered.load();
+    await recovered.applyTicketOutcome('a', 'ticket-a', gap);
+    expect(recovered.get('author')).toBe(0.5);
+    await recovered.applyTicketOutcome('b', 'ticket-b', gap);
+    expect(recovered.get('author')).toBe(0.1);
+  });
+
+  it('does not silently reset a damaged receipt snapshot', async () => {
+    const dir = await tmpDir();
+    await fs.writeFile(path.join(dir, LLM_DYNAMIC_SCORES_FILE), 'schemaVersion: 1\nscores: {}\nticketEvents: {bad: invalid}\n');
+    const store = new ScoreStore(path.join(dir, 'config.yaml'));
+    await store.load();
+    await expect(store.applyTicketOutcome('new', 'ticket', gap)).rejects.toThrow();
+    expect(await fs.readFile(path.join(dir, LLM_DYNAMIC_SCORES_FILE), 'utf8')).toContain('bad: invalid');
+  });
+});

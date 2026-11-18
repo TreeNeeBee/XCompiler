@@ -6,6 +6,7 @@ import { ObjectIdSchema, type ObjectId } from '../identity/object_id.js';
 import { PendingReasonSchema } from '../workflow/pending_reason.js';
 import { TicketAcceptanceRecordSchema, TicketDeliverySchema } from './ticket_review.js';
 import { STEP_TYPES } from '../steps/step.js';
+import { ModelContributionSchema, ModelFindingSchema } from './model_feedback.js';
 import { TicketWorkspaceBindingSchema, type TicketWorkspaceBinding } from './workspace_binding.js';
 export { TicketWorkspaceBindingSchema, TICKET_WORKSPACE_BINDING_REASONS, type TicketWorkspaceBinding } from './workspace_binding.js';
 import {
@@ -169,6 +170,9 @@ const TicketBaseSchema = ObjectEnvelopeSchema.extend({
   reporterActorId: ObjectIdSchema.optional(),
   deliveries: z.array(TicketDeliverySchema).default([]),
   acceptanceRecords: z.array(TicketAcceptanceRecordSchema).default([]),
+  // Optional: parsing an old retained request must not inject new prompt material.
+  modelContributions: z.array(ModelContributionSchema).optional(),
+  modelFinding: ModelFindingSchema.optional(),
   requiredCapabilities: z.array(z.string().min(1)).default([]),
   priority: z.number().int().min(TICKET_PRIORITY_MIN).max(TICKET_PRIORITY_MAX),
   parentTicketId: ObjectIdSchema.optional(),
@@ -274,6 +278,8 @@ export const EnhancementTicketSchema = TicketBaseSchema.extend({
   /** Step that discovered the quality gap; this determines whether CODE already existed. */
   stepId: ObjectIdSchema,
   enhancementKind: z.enum(['functional-gap', 'test-incomplete', 'quality-shortfall']),
+  /** A capability/evidence gap can route work without attributing a product defect to a model. */
+  modelFeedbackExcluded: z.literal(true).optional(),
   finding: z.string().min(1),
   /** Exact target-owned artifacts this focused correction may modify. */
   affectedArtifacts: z.array(z.string().min(1)).default([]),

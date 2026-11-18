@@ -66,9 +66,16 @@ export interface AcquiredLock {
 export async function acquireLock(
   stateRoot: string,
   command: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; completePublication?: boolean } = {},
 ): Promise<AcquiredLock> {
-  const file = lockPath(stateRoot);
+  return acquireFileLock(lockPath(stateRoot), command, options);
+}
+
+async function acquireFileLock(
+  file: string,
+  command: string,
+  options: { force?: boolean; completePublication?: boolean },
+): Promise<AcquiredLock> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const info: LockInfo = {
     ownerId: randomUUID(),
@@ -80,6 +87,19 @@ export async function acquireLock(
   const payload = JSON.stringify(info, null, 2);
 
   const tryCreate = async (): Promise<boolean> => {
+    if (options.completePublication) {
+      const staged = `${file}.${info.ownerId}.tmp`;
+      try {
+        await fs.writeFile(staged, payload, { encoding: 'utf8', flag: 'wx' });
+        await fs.link(staged, file);
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw err;
+      } finally {
+        await fs.unlink(staged).catch(() => undefined);
+      }
+    }
     try {
       const fh = await fs.open(file, 'wx');
       await fh.writeFile(payload, 'utf8');
@@ -105,12 +125,29 @@ export async function acquireLock(
   if (existing) {
     const sameHost = existing.host === info.host;
     if (sameHost && !isAlive(existing.pid)) {
+      if (options.completePublication) {
+        // Serialize recovery of this dead owner's lock. The winning writer replaces it with a
+        // complete record, so no contender can mistake a partially written lock for the old one.
+        const claim = await acquireFileLock(`${file}.reclaim`, command, { completePublication: true });
+        try {
+          if ((await readLock(file))?.ownerId !== existing.ownerId) {
+            throw new LockError(t().system.workspaceLocked(existing, file), existing);
+          }
+          const staged = `${file}.${info.ownerId}.tmp`;
+          try {
+            await fs.writeFile(staged, payload, { encoding: 'utf8', flag: 'wx' });
+            await fs.rename(staged, file);
+          } finally { await fs.unlink(staged).catch(() => undefined); }
+        } finally { await claim.release(); }
+        return makeReleaser(file, info.ownerId!);
+      }
       // 陈旧锁：直接覆写
       await fs.writeFile(file, payload, 'utf8');
       return makeReleaser(file, info.ownerId!);
     }
     throw new LockError(t().system.workspaceLocked(existing, file), existing);
   }
+  if (options.completePublication) throw new LockError(`Cannot acquire unreadable lock ${file}`);
   // 文件存在但读不出（损坏） → 接管
   await fs.writeFile(file, payload, 'utf8');
   return makeReleaser(file, info.ownerId!);

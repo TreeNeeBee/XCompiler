@@ -177,6 +177,7 @@ describe('fixed original producer for protocol correction', () => {
     const scores = new ScoreStore(path.join(root, 'config.yaml'));
     scores.set('primary', 0);
     scores.set('secondary', 1);
+    await scores.flush();
     const boost = vi.spyOn(scores, 'boost');
     const decay = vi.spyOn(scores, 'decay');
     const router = new LLMRouter(config(primary.url, secondary.url), await audit(), scores,

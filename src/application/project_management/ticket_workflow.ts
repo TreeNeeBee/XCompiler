@@ -262,6 +262,7 @@ export class TicketWorkflow {
     finding: string;
     affectedArtifacts?: string[];
     sourceQualityAssessmentId?: ObjectId;
+    modelFeedbackExcluded?: true;
     sourceBugTicketId?: ObjectId;
     parentChangeRequestId?: ObjectId;
     correlationId: ObjectId;
@@ -297,6 +298,7 @@ export class TicketWorkflow {
       ticket.targetStepId === input.targetStep.id &&
       ticket.enhancementKind === input.kind &&
       ticket.sourceQualityAssessmentId === input.sourceQualityAssessmentId &&
+      ticket.modelFeedbackExcluded === input.modelFeedbackExcluded &&
       ticket.sourceBugTicketId === input.sourceBugTicketId &&
       ticket.finding === input.finding,
     );
@@ -345,6 +347,7 @@ export class TicketWorkflow {
       finding: input.finding,
       affectedArtifacts: input.affectedArtifacts ?? [],
       sourceQualityAssessmentId: input.sourceQualityAssessmentId,
+      modelFeedbackExcluded: input.modelFeedbackExcluded,
       sourceBugTicketId: input.sourceBugTicketId,
       targetStepId: input.targetStep.id,
       verificationStepId: input.verificationStep.id,

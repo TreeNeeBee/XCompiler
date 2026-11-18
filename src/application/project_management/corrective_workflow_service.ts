@@ -334,6 +334,7 @@ export class CorrectiveWorkflowService {
     affectedArtifacts?: string[];
     kind: EnhancementTicket['enhancementKind'];
     qualityAssessmentId?: ObjectId;
+    modelFeedbackExcluded?: true;
     correlationId: ObjectId;
     causationId?: ObjectId;
     parentChangeRequestId?: ObjectId;
@@ -368,6 +369,7 @@ export class CorrectiveWorkflowService {
       finding: input.finding,
       affectedArtifacts: input.affectedArtifacts,
       sourceQualityAssessmentId: input.qualityAssessmentId,
+      modelFeedbackExcluded: input.modelFeedbackExcluded,
       sourceBugTicketId: input.sourceBugTicketId,
       correlationId: input.correlationId,
       causationId: input.causationId,

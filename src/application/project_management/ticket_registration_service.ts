@@ -22,6 +22,7 @@ import { createDomainEvent } from '../observability/domain_event_factory.js';
 import type { PersistedDomainObject } from '../../domain/objects/persisted.js';
 import { GovernanceService } from './governance_service.js';
 import { TicketWorkflow } from './ticket_workflow.js';
+import { TicketModelFeedbackService } from './ticket_model_feedback.js';
 
 export class TicketRegistrationService {
   private readonly roles: RoleRegistry;
@@ -83,10 +84,15 @@ export class TicketRegistrationService {
         occurredAt: now,
       },
     ]);
-    const registered = TicketSchema.parse({ ...built.ticket, registeredAt: now });
+    const candidate = TicketSchema.parse({ ...built.ticket, registeredAt: now });
+    const feedback = ticket.type === 'bug' && await this.findOriginalBug(ticket)
+      ? { ticket: candidate, events: [] }
+      : await new TicketModelFeedbackService(this.repository).registration(candidate);
+    const registered = feedback.ticket;
     await this.repository.commit([
       ...built.events,
       registered,
+      ...feedback.events,
       createDomainEvent({
         projectId: ticket.projectId,
         aggregate: { id: ticket.id, objectType: 'ticket' },
@@ -107,23 +113,7 @@ export class TicketRegistrationService {
 
   /** PM compares registered Bugs before assignment and records the selected routing outcome. */
   private async checkAndParkDuplicate(incoming: BugTicket, pm: ActorRegistration): Promise<BugTicket> {
-    const earlier = (candidate: BugTicket) =>
-      candidate.submittedAt < incoming.submittedAt ||
-      (candidate.submittedAt === incoming.submittedAt && candidate.id < incoming.id);
-    const original = (await this.tickets.list())
-      .filter((ticket): ticket is BugTicket =>
-        ticket.type === 'bug' &&
-        ticket.id !== incoming.id &&
-        ticket.projectId === incoming.projectId &&
-        ticket.registeredAt !== undefined &&
-        ticket.duplicateOfTicketId === undefined &&
-        ticket.state !== 'closed' &&
-        ticket.state !== 'cancelled' &&
-        ticket.failure.targetStepId === incoming.failure.targetStepId &&
-        sameFailureIdentity(ticket.failure.identity, incoming.failure.identity) &&
-        earlier(ticket))
-      .sort((left, right) =>
-        left.submittedAt.localeCompare(right.submittedAt) || left.id.localeCompare(right.id))[0];
+    const original = await this.findOriginalBug(incoming);
     if (!original) return incoming;
     const now = new Date().toISOString();
     const governance = await this.governance.prepareDecision({
@@ -157,6 +147,26 @@ export class TicketRegistrationService {
         now,
       }),
     ]);
+  }
+
+  private async findOriginalBug(incoming: BugTicket): Promise<BugTicket | undefined> {
+    const earlier = (candidate: BugTicket) =>
+      candidate.submittedAt < incoming.submittedAt ||
+      (candidate.submittedAt === incoming.submittedAt && candidate.id < incoming.id);
+    return (await this.tickets.list())
+      .filter((ticket): ticket is BugTicket =>
+        ticket.type === 'bug' &&
+        ticket.id !== incoming.id &&
+        ticket.projectId === incoming.projectId &&
+        ticket.registeredAt !== undefined &&
+        ticket.duplicateOfTicketId === undefined &&
+        ticket.state !== 'closed' &&
+        ticket.state !== 'cancelled' &&
+        ticket.failure.targetStepId === incoming.failure.targetStepId &&
+        sameFailureIdentity(ticket.failure.identity, incoming.failure.identity) &&
+        earlier(ticket))
+      .sort((left, right) =>
+        left.submittedAt.localeCompare(right.submittedAt) || left.id.localeCompare(right.id))[0];
   }
 
   async registerProjectTickets(projectId: ObjectId): Promise<Ticket[]> {

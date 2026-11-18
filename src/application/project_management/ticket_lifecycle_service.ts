@@ -20,6 +20,7 @@ import { TicketTraceService } from './ticket_trace_service.js';
 import { TicketDistillationService } from '../context/ticket_distillation_service.js';
 import type { TicketTraceAppendInput } from './ticket_trace_service.js';
 import { createDomainEvent } from '../observability/domain_event_factory.js';
+import { TicketModelFeedbackService } from './ticket_model_feedback.js';
 
 export interface TicketTransitionInput {
   initiatorActorId?: ObjectId;
@@ -173,6 +174,9 @@ export class TicketLifecycleService {
       objectRevision: updatedTicket.revision,
       now,
     }));
+    if (ticket.state !== 'closed' && finalState === 'closed' && input.reasonCode === 'ticket.verified_close') {
+      objects.push(...await new TicketModelFeedbackService(this.repository).closure(updatedTicket));
+    }
     return { ticket: updatedTicket, objects };
   }
 

@@ -18,6 +18,7 @@ import { isExecutableTestPath } from '../../domain/quality/test_assets.js';
 import type { Language } from '../../domain/planning/execution_plan.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
 import { OriginalVerificationUnavailableError } from './corrective_workflow_service.js';
+import { TicketModelFeedbackService } from './ticket_model_feedback.js';
 
 export interface AttemptResultProcessorOptions {
   repository: DomainObjectRepositoryPort;
@@ -62,6 +63,7 @@ export class AttemptResultProcessor {
     result: AttemptResult;
   }): Promise<AttemptDisposition> {
     const { phase, work, steps, result } = input;
+    await new TicketModelFeedbackService(this.options.repository).recordAttempt(work, result);
     const mode = workModeFor(work.ticket);
     if (!result.ok) return this.processFailure(phase, work, steps, result);
     if (!result.assessment) {
@@ -479,6 +481,7 @@ export class AttemptResultProcessor {
         finding: result.failure.message,
         affectedArtifacts: result.changedFiles,
         kind: 'test-incomplete',
+        modelFeedbackExcluded: true,
         correlationId: work.ticket.source.correlationId,
         causationId: work.ticket.id,
         parentChangeRequestId: mode === 'change-request' ? work.ticket.id : undefined,

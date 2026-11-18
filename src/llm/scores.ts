@@ -4,6 +4,16 @@ import YAML from 'yaml';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import type { XCompilerConfig } from '../config/config.js';
+import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { TicketModelFeedbackSchema, type TicketModelFeedback } from '../domain/tickets/model_feedback.js';
+import { acquireLock } from '../infrastructure/locking/file_lock.js';
+
+const TicketScoreSnapshot = z.object({
+  schemaVersion: z.literal(1),
+  scores: z.record(z.string(), z.number().finite()),
+  ticketEvents: z.record(z.string(), z.string().regex(/^[a-f0-9]{64}$/u)),
+}).strict();
 
 export const CLUSTER_PROVIDER_TAG = 'cluster';
 export const LLM_DYNAMIC_SCORES_FILE = 'llm_scores.yaml';
@@ -42,6 +52,9 @@ export class ScoreStore {
 
   private readonly dynamicScores = new Map<string, number>();
   private readonly userScores = new Map<string, number>();
+  private readonly ticketEvents = new Map<string, string>();
+  private persistedText: string | undefined;
+  private snapshotReadError: unknown;
   private readonly clusterProviders: Set<string>;
   private readonly clusterMin: number;
   private readonly clusterMax: number;
@@ -73,7 +86,13 @@ export class ScoreStore {
   private async loadDynamicScores(): Promise<void> {
     try {
       const raw = await fs.readFile(this.sidecarPath, 'utf8');
-      const parsed = YAML.parse(raw) as Record<string, number> | null;
+      this.persistedText = raw;
+      let parsed = YAML.parse(raw) as Record<string, unknown> | null;
+      if (parsed && (Object.hasOwn(parsed, 'ticketEvents') || typeof parsed.scores === 'object')) {
+        const snapshot = TicketScoreSnapshot.parse(parsed);
+        for (const [id, digest] of Object.entries(snapshot.ticketEvents)) this.ticketEvents.set(id, digest);
+        parsed = snapshot.scores;
+      }
       if (parsed && typeof parsed === 'object') {
         for (const [k, v] of Object.entries(parsed)) {
           if (typeof v === 'number' && Number.isFinite(v)) {
@@ -83,7 +102,7 @@ export class ScoreStore {
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        // 文件存在但解析失败：保留 ctor 初值，记一笔 audit 但不阻断启动。
+        this.snapshotReadError = err;
         await this.audit?.event('llm.error', t().llm.scoreReadFailed(this.sidecarPath, (err as Error).message), {
           messageId: 'llm.score_read_failed',
           sidecarPath: this.sidecarPath,
@@ -170,6 +189,57 @@ export class ScoreStore {
     await this.writeQueue;
   }
 
+  /** The score and receipt share one atomic snapshot, including at the floor. */
+  async applyTicketOutcome(eventId: string, ticketId: string, input: TicketModelFeedback,
+    eligibleProviders: readonly string[] = input.providers): Promise<void> {
+    const feedback = TicketModelFeedbackSchema.parse(input);
+    if (feedback.providers.length === 0) {
+      await this.audit?.event('llm.score', `Ticket ${ticketId}: ${feedback.outcome} (missing)`, {
+        messageId: 'llm.ticket_score_unattributed', eventId, ticketId, ...feedback,
+      });
+      return;
+    }
+    const digest = createHash('sha256').update(JSON.stringify({ ticketId, ...feedback,
+      providers: [...new Set(feedback.providers)].sort(), evidenceRefs: [...new Set(feedback.evidenceRefs)].sort(),
+    })).digest('hex');
+    const write = this.writeQueue.then(async () => {
+      const previous = this.ticketEvents.get(eventId);
+      if (previous) {
+        if (previous !== digest) throw new Error(`Ticket score event ${eventId} changed after application`);
+        return;
+      }
+      const changes = [];
+      const beforeScores = new Map<string, number | undefined>();
+      for (const provider of [...new Set(feedback.providers)]) {
+        if (!eligibleProviders.includes(provider)) continue;
+        if (this.isUserDisabled(provider)) continue;
+        const before = this.dynamicScore(provider);
+        if (before === ScoreStore.DISABLED) continue;
+        beforeScores.set(provider, this.dynamicScores.get(provider));
+        const after = feedback.outcome === 'quality-gap'
+          ? Math.max(this.minFor(provider), before - ScoreStore.DECAY)
+          : Math.min(this.maxFor(provider), before + ScoreStore.BOOST);
+        this.dynamicScores.set(provider, after);
+        changes.push({ provider, previous: before, score: after });
+      }
+      this.ticketEvents.set(eventId, digest);
+      try { await this.persist(); }
+      catch (error) {
+        this.ticketEvents.delete(eventId);
+        for (const [provider, previous] of beforeScores) {
+          if (previous === undefined) this.dynamicScores.delete(provider);
+          else this.dynamicScores.set(provider, previous);
+        }
+        throw error;
+      }
+      await this.audit?.event('llm.score', `Ticket ${ticketId}: ${feedback.outcome} (${feedback.attribution})`, {
+        messageId: 'llm.ticket_score_applied', eventId, ticketId, ...feedback, changes,
+      });
+    });
+    this.writeQueue = write.catch(() => undefined);
+    await write;
+  }
+
   private scheduleSave(): void {
     if (!this.dirty) return;
     this.dirty = false;
@@ -182,14 +252,27 @@ export class ScoreStore {
   }
 
   private async persist(): Promise<void> {
+    if (this.snapshotReadError) throw this.snapshotReadError;
     const data = this.snapshot();
     const yaml =
       `${t().llm.scoreFileHeader}\n` +
       `${t().llm.scoreFileSemantics}\n` +
-      YAML.stringify(data);
-    const tmp = `${this.sidecarPath}.tmp`;
-    await fs.writeFile(tmp, yaml, 'utf8');
-    await fs.rename(tmp, this.sidecarPath);
+      YAML.stringify(this.ticketEvents.size > 0
+        ? { schemaVersion: 1, scores: data, ticketEvents: Object.fromEntries(this.ticketEvents) }
+        : data);
+    const lock = await acquireLock(`${this.sidecarPath}.lockdir`, 'persist-model-scores', { completePublication: true });
+    try {
+      const current = await fs.readFile(this.sidecarPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      // Another project can share the configuration. Never overwrite its score receipts from a stale snapshot.
+      if (current !== this.persistedText) throw new Error('Model score snapshot changed in another process; reload before retrying');
+      const tmp = `${this.sidecarPath}.tmp`;
+      await fs.writeFile(tmp, yaml, 'utf8');
+      await fs.rename(tmp, this.sidecarPath);
+      this.persistedText = yaml;
+    } finally { await lock.release(); }
   }
 
   private defaultFor(name: string): number {

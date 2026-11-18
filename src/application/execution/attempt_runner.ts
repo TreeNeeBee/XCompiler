@@ -1896,7 +1896,14 @@ const TICKET_PROSE_FIELDS = ['description', 'summary', 'message', 'failureLog', 
 const TICKET_PROSE_BUDGET = 1200;
 
 export function ticketContextSnapshot<T>(ticket: T): T {
-  return trimTicketProse(ticket, new Set<unknown>()) as T;
+  const projected = trimTicketProse(ticket, new Set<unknown>());
+  if (projected && typeof projected === 'object' && 'objectType' in projected && projected.objectType === 'ticket') {
+    const material = projected as Record<string, unknown>;
+    delete material.modelContributions;
+    delete material.modelFinding;
+    delete material.modelFeedbackExcluded;
+  }
+  return projected as T;
 }
 
 function trimTicketProse(value: unknown, seen: Set<unknown>): unknown {

@@ -6,6 +6,10 @@ import type { TicketReviewPort } from '../src/application/execution/ticket_revie
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { createObjectId } from '../src/domain/identity/object_id.js';
 import { TicketWorkflow } from '../src/application/project_management/ticket_workflow.js';
+import { TicketModelFeedbackService } from '../src/application/project_management/ticket_model_feedback.js';
+import { TICKET_MODEL_FEEDBACK_EVENT } from '../src/domain/tickets/model_feedback.js';
+import type { AttemptResult } from '../src/application/execution/attempt_runner.js';
+import type { AuditLogger } from '../src/audit/audit.js';
 import { AttemptResultProcessor } from '../src/application/project_management/attempt_result_processor.js';
 import { CorrectiveWorkflowService } from '../src/application/project_management/corrective_workflow_service.js';
 import { ProjectStateService } from '../src/application/project_management/project_state_service.js';
@@ -26,6 +30,104 @@ import { bugContracts, failedTestOutcome, passedTestOutcome } from './helpers/ti
 import { buildBugFailureContracts } from '../src/application/project_management/bug_verification.js';
 
 describe('TicketWorkflow', () => {
+
+  it.each(['bug', 'enhancement'] as const)('attributes a newly registered %s to its actual author, never its finder', async type => {
+    const { graph, repository, workflow, registration } = await setup();
+    const coding = graph.steps.find(step => step.type === 'CODE')!;
+    const unit = graph.steps.find(step => step.type === 'UNIT_TEST')!;
+    const phase = graph.phases[0]!;
+    const story = await workflow.storyForStep(coding.id);
+    const processor = new AttemptResultProcessor({ repository, controller: new ProjectController(repository),
+      tickets: registration, audit: { event: async () => undefined } as unknown as AuditLogger,
+      onTransition: async () => undefined });
+    const result = scoredResult('author', false);
+    result.failure = { kind: 'execution', category: 'quality', code: 'entrypoint_launch_failed',
+      message: 'Empty help output', retryable: true, switchProvider: false };
+    await processor.process({ phase, work: { phase, step: coding, ticket: story }, steps: graph.steps, result });
+    const feedback = new TicketModelFeedbackService(repository);
+    const finderTicket = await workflow.storyForStep(unit.id);
+    const finder = scoredResult('finder', false);
+    finder.failure = { kind: 'execution', category: 'test', code: 'test_command_failed',
+      message: 'Real verification failed', retryable: true, switchProvider: false };
+    await feedback.recordAttempt({ phase, step: unit, ticket: finderTicket }, finder);
+    const workspaceBinding = { kind: 'ticket', relativePath: 'worktrees/tickets/candidate', branch: 'candidate',
+      revision: 'a'.repeat(40), reason: 'initial', boundAt: new Date().toISOString() } as const;
+    await feedback.recordAttempt({ phase, step: { ...coding, attempts: 1 }, ticket: story },
+      { ...scoredResult('unrelated-candidate', true), commit: 'f'.repeat(40) });
+    const creatorActorId = await registration.discovererActorIdForStep(unit.id);
+    const open = () => type === 'bug'
+      ? workflow.openBug({ creatorActorId, failedStep: unit, targetStep: coding, verificationStep: unit,
+        kind: 'test-failure', severity: 'high', message: 'Real verification failed', summary: 'Product defect',
+        category: 'test', code: 'test_command_failed', retryable: true, switchProvider: false, correlationId: createObjectId(),
+        causationId: finderTicket.id, workspaceBinding,
+        ...bugContracts(unit, coding, unit, { category: 'test', code: 'test_command_failed', testSelectors: ['tests/unit.test.ts'], artifactTargets: ['src/main.ts'] }),
+      })
+      : workflow.openEnhancement({ creatorActorId, sourceStep: unit, targetStep: coding, verificationStep: unit,
+        kind: 'functional-gap', finding: 'Missing behavior', correlationId: createObjectId(),
+        affectedArtifacts: ['src/main.ts'], causationId: finderTicket.id, workspaceBinding });
+    const ticket = await open();
+    const registered = await registration.register(ticket.id);
+    const events = () => repository.list({ objectType: 'domain-event', projectId: graph.project.id }).then(items =>
+      items.filter(item => item.objectType === 'domain-event' && item.eventType === TICKET_MODEL_FEEDBACK_EVENT));
+    expect(await events()).toMatchObject([{ ticketId: ticket.id,
+      payload: { outcome: 'quality-gap', providers: ['author'], attribution: 'recorded' } }]);
+    expect(registered.modelFinding?.providers).toEqual(['finder']);
+    await registration.register(ticket.id);
+    expect(await events()).toHaveLength(1);
+    if (type === 'bug') {
+      await new Promise(resolve => setTimeout(resolve, 2));
+      const duplicate = await open();
+      expect(await registration.register(duplicate.id)).toMatchObject({ duplicateOfTicketId: ticket.id });
+      expect(await events()).toHaveLength(1);
+      const assigned = await registration.routeAndAssign(ticket.id);
+      await new ProjectStateService(repository).transitionTicketPath(assigned.ticket, ['in_progress']);
+      await feedback.recordAttempt({ phase, step: { ...coding, attempts: 1 }, ticket: registered },
+        { ...scoredResult('superseded', true), commit: 'c'.repeat(40) });
+      const repair = { ...scoredResult('repairer', true), commit: 'b'.repeat(40) };
+      await feedback.recordAttempt({ phase, step: { ...coding, attempts: 2 }, ticket: registered }, repair);
+      await workflow.recordChange({ ticketId: ticket.id, stepId: coding.id, summary: 'Restore invocation',
+        commit: repair.commit, entries: [{ path: 'src/main.ts', operation: 'update' }] });
+      await workflow.setSolution(ticket.id, { status: 'verified', approach: 'Repair the entry', rationale: 'Restore invocation',
+        changes: ['src/main.ts'], verification: ['source checks'], updatedAt: new Date().toISOString() });
+      expect((await workflow.closeVerified(ticket.id)).state).not.toBe('closed');
+      expect(await events()).toHaveLength(1);
+      await deliverBugFixture(repository, ticket.id);
+      await workflow.recordBugVerification(ticket.id, unit, [passedTestOutcome(unit, ['tests/unit.test.ts'])], await passingAssessment(repository, unit));
+      expect((await workflow.closeVerified(ticket.id)).state).toBe('closed');
+      expect(await events()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ payload: expect.objectContaining({ outcome: 'repair-verified', providers: ['repairer'] }) }),
+        expect.objectContaining({ payload: expect.objectContaining({ outcome: 'finding-validated', providers: ['finder'] }) }),
+      ]));
+      expect(JSON.stringify(await events())).not.toContain('superseded');
+      await workflow.closeVerified(ticket.id);
+      await registration.register(ticket.id);
+      expect(await events()).toHaveLength(3);
+    }
+  });
+
+  it('records missing authors and does not backfill a previously registered Ticket', async () => {
+    const { graph, repository, workflow, registration } = await setup();
+    const coding = graph.steps.find(step => step.type === 'CODE')!;
+    const unit = graph.steps.find(step => step.type === 'UNIT_TEST')!;
+    const ticket = await workflow.openEnhancement({ creatorActorId: await registration.discovererActorIdForStep(unit.id),
+      sourceStep: unit, targetStep: coding, verificationStep: unit, kind: 'functional-gap',
+      finding: 'Missing behavior', correlationId: createObjectId() });
+    await new TicketModelFeedbackService(repository).recordAttempt({ phase: graph.phases[0]!, step: unit,
+      ticket: await workflow.storyForStep(unit.id) }, scoredResult('finder', false));
+    await registration.register(ticket.id);
+    const events = objectsOf(await repository.list({ objectType: 'domain-event' }), 'domain-event')
+      .filter(event => event.eventType === TICKET_MODEL_FEEDBACK_EVENT);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({ providers: [], attribution: 'missing' });
+    const old = await workflow.openEnhancement({ creatorActorId: await registration.discovererActorIdForStep(unit.id),
+      sourceStep: unit, targetStep: coding, verificationStep: unit, kind: 'functional-gap',
+      finding: 'Historical finding', correlationId: createObjectId() });
+    await repository.update(TicketSchema.parse({ ...old, ...reviseObjectEnvelope(old), registeredAt: old.createdAt }), old.state);
+    await registration.register(old.id);
+    expect(objectsOf(await repository.list({ objectType: 'domain-event' }), 'domain-event')
+      .filter(event => event.eventType === TICKET_MODEL_FEEDBACK_EVENT)).toHaveLength(1);
+  });
+
 
   it.each(['confirmed', 'dismissed', 'needs-evidence'] as const)('explicitly rechecks a dismissed diagnosis once and retains both verdicts (%s)', async decision => {
     const { repository, graph, request, review, verifier, reporter, bug } = await dismissedDiagnosis();
@@ -2672,4 +2774,10 @@ async function acceptRecordedChange(repository: DomainObjectRepository, id: Tick
   const request = asTicket(await repository.read(id), 'change-request');
   await workflow.setSolution(id, { ...request.solution!, status: 'verified', updatedAt: new Date().toISOString() });
   return workflow.closeVerified(id);
+}
+
+function scoredResult(provider: string, ok: boolean): AttemptResult {
+  return { ok, changedFiles: ['src/main.ts'], commit: 'a'.repeat(40), wikiEntryIds: [], testOutcomes: [],
+    executor: { success: ok, rounds: 1, toolCalls: [], metrics: { rounds: 1, parseFailures: 0,
+      repeatedTurns: 0, toolFailRatio: 0, progressRatio: 1, healthScore: 1, providers: [provider] } } };
 }

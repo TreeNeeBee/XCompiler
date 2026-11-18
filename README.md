@@ -126,6 +126,10 @@ context_window: 128K
 
 `config.yaml`, `llm_scores.yaml`, and `llm_scores_user.yaml` are local files and are intentionally not committed. The npm package ships `config.example.yaml` and `.env.example` as templates. `llm_scores.yaml` is XCompiler-maintained runtime state; create `llm_scores_user.yaml` only when you want fixed local score overrides such as `provider: 0` to disable one provider.
 
+New Ticket outcomes can update dynamic model scores when the framework can trace the finding,
+repair, or accepted change to its model. Unattributed outcomes leave the score alone. The score
+file tracks applied Ticket events so restarting the Runtime does not apply them again.
+
 ---
 
 ## Quick Start

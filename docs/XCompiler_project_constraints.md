@@ -135,6 +135,13 @@ only authority that changes Ticket state.
   delivered merely because its earlier CRs are closed.
 - Bug, Enhancement, Change Request, dependency, permission, and environment outcomes remain distinct
   for lifecycle, audit, metrics, and model scoring.
+- New Bug and Enhancement findings debit a model only when retained attempt evidence binds the
+  author to the affected artifact and candidate or assessment. Missing or ambiguous attribution is
+  recorded and leaves scores alone. Verified corrective closure credits attributable findings and
+  repairs. A CR credits its own accepted change with evidence from that exact delivery.
+  Ticket feedback is persisted with the lifecycle event and applied once per event. Existing
+  lifecycle history is not backfilled, and dependency, permission, and infrastructure outcomes do
+  not enter Ticket quality scoring.
 - An S1–S4 CR processor can submit a structured contradiction of the original failure diagnosis.
   PM retains the current candidate and original failure selectors and asks the original verification
   reporter to confirm. A confirmed verification defect may open a Bug linked to the original CR.

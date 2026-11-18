@@ -60,11 +60,8 @@ export type ProviderAvailabilityProbe = (
   provider: ProviderConfig,
 ) => Promise<LLMProbeResult>;
 
-export type TicketScoreOutcome =
-  | 'quality-gap'
-  | 'finding-validated'
-  | 'repair-verified'
-  | 'change-verified';
+export type { TicketScoreOutcome } from '../domain/tickets/model_feedback.js';
+import type { TicketScoreOutcome, TicketModelFeedback } from '../domain/tickets/model_feedback.js';
 
 /** 探测结果缓存时长：同一 provider 短时间内多次切换/重试不重复发起探测。 */
 const PROBE_CACHE_TTL_MS = 15_000;
@@ -290,12 +287,18 @@ export class LLMRouter {
    * Enhance findings penalize the attributed author; verified Bug/CR work
    * rewards the models that produced the accepted repair or change.
    */
-  recordTicketOutcome(
+  async recordTicketOutcome(
     providers: readonly string[],
     outcome: TicketScoreOutcome,
     ticketId: string,
-  ): void {
+    event?: { id: string; feedback: TicketModelFeedback },
+  ): Promise<void> {
     if (!this.scores) return;
+    if (event) {
+      const known = [...new Set(providers)].filter(provider => Object.hasOwn(this.cfg.llm.providers, provider));
+      await this.scores.applyTicketOutcome(event.id, ticketId, event.feedback, known);
+      return;
+    }
     for (const provider of [...new Set(providers)]) {
       if (!this.cfg.llm.providers[provider]) continue;
       const reason = `${outcome} from ${ticketId}`;

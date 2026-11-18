@@ -20,6 +20,8 @@ import { ProjectGraphPersistenceService } from '../../src/application/planning/p
 import { buildPhasePlanFromCurrentPlan } from '../../src/application/planning/phase_plan_files.js';
 import { ProjectOrchestrator } from '../../src/application/project_management/orchestrator.js';
 import { TicketWorkflow } from '../../src/application/project_management/ticket_workflow.js';
+import { TicketModelFeedbackService } from '../../src/application/project_management/ticket_model_feedback.js';
+import { LLM_DYNAMIC_SCORES_FILE } from '../../src/llm/scores.js';
 import { TicketRegistrationService } from '../../src/application/project_management/ticket_registration_service.js';
 import { ProjectManagerIntakeService } from '../../src/application/project_management/project_manager_intake.js';
 import { ProjectStateService } from '../../src/application/project_management/project_state_service.js';
@@ -133,6 +135,11 @@ describe('Runtime initializes the configured knowledge store', () => {
       const assessment = await new QualityAssessmentService(repository).assessStep({ step: work.step,
         metrics: kpis.flatMap(kpi => kpi.objectType === 'kpi' ? [{ metric: kpi.metric, value: kpi.target }] : []),
       });
+      await new TicketModelFeedbackService(repository).recordAttempt(work, {
+        ok: true, assessment, commit: revision, changedFiles: ['src/main.py'], wikiEntryIds: [], testOutcomes: [],
+        executor: { success: true, rounds: 1, toolCalls: [], metrics: { rounds: 1, parseFailures: 0,
+          repeatedTurns: 0, toolFailRatio: 0, progressRatio: 1, healthScore: 1, providers: ['local'] } },
+      });
       const deliver = TicketWorkflow.prototype.deliverForReview;
       const interruptedDelivery = interruptionPoint === 'after-delivery'
         ? vi.spyOn(TicketWorkflow.prototype, 'deliverForReview').mockImplementation(async function (this: TicketWorkflow, input) {
@@ -169,6 +176,7 @@ describe('Runtime initializes the configured knowledge store', () => {
       config.llm.providers.reporter = { ...config.llm.providers.local, model: 'reporter-model' };
       config.llm.pools.reporter = ['reporter'];
       await fs.writeFile(configPath, YAML.stringify(config));
+      await fs.writeFile(path.join(root, LLM_DYNAMIC_SCORES_FILE), 'local: 0.5\n');
       const unexpectedExecution = vi.fn(async (): Promise<never> => { throw new Error('No project command is part of this reporter recovery fixture'); });
       vi.mocked(createSandbox).mockReturnValue({ kind: 'subprocess', build: vi.fn(async () => ({ rebuilt: false, reason: 'Preparation outside this fixture' })),
         exec: unexpectedExecution, runProgram: unexpectedExecution, runTests: unexpectedExecution, installDeps: unexpectedExecution });
@@ -215,6 +223,21 @@ describe('Runtime initializes the configured knowledge store', () => {
         });
         expect(calls).toHaveLength(2);
       }
+      const scored = YAML.parse(await fs.readFile(path.join(root, LLM_DYNAMIC_SCORES_FILE), 'utf8'));
+      expect(scored.scores?.local).toBeCloseTo(0.6);
+      expect(Object.keys(scored.ticketEvents)).toHaveLength(1);
+      // Recreate the interruption between persisting the score and acknowledging its outbox event.
+      const feedbackEvent = (await repository.list({ objectType: 'domain-event', projectId: graph.project.id }))
+        .find(event => event.objectType === 'domain-event' && Object.hasOwn(scored.ticketEvents, event.id));
+      if (!feedbackEvent || feedbackEvent.objectType !== 'domain-event') throw new Error('Missing score event');
+      await repository.update({ ...feedbackEvent, revision: feedbackEvent.revision + 1, status: 'pending',
+        publishedAt: undefined }, 'pending');
+
+      expect(await runRunCommand(command)).toMatchObject({ status: 'error', message: stop.message });
+      const replayed = YAML.parse(await fs.readFile(path.join(root, LLM_DYNAMIC_SCORES_FILE), 'utf8'));
+      expect(replayed).toEqual(scored);
+      await repository.load();
+      expect(await repository.read(feedbackEvent.id)).toMatchObject({ status: 'published' });
       expect(unexpectedExecution).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();

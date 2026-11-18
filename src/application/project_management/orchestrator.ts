@@ -594,6 +594,7 @@ export class ProjectOrchestrator {
     await this.scheduler.reconcileClosedCorrectiveTickets(phase.projectId);
     if (this.options.recheckCrDiagnosisId) await this.scheduler.recheckDiagnosis(phase.id, this.options.recheckCrDiagnosisId);
     await this.scheduler.resumeProblemConfirmations(phase.id);
+    await this.outbox.dispatchPending(phase.projectId);
     // A completed recheck without corrective work cannot authorize another unchanged CR attempt.
     // Read canonical state so the same stop survives restart without repeating either review.
     for (const review of (await this.requirePhase(phase.id)).problemReviews) {
@@ -678,6 +679,7 @@ export class ProjectOrchestrator {
         const delivery = ticket.deliveries.at(-1);
         if (!delivery || integratedDeliveries.has(delivery.requestId) || (ticket.state !== 'deliver' && ticket.state !== 'closed')) continue;
         const accepted = await this.scheduler.resumeAcceptance(ticket.id);
+        await this.outbox.dispatchPending(phase.projectId);
         if (!accepted.closed) continue;
         const step = steps.find(candidate => candidate.id === ticket.targetStepId);
         if (!step) throw new Error('Delivered CR has no target in its Phase');

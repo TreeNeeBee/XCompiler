@@ -10,6 +10,7 @@ import { GitService } from '../workspace/git.js';
 import { loadConfigWithPath } from '../config/config.js';
 import { LLMRouter } from '../llm/router.js';
 import { ScoreStore, scoreStoreOptionsFromConfig } from '../llm/scores.js';
+import { publishTicketModelFeedback } from './ticket_model_feedback.js';
 import { preflightProviders } from '../llm/preflight.js';
 import { createSandbox } from '../sandbox/factory.js';
 import { sandboxDownloadCachePath, sandboxEnvironmentPath } from '../sandbox/environment.js';
@@ -638,6 +639,7 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
   });
   let finalProjectAudit: ProjectAuditResult | undefined;
   const engine = new ProjectOrchestrator({
+    eventPublisher: { publish: event => publishTicketModelFeedback(router, event) },
     recheckCrDiagnosisId: opts.recheckCrDiagnosisId,
     reviewTicket: (request) => judgeRuntimeTicketReview({
       ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,

@@ -534,6 +534,7 @@ export class ProjectController {
     affectedArtifacts?: string[];
     kind: EnhancementTicket['enhancementKind'];
     qualityAssessmentId?: ObjectId;
+    modelFeedbackExcluded?: true;
     correlationId: ObjectId;
     causationId?: ObjectId;
     parentChangeRequestId?: ObjectId;
