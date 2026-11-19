@@ -2768,7 +2768,7 @@ function isRepairEvidenceTool(tool: string): boolean {
   return REPAIR_EVIDENCE_TOOLS.has(tool);
 }
 
-function isOutputMutationTool(tool: string): boolean {
+export function isOutputMutationTool(tool: string): boolean {
   return OUTPUT_MUTATION_TOOLS.has(tool);
 }
 

@@ -18,9 +18,14 @@ workspace/logs/
 coverage/
 .tools/
 
-# 本地会话记录可能包含提示词、路径和运行环境信息；仅提交白名单中的重大变更审计。
-docs/audit/*
-docs/dev_audit_log.md
+# Local audit evidence and reports can contain prompts, paths, and runtime details.
+/audit/
+/audit-reports/
+/audit-logs/
+/docs/audit/
+/docs/audit-reports/
+/docs/audit-logs/
+/docs/dev_audit_log.md
 
 # Local observations and their historical archives are not repository documentation.
 /docs/issues/

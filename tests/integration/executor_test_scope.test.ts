@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { StepExecutor } from '../../src/agents/executor.js';
 import { AuditLogger, type AuditEvent } from '../../src/audit/audit.js';
-import { collectTestOutcomes } from '../../src/application/execution/test_outcome.js';
+import { collectTestOutcomes, collectVerificationRuns } from '../../src/application/execution/test_outcome.js';
 import type { Step } from '../../src/domain/planning/execution_plan.js';
 import { SubprocessSandbox } from '../../src/sandbox/subprocess.js';
 import { runTestsTool } from '../../src/tools/sandbox.js';
@@ -19,6 +19,7 @@ describe('test scope through the executor and real sandbox', () => {
       const integration = 'tests/integration/fail.test.cjs';
       await ws.writeFile('package.json', JSON.stringify({ scripts: { test: 'node --test' } }));
       await ws.writeFile(unit, "require('node:test')('unit', () => require('node:assert/strict').ok(true));\n");
+      await fs.symlink(root, ws.abs('root-alias'), 'dir');
       const sandbox = new SubprocessSandbox({ ws, language: 'typescript', environmentRoot: path.join(root, 'environment'),
         limits: { cpu: 1, memory_mb: 256, wall_seconds: 20, network: 'off' } });
       const step: Step = { id: 'S004', iterationId: 'P1', phase: 'CODE', title: 'Correct verification request',
@@ -28,7 +29,7 @@ describe('test scope through the executor and real sandbox', () => {
       const result = await new StepExecutor({ maxRounds: 3, request: { name: 'scope-correction', async send() {
         turn++;
         return { provider: 'scope-correction', text: JSON.stringify(turn <= 2 ? { thoughts: 'Execute verification',
-          actions: [{ tool: 'run_tests', args: { args: [unit] } },
+          actions: [{ tool: 'run_tests', args: { cwd: 'root-alias', args: [unit] } },
             ...(turn === 1 || repeat ? [{ tool: 'run_tests', args: { args: [integration] } }] : [])], done: false,
         } : { thoughts: 'Finish with the required scope', actions: [], done: true,
           qualityAssessment: { completion: 1, upstreamAlignment: 1, metrics: {},
@@ -40,6 +41,9 @@ describe('test scope through the executor and real sandbox', () => {
       expect(result.toolCalls.filter(call => call.ok)).toHaveLength(1);
       expect(result.toolCalls.find(call => !call.ok)?.code).toBe('test_scope_not_allowed');
       expect(result.validationDefect).toBeUndefined();
+      expect(collectVerificationRuns(result.toolCalls)).toEqual([{
+        callId: result.toolCalls[0]!.callId, runner: 'vitest', cwd: '.', selectors: [unit], exitCode: 0,
+      }]);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 

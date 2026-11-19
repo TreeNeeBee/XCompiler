@@ -7,6 +7,7 @@ import type { WorkspaceKind } from '../../domain/workspace/change_set.js';
 import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
 import { resolveFileTreeService } from '../workspace/file_tree_resolver.js';
 import {
+  isOutputMutationTool,
   StepExecutor,
   type AdvisoryFailureRule,
   type ExecutorRunResult,
@@ -28,6 +29,7 @@ import {
   buildDownstreamContextSnippet,
   computeIncrementalAllowedWrites,
   computeStepAllowedWrites,
+  ownedAffectedArtifacts,
   stepContextChars,
 } from './execution_context.js';
 import { earlierPhaseTestOwners } from './earlier_phase_test_owners.js';
@@ -105,7 +107,10 @@ import {
   type AttemptFailure,
   type AttemptFailureKind,
 } from './failure_classification.js';
-import { collectTestOutcomes, unresolvedTestFailures, type TestOutcome } from './test_outcome.js';
+import {
+  collectTestOutcomes, collectVerificationRuns, newVerificationRuns, unresolvedTestFailures, type TestOutcome,
+  verificationRunsWithinScope,
+} from './test_outcome.js';
 import { acceptedContractChanges } from './accepted_contract_changes.js';
 import { getPromptLocale, tFor } from '../../i18n/index.js';
 import { planContractFor } from './plan_contract.js';
@@ -135,6 +140,14 @@ import {
 import { resolveCorrectionChainOrigin } from './correction_provenance.js';
 import { moveIntoRuntimeTemp, stepAttemptTempDir, workingChanges } from '../../workspace/runtime_temp.js';
 import { runtimeOwnedFile } from '../../domain/workspace/runtime_owned_file.js';
+
+const CR_REDELIVERY_NO_PROGRESS = 'cr_redelivery_no_progress';
+
+class ChangeRequestRedeliveryError extends Error {
+  constructor(readonly deliveryRequestId: string, readonly paths: string[]) {
+    super('CR replacement has neither changed scoped artifacts nor added verified test coverage since the reporter rejected it.');
+  }
+}
 
 export {
   prioritizeAttemptFailureEvidence,
@@ -425,9 +438,9 @@ export class DomainAttemptRunner {
         ? [...new Set([...failureMissingOutputs(input.ticket.failure), ...previousMissingOutputs])]
         : [];
       wikiMatches = assembled.debugWikiMatches;
-      if (wikiMatches.length > 0 && input.ticket.type === 'bug') {
+      if (debugContext && wikiMatches.length > 0) {
         await this.wiki.recordUse(wikiMatches.map((match) => match.entry.id), {
-          brief: debugContext!.brief,
+          brief: debugContext.brief,
           ticketId: input.ticket.id,
           stepId: input.domainStep.id,
           phase: input.executionStep.phase,
@@ -499,6 +512,7 @@ export class DomainAttemptRunner {
       // It is built from that failure's log, whose typed failure decides the category: Rule
       // applicability reads it, and the rendered retry text it would otherwise be parsed from is prose.
       const retryBrief = previousAttempt ? briefForAttemptFailure(previousAttempt, input.executionStep.phase) : undefined;
+      const activeBrief = retryBrief ?? debugContext?.brief;
       const result = await environment.executor.run({
         step: input.executionStep,
         stepName: input.domainStep.name,
@@ -527,8 +541,8 @@ export class DomainAttemptRunner {
             input.ticket.failure.message,
             retryFeedback,
           ),
-          debugBrief: retryBrief ? retryBrief.summary : debugContext?.brief.summary,
-          ...((retryBrief ?? debugContext?.brief) ? { failureCategory: (retryBrief ?? debugContext!.brief).category } : {}),
+          debugBrief: activeBrief?.summary,
+          ...(activeBrief ? { failureCategory: activeBrief.category } : {}),
           suggestions: debugContext?.suggestions,
           repairRequired: input.mode !== 'verification',
           verificationScope: environment.verificationScope.inheritedFromTicket
@@ -581,11 +595,11 @@ export class DomainAttemptRunner {
         if (
           failureKind === 'execution' &&
           failure.code !== 'agent_execution_stalled' &&
-          input.ticket.type === 'bug' &&
+          debugContext &&
           wikiMatches.length > 0
         ) {
           await this.wiki.recordFailure(wikiMatches.map((match) => match.entry.id), {
-            brief: debugContext!.brief,
+            brief: debugContext.brief,
             ticketId: input.ticket.id,
             stepId: input.domainStep.id,
             phase: input.executionStep.phase,
@@ -721,10 +735,15 @@ export class DomainAttemptRunner {
       const localAssessment = scopedAssessment && downstreamFindings.length > 0
         ? { ...scopedAssessment, findings: scopedAssessment.findings?.filter(finding => !downstreamFindings.includes(finding)) }
         : scopedAssessment;
+      const changeRequest = input.mode === 'change-request' && input.ticket.type === 'change-request' ? input.ticket : undefined;
+      const lastWrite = result.toolCalls.reduce((index, call, current) =>
+        call.ok && isOutputMutationTool(call.tool) ? current : index, -1);
+      const verificationRuns = changeRequest ? collectVerificationRuns(result.toolCalls, lastWrite) : undefined;
       const assessment = await this.recordAssessment(
         input.domainStep,
         localAssessment ? mergePairedSourceTestQuality(localAssessment, pairedTestInspection) : localAssessment,
         environment.baselineGateExecution.mode === 'defer' ? 'source-delivery' : 'full-step',
+        verificationRuns,
       );
       if (!assessment.passed) {
         const qualityFailure = renderQualityAssessmentFailure(assessment);
@@ -810,7 +829,49 @@ export class DomainAttemptRunner {
       // dependencies and left the environment without them hands every later Step a project whose
       // toolchain is not installed.
       await this.syncSandboxIfManifestChanged(scope, changedFiles);
-      const commit = await this.recordTicketCommit(scope, input, 'verified', 'verified change');
+      const rejection = changeRequest && latestChangeRequestRejection(changeRequest, input.domainStep.id);
+      const reviewRuns = changeRequest && rejection && verificationRuns?.length ? verificationRunsWithinScope(verificationRuns, [
+        ...environment.verificationScope.testArgs,
+        ...changeRequest.originFailures.filter(failure => failure.verificationStepId === input.domainStep.id)
+          .flatMap(failure => failure.identity.testSelectors),
+        ...(environment.context.supplementalTestRoot ? [environment.context.supplementalTestRoot] : []),
+        ...(await environment.context.inheritedGateTests?.() ?? []),
+      ]) : [];
+      let commit: string;
+      try {
+        commit = await this.recordTicketCommit(scope, input, 'verified', 'verified change', changeRequest && rejection ? async () => {
+          const replacement = await this.requireChangeRequestRedeliveryProgress(
+            scope, input.executionStep, changeRequest, environment.context, rejection, reviewRuns,
+          );
+          // The correction can already be committed in a retained attempt. Include it in the handoff
+          // even when this attempt's working copy was clean, so the reporter reads it again.
+          for (const entry of replacement) {
+            if (changedFiles.includes(entry.path)) continue;
+            changedFiles.push(entry.path);
+            changes.push(entry);
+          }
+        } : undefined);
+      } catch (error) {
+        if (!(error instanceof ChangeRequestRedeliveryError)) throw error;
+        const failureLog = [error.message, ...(error.paths.length
+          ? [`Relevant artifacts: ${error.paths.join(', ')}`] : [])].join('\n');
+        return await this.failAttempt(scope, baseline, input, {
+          reason: error.message,
+          failureLog,
+          failure: {
+            kind: 'execution', category: 'quality', code: CR_REDELIVERY_NO_PROGRESS,
+            message: failureLog, retryable: true, switchProvider: false,
+            details: { deliveryRequestId: error.deliveryRequestId, paths: error.paths },
+          },
+          gateFindings: [{
+            category: 'quality-shortfall', code: CR_REDELIVERY_NO_PROGRESS, target: 'current-step',
+            summary: error.message, evidence: [error.deliveryRequestId], affectedArtifacts: error.paths,
+            dependencyPackages: [],
+          }],
+          executor: result,
+          wikiEntryIds: wikiMatches.map(match => match.entry.id),
+        });
+      }
       return {
         ok: true,
         assessment,
@@ -832,8 +893,12 @@ export class DomainAttemptRunner {
         await scope.git.revertTo(baseline);
         throw error;
       }
-      // A thrown error on our own execution path carries a message this runtime authored.
-      const failure = classifyFailure(error, { trustProviderText: true });
+      const classified = classifyFailure(error, { trustProviderText: true });
+      // Project test failures reach the verifier as structured tool results. An unclassified
+      // exception escaping the Runtime has no evidence for a generated-project Bug.
+      const failure: AttemptFailure = input.mode === 'verification' && classified.code === 'unclassified_execution_failure'
+        ? { ...classified, kind: 'infrastructure', code: 'framework_execution_failed', retryable: false }
+        : classified;
       try {
         return await this.failAttempt(scope, baseline, input, {
           reason: error instanceof Error ? error.message : String(error),
@@ -951,6 +1016,9 @@ export class DomainAttemptRunner {
       writeChunkBytes: resolveWriteChunkBytes(window.writeChunkBytes, budgetContext),
       baselineExecutionDeferred: baselineGateExecution.mode === 'defer' && input.mode === 'debug' && input.ticket.type === 'bug',
       testGateArgs: resolveAttemptTestArgs(verificationScope, input.plan.language),
+      captureVerificationEvidence: input.mode === 'change-request',
+      captureBugVerificationCases: input.ticket.type === 'bug' &&
+        input.ticket.verificationContract.verificationStepId === input.domainStep.id,
       supplementalTestRoot,
       inheritedTestAssets: inheritedTests,
       inheritedGateTests: this.inheritedGateTests(scope, input, earlierTestOwners, attemptBaseline),
@@ -1131,7 +1199,12 @@ export class DomainAttemptRunner {
     return selected ? renderAttemptRetryFeedback(selected, input.executionStep.phase) : undefined;
   }
 
-  private async recordAssessment(step: Step, value?: StageQualityAssessment, scope: QualityAssessment['scope'] = 'full-step'): Promise<QualityAssessment> {
+  private async recordAssessment(
+    step: Step,
+    value?: StageQualityAssessment,
+    scope: QualityAssessment['scope'] = 'full-step',
+    verificationRuns?: QualityAssessment['verificationRuns'],
+  ): Promise<QualityAssessment> {
     const metrics = [
       ...(value?.completion === undefined ? [] : [{ metric: 'completion', value: value.completion }]),
       ...(value?.upstreamAlignment === undefined ? [] : [{ metric: 'upstreamAlignment', value: value.upstreamAlignment }]),
@@ -1141,6 +1214,7 @@ export class DomainAttemptRunner {
       step,
       scope,
       metrics,
+      verificationRuns,
       // A precondition the Step does not own is recorded, not held against it. It reaches the gate
       // as evidence so the assessment still shows why the Step could go no further.
       evidence: [
@@ -1597,16 +1671,77 @@ export class DomainAttemptRunner {
     input: AttemptInput,
     kind: TicketCommit['kind'],
     summary: string,
+    validateIndex?: () => Promise<void>,
   ): Promise<string> {
     await this.setAsideRunOutputs(scope, input);
     const revision = await scope.git.snapshot(
       input.domainStep.id,
       input.domainStep.attempts,
       summary,
+      validateIndex,
     );
     await this.recordTicketRevision(input, revision, kind, summary);
     await this.options.recordChangeSetRevision?.(input.ticket.id, revision);
     return revision;
+  }
+
+  private async requireChangeRequestRedeliveryProgress(
+    scope: ExecutionScope,
+    step: ExecutionStep,
+    ticket: Extract<Ticket, { type: 'change-request' }>,
+    context: ToolContext,
+    rejection: NonNullable<ReturnType<typeof latestChangeRequestRejection>>,
+    verificationRuns: NonNullable<QualityAssessment['verificationRuns']>,
+  ): Promise<Changelist['entries']> {
+    const inherited = [...(context.inheritedTestAssets ?? []), ...(context.supplementalTestRoot ? [context.supplementalTestRoot] : [])];
+    const owned = [...step.outputs, ...inherited];
+    const declared = ticket.contractDelta.affectedArtifacts;
+    const affected = [...ownedAffectedArtifacts(step, declared, inherited),
+      ...declared.filter(artifact => isAllowedWrite(artifact, owned))];
+    const paths = [...new Set(affected.length ? affected : owned)].sort();
+    if (rejection.candidateRevision) {
+      // Compare staged blob identities against the rejected tree. This includes new/untracked
+      // deliverables and ignores commit metadata, mode-only differences and writes later undone.
+      const diff = await scope.git.raw().raw([
+        'diff', '--cached', '--raw', '--no-abbrev', '--no-renames', '-z', rejection.candidateRevision, '--',
+      ]);
+      const entries: Changelist['entries'] = [];
+      const fields = diff.split('\0');
+      for (let index = 0; index + 1 < fields.length; index += 2) {
+        const [, , oldObject, newObject, status] = fields[index]!.split(' ');
+        const file = normalizeGitPath(fields[index + 1]!);
+        if (oldObject !== newObject && isAllowedWrite(file, paths) &&
+          isAllowedWrite(file, owned) && isAllowedWrite(file, context.allowedWrites)) {
+          entries.push({ path: file, operation: gitChangeOperation(status ?? '', '') });
+        }
+      }
+      if (entries.length > 0) return entries;
+    }
+    if (verificationRuns.length > 0) {
+      const prior = await this.options.repository.read(rejection.assessmentId);
+      if (prior.objectType !== 'quality-assessment' || prior.subject.objectType !== 'step' ||
+        prior.subject.id !== ticket.targetStepId || !prior.passed) {
+        throw new Error('CR rejection does not reference its passing Step assessment');
+      }
+      if (prior.verificationRuns && newVerificationRuns(prior.verificationRuns, verificationRuns).length > 0) {
+        const seen = [...prior.verificationRuns];
+        if (rejection.candidateRevision && ticket.deliveries.length > 1) {
+          const git = scope.git.raw();
+          const tree = (await git.revparse([`${rejection.candidateRevision}^{tree}`])).trim();
+          for (const delivery of ticket.deliveries) {
+            if (delivery.requestId === rejection.deliveryRequestId || delivery.stepId !== ticket.targetStepId ||
+              !delivery.candidateRevision) continue;
+            const older = await this.options.repository.read(delivery.assessmentId);
+            if (older.objectType !== 'quality-assessment' || !older.verificationRuns?.length) continue;
+            if ((await git.revparse([`${delivery.candidateRevision}^{tree}`])).trim() === tree) {
+              seen.push(...older.verificationRuns);
+            }
+          }
+        }
+        if (newVerificationRuns(seen, verificationRuns).length > 0) return [];
+      }
+    }
+    throw new ChangeRequestRedeliveryError(rejection.deliveryRequestId, paths);
   }
 
   private async recordTicketRevision(
@@ -1651,7 +1786,7 @@ export class DomainAttemptRunner {
     const changedFiles = status.files.map((file) => normalizeGitPath(file.path));
     // Read the working copy before deciding, so "did this attempt achieve anything" is answered by
     // the files it left rather than by the label on how it ended.
-    const preserveCandidate = shouldPreserveFailedCandidate(
+    const preserveCandidate = (classified.code !== CR_REDELIVERY_NO_PROGRESS || changedFiles.length > 0) && shouldPreserveFailedCandidate(
       classified,
       failure.dependencyRequest !== undefined,
       changedFiles.length,

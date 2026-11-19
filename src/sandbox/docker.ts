@@ -5,11 +5,12 @@ import type { Workspace } from '../workspace/workspace.js';
 import type { AuditLogger } from '../audit/audit.js';
 import { t } from '../i18n/index.js';
 import type { Language } from '../domain/planning/execution_plan.js';
-import type { Sandbox, SandboxBuildOptions, SandboxLimits, ExecResult, ExecExtra } from './types.js';
+import type { Sandbox, SandboxBuildOptions, SandboxLimits, ExecResult, ExecExtra, TestRunExtra, TestRunResult } from './types.js';
 import { SANDBOX_GUEST_ENVIRONMENT_DIR } from './environment.js';
 import { normalizeTypeScriptTestArgs } from './test_args.js';
 import { resolveTypeScriptProgramCommand, stripPythonInterpreterPrefix } from './program_args.js';
 import { createInstallProgressWatch, execRaw, formatExecFailure } from './subprocess.js';
+import { runPytestWithCaseReport } from './pytest_case_report.js';
 
 export interface DockerSandboxOptions {
   ws: Workspace;
@@ -57,6 +58,7 @@ export class DockerSandbox implements Sandbox {
   private readonly language: Language;
   private readonly image: string;
   private readonly workdir: string;
+  get guestWorkspaceRoot(): string { return this.workdir; }
   private readonly cacheRel: string;
   private readonly dockerBin: string;
   private readonly extraRunArgs: string[];
@@ -343,11 +345,14 @@ export class DockerSandbox implements Sandbox {
     return this.exec(this.pythonInContainer, stripPythonInterpreterPrefix(args), extra);
   }
 
-  async runTests(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+  async runTests(args: string[] = [], extra?: TestRunExtra): Promise<TestRunResult> {
     if (this.language === 'typescript') {
       const normalizedArgs = normalizeTypeScriptTestArgs(args);
       const argv = normalizedArgs.length > 0 ? ['test', '--silent', '--', ...normalizedArgs] : ['test', '--silent'];
       return this.exec('npm', argv, extra);
+    }
+    if (extra?.capturePytestCases) {
+      return runPytestWithCaseReport(args, this.workdir, argv => this.exec(this.pythonInContainer, argv, extra));
     }
     return this.exec(this.pythonInContainer, ['-m', 'pytest', ...args], extra);
   }

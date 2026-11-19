@@ -273,7 +273,7 @@ describe('ticket delivery loop', () => {
       .toEqual([[1, 'merged'], [2, 'merged']]);
   });
 
-  // dbc2excel-5 P2: a Bug repaired a generation cut before another Ticket changed the same file on
+  // a validation project P2: a Bug repaired a generation cut before another Ticket changed the same file on
   // the mainline. simple-git reported the conflicted candidate merge as a success, the gate passed
   // on the unmerged mainline, and only the squash failed — a stop no repair on that branch could
   // ever clear, because every repair stayed on the stale branch.

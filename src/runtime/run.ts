@@ -43,7 +43,7 @@ import {
 } from '../application/project_management/project_manager_intake.js';
 import { parseUserChangeRequest, UserChangeRequestError } from '../application/project_management/user_change_request.js';
 import { judgeRuntimeContractBasis } from './contract_basis_judgement.js';
-import { judgeRuntimeTicketReview, readTicketReviewArtifacts, resolveRuntimeCrReviewRetry } from './ticket_review.js';
+import { judgeRuntimeTicketReview, readTicketReviewArtifacts, resolveRuntimeCrReviewRetry, resolveRuntimeCrDiagnosisRetry } from './ticket_review.js';
 import {
   frozenRequirementsFor, isScenarioOutcomeJudgementError, scenarioArtifactText,
 } from '../application/execution/scenario_outcome_judge.js';
@@ -127,6 +127,8 @@ export interface ExecuteOptions {
   changeRequestPath?: string;
   /** Explicitly retry a proven failed model request for the current immutable CR delivery. */
   retryCrReviewRequestId?: string;
+  /** Explicitly retry a proven terminal model failure of the current CR diagnosis round. */
+  retryCrDiagnosisRequestId?: string;
   /** Explicitly collect current evidence and recheck a dismissed CR diagnosis once. */
   recheckCrDiagnosisId?: string;
 }
@@ -206,6 +208,21 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     throw new Error(`Canonical Phase ${plan.phaseId} is missing from Project ${domainProject.name}`);
   }
   let retryCrReviewTicketId: ObjectId | undefined;
+  let retryCrDiagnosisReviewId: ObjectId | undefined;
+  if (opts.retryCrDiagnosisRequestId !== undefined) {
+    try {
+      retryCrDiagnosisReviewId = await resolveRuntimeCrDiagnosisRetry({
+        requestId: opts.retryCrDiagnosisRequestId, container, repository: domainRepository,
+        projectId: domainProject.id, phaseId: domainPhase.id,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await runtimeLog(io, 'error', message);
+      await audit.end({ status: 'error', stage: 'cr-diagnosis-retry', message });
+      await runtimeResult(io, 'run', 'error', { message, exitCode: 7 });
+      return { status: 'error', message, exitCode: 7 };
+    }
+  }
   if (opts.recheckCrDiagnosisId !== undefined) {
     try {
       await new ProjectManagerIntakeService(domainRepository).checkDiagnosisRecheck(domainPhase.id, opts.recheckCrDiagnosisId);
@@ -643,7 +660,8 @@ export async function runExecute(opts: ExecuteOptions): Promise<ExecuteResult> {
     recheckCrDiagnosisId: opts.recheckCrDiagnosisId,
     reviewTicket: (request) => judgeRuntimeTicketReview({
       ...request, config: cfg.rules, container, recordReplay, router, audit, signal: opts.abortSignal,
-      retryFailedRequestId: request.payload.subjectId === retryCrReviewTicketId ? opts.retryCrReviewRequestId : undefined,
+      retryFailedRequestId: request.payload.subjectId === retryCrDiagnosisReviewId ? opts.retryCrDiagnosisRequestId
+        : request.payload.subjectId === retryCrReviewTicketId ? opts.retryCrReviewRequestId : undefined,
     }),
     readProblemArtifacts: async (review, source, steps) => {
       const affected = steps.filter(step => step.id === source.sourceStepId || step.id === source.targetStepId);

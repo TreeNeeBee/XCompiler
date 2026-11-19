@@ -1,5 +1,5 @@
 import { createObjectEnvelope, reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
-import { VERIFICATION_STEP_TYPES } from '../../domain/steps/step.js';
+import { VERIFICATION_STEP_TYPES, type Step } from '../../domain/steps/step.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import {
@@ -262,6 +262,16 @@ export class TicketRegistrationService {
     return registered;
   }
 
+  /** Capacity is the only dispatch refusal which may leave a ready Ticket in the queue. */
+  async capacityBlockers(ticket: Ticket, step: Step): Promise<ActorRegistration[]> {
+    const current = await this.assignmentForRouting(ticket, step);
+    if (current?.reusable) return [];
+    if (ticket.state !== 'deliver') return this.roles.capacityBlockers(ticket, step);
+    if (!ticket.reporterActorId) return []; // Normal routing reports the missing reporter.
+    const { actor, reason } = await this.roles.ineligibilityOf(ticket.reporterActorId, ticket, step, { ignoreCapacity: true });
+    return !reason && actor.activeAssignmentIds.length >= actor.capacity ? [actor] : [];
+  }
+
   async routeAndAssign(
     ticketId: ObjectId,
     options: {
@@ -285,24 +295,15 @@ export class TicketRegistrationService {
     const routingStepId = options.forStepId ?? workStepId(ticket);
     const stepObject = routingStepId ? await this.repository.read(routingStepId) : undefined;
     const step = stepObject?.objectType === 'step' ? stepObject : undefined;
-    let releasedAssignment: TicketAssignment | undefined;
-    if (ticket.activeAssignmentId) {
-      const existing = await this.repository.read(ticket.activeAssignmentId);
-      if (existing.objectType !== 'ticket-assignment') {
-        throw new Error(`Ticket ${ticket.name} active assignment is invalid`);
+    const current = await this.assignmentForRouting(ticket, step, options.administrative === true);
+    if (current?.reusable) {
+      const { assignment, owner } = current;
+      if (!options.administrative && assignment.capacityConsumed && !owner.activeAssignmentIds.includes(assignment.id)) {
+        await this.repository.commit([reviseActor(owner, { activeAssignmentIds: [...owner.activeAssignmentIds, assignment.id] })]);
       }
-      const owner = await this.roles.resolve(existing.assigneeActorId);
-      // A Change Request keeps propagating into Steps owned by other roles; when the current owner
-      // cannot perform the next application, PM releases and re-routes instead of failing the Ticket.
-      const blocked = this.roles.ineligibility(owner, ticket, step, { ignoreAssignmentId: existing.id, ignoreCapacity: options.administrative === true });
-      if (!blocked && existing.state === 'accepted' && (ticket.state !== 'deliver' || existing.assigneeActorId === ticket.reporterActorId)) {
-        if (!options.administrative && existing.capacityConsumed && !owner.actor.activeAssignmentIds.includes(existing.id)) {
-          await this.repository.commit([reviseActor(owner.actor, { activeAssignmentIds: [...owner.actor.activeAssignmentIds, existing.id] })]);
-        }
-        return { ticket, assignment: existing };
-      }
-      releasedAssignment = existing;
+      return { ticket, assignment };
     }
+    const releasedAssignment = current?.assignment;
     const parentAssignment = options.inheritedFromTicketId
       ? await this.assignmentForTicket(options.inheritedFromTicketId)
       : undefined;
@@ -535,6 +536,19 @@ export class TicketRegistrationService {
     if (creator.projectId !== ticket.projectId) {
       throw new Error(`Ticket ${ticket.name} creator belongs to another Project`);
     }
+  }
+
+  private async assignmentForRouting(ticket: Ticket, step?: Step, ignoreCapacity = false) {
+    if (!ticket.activeAssignmentId) return undefined;
+    const assignment = await this.repository.read(ticket.activeAssignmentId);
+    if (assignment.objectType !== 'ticket-assignment') throw new Error(`Ticket ${ticket.name} active assignment is invalid`);
+    const owner = await this.roles.resolve(assignment.assigneeActorId);
+    // A Change Request may resume on another Step. Reuse its assignment only if its owner
+    // can do the current work, counting an already-reserved slot only once.
+    const reusable = assignment.state === 'accepted' &&
+      (ticket.state !== 'deliver' || assignment.assigneeActorId === ticket.reporterActorId) &&
+      !this.roles.ineligibility(owner, ticket, step, { ignoreAssignmentId: assignment.id, ignoreCapacity });
+    return { assignment, owner: owner.actor, reusable };
   }
 
   private async assignmentForTicket(ticketId: ObjectId): Promise<TicketAssignment> {

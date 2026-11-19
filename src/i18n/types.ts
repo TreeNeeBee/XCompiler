@@ -195,6 +195,7 @@ export interface Messages {
     optChangeRequest: string;
     optRetryCrReview: string;
     optRecheckCrDiagnosis: string;
+    optRetryCrDiagnosis: string;
     optDebugWikiPath: string;
     optRecordReplay: string;
     optRecordReplayPath: string;
@@ -551,6 +552,7 @@ export interface Messages {
     noDownstreamVerification: (ticket: string) => string;
     crDiagnosisReviewUnresolved: (ticket: string, detail: string) => string;
     evidenceStorageFailed: (ticket: string, detail: string) => string;
+    frameworkExecutionFailed: (ticket: string, detail: string) => string;
     permissionBlocked: (ticket: string, detail: string) => string;
     infrastructureFailure: (ticket: string, detail: string) => string;
     gateAuditPermissionDenied: () => string;

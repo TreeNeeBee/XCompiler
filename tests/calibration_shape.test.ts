@@ -236,7 +236,7 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
-  // dbc2excel-5 P2: delivery promotes a later Phase's user documents to the root, so a plan made from now on
+  // a validation project P2: delivery promotes a later Phase's user documents to the root, so a plan made from now on
   // asks that Phase's functional test to write its README beside the quickstart it already delivered.
   it('asks a later Phase to write the README its delivery promotes to the root', () => {
     const raw = [
@@ -249,7 +249,7 @@ describe('calibrateStepShape', () => {
     ]);
   });
 
-  // dbc2excel-6 P2: the planner named its requirement analysis docs/p2-01-requirement-analysis.md and
+  // a validation project P2: the planner named its requirement analysis docs/p2-01-requirement-analysis.md and
   // calibration added the canonical path beside it. The Step had two requirement documents; the model
   // wrote and cited its own name, and the contract checks accept only the canonical one.
   it('folds a later Phase\'s iteration-named copies of canonical documents into its canonical paths', () => {

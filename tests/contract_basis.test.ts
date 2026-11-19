@@ -5,7 +5,7 @@ import { contractBasisDocuments } from '../src/domain/quality/test_assets.js';
 
 /**
  * A completed Phase is a milestone: a later Phase may change what it delivered only where a contract
- * it accepted superseded it. The clause below is the real P2 requirement of the dbc2excel run.
+ * it accepted superseded it. The clause below is the real P2 requirement of the a validation project run.
  */
 const REQUIREMENT = 'docs/iterations/P2/01-requirement-analysis.md';
 const DESIGN = 'docs/iterations/P2/02-high-level-design.md';

@@ -1,11 +1,11 @@
 # 0.4.0 refactor handover
 
-> **2026-10-16 起**：本轮变更按 [审查变更清单](2026-10-15-review-change-list.md) 实施，结果与遗留项记录在 [变更审计日志](../../audit-reports/2026-10-16-change-audit-log.md)。本文开头的“当前状态”表是 0.4 唯一的进度来源（D-9）。
+> **2026-10-16 起**：本轮变更按 [审查变更清单](2026-10-15-review-change-list.md) 实施，结果与遗留项记录在 变更审计日志。本文开头的“当前状态”表是 0.4 唯一的进度来源（D-9）。
 
 ## 当前状态（唯一进度表）
 
-最近增量更新为 2026-11-16。`dbc2excel-7` P2 实跑已通过显式重试关闭 `CR-P2-001`，随后 `CR-BUG-001` 也独立验收关闭。`CR-BUG-002` 在 S4 反复提交诊断矛盾后停于原票 14/14。已接通 PM 留存和原验证 reporter 复核，待用新构建继续真实 P2。见 [CR 验收恢复报告](../../audit-reports/2026-11-16-cr-review-retry-report.md)和 [S4 诊断交接修复](../../audit-reports/2026-11-16-cr-diagnosis-handoff-report.md)。表中其他行保留历史阶段记录。
-审查与审计报告已归档到 [`docs/audit-reports/`](../../audit-reports/README.md)。
+最近增量更新为 2026-11-16。后续派生验证工程 P2 实跑已通过显式重试关闭 `CR-P2-001`，随后 `CR-BUG-001` 也独立验收关闭。`CR-BUG-002` 在 S4 反复提交诊断矛盾后停于原票 14/14。已接通 PM 留存和原验证 reporter 复核，待用新构建继续真实 P2。见 CR 验收恢复报告和 S4 诊断交接修复。表中其他行保留历史阶段记录。
+相关审查与审计报告保存在本地归档。
 下方带 2026-10-15 或更早日期的检查结果保留为历史证据，不代表本轮变更已经通过。
 
 2026-11-13 用户确认的新合同：assignment 为当前处理人，reporter 为验收关闭负责人。S6→S3 Bug 由 S3 处理、自身交付后通过独立验收的 CR 传导，最终由原 S6 reporter 复验关闭。PM 仅在验证 Actor 确认外部门禁证据后物化 Bug；S1～S4 保留原票修正。活动旧票显式迁移 reporter，不改写创建者或终态历史。详见 [实施记录](2026-11-13-ticket-responsibility-implementation.md)。
@@ -20,17 +20,17 @@
 | 6 | M-C 请求基础设施 | 已完成：容量跳过（C1）、正常路径不读审计（C2，按 D-21 替代字节区间）、每次执行一份 Rule 快照（C3）；调用点证伪通过 | 无本阶段剩余项 |
 | 7 | M-D Rule 抽取与提示组装 | 已完成：23 个编译器 RuleList（en/zh）、Runtime 绑定计算、Executor/规划提示改由 Rule 承载 Who/What/How；调用点证伪通过 | 无本阶段剩余项 |
 | 8 | M-E 协议纠正校准接通 | 已完成：`escape-insertion` 准入与证明、账本额度耗尽、Executor、需求澄清、阶段规划、阶段拆解与场景结果判定生产接线与恢复；调用点证伪通过 | 无本阶段剩余项；下一步 G1 |
-| 9 | 小规模真实项目验证 | P1 已交付。`dbc2excel-7` P2 原 `BUG-P2-002` 为 `pending / quality-gap`，12/12 次，等待 `CR-BUG-002`、`CR-BUG-003`。`CR-P2-001` 与 `CR-BUG-001` 均已验收关闭。`CR-BUG-002` 等待用新构建复核 S4 提交的诊断证据。 | 在用户可见 Terminal 用普通 `run` 续跑，观察原 S6 复核、S4 CR 的处理、源 Bug 自身交付及原范围复验。见 [S4 诊断交接修复](../../audit-reports/2026-11-16-cr-diagnosis-handoff-report.md)。 |
+| 9 | 小规模真实项目验证 | P1 已交付。后续派生验证工程 P2 原 `BUG-P2-002` 为 `pending / quality-gap`，12/12 次，等待 `CR-BUG-002`、`CR-BUG-003`。`CR-P2-001` 与 `CR-BUG-001` 均已验收关闭。`CR-BUG-002` 等待用新构建复核 S4 提交的诊断证据。 | 在用户可见 Terminal 用普通 `run` 续跑，观察原 S6 复核、S4 CR 的处理、源 Bug 自身交付及原范围复验。见 S4 诊断交接修复。 |
 | 10 | P1 发布准备 | 已完成并提交（`efb64b0`，用户选择先于 D-20）：10 项资源失败已修复、版本 0.4.0 / Plugin API 4、依赖审计 0 项、完整门禁通过；未打 tag、未发布 | 原生 pkg 二进制由 release workflow 构建；发版时运行 `release:local -- v0.4.0` |
-| 11 | 审查后修正 | 已提交 `c49b11c`：审计半行防护、修复提示按类型码、删除死字段、产出缺失类型化。未提交：删除单轮规划提示并迁入 3 项指导（C）；同一执行的选择材料丢失后停止发送（E，Codex SNP-01）。当前门禁：core 120/1,764，integration 66/1,503，e2e 2/11 | 提交 C、E；处理[审计报告](../../audit-reports/2026-10-17-change-audit-report.md)第 8 节的遗留决定 |
-| 12 | RuleChain 修订（[合同](2026-10-18-rulechain-revision.md)，[变更清单](2026-10-15-review-change-list.md) D-22～D-34） | 已实施、未提交：32 位槽位与 schema 2、`xcompiler rule` 与本地差异层、最小规则集与适用维度、分区与选择策略及失败降级、基础段与分组渲染、Python 列表与两种语言去重、Rule 正文按摘要存放；调用点证伪通过。现有 26 个 RuleList、75 条 Rule。2026-10-20 已处理 [Codex 审计](../../audit-reports/2026-10-20-codex-audit-report.md) RC-01～RC-07 与第 4.1 节（D-35），并修复自我审查发现的缺产出类别问题。过程见[审计日志](../../audit-reports/2026-10-16-change-audit-log.md#rulechain-修订实施2026-10-19-起未提交)，汇总见 [2026-10-20 工作记录](../../audit-reports/2026-10-20-work-report.md) | 用户审定：三份内容草案（[`drafts/`](drafts/)）、Python 列表不设显式最小规则集的做法、创世声明 en 变体含中文；之后提交，再做第 9 行 |
-| 13 | 需求接收动态澄清（[变更清单](2026-10-15-review-change-list.md) D-36～D-39，[设计 4.2](../../XCompiler_design.md#42-需求接收与澄清)） | 已实施、未提交（2026-10-21）：语言与交付形态由代码以固定选择题提问，已知则跳过；之后每轮一次 PM 请求（`planning-clarification/2`），六维覆盖约束，模型判定清晰、`planning.clarification.max_questions` 或 `/done` 结束；topic.md front matter 记录决定，Gate 1 后与 `--topic` 以其为准；规划形态固定为决定值。D-37：每轮由模型按能力边界判断可实施性，判为无法交付时由用户选择缩小、修改、继续或取消。D-38：去掉 `/done` 与题数上限，改以上下文预算（`context_ratio`）和停滞（`stall_turns`）触发最终评估；规划只读 topic.md；中文 token 估算；断点续问与进度。D-39：自我审查后的修正（规划侧预算、代码生成最终评估、关闭提示即取消、Gate 1 校验、修改后重新判定、topic 精简、空回答取 A、回答脱敏）。调用点证伪 10 + 12 + 22 + 17 处通过。过程见[审计日志](../../audit-reports/2026-10-16-change-audit-log.md#需求接收改为动态澄清2026-10-21用户决定d-36)，汇总与审查重点见 [2026-10-21 变更审计报告](../../audit-reports/2026-10-21-change-audit-report.md) | 用户决定 ACP 中“修改需求”只能原样保存的处理；真实运行观察题数与费用（D-20）；与第 12 行一起提交（补充需求重复发送已由 D-41 修复） |
-| 14 | 语言与提示翻译（[变更清单](2026-10-15-review-change-list.md) D-40、D-41，[设计 4.3](../../XCompiler_design.md#43-语言与提示翻译)） | 已实施、未提交（2026-10-21）：`locale` 限定为用户语言；新增 `prompt_translate`（默认 off），开启后模型读英文。预设文字（模板、Rule、工具描述与反馈、calibration 与 Step 契约、topic 标题）直接替换，用户自由文字与模型提问经 `text-translation/1` 请求翻译，按文本缓存，失败时退回原文并告警；交付物语言由 Rule 变量 `{{outputLanguage}}` 表达（`base-output-language` 1.1.0）；可选 `llm.pools.translation`；框架硬编码中文迁入 i18n。D-41：中文补充需求标题正则修复；规划与后续 Phase 只读 topic（补充需求不再单独发送）；英文 topic 由澄清中已有译文拼出并按节缓存，读取时按节翻译、只译改动的节；Gate 2 预览翻译；重答提示与入口门禁说明按提示语言。调用点证伪 38 + 12 处，D-40 存活的 4 处已补测试或删除不可观察的接线。过程见[审计日志](../../audit-reports/2026-10-16-change-audit-log.md#语言与提示翻译2026-10-21用户决定d-40)，汇总见 [2026-10-21 工作报告](../../audit-reports/2026-10-21-work-report.md) | 真实模型验证翻译质量与费用（D-20）；与第 12、13 行一起提交 |
+| 11 | 审查后修正 | 已提交 `c49b11c`：审计半行防护、修复提示按类型码、删除死字段、产出缺失类型化。未提交：删除单轮规划提示并迁入 3 项指导（C）；同一执行的选择材料丢失后停止发送（E，Codex SNP-01）。当前门禁：core 120/1,764，integration 66/1,503，e2e 2/11 | 提交 C、E；处理审计报告第 8 节的遗留决定 |
+| 12 | RuleChain 修订（[合同](2026-10-18-rulechain-revision.md)，[变更清单](2026-10-15-review-change-list.md) D-22～D-34） | 已实施、未提交：32 位槽位与 schema 2、`xcompiler rule` 与本地差异层、最小规则集与适用维度、分区与选择策略及失败降级、基础段与分组渲染、Python 列表与两种语言去重、Rule 正文按摘要存放；调用点证伪通过。现有 26 个 RuleList、75 条 Rule。2026-10-20 已处理 Codex 审计 RC-01～RC-07 与第 4.1 节（D-35），并修复自我审查发现的缺产出类别问题。过程见审计日志，汇总见 2026-10-20 工作记录 | 用户审定：三份内容草案（[`drafts/`](drafts/)）、Python 列表不设显式最小规则集的做法、创世声明 en 变体含中文；之后提交，再做第 9 行 |
+| 13 | 需求接收动态澄清（[变更清单](2026-10-15-review-change-list.md) D-36～D-39，[设计 4.2](../../XCompiler_design.md#42-需求接收与澄清)） | 已实施、未提交（2026-10-21）：语言与交付形态由代码以固定选择题提问，已知则跳过；之后每轮一次 PM 请求（`planning-clarification/2`），六维覆盖约束，模型判定清晰、`planning.clarification.max_questions` 或 `/done` 结束；topic.md front matter 记录决定，Gate 1 后与 `--topic` 以其为准；规划形态固定为决定值。D-37：每轮由模型按能力边界判断可实施性，判为无法交付时由用户选择缩小、修改、继续或取消。D-38：去掉 `/done` 与题数上限，改以上下文预算（`context_ratio`）和停滞（`stall_turns`）触发最终评估；规划只读 topic.md；中文 token 估算；断点续问与进度。D-39：自我审查后的修正（规划侧预算、代码生成最终评估、关闭提示即取消、Gate 1 校验、修改后重新判定、topic 精简、空回答取 A、回答脱敏）。调用点证伪 10 + 12 + 22 + 17 处通过。过程见审计日志，汇总与审查重点见 2026-10-21 变更审计报告 | 用户决定 ACP 中“修改需求”只能原样保存的处理；真实运行观察题数与费用（D-20）；与第 12 行一起提交（补充需求重复发送已由 D-41 修复） |
+| 14 | 语言与提示翻译（[变更清单](2026-10-15-review-change-list.md) D-40、D-41，[设计 4.3](../../XCompiler_design.md#43-语言与提示翻译)） | 已实施、未提交（2026-10-21）：`locale` 限定为用户语言；新增 `prompt_translate`（默认 off），开启后模型读英文。预设文字（模板、Rule、工具描述与反馈、calibration 与 Step 契约、topic 标题）直接替换，用户自由文字与模型提问经 `text-translation/1` 请求翻译，按文本缓存，失败时退回原文并告警；交付物语言由 Rule 变量 `{{outputLanguage}}` 表达（`base-output-language` 1.1.0）；可选 `llm.pools.translation`；框架硬编码中文迁入 i18n。D-41：中文补充需求标题正则修复；规划与后续 Phase 只读 topic（补充需求不再单独发送）；英文 topic 由澄清中已有译文拼出并按节缓存，读取时按节翻译、只译改动的节；Gate 2 预览翻译；重答提示与入口门禁说明按提示语言。调用点证伪 38 + 12 处，D-40 存活的 4 处已补测试或删除不可观察的接线。过程见审计日志，汇总见 2026-10-21 工作报告 | 真实模型验证翻译质量与费用（D-20）；与第 12、13 行一起提交 |
 
 本轮已确认：Actor 覆盖池独立；角色默认池可继承全局备用。编译只产工作，应用层在物化任务之前准备登记执行者。
 预图需求澄清、阶段规划、阶段拆解只有操作身份；已有 Project 的阶段拆解与场景结果判定使用登记 Actor、固定角色版本和实际模型池。
 业务请求留存原允许 provider 集合及备用策略，恢复不按当前配置重新授权。0.4 不兼容旧工作区。
-M-C～P1 的审查入口：[CC 变更审查交接](../../audit-reports/2026-10-16-cc-change-review-handover.md)（`efb64b0`）。
+M-C～P1 的审查入口：CC 变更审查交接（`efb64b0`）。
 审计（D-21）：`audit.jsonl` 只用于追溯检查和重启恢复；正常业务路径只写不读，LLM 回复的业务结果在对应业务对象中。生产流程目前没有接入重启恢复入口（`resumeRuntime*` 只有测试调用）。
 
 RuleChain 修订（第 12 行，含 Codex 审计处理）的完整门禁（2026-10-20）：core 122 文件 / 1,872 项，integration 67 / 1,550，e2e 3 / 18；类型检查（自 2026-10-20 起覆盖测试，`tests/tsconfig.json`，编辑器同样使用）、lint、构建、`git diff --check` 通过；未调用外部付费模型。
@@ -61,7 +61,7 @@ D-47（`run_program` 预期退出码）与 D-48（测试阶段只在补充测试
 
 D-46（验证 Step 的无效补充测试改由本 Step 在执行中修正）与执行器未解决失败改按结构化字段判定之后的完整门禁（2026-10-28）：core 126 文件 / 1,998 项，integration 67 / 1,599，e2e 3 / 22；typecheck（含测试）、lint、`git diff --check` 通过；`dist/pkg` 两个目标已重新打包。
 
-D-45（dbc2excel-3 失败分析后的工程侧修复：Python 覆盖率由 Runtime 提供、无结论测试运行的失败码、审计记录工具错误、报错信息）之后的完整门禁（2026-10-28）：core 125 文件 / 1,987 项，integration 67 / 1,599，e2e 3 / 22；typecheck（含测试）、lint、`git diff --check` 通过；`dist/pkg` 两个目标已重新打包。真实 pytest-cov 进程集成随后用 dbc2excel-4 沙箱中已安装的 pytest-cov 7.1.0 / coverage 7.17.0 验证通过（见审计日志 D-45）。
+D-45（派生验证工程-3 失败分析后的工程侧修复：Python 覆盖率由 Runtime 提供、无结论测试运行的失败码、审计记录工具错误、报错信息）之后的完整门禁（2026-10-28）：core 125 文件 / 1,987 项，integration 67 / 1,599，e2e 3 / 22；typecheck（含测试）、lint、`git diff --check` 通过；`dist/pkg` 两个目标已重新打包。真实 pytest-cov 进程集成随后用 派生验证工程-4 沙箱中已安装的 pytest-cov 7.1.0 / coverage 7.17.0 验证通过（见审计日志 D-45）。
 
 D-44（run 监控中断后的修复）之后的完整门禁（2026-10-28）：core 124 文件 / 1,967 项，integration 67 / 1,598，e2e 3 / 22；typecheck（含测试）、lint、`git diff --check` 通过；`dist/pkg` 两个目标已重新打包。
 
@@ -69,7 +69,7 @@ D-44（run 监控中断后的修复）之后的完整门禁（2026-10-28）：co
 
 D-43 之后的完整门禁（2026-10-27）：core 124 文件 / 1,962 项，integration 67 / 1,598，e2e 3 / 22；typecheck（含测试）、lint、构建、`git diff --check` 通过；`dist/pkg` 已按最新代码重新打包。
 
-D-42 之后的完整门禁（2026-10-22）：core 124 文件 / 1,959 项，integration 67 / 1,596，e2e 3 / 22；typecheck（含测试）、lint、构建、`git diff --check` 通过。dbc2excel 真实 build 两次共约 $0.033。
+D-42 之后的完整门禁（2026-10-22）：core 124 文件 / 1,959 项，integration 67 / 1,596，e2e 3 / 22；typecheck（含测试）、lint、构建、`git diff --check` 通过。派生验证工程 真实 build 两次共约 $0.033。
 
 验证前最终检查（第 14 行）之后的完整门禁（2026-10-21）：core 124 文件 / 1,958 项，integration 67 / 1,594，e2e 3 / 22；typecheck（含测试）、lint、构建、`git diff --check` 通过；未调用外部付费模型。
 
@@ -80,7 +80,7 @@ D-42 之后的完整门禁（2026-10-22）：core 124 文件 / 1,959 项，integ
 M-C～P1 阶段的完整门禁：core 118 文件 / 1,696 项；功能 integration 66 文件 / 1,499 项；e2e 2 文件 / 11 项，全部通过。
 类型检查、lint、构建及其版本一致性检查通过。21 处调用点证伪均按预期失败并逐字节恢复；恢复后 9 文件 / 298 项通过。
 P1 已完成，integration 完整运行不再排除任何文件；未调用外部付费模型。
-验证过程及原始 CC 记录的修正见 [本轮审计日志](../../audit-reports/2026-10-16-change-audit-log.md#本轮独立验证与调用点证伪)。
+验证过程及原始 CC 记录的修正见 本轮审计日志。
 
 ## 历史交接正文（2026-10-15）
 
@@ -1348,8 +1348,7 @@ Executed checks with Node v24.16.0:
 
 Restricted loopback runs produced `EPERM`/timeouts, not product failures; exact local-test commands
 were approved for escalation and reran successfully. No external model or paid-model call was made.
-Temporary mutation edits were restored. Reports are local under `/private/tmp/xcompiler-p01-*.json`
-and are not repository artifacts.
+Temporary mutation edits were restored. Reports are retained locally.
 
 **Full integration remains open:** the initial unfiltered run passed 1,435 cases and failed 11.
 The planning snapshot assertion is fixed. The remaining ten failures are in
@@ -1418,8 +1417,7 @@ Executed checks with Node v24.16.0:
 Falsified calls: Build injection, Run injection, progression-to-Planner injection, business validation,
 Rule preparation, required judgement audit, Skill validation, output-ownership lint, Registry helper
 binding, phase-plan phase validation, Build checkpoint validation, post-Project snapshot binding, protocol
-consumer and recovery parser. Source restoration was verified after every mutation. Local reports
-and logs are `/private/tmp/xcompiler-p03-*` and are not repository artifacts.
+consumer and recovery parser. Source restoration was verified after every mutation. Reports and logs are retained locally.
 
 The restricted core run's two existing loopback Router cases did not complete; the same whole gate
 passed in the approved local environment. Functional integration/e2e/falsification used only local
@@ -1499,9 +1497,9 @@ provider projection, original Rule guard, projected full-array guard, final capa
 projection protection, Runtime-to-Tool window, Executor-to-Tool window, Runner Actor pool, no-success-
 credit policy, recovery validator, Ollama token callback, port-to-review pool, review pool selection,
 typed content-failure producer and Runner consumer. Final complete gates cover the restored sources.
-Local reports/logs are `/private/tmp/xcompiler-executor-*` and are not committed artifacts.
+Reports and logs are retained locally.
 
-The standalone [review handover](../../audit-reports/2026-10-15-executor-review-handover.md) records implementation,
+The locally archived review handover records implementation,
 current overall progress and cc review priorities against `29d6cca`. Full integration remains open
 because the ten recorded P1 resource
 failures are deferred, not waived. No external model, generated-project model scenario, package

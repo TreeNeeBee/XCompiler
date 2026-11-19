@@ -88,3 +88,18 @@ describe('--recheck-cr-diagnosis (real CLI process)', () => {
     expect(result.code).toBe(7);
   }, 60_000);
 });
+
+describe('--retry-cr-diagnosis (real CLI process)', () => {
+  it.each([
+    ['xcompiler run', 'src/cli/xcompiler.ts', ['run']],
+    ['xcompiler_run', 'src/cli/xcompiler_run.ts', []],
+  ])('validates the diagnosis request before dry-run exits through %s', async (_name, entry, command) => {
+    const { container, planPath, configPath } = await project();
+    const requestId = randomUUID();
+    const result = await cli(entry, ...command, planPath, '-w', container.root, '-c', configPath,
+      '--dry-run', '--retry-cr-diagnosis', requestId);
+    expect(result.output).toContain(requestId);
+    expect(result.output).toContain('diagnosis_retry_scope');
+    expect(result.code).toBe(7);
+  }, 60_000);
+});

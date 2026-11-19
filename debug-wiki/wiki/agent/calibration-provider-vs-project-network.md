@@ -36,7 +36,7 @@ solution: |
   fallbacks, weakening assertions — to fix something that was never broken.
 evidence:
   - "Live run: 'Architect availability check failed for openai:deepseek/deepseek-v4-flash: fetch failed' was classified network_api_failure, whose demand tells the project to switch to a public no-key API"
-  - "Two dbc2excel runs lost ~30 minutes each to provider outages that produced no project defect"
+  - "Two derived-project validation runs lost ~30 minutes each to provider outages that produced no project defect"
 stats:
   uses: 0
   successes: 0

@@ -1,14 +1,20 @@
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { toolText } from './tool_text.js';
 import path from 'node:path';
 import { isPathPattern, type Tool, type ToolContext, type ToolFailureCode, type ToolResult } from './types.js';
 import type { StepType } from '../domain/steps/step.js';
+import { testSelectorPath } from '../domain/tickets/failure_identity.js';
+import type { TestCaseResults, TestRunExtra, TestRunResult } from '../sandbox/types.js';
+import { RUNTIME_TEMP_DIR } from '../workspace/runtime_temp.js';
 import { detectNetworkApiFailureInExec } from '../application/execution/network_failure.js';
 import { isCoverageArgument, normalizeTypeScriptTestArgs } from '../sandbox/test_args.js';
-import { resolveTypeScriptProgramCommand } from '../sandbox/program_args.js';
+import { resolveTypeScriptProgramCommand, stripPythonInterpreterPrefix } from '../sandbox/program_args.js';
 import { resolveWorkspacePath } from './path_guard.js';
 import { isExecutableTestPath } from '../domain/quality/test_assets.js';
 import { failingTestsIn } from '../application/execution/debug_brief.js';
+import { pytestExecutionReceipt } from './pytest_execution_receipt.js';
+import { vitestCaseReportArgs, vitestCaseResults, vitestPassedExactFile, vitestVerificationArgs } from './vitest_verification.js';
 
 /** 截取多行文本最后 N 行，用于在 ToolResult.summary 里给 LLM 直接看的失败上下文。
  * 仅在失败时调用——成功路径上 stdout 通常很长且无价值，没必要塞回 prompt。 */
@@ -113,9 +119,17 @@ function extractVitestEvidence(stdout: string): string[] {
   return evidence;
 }
 
+interface ExplicitTestScope {
+  runner: 'vitest' | 'pytest';
+  cwd: string;
+  selectors: string[];
+  executedSelectors?: string[];
+}
+
 export const runProgramTool: Tool<
   { args: string[]; cwd?: string; timeoutMs?: number; expectExitCode?: number },
-  { exitCode: number; stdout: string; stderr: string; timedOut: boolean; expectedExitCode?: number }
+  { exitCode: number; stdout: string; stderr: string; timedOut: boolean; expectedExitCode?: number;
+    testScope?: ExplicitTestScope }
 > = {
   name: 'run_program',
   get description() { return toolText().runProgram.description; },
@@ -144,7 +158,14 @@ export const runProgramTool: Tool<
         error: toolText().runProgram.expectExitCodeForTestRunner,
       };
     }
-    const r = await ctx.sandbox.runProgram(args.args, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
+    const runner = ctx.language === 'typescript' ? 'vitest' : 'pytest';
+    const selectors = ranTests ? directTestProgramArgs(runner, args.args) : undefined;
+    const receiptScope = ctx.captureVerificationEvidence && selectors?.length === 1
+      ? await resolvedTestScope(ctx, cwd, runner, selectors, true) : undefined;
+    const receipt = receiptScope && runner === 'pytest' && selectors ? pytestExecutionReceipt(selectors[0]!) : undefined;
+    const vitestFile = receiptScope && runner === 'vitest' ? await processTestFile(ctx, receiptScope) : undefined;
+    const commandArgs = receipt?.args ?? (vitestFile ? vitestVerificationArgs(args.args) : args.args);
+    const r = await ctx.sandbox.runProgram(commandArgs, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
     const declaresFailureExit = expected !== undefined && expected !== 0;
     const exitAsDeclared = declaresFailureExit && !r.timedOut && r.exitCode === expected;
     const failed = (r.exitCode !== 0 && !exitAsDeclared) || r.timedOut || (declaresFailureExit && r.exitCode === 0);
@@ -155,11 +176,17 @@ export const runProgramTool: Tool<
     const withoutVerdict = ranTests && isPytestInvocation(args.args) && !r.timedOut
       ? pytestRunWithoutVerdict(base, r.exitCode)
       : undefined;
+    const testScope = ok && selectors ? await resolvedTestScope(ctx, cwd, runner, selectors, true) : undefined;
+    if (testScope && receiptScope && testScope.selectors[0] === receiptScope.selectors[0]) {
+      const passed = receipt?.passed(r.stdout) ?? (vitestFile && vitestPassedExactFile(r.stdout, vitestFile));
+      if (passed) testScope.executedSelectors = testScope.selectors;
+    }
     return {
       ok,
       data: {
         exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut,
         ...(expected !== undefined ? { expectedExitCode: expected } : {}),
+        ...(testScope ? { testScope } : {}),
       },
       summary: ok
         ? exitAsDeclared ? `${base} (the declared expected exit code)` : base
@@ -180,6 +207,54 @@ export const runProgramTool: Tool<
     };
   },
 };
+
+async function processTestFile(ctx: ToolContext, scope: ExplicitTestScope): Promise<string | undefined> {
+  const root = await processWorkspaceRoot(ctx);
+  return root ? path.posix.join(root, scope.cwd, scope.selectors[0]!) : undefined;
+}
+
+async function processWorkspaceRoot(ctx: ToolContext): Promise<string | undefined> {
+  const root = ctx.sandbox.kind === 'docker' ? ctx.sandbox.guestWorkspaceRoot
+    : await fs.realpath(ctx.ws.root).catch(() => undefined);
+  return root?.replaceAll('\\', '/');
+}
+
+/** Attest literal selectors through the same workspace boundary as their execution directory. */
+async function resolvedTestScope(
+  ctx: ToolContext,
+  cwd: { abs?: string; rel: string },
+  runner: ExplicitTestScope['runner'],
+  selectors: readonly string[],
+  requireTestFile = false,
+): Promise<ExplicitTestScope | undefined> {
+  if (!selectors.length) return undefined;
+  const canonical = await Promise.all(selectors.map(async selector => {
+    const [file, ...nodes] = selector.split('::');
+    if (!file || file.startsWith('-') || isPathPattern(file) || nodes.includes('') ||
+      (runner === 'vitest' && nodes.length > 0)) return undefined;
+    const resolved = await resolveWorkspacePath(ctx.ws, path.resolve(cwd.abs ?? ctx.ws.root, file),
+      'verification.testScope', { mustExist: true });
+    if (!resolved.ok) return undefined;
+    if (requireTestFile && (!isExecutableTestPath(resolved.rel, ctx.language ?? 'python') ||
+      !await fs.stat(resolved.abs).then(entry => entry.isFile(), () => false))) return undefined;
+    const relativeFile = path.posix.relative(cwd.rel, resolved.rel) || '.';
+    if (relativeFile === '..' || relativeFile.startsWith('../')) return undefined;
+    return [relativeFile, ...nodes].join('::');
+  }));
+  if (canonical.some(selector => selector === undefined)) return undefined;
+  return { runner, cwd: cwd.rel, selectors: canonical.filter(selector => selector !== undefined) };
+}
+
+function directTestProgramArgs(runner: ExplicitTestScope['runner'], argv: string[]): string[] | undefined {
+  if (runner === 'pytest') {
+    const [moduleFlag, module, ...args] = stripPythonInterpreterPrefix(argv);
+    return moduleFlag === '-m' && module === 'pytest' ? args : undefined;
+  }
+  const { cmd, argv: actualArgs } = resolveTypeScriptProgramCommand(argv);
+  const args = cmd === 'npx' && actualArgs[0] === 'vitest' ? actualArgs.slice(1)
+    : /^(?:\.\/)?node_modules[\\/]\.bin[\\/]vitest$/u.test(cmd) ? actualArgs : undefined;
+  return args?.[0] === 'run' ? args.slice(1) : undefined;
+}
 
 /** The action a failed product run leaves the caller, when its exit code may be the specified one. */
 function withExitCodeGuidance(
@@ -238,7 +313,10 @@ export const runTestsTool: Tool<
      * passing rerun did not, and the stale failure outlived every pass until the Step ran out of rounds.
      */
     selectors?: string[];
+    testScope?: ExplicitTestScope;
     failedTests: string[];
+    caseEvidenceRequested?: boolean;
+    caseResults?: TestCaseResults;
     /** Line and branch coverage the run measured, in percent, when it was asked to measure them. */
     coverage?: MeasuredCoverage;
   }
@@ -293,7 +371,12 @@ export const runTestsTool: Tool<
     const coverageFile = coverageReport ? await confinedCoverageReport(ctx, runDirectory, coverageReport) : undefined;
     if (coverageFile && !coverageFile.ok) return coverageFile.refusal;
     if (coverageFile) await fs.rm(coverageFile.abs, { force: true });
-    const r = await ctx.sandbox.runTests(runArgs, { cwd: cwd.abs, timeoutMs: args.timeoutMs });
+    const runner = ctx.language === 'typescript' ? 'vitest' : 'pytest';
+    const caseEvidenceRequested = ctx.captureBugVerificationCases === true;
+    const captureCases = caseEvidenceRequested && gateSelectors.length > 0;
+    const r = await runTestCommand(ctx, runArgs, {
+      cwd: cwd.abs, timeoutMs: args.timeoutMs,
+    }, captureCases ? runner : undefined);
     // A test runner's verdict is its exit code. Network text inside a passing suite is the suite's
     // own subject matter — a project whose tests cover "the source is unreachable" prints exactly
     // that on the way to passing. The detector only explains a run that already failed.
@@ -306,7 +389,6 @@ export const runTestsTool: Tool<
     const failed = r.exitCode !== 0 || r.timedOut;
     const networkFailure = failed ? detectNetworkApiFailureInExec(r) : null;
     const passed = !failed;
-    const runner = ctx.language === 'typescript' ? 'vitest' : 'pytest';
     const cmd = runner === 'vitest' ? 'npm test' : 'pytest';
     const base = [
       `${cmd} exit=${r.exitCode}`,
@@ -324,6 +406,9 @@ export const runTestsTool: Tool<
       : coverage ? [`coverage lines=${coverage.lines}%${coverage.branches === undefined ? '' : ` branches=${coverage.branches}%`}`] : [];
     const failedTests = failed ? failingTestsIn(`${r.stderr}\n${r.stdout}`) : [];
     const withoutVerdict = runner === 'pytest' && !r.timedOut ? pytestRunWithoutVerdict(base, r.exitCode) : undefined;
+    const testScope = passed || captureCases ? await resolvedTestScope(ctx, cwd, runner, gateSelectors) : undefined;
+    const caseResults = captureCases && testScope && r.caseResults && !r.timedOut && (r.exitCode === 0 || r.exitCode === 1)
+      ? scopedCaseResults(r.caseResults, testScope) : undefined;
     return {
       ok: passed,
       data: {
@@ -334,8 +419,11 @@ export const runTestsTool: Tool<
         passed,
         runner,
         effectiveArgs: runArgs,
-        ...(gateArgs.length > 0 ? { selectors: testSelectors(gateArgs) } : {}),
+        ...(gateArgs.length > 0 ? { selectors: gateSelectors } : {}),
+        ...(passed && testScope ? { testScope } : {}),
         failedTests,
+        ...(caseEvidenceRequested ? { caseEvidenceRequested: true } : {}),
+        ...(caseResults ? { caseResults } : {}),
         ...(coverage ? { coverage } : {}),
       },
       summary: passed
@@ -352,6 +440,43 @@ export const runTestsTool: Tool<
     };
   },
 };
+
+async function runTestCommand(
+  ctx: ToolContext, args: string[], extra: TestRunExtra, capture?: ExplicitTestScope['runner'],
+): Promise<TestRunResult> {
+  if (capture === 'pytest') return ctx.sandbox.runTests(args, { ...extra, capturePytestCases: true });
+  if (capture !== 'vitest') return ctx.sandbox.runTests(args, extra);
+  const root = await processWorkspaceRoot(ctx);
+  const reportPath = `${RUNTIME_TEMP_DIR}/test-cases-${randomUUID()}.json`;
+  const output = await resolveWorkspacePath(ctx.ws, reportPath, 'run_tests.case_report', { forWrite: true });
+  if (!root || !output.ok || output.rel !== reportPath) return ctx.sandbox.runTests(args, extra);
+  await fs.mkdir(path.dirname(output.abs), { recursive: true });
+  const result = await ctx.sandbox.runTests(vitestCaseReportArgs(args, path.posix.join(root, reportPath)), extra);
+  const report = await resolveWorkspacePath(ctx.ws, reportPath, 'run_tests.case_report', { mustExist: true });
+  if (!report.ok || report.rel !== reportPath) return result;
+  try {
+    const raw = await fs.readFile(report.abs, 'utf8').catch(() => undefined);
+    const cases = raw && vitestCaseResults(raw, root);
+    return cases ? { ...result, caseResults: cases } : result;
+  } finally {
+    await fs.rm(report.abs, { force: true }).catch(() => undefined);
+  }
+}
+
+/** Keep only runner results attributable to the frozen gate, even for substring-based runners. */
+function scopedCaseResults(results: TestCaseResults, scope: ExplicitTestScope): TestCaseResults {
+  const allowed = scope.selectors.map(selector => path.posix.join(scope.cwd, selector));
+  const inScope = (selector: string) => {
+    const file = testSelectorPath(selector);
+    if (path.posix.normalize(file) !== file) return false;
+    return allowed.some(candidate => {
+      const target = testSelectorPath(candidate);
+      if (candidate !== target) return selector === candidate || selector.startsWith(`${candidate}::`) || selector.startsWith(`${candidate}[`);
+      return file === target || target === '.' || file.startsWith(`${target}/`);
+    });
+  };
+  return { passed: results.passed.filter(inScope), failed: results.failed.filter(inScope) };
+}
 
 async function appendVerificationSupplements(
   ctx: ToolContext,
@@ -653,11 +778,11 @@ async function resolveSandboxCwd(
   ctx: ToolContext,
   cwd: string | undefined,
   operation: string,
-): Promise<{ ok: true; abs?: string } | { ok: false; error: string }> {
-  if (!cwd) return { ok: true };
+): Promise<{ ok: true; abs?: string; rel: string } | { ok: false; error: string }> {
+  if (!cwd) return { ok: true, rel: '.' };
   const resolved = await resolveWorkspacePath(ctx.ws, cwd, operation, { mustExist: true });
   if (!resolved.ok) return { ok: false, error: resolved.error };
-  return { ok: true, abs: resolved.abs };
+  return { ok: true, abs: resolved.abs, rel: resolved.rel };
 }
 
 export const installDepsTool: Tool<{ packages: string[] }, { exitCode: number; stdout: string; stderr: string }> = {

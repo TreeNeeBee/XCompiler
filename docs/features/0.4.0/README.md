@@ -1,13 +1,51 @@
-# 0.4.0: Rule architecture and module separation
+# XCompiler 0.4.0
 
-> **2026-10-16 起**：[审查变更清单](2026-10-15-review-change-list.md) 的 D-1–D-20 替代本文中与之冲突的描述（业务 Rule 推迟到 0.5、角色/工作内容拆分、RuleChain 分段、具名模型池等）。当前进度只以 [HANDOVER](HANDOVER.md) 的状态表为准（D-9）；下文带日期的段落是历史记录。
+The 0.4.0 development branch implements the Rule architecture, retained model requests, and the
+Ticket and verification updates below. The latest full regression passed 4,143 tests across 214
+files. Type checking, lint, and the build also passed. Business-project verification and release
+preparation are separate milestones.
 
-2026-11-15。按已确认的 assignment/reporter 合同实现 Ticket 流程。S1～S3 交付自有修正，CR 由 reporter 独立验收并决定下游传导，原 Bug 回原 S5～S8 复验。已在 `dbc2excel-7` 状态副本上预演旧票迁移，真实 P2 尚未续跑。11-12 设计中的关闭和传播安排以新合同为准。见[实施记录](2026-11-13-ticket-responsibility-implementation.md)和[变更报告](../../audit-reports/2026-11-15-ticket-responsibility-change-report.md)。
+## Implemented
 
-Status: feature implementation in progress; tests follow complete functional milestones and release
-preparation follows functional acceptance. Updated 2026-10-15.
+- YAML Rules are selected by role, work, language, and request scope. Runtime records the Rule
+  snapshot and binds retained requests to their input, Actor, provider attempt, and adopted
+  response. Protocol correction uses the fixed correction template and requires a mechanical
+  proof before adopting the result.
+- The execution context adjusts tool output and evidence to the active provider window. It
+  prioritizes task constraints and failure evidence, records compression when applied, and
+  keeps the underlying audit records.
+- PM derives a serial work queue from persisted Tickets. Ready Bug rechecks precede routine work
+  for their Step. Work stays queued when the eligible Actor is at capacity, and budgets are used
+  after dispatch.
+- S5–S8 report Bugs and verify the original failure scope after repair, integration, and associated
+  CR acceptance. pytest and Vitest provide observed case verdicts. A recurring failure reopens its
+  Bug. An independent failure gets a linked Bug, and the original waits for a full passing
+  verification before closure.
+- CR reporters independently accept or reject candidates and can propose another downstream hop.
+  A replacement for a rejected candidate needs a relevant content change or new verified test
+  evidence. The CLI supports explicit recovery for eligible review and diagnosis requests.
+- Verified corrections can feed Debug Wiki. Its operational history and local development audit
+  reports stay with the working environment.
 
-Latest checkpoint: the complete Executor retained-request node is implemented and verified through
+## References
+
+| Document | Scope |
+|---|---|
+| [Project constraints](../../XCompiler_project_constraints.md) | Current architecture, ownership, Ticket lifecycle, and release gates |
+| [Refactor plan](0.4.0-modularisation-and-layering.md) | Module boundaries and implementation scope |
+| [Decision register](0.4.0-decisions.md) | Recorded 0.4.0 design decisions |
+| [RuleChain design](0.4.0-rulechain-design.md) | Rule catalogue, slots, and priority |
+| [Rule artifacts](rule-artifacts.md) | YAML, selection, and retained request formats |
+| [Output calibration](output-calibration.md) | Protocol correction and verification |
+| [Implementation plan](implementation-plan.md) | Sequencing and acceptance criteria |
+| [Ticket responsibility implementation](2026-11-13-ticket-responsibility-implementation.md) | Implementation checkpoint for assignment and reporter roles |
+
+Business Rules and functional Stories are tracked in [0.5.0](../0.5.0/README.md).
+
+<details>
+<summary>Earlier development checkpoints and design references</summary>
+
+Executor retained-request checkpoint: the complete Executor retained-request node is implemented and verified through
 Runtime Run, AttemptRunner and StepExecutor. It binds original prompt
 context, canonical work scope, actual role and Actor model pool to Rules, attempts and adopted output.
 Whole producer completion/protocol/proof precedes original business checks and Tool/permission
@@ -18,7 +56,7 @@ The other inventoried instruction sources stay where they are; production protoc
 The restored final gates passed 1,651 core, 1,483 functional-integration and 11 e2e cases,
 typecheck/lint/build, and 24 actual-call removal checks. Typed content refusal now survives Runner
 and PM without creating a generated-project Bug. Final results and limits are recorded in HANDOVER;
-the [review handover](../../audit-reports/2026-10-15-executor-review-handover.md) describes scope and review priorities.
+the review handover describes scope and review priorities.
 
 Previous checkpoint: phase decomposition is now retained in both Build (pre-graph planning
 operation) and Run phase progression (real canonical Project identity). Original i18n messages
@@ -254,3 +292,5 @@ audit/file/loopback cases are authored, unrun; scenario-outcome judgement/rubric
 Preserve the existing PM/Phase/V-model, Ticket, permission, and merge contracts while extracting
 Rules. Functional Stories belong to [0.5](../0.5.0/README.md); Sandbox to
 [0.6](../0.6.0/README.md); LLM-switch to [0.7](../0.7.0/README.md).
+
+</details>

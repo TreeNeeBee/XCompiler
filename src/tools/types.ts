@@ -124,6 +124,10 @@ export interface ToolContext {
   readChunkBytes?: number;
   /** Runtime-owned executable gate. Model-provided selectors cannot replace or widen this scope. */
   testGateArgs?: string[];
+  /** Retain verified execution evidence for independent review of a Change Request. */
+  captureVerificationEvidence?: boolean;
+  /** Retain individual test verdicts from the delivered Bug's reporter verification run. */
+  captureBugVerificationCases?: boolean;
   /** The source repair cannot execute the downstream Bug's verification in this attempt. */
   baselineExecutionDeferred?: boolean;
   /** Verification-owned directory scanned at run_tests time and appended to the baseline gate. */

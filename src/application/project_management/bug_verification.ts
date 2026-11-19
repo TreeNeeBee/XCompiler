@@ -83,19 +83,61 @@ export function bugVerificationSatisfied(
   const passed = relevant.filter((outcome) => outcome.status === 'passed');
   if (passed.length === 0) return false;
   const requiredSelectors = replayableTestSelectors(contract.testSelectors);
-  if (requiredSelectors.length === 0) return true;
+  if (requiredSelectors.length === 0) return passed.some(outcome =>
+    !(outcome.caseEvidenceRequested || outcome.passedCaseSelectors !== undefined) ||
+    (outcome.passedCaseSelectors ?? []).some(hasExecutableTestPath));
   return requiredSelectors.every(selector => {
     let proven = false;
     for (const outcome of relevant) {
       const executed = outcome.args.filter(arg => !arg.startsWith('-')).map(normalizeSelector);
       if (outcome.status === 'passed') {
-        if (executed.some(candidate => selectorCoveredBy(candidate, selector))) proven = true;
+        const coversScope = executed.some(candidate => selectorCoveredBy(candidate, selector));
+        const observed = outcome.caseEvidenceRequested || outcome.passedCaseSelectors !== undefined
+          ? coversScope && (outcome.passedCaseSelectors ?? [])
+            .some(candidate => selectorCoveredBy(selector, normalizeSelector(candidate)))
+          : coversScope;
+        if (observed) proven = true;
       } else if (executed.some(candidate => selectorCoveredBy(candidate, selector) || selectorCoveredBy(selector, candidate))) {
         proven = false;
       }
     }
     return proven;
   });
+}
+
+/** Compare observed case verdicts with the original contract. Missing verdicts prove nothing. */
+export function partitionBugReplayFailure(
+  bug: BugTicket,
+  step: Step,
+  failure: Pick<AttemptFailure, 'code' | 'category'>,
+  outcomes: readonly TestOutcome[],
+): { repeated: string[]; independent: string[]; passedOriginal: string[] } | undefined {
+  const required = replayableTestSelectors(bug.verificationContract.testSelectors).map(normalizeSelector);
+  if (bug.verificationContract.verificationStepId !== step.id || required.length === 0 ||
+    !required.every(hasExecutableTestPath)) return undefined;
+  const verdicts = new Map<string, 'passed' | 'failed'>();
+  for (const outcome of outcomes) {
+    if (outcome.stepType !== step.type || !['passed', 'failed'].includes(outcome.status)) continue;
+    for (const selector of outcome.passedCaseSelectors ?? []) verdicts.set(normalizeSelector(selector), 'passed');
+    for (const selector of outcome.failedCaseSelectors ?? []) verdicts.set(normalizeSelector(selector), 'failed');
+  }
+  const coversOriginal = (selector: string) => required.some(original => selectorCoveredBy(original, selector));
+  const repeated: string[] = [];
+  const independent: string[] = [];
+  const passedOriginal: string[] = [];
+  for (const [selector, verdict] of verdicts) {
+    if (!hasExecutableTestPath(selector)) continue;
+    if (verdict === 'passed') {
+      if (coversOriginal(selector)) passedOriginal.push(selector);
+    } else if (!coversOriginal(selector)) {
+      independent.push(selector);
+    } else {
+      if (bug.failure.category !== failure.category || bug.failure.code !== failure.code) return undefined;
+      repeated.push(selector);
+    }
+  }
+  if (repeated.length === 0 && independent.length === 0) return undefined;
+  return { repeated: repeated.sort(), independent: independent.sort(), passedOriginal: passedOriginal.sort() };
 }
 
 /** Accepts either this execution's exact replay or an earlier append-only proof from the same CR chain. */
@@ -113,7 +155,9 @@ export function passedTestSelectors(step: Step, outcomes: readonly TestOutcome[]
   return canonicalStrings(
     outcomes
       .filter((outcome) => outcome.status === 'passed' && outcome.stepType === step.type)
-      .flatMap((outcome) => outcome.args.filter((arg) => !arg.startsWith('-'))),
+      .flatMap(outcome => outcome.caseEvidenceRequested || outcome.passedCaseSelectors !== undefined
+        ? outcome.passedCaseSelectors ?? []
+        : outcome.args.filter(arg => !arg.startsWith('-'))),
     normalizeSelector,
   );
 }
@@ -123,7 +167,8 @@ function selectorCoveredBy(executed: string, required: string): boolean {
   const executionPath = testSelectorPath(executed);
   const requiredPath = testSelectorPath(required);
   if (executed !== executionPath) {
-    return executed === required || required.startsWith(`${executed}::`) || required.startsWith(`${executed} > `);
+    return executed === required || required.startsWith(`${executed}::`) ||
+      required.startsWith(`${executed} > `) || required.startsWith(`${executed}[`);
   }
   return executionPath === requiredPath ||
     requiredPath.startsWith(`${executionPath.replace(/\/$/u, '')}/`);

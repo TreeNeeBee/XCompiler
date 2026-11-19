@@ -32,10 +32,10 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-async function fixture(reasoningOnlyCalls = 0) {
+async function fixture(reasoningOnlyCalls = 0, kind: 'ticket-acceptance' | 'problem-confirmation' = 'ticket-acceptance') {
   const calls: Array<{ messages: ChatMessage[] }> = [];
   const subjectId: string = createObjectId();
-  const verdict = { kind: 'ticket-acceptance', decision: 'accept', reason: 'Candidate satisfies its accepted contract', evidenceRefs: [subjectId], propagation: null };
+  const verdict = kind === 'problem-confirmation' ? { kind, decision: 'dismissed', reason: 'Reviewed current candidate', evidenceRefs: [subjectId], ticketType: null, targetStepId: null } : { kind: 'ticket-acceptance', decision: 'accept', reason: 'Candidate satisfies its accepted contract', evidenceRefs: [subjectId], propagation: null };
   const server = createServer((request, response) => {
     let body = '';
     request.on('data', chunk => { body += String(chunk); });
@@ -57,14 +57,14 @@ async function fixture(reasoningOnlyCalls = 0) {
     pools: { ...Object.fromEntries(DEFAULT_MODEL_POOLS.map(pool => [pool, ['local']])), reporter: ['local'] }, fallbacks: [],
   }, agent: {} }));
   const { config } = await loadConfigWithPath(configPath);
-  const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'review-fixture', contentMode: 'full' });
+  const audit = new AuditLogger({ root: container.root, stateRoot: container.state.root, command: 'review-fixture', contentMode: kind === 'problem-confirmation' ? 'redacted' : 'full' });
   await audit.start();
   const recordReplay = createRuntimeRecordReplay(config, container.control, { mode: 'off' });
   const router = new LLMRouter(config, audit, undefined, undefined, undefined, async () => ({ ok: true, latencyMs: 0, detail: 'local endpoint' }), recordReplay);
   return { calls, verdict, router, container, audit, input: {
     config: config.rules, container, recordReplay, router, audit, logicalRequestId: randomUUID(),
     actor: { actorId: createObjectId(), role: 'integration-test-engineer' as const, roleVersion: roleProfile('integration-test-engineer').version, modelPool: 'reporter' },
-    payload: { kind: 'ticket-acceptance' as const, projectId: createObjectId(), phaseId: createObjectId(), subjectId, candidateIdentity: 'a'.repeat(40), evidence: [{ ref: subjectId, content: 'Accepted contract and captured candidate delivery' }] },
+    payload: { kind, ...(kind === 'problem-confirmation' ? { confirmationMode: 'change-request-contradiction' as const } : {}), projectId: createObjectId(), phaseId: createObjectId(), subjectId, candidateIdentity: 'a'.repeat(40), evidence: [{ ref: subjectId, content: 'Accepted contract and captured candidate delivery' }] },
   } };
 }
 
@@ -134,6 +134,47 @@ describe('Runtime reporter acceptance', () => {
       .rejects.toMatchObject({ details: { field: 'ticket_review_failure_unproven' } });
     expect(current.calls).toHaveLength(1);
   });
+
+  it.each(['current', 'legacy', 'tampered-input', 'tampered-attempt', 'no-terminal', 'has-response'] as const)(
+    'retries a failed diagnosis from retained source evidence without changing the round (%s)', async mode => {
+      const current = await fixture(1, 'problem-confirmation');
+      current.input.payload.evidence[0]!.content = 'token = [REDACTED]\n    return value\n';
+      await expect(judgeRuntimeTicketReview(current.input)).rejects.toMatchObject({ failure: { code: 'all_providers_failed' } });
+      const ledger = current.container.state.abs('audit', 'audit.jsonl');
+      const entries = (await fs.readFile(ledger, 'utf8')).trimEnd().split('\n').map(line => JSON.parse(line));
+      if (mode !== 'current') {
+        // Bytes produced by the former logger: it consumed the escaped newline after the marker.
+        for (const event of entries) {
+          const material = event.messageId === 'llm.business_request_input' ? event.data.input
+            : event.messageId === 'llm.business_request_attempt' ? event.data.request : undefined;
+          if (!material) continue;
+          for (const message of material.messages) {
+            message.content = message.content.replace('token = [REDACTED]\\n    return', 'token = [REDACTED]    return');
+          }
+        }
+      }
+      if (mode === 'tampered-input') entries.find(e => e.messageId === 'llm.business_request_input').data.input.messages[0].content += 'tampered';
+      if (mode === 'tampered-attempt') entries.find(e => e.messageId === 'llm.business_request_attempt').data.request.messages[0].content += 'tampered';
+      if (mode === 'has-response') entries.push({ ts: new Date().toISOString(), kind: 'llm.response', messageId: 'llm.provider_response',
+        data: { logicalRequestId: current.input.logicalRequestId } });
+      await fs.writeFile(ledger, entries.filter(e => mode !== 'no-terminal' || e.messageId !== 'audit.llm_error').map(e => JSON.stringify(e)).join('\n') + '\n');
+      const previous = await fs.readFile(ledger, 'utf8');
+      await expect(judgeRuntimeTicketReview(current.input)).rejects.toThrow();
+      expect(current.calls).toHaveLength(1);
+      const retry = { ...current.input, retryFailedRequestId: current.input.logicalRequestId };
+      if (mode !== 'current' && mode !== 'legacy') {
+        await expect(judgeRuntimeTicketReview(retry)).rejects.toThrow();
+        expect(current.calls).toHaveLength(1);
+        await expect(fs.readdir(current.container.state.abs('llm', 'business-inputs', 'ticket-review-retries'))).rejects.toMatchObject({ code: 'ENOENT' });
+        return;
+      }
+      expect(await judgeRuntimeTicketReview(retry)).toEqual(current.verdict);
+      expect(current.calls).toHaveLength(2);
+      expect(current.calls[1]!.messages).toEqual(current.calls[0]!.messages);
+      expect((await fs.readFile(ledger, 'utf8')).startsWith(previous)).toBe(true);
+      expect(await judgeRuntimeTicketReview(current.input)).toEqual(current.verdict);
+      expect(current.calls).toHaveLength(2);
+    });
 
   it('reads immutable candidate blobs, including symlink text, and preserves missing artifact evidence', async () => {
     const run = promisify(execFile);

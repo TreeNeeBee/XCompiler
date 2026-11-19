@@ -248,7 +248,7 @@ describe('Runtime initializes the configured knowledge store', () => {
     }
   });
 
-  it.each(['needs-evidence', 'dismissed', 'interrupted-recheck'] as const)('resumes a %s CR diagnosis with original selectors and immutable candidate artifacts', async mode => {
+  it.each(['needs-evidence', 'dismissed', 'interrupted-recheck', 'failed-model-retry'] as const)('resumes a %s CR diagnosis with original selectors and immutable candidate artifacts', async mode => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-cr-diagnosis-replay-')));
     const envKeys = ['XC_PATH', 'XCOMPILER_PATH', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
     const previous = envKeys.map(key => process.env[key]);
@@ -261,6 +261,11 @@ describe('Runtime initializes the configured knowledge store', () => {
         const input = JSON.parse(body) as { model: string; messages: Array<{ content: string }> };
         const payload = JSON.parse(input.messages.at(-1)!.content) as TicketReviewPayload;
         calls.push({ model: input.model, payload });
+        if (mode === 'failed-model-retry' && calls.length === 1) {
+          response.writeHead(503, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: { message: 'Temporary test endpoint failure' } }));
+          return;
+        }
         const proof = payload.evidence.find(item => item.ref.startsWith('verification-replay:'));
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({ model: input.model, choices: [{ index: 0, finish_reason: 'stop',
@@ -380,9 +385,24 @@ describe('Runtime initializes the configured knowledge store', () => {
         exec: noOtherExecution, runProgram: noOtherExecution, installDeps: noOtherExecution,
       }));
       const runAttempt = vi.spyOn(DomainAttemptRunner.prototype, 'run').mockRejectedValue(new Error('Stop after replaying the retained review'));
-      await runRunCommand({ workspace: container.root, planArg: planPath, configPath, debugWikiPath: path.join(root, 'debug-wiki'),
-        io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off',
-        recheckCrDiagnosisId: mode === 'dismissed' ? review!.id : undefined });
+      const command = { workspace: container.root, planArg: planPath, configPath, debugWikiPath: path.join(root, 'debug-wiki'),
+        io: { ...silentRuntimeIO, permissionPolicy: 'auto' }, recordReplayMode: 'off' } as const;
+      await runRunCommand({ ...command, recheckCrDiagnosisId: mode === 'dismissed' || mode === 'failed-model-retry' ? review!.id : undefined });
+      if (mode === 'failed-model-retry') {
+        await repository.load();
+        const failedPhase = await repository.read(phase.id);
+        if (failedPhase.objectType !== 'phase') throw new Error('Missing Phase');
+        const saved = failedPhase.problemReviews[0]!;
+        const failedRequestId = saved.rounds[1]!.requestId;
+        expect(saved.rounds).toHaveLength(2);
+        expect(saved.rounds[1]!.verdict).toBeUndefined();
+        expect(await runRunCommand(command)).toMatchObject({ status: 'error', message: expect.stringContaining('ticket_review_unfinished_request') });
+        expect(await runRunCommand({ ...command, retryCrDiagnosisRequestId: randomUUID() })).toMatchObject({ status: 'error', exitCode: 7 });
+        expect(calls).toHaveLength(1);
+        await runRunCommand({ ...command, retryCrDiagnosisRequestId: failedRequestId });
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toEqual(calls[0]);
+      }
       if (mode !== 'needs-evidence') {
         expect(runAttempt).not.toHaveBeenCalled();
         // A plain restart retains the stop; it does not send the review or consume an S4 attempt.
@@ -399,7 +419,7 @@ describe('Runtime initializes the configured knowledge store', () => {
       expect(await gitAt(workspace.root, 'rev-parse', 'HEAD')).toBe(mainRevision);
       expect(await workspace.readFile(testFile)).toBe(mainText);
 
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(mode === 'failed-model-retry' ? 2 : 1);
       expect(calls[0]).toMatchObject({ model: 'original-verifier', payload: {
         kind: 'problem-confirmation', subjectId: review!.id, candidateIdentity: revision,
       } });

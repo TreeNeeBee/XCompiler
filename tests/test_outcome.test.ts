@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { collectTestOutcomes } from '../src/application/execution/test_outcome.js';
+import type { ToolCallRecord } from '../src/agents/executor.js';
+import { collectTestOutcomes, collectVerificationRuns, newVerificationRuns, verificationRunsWithinScope } from '../src/application/execution/test_outcome.js';
 
 describe('collectTestOutcomes', () => {
   it('uses the runner structured selectors and effective arguments', () => {
@@ -36,6 +37,21 @@ describe('collectTestOutcomes', () => {
     expect(outcome?.args).toEqual(['tests/unit']);
     expect(outcome?.failedTests).toEqual([]);
   });
+
+  it('preserves the requested case-evidence boundary and refuses malformed or conflicting pass claims', () => {
+    const selector = 'tests/integration/test_record.py::test_original';
+    const cases = (result: unknown) => collectTestOutcomes([{
+      tool: 'run_tests', ok: false,
+      data: { timedOut: false, exitCode: 1, caseEvidenceRequested: true, caseResults: result },
+    }], 'INTEGRATION_TEST')[0]!;
+    for (const invalid of [undefined, { passed: [selector] }, { passed: [selector, true], failed: [] }]) {
+      expect(cases(invalid).caseEvidenceRequested).toBe(true);
+      expect(cases(invalid).passedCaseSelectors).toBeUndefined();
+    }
+    expect(cases({ passed: [selector], failed: [selector] })).toMatchObject({
+      passedCaseSelectors: [], failedCaseSelectors: [selector],
+    });
+  });
 });
 
 describe('collectTestOutcomes by what was executed', () => {
@@ -65,5 +81,65 @@ describe('collectTestOutcomes by what was executed', () => {
       data: { exitCode: 2, timedOut: false },
     }], 'HIGH_LEVEL_DESIGN');
     expect(outcomes).toEqual([]);
+  });
+});
+
+describe('independent verification evidence', () => {
+  const receipt = (selectors: string[], cwd = '.'): ToolCallRecord => ({
+    callId: 'test-run', tool: 'run_tests', ok: true,
+    data: { exitCode: 0, timedOut: false, testScope: { runner: 'pytest', cwd, selectors } },
+  });
+
+  const executedReceipt = (selectors: string[], cwd = '.'): ToolCallRecord => ({
+    ...receipt(selectors, cwd),
+    data: { exitCode: 0, timedOut: false, testScope: { runner: 'pytest', cwd, selectors, executedSelectors: selectors } },
+  });
+
+  it('uses structured scope and keeps a successful unscoped run distinct from no executed tests', () => {
+    const command = receipt(['./tests/test_b.py', 'tests/test_a.py', 'tests/test_b.py']);
+    const ignored = { ...command, ok: false, executionStatus: 'permission-blocked' as const };
+    expect(collectVerificationRuns([ignored])).toEqual([]);
+    expect(collectVerificationRuns([command])).toEqual([{
+      callId: 'test-run', runner: 'pytest', cwd: '.', selectors: ['tests/test_a.py', 'tests/test_b.py'], exitCode: 0,
+    }]);
+    const executed = executedReceipt(['tests/test_new.py']);
+    expect(collectVerificationRuns([executed], 0)).toEqual([{
+      callId: 'test-run', runner: 'pytest', cwd: '.', selectors: ['tests/test_new.py'], exitCode: 0,
+    }]);
+    const unscoped = { ...command, data: { exitCode: 0, timedOut: false }, summary: 'Fake passing test scope' };
+    expect(collectVerificationRuns([command, unscoped])).toBeUndefined();
+  });
+
+  it('requires coverage outside the union of prior scopes and ignores aliases, narrower selections, and presentation flags', () => {
+    const before = collectVerificationRuns([
+      receipt(['tests/test_a.py', 'tests/package/']),
+      receipt(['tests/test_b.py']),
+    ]);
+    const repeated = collectVerificationRuns([{
+      ...receipt(['./test_a.py::test_one', 'test_b.py', 'package/test_c.py'], 'tests/./'),
+      args: { args: ['-vv', '--reporter=json'] },
+    }])!;
+    expect(newVerificationRuns(before, repeated)).toEqual([]);
+    const direct = collectVerificationRuns([{
+      ...receipt(['test_other.py'], 'tests'), callId: 'direct-test', tool: 'run_program',
+      args: { args: ['-m', 'pytest', 'test_other.py'] },
+    }])!;
+    expect(newVerificationRuns(before, direct)).toEqual(direct);
+    expect(newVerificationRuns(undefined, direct)).toEqual([]);
+  });
+
+  it('uses only scopes entirely within the target even when a single receipt runs more tests', () => {
+    const scope = ['tests/owned/'];
+    const unrelated = collectVerificationRuns([executedReceipt(['other/test_unrelated.py'], 'tests')])!;
+    const broad = collectVerificationRuns([executedReceipt(['tests'])])!;
+    const mixed = collectVerificationRuns([executedReceipt(['owned/test_valid.py', 'other/test_unrelated.py'], 'tests')])!;
+    const skipped = collectVerificationRuns([receipt(['owned/test_new.py'], 'tests')])!;
+    expect(verificationRunsWithinScope(unrelated, scope)).toEqual([]);
+    expect(verificationRunsWithinScope(broad, scope)).toEqual([]);
+    expect(verificationRunsWithinScope(skipped, scope)).toEqual([]);
+    expect(verificationRunsWithinScope(mixed, scope)).toEqual([
+      { ...mixed[0], selectors: ['owned/test_valid.py'], executedSelectors: ['owned/test_valid.py'] },
+    ]);
+    expect(mixed[0]!.selectors).toHaveLength(2);
   });
 });

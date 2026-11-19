@@ -53,17 +53,19 @@ V 模型行为：
 - `HIGH_LEVEL_DESIGN` 定义系统级接口、外部 API、第三方库选型和依赖确认。
 - `DETAILED_DESIGN` 定义模块内部结构和具体实现方案。
 - Ticket 类型固定为 `epic`、`story`、`task`、`bug`、`enhancement`、`change-request`。展示名如 `P1-S004` 只用于阅读，所有关系都使用全局 ID。
-- 测试或执行失败创建 Bug，并路由到配对的上游 Step；完成度、对齐度或覆盖指标不足创建 Enhancement。单元测试的行与分支覆盖率由 Runtime 测量（TypeScript 用 Vitest V8 覆盖率，Python 用 pytest-cov，Python 工程的依赖固定包含它），不采信模型自报；没有得到测试结论的运行（如 pytest 用法错误、未收集到用例、声明的测试文件尚未写出）不算测试失败，由本 Step 自己修正。
+- S1～S4 负责本步交付物和配对基线。S1～S3 默认验证本步交付物和基线资产，包含上游返修后的交付，配对验证 Step 执行基线。显式要求执行的门禁照常执行。S4 还运行单元测试，S5～S8 执行冻结的配对基线及本步补充测试。
+- S5～S8 的验证 Actor 为已确认的测试或产品缺陷建 Bug。S1～S4 把本步失败留在当前 Ticket，涉及其他 Step 时通过 CR 交接。交付物不完整或对齐不足可以建 Enhancement。单元测试的行与分支覆盖率由 Runtime 测量，TypeScript 使用 Vitest V8，Python 使用 pytest-cov。pytest 用法错误、未收集到用例或声明的测试文件尚未写出等情况由本步处理。
 - 失败归属发现它的 Step，目标由 V 模型配对关系决定，不继承当时恰好活跃的 CR 链起点。
 - 验证 Step 的门禁同时跑配对基线和该 Step 自己撰写的补充测试。补充目录里不是测试的文件由该 Step 在执行中修正，不会在它运行之前就拦截尝试。缺陷只落在补充里就留在写它的 Step——交给配对源等于给它一个无权写入的文件；只要有一个失败用例属于基线，整条 finding 仍回到配对源。
 - 两条 CR 传导同一跳（相同源 Step、相同目标 Step、相同起因失败）时并入已承载该跳的那条，不各自开链。
 - 同一失败反复出现时 Ticket 会停止，而不是耗尽预算，停止信息写明是哪个失败。是否「同一个失败」由结构化签名判定：签名只含失败本身（失败用例、失败类型、原因的稳定部分），不含工具命令行、运行器分配的临时目录、地址或计数器——这些在两次完全相同的失败之间也会变。
 - 上游修复先形成 CR，携带契约差异、影响 Step/产物、实施方案、changelist、commit 和验证门禁；下游只实施增量变化。
-- CR 下游失败会创建关联 Bug 并阻塞父 CR；配对源 Step 修复和子 CR 验证通过后，只恢复父 CR 尚未完成的应用步骤。
-- Bug 只有在开票的那个失败于观察到它的 Step 重跑并通过后才关闭。每张 Bug 携带验证契约（该 Step 与要重放的选择器），满足时追加不可变的验证记录。未满足则**拒绝关闭而非抛错**：未完成的纠正链让 Bug 保持打开、Story 保持阻塞，下一条到达该门禁的链仍能把它做完。
-- Bug 只有在所有受影响 CR 门禁通过、方案被验证并写入 Debug Wiki 后才关闭。失败的历史方案会标记为待复核。
-- 每一次失败报告都保留为独立 Ticket。PM 在分派前比对已注册的 Bug，把结构性重复（目标 Step 相同、失败身份相同）挂到提交最早的那张上并记录路由决策。被挂起的重复票不参与调度，并随原始票进入其终态。
+- CR 的下游验证发现缺陷时可以创建关联 Bug，父 CR 等待纠正工作完成。每张 CR 的目标 Step 通过自身门禁后提交候选，由原 reporter 独立验收并决定是否向下游传导。驳回会重开原 CR，补交需要修改受影响的产物，或提供范围内新增且实际通过的测试证据。重启按请求身份恢复已记录的交付和裁决。
+- 修复后的 Bug 等关联 CR 关闭和修复候选完成集成后，由原 reporter 在原 Step 按记录的范围复验。关票要求完整通过的评估。由 Phase 交付门禁发现的 Bug 还要复跑原门禁。运行时记录 pytest 或 Vitest 实际观测到的逐用例结果。原失败再次出现就重开原票，独立失败另建关联 Bug。原票保留已观测到的通过用例，等新缺陷修复且完整复验通过后再关闭。
+- PM 在分派前比对独立提交的 Bug，把目标 Step 和失败身份都相同的重复票挂到最早仍有效的原票上，并记录路由决策。原票进入终态后，PM 处置重复票。
 - CR 携带开链时确定的传导范围，因此仅修改配对基线测试的修复可直达其验证 Step，不必逐跳走完中间各阶段。
+- PM 从持久化票据生成串行队列，一个 Step 可处理多张票。已就绪的 Bug 复验优先于同一步的常规工作。执行者名额不足时，票据留队，PM 继续检查其他就绪工作。重试预算从开始执行时计入。原 reporter 复验时遇到框架异常，证据保留在原 Bug，尝试次数和执行名额归还。
+- 指派记录当前处理者，reporter 负责验收和关闭。每次交接保留执行者、角色、原因和关联关系的不可变记录。
 - 已完成阶段的 Debug 必须提供真实 patch/rewrite 或成功验证证据。
 - 网络/API 调用失败是正式门禁：项目 API 失败时必须修复或切换可用 API，不能跳过或掩盖。
 
@@ -164,6 +166,9 @@ xcompiler bootstrap -r path/to/XCompiler -i self_req.md --yes
 | `xcompiler run <phasePlan.json>` | 执行当前阶段计划 |
 | `xcompiler run --debug-wiki-path <dir>` | 复用并更新共享分层 Debug wiki 路径 |
 | `xcompiler run --change-request <file>` | 向进行中的 Phase 提交契约变更，然后继续执行 |
+| `xcompiler run --retry-cr-review <request-id>` | 重试当前 CR 交付中已有确证的模型调用失败 |
+| `xcompiler run --recheck-cr-diagnosis <review-id>` | 补取候选证据，由原验证者复核一次被驳回的 CR 诊断 |
+| `xcompiler run --retry-cr-diagnosis <request-id>` | 重试当前 CR 诊断轮次中已有确证的模型调用失败 |
 | `xcompiler load <name.xc>` | 读取工程配置/进度并继续 |
 | `xcompiler append <name.xc> -i <file>` | 在已有工程上追加新需求 |
 | `xcompiler evolve -w <workspace> -i <file>` | 编译并执行一次增量变更 |
@@ -201,16 +206,23 @@ xcompiler run --change-request change.yaml
 
 文件在任何 Step 或模型运行之前校验，`--dry-run` 校验后即停止。变更随后成为普通的 Change Request：从 `target` 开始，经过之后每个 V 模型 Step 和阶段门禁，每个 Step 只修改列表中归自己所有的产物。只有进行中的 Phase 才能接收；`id` 已被不同内容使用时会报错，不会覆盖。
 
+### 恢复 CR 验收或诊断
+
+对已经记录了终止性模型调用失败的当前 CR 交付，使用 `xcompiler run --retry-cr-review <request-id>`。对被驳回的首轮诊断，使用 `xcompiler run --recheck-cr-diagnosis <review-id>`，由原验证者根据保留的候选、原失败范围和重新执行的证据复核一次。
+
+若诊断模型调用有确证的终止性服务失败且未产生响应候选，使用 `xcompiler run --retry-cr-diagnosis <request-id>`，参数是失败请求的逻辑 ID。运行时绑定原候选、原 reporter 和当前未裁决的轮次，每次确证失败允许显式重试一次。普通 `run` 按已保存的请求身份恢复。
+
 ## 默认运行时
 
 - **LLM**：默认 OpenRouter Free mode。key 缺失或无效时会输出 provider、model、base URL、HTTP 状态/响应体，并明确提示 `OPENROUTER_API_KEY`。
 - **LLM 路由**：角色专用 provider 链、XCompiler 自动维护的动态评分、`llm_scores_user.yaml` 用户覆盖，以及 `tags: [cluster]` 聚合路由兜底评分带。
+- **执行上下文**：Runtime 按当前 provider 的窗口调整工具输出片段和执行证据，优先保留任务约束和失败证据。需要进一步压缩时记录压缩情况，原始审计记录继续保留。
 - **语言**：支持 Python 与 TypeScript 的工程生成、测试、运行和入口检查。
 - **界面语言与提示翻译**：`locale`（`en`/`zh`）是用户的语言，CLI、提问、报告以及写进工程的自然语言交付物（文档、报告、提交信息、生成代码中的注释）都用它。模型默认读同一种语言；设为 `prompt_translate: on` 后模型读英文：提示模板、Rule、工具描述和反馈直接换成英文版本，用户自己写的文字（需求、自定义回答、补充需求）在输入时由模型译成英文，模型给出的问题、结论和 Gate 2 计划预览译回用户语言后再显示。topic.md 保持用户语言；规划读的英文 topic 由这些译文拼出，之后再读取时只翻译用户改过的节。译文缓存在工程状态目录；配置了 `llm.pools.translation` 时在该池翻译，否则用 management 池；翻译服务不可用时保留原文并给出警告。`locale: en` 时该开关不起作用。
 - **需求接收**：`build` 先问两道固定选择题：开发语言，以及交付形态（可运行程序、库或两者兼有）。需求原文或已有项目已经确定的，不再询问。之后每次只问一道由模型生成的问题，每题都基于此前全部回答。模型每轮还会按 XCompiler 自身的能力边界判断需求能否交付，依据是：已定的语言、交付形态、能用命令检查的验收方式，以及配置的沙箱。判断为无法交付时，会列出原因，由用户选择：接受模型建议的最接近的可交付范围、修改需求、仍按原需求继续，或取消。模型判定需求可交付且各维度均已澄清时，结束提问，同时列出交给规划按默认处理的事项（例如输出包含哪些字段），写入 topic.md 的“默认假设”一节，可在 Gate 1 修改。每道题都会重新发送此前确认的全部内容，所以澄清有上下文预算。预算用完，或连续几次回答都没有确定新内容时，模型不再提问，而是做最终评估，列出仍未确定或无法交付的内容，由用户选择：接受最接近的可交付范围、修改需求、按已确定的内容继续，或取消。因回答停滞触发时，还可以选择继续澄清。直接回车即选推荐的 A；回答中疑似凭据的内容在保存前会被替换。每道题都会显示已澄清的维度数、可交付判断和预算用量。回答随时保存，澄清中途中断的 build 会询问是否继续。topic.md 用 front matter（`xcompiler-topic: 1`、`language`、`projectType`）记录这两项决定；规划和 `--topic` 重跑都只读取澄清后的 topic，不再另外读取一份问答列表。
 - **Sandbox**：默认 `subprocess` 且隔离宿主环境变量（`inherit_env: false`）；可切换 `docker` 获得可执行的网络/资源隔离。subprocess 无法兑现 `network: off`，因此该组合会明确报错。
 - **Audit**：每次运行写入人类可读日志，并持久化带 correlation/causation ID 的领域 AuditEvent 和 Log 对象。
-- **Debug wiki**：Debugger 处理 Bug Ticket 时会基于压缩后的 `DebugBrief` 检索 LLM-wiki 风格的历史修复经验。wiki 是分层 Markdown 知识库：随包发布的 `wiki/system` 策略页、随包发布的 `wiki/agent` calibration 页、本地 `wiki/external` 真实 Bug 解决方案页。Runtime 会重新生成 `index.md` 供人工审阅、`index.json` 供检索使用；`log.md` 则保留为本地追加式操作流水，不由索引或摘要重建。默认复制到 XCompiler 路径（设置 `XC_PATH` 时为 `$XC_PATH/.xcompiler/debug-wiki`，否则为包/仓库根目录；单文件可执行程序为其所在目录），也可用 `--debug-wiki-path <dir>` 指定共享根目录。Bug 的全部 CR 验证通过后才把 `bugResolutionPlan` 写入 `external`；复用方案失败会通过 feedback overlay 标为 `needs_review`，后续成功修复会创建或纠正 external 条目。
+- **Debug wiki**：Bug 修复通过简明的 `DebugBrief` 检索历史方案。分层知识库包含随包发布的 `wiki/system` 策略、`wiki/agent` 校准页和本地 `wiki/external` 已验证修复经验。Runtime 重新生成供审阅的 `index.md` 和供检索的 `index.json`，并保留本地追加式 `log.md`。使用 `--debug-wiki-path <dir>` 指定共享根目录。复用失败的方案会标为 `needs_review`。
 - **Record/Replay**：针对 HTTP、LLM 和 Tool 的外部数据提供记录与重放；当前工程的代码、构建和测试始终真实执行，Replay 只提供外部 fixture，不复用旧进程退出码。Phase 交付门禁中的真实用户场景会关闭 Replay。
 - **Rule**：每个模型请求带上代码按角色、工作和语言绑定的 Rule（`rules/*.yaml`，由编译进程序的清单校验），再按各条的适用范围过滤：项目模式与类型、工具、产出路径、失败类别。本地修改存放在 `<XC_PATH 或 ~/.xc>/rules-local`（可用 `XC_RULES_LOCAL` 覆盖）；所修改的基础列表升级后，差异标为待审并停止生效。每个请求的 Rule 选择记录为不可变快照，Rule 正文按摘要只存一份。
 - **Agent Skills**：内置文件、Web、测试、Debug、Record/Replay、Debug Wiki、依赖、评审、安全、性能、CR 和交付工作流。Planner 只读取 `name + description`，Run 只激活所选 Skill 的正文与按需资源；Plugin API 4 可引入标准 Skill 目录，但不能绕过 Runtime 权限、路径、Ticket 或门禁。
@@ -261,8 +273,8 @@ LLM 路由配置位于 `config.yaml -> llm.*`。
 | [docs/acp.md](docs/acp.md) | ACP Code Agent Adapter 协议说明 |
 | [docs/agent_skills.md](docs/agent_skills.md) | Agent Skills 标准、内置目录、安全边界与 Plugin API 4 |
 | [docs/XCompiler_design.md](docs/XCompiler_design.md) | 核心设计与 V 模型概念 |
-| [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | 架构、归属、生命周期与目录布局等必须保持的工程约束 |
 | [docs/XCompiler_project_constraints.md](docs/XCompiler_project_constraints.md) | 当前架构、PM/Ticket 生命周期、工作区与发布约束 |
+| [0.4.0 功能状态](docs/features/0.4.0/README.md) | 已实现功能、回归验证和设计索引 |
 | [docs/plugin_api.md](docs/plugin_api.md) | Plugin API、生命周期 hooks、tools、skills |
 | [docs/versioning.md](docs/versioning.md) | 版本源、release 脚本、tag 策略 |
 | [docs/self_bootstrap.md](docs/self_bootstrap.md) | 自举开发与 qualification gates |

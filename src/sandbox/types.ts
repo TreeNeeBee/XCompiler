@@ -49,6 +49,19 @@ export interface ExecExtra {
   progressWatch?: ExecProgressWatch;
 }
 
+export interface TestCaseResults {
+  passed: string[];
+  failed: string[];
+}
+
+export interface TestRunResult extends ExecResult {
+  caseResults?: TestCaseResults;
+}
+
+export interface TestRunExtra extends ExecExtra {
+  capturePytestCases?: boolean;
+}
+
 export interface SandboxBuildOptions {
   /** Regenerate the TypeScript lockfile after a controlled manifest change. */
   refreshLockfile?: boolean;
@@ -58,6 +71,8 @@ export interface SandboxBuildOptions {
 export interface Sandbox {
   /** 实现标识，便于审计与日志区分。 */
   readonly kind: 'subprocess' | 'docker';
+  /** Workspace root as seen by commands in a container. Host processes use the Workspace root. */
+  readonly guestWorkspaceRoot?: string;
 
   /**
    * 构建/复用环境。
@@ -86,7 +101,7 @@ export interface Sandbox {
    *  - Python：`python -m pytest <args>`。
    *  - TypeScript：`npm test`（Vitest）。
    */
-  runTests(args?: string[], extra?: ExecExtra): Promise<ExecResult>;
+  runTests(args?: string[], extra?: TestRunExtra): Promise<TestRunResult>;
 
   /**
    * 安装额外依赖（不写入依赖清单）。

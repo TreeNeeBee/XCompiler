@@ -10,7 +10,7 @@ import { ProjectStateService } from '../src/application/project_management/proje
 import { ProjectController, type ScheduledWork } from '../src/application/project_management/project_controller.js';
 import { workModeFor } from '../src/application/project_management/work_scheduler.js';
 import { TicketRegistrationService } from '../src/application/project_management/ticket_registration_service.js';
-import { createObjectId } from '../src/domain/identity/object_id.js';
+import { createObjectId, type ObjectId } from '../src/domain/identity/object_id.js';
 import { createObjectEnvelope, reviseObjectEnvelope } from '../src/domain/objects/object_envelope.js';
 import { materializeProjectGraph } from '../src/application/planning/project_graph_persistence_service.js';
 import { TicketSchema } from '../src/domain/tickets/ticket.js';
@@ -70,7 +70,7 @@ describe('PM WorkScheduler', () => {
     expect(resumed && workModeFor(resumed.ticket)).toBe('debug');
   });
 
-  it('offers a delivered Bug to its original verifier instead of repeating its repair', async () => {
+  it.each([false, true])('offers a delivered Bug to its original verifier (same-Step CR queued: %s)', async (withChangeRequest) => {
     // A Bug parked for its verification is done, not blocked. Leaving it schedulable handed the same
     // Step the same repair again the moment it finished: a live run cycled one Bug through
     // pending → in_progress three times, and the Ticket never propagated because each cycle
@@ -95,19 +95,14 @@ describe('PM WorkScheduler', () => {
       correlationId: createObjectId(),
       bugKind: 'test-failure',
     });
-    await fixture.registration.routeAndAssign(bug.id);
+    const assigned = await fixture.registration.routeAndAssign(bug.id);
     const workflow = new TicketWorkflow(fixture.repository);
-    await workflow.setSolution(bug.id, {
-      status: 'proposed',
-      approach: 'Restore the unit contract.',
-      rationale: 'Reproduced at the unit gate.',
-      changes: ['src/service.ts'],
-      verification: [],
-      updatedAt: new Date().toISOString(),
-    });
     const code = fixture.graph.steps.find((step) => step.type === 'CODE')!;
     const codeStep = await fixture.repository.read(code.id);
     if (codeStep.objectType !== 'step') throw new Error('CODE Step missing');
+    const repair = await fixture.controller.start({
+      phase: fixture.graph.phases[0]!, step: codeStep, ticket: assigned.ticket,
+    });
     const kpis = await Promise.all(codeStep.kpiIds.map((id) => fixture.repository.read(id)));
     const assessment = await new QualityAssessmentService(fixture.repository).assessStep({
       step: codeStep,
@@ -115,16 +110,67 @@ describe('PM WorkScheduler', () => {
         ? [{ metric: object.metric, value: 1 }]
         : []),
     });
-    await workflow.awaitVerification(bug.id, {
-      stepId: code.id,
-      qualityAssessmentId: assessment.id,
-    });
+    expect(await fixture.controller.completeCorrectiveWithoutPropagation({
+      work: repair, qualityAssessmentId: assessment.id, testOutcomes: [],
+      sourceChange: { summary: 'Restore the unit contract', entries: [], verification: [] },
+      solution: {
+        status: 'proposed', approach: 'Restore the unit contract.', rationale: 'Reproduced at the unit gate.',
+        changes: [], verification: [], updatedAt: new Date().toISOString(),
+      },
+    })).toBe(true);
 
-    const next = await fixture.controller.next(fixture.graph.phases[0]!.id);
+    let requestId: ObjectId | undefined;
+    if (withChangeRequest) {
+      // The Bug already occupies the sole verifier slot. A separate CR on this Step has no
+      // reservation and must remain queued until the reporter has run the existing acceptance.
+      await fixture.registration.routeAndAssign(bug.id, { forStepId: unitWork.step.id });
+      const source = await workflow.storyForStep(unitWork.step.id);
+      const request = await workflow.openChangeRequest({
+        changeKind: 'contract-change', creatorActorId, sourceTicketIds: [source.id],
+        triggerStepId: unitWork.step.id, sourceStepId: unitWork.step.id, targetStepId: unitWork.step.id,
+        propagationStepIds: [unitWork.step.id],
+        contractDelta: { summary: 'Clarify a separate verification report', before: ['Old summary'], after: ['New summary'],
+          affectedArtifacts: unitWork.step.outputs },
+        implementationPlan: ['Update the separate report'], verificationGate: ['The updated report passes'],
+      });
+      requestId = request.id;
+      const waitingBug = asObject(await fixture.repository.read(bug.id), 'ticket');
+      await fixture.repository.update(TicketSchema.parse({
+        ...waitingBug, ...reviseObjectEnvelope(waitingBug), dependencyTicketIds: [request.id],
+      }), waitingBug.state);
+      await expect(fixture.controller.resume(fixture.graph.phases[0]!.id)).rejects.toThrow(
+        new RegExp(`capacity: ${request.name}.*held by ${bug.name}`),
+      );
+      const prior = asObject(await fixture.repository.read(bug.id), 'ticket');
+      await fixture.repository.update(TicketSchema.parse({
+        ...prior, ...reviseObjectEnvelope(prior), dependencyTicketIds: waitingBug.dependencyTicketIds,
+      }), prior.state);
+    }
+    const repository = new DomainObjectRepository(new Workspace(fixture.root));
+    await repository.load();
+    const controller = new ProjectController(repository);
+    const next = await controller.resume(fixture.graph.phases[0]!.id);
 
     expect(next?.ticket.id).toBe(bug.id);
     expect(next?.step.id).toBe(bug.verificationContract.verificationStepId);
     expect(next && workModeFor(next.ticket)).toBe('verification');
+    if (requestId) {
+      expect(await repository.read(requestId)).toMatchObject({ attempts: 0, state: 'created', assignmentIds: [] });
+      const work = await controller.start(next!);
+      const gates = await Promise.all(work.step.kpiIds.map(id => repository.read(id)));
+      const proof = await new QualityAssessmentService(repository).assessStep({
+        step: work.step, metrics: gates.flatMap(gate => gate.objectType === 'kpi' ? [{ metric: gate.metric, value: 1 }] : []),
+      });
+      expect(await controller.verifyDeliveredBug({ work, qualityAssessmentId: proof.id, testOutcomes: [{
+        status: 'passed', stepType: work.step.type, tool: 'run_tests', args: ['tests/unit.test.ts'],
+        exitCode: 0, timedOut: false, failedTests: [], recordedAt: new Date().toISOString(),
+      }] })).toBe(true);
+      const story = await controller.resume(fixture.graph.phases[0]!.id);
+      expect(story?.ticket.id).toBe(unitWork.ticket.id);
+      await deliverPassing({ ...fixture, repository, controller }, await controller.start(story!));
+      expect((await controller.resume(fixture.graph.phases[0]!.id))?.ticket.id).toBe(requestId);
+      expect(await repository.read(requestId)).toMatchObject({ attempts: 0, state: 'created', assignmentIds: [] });
+    }
   });
 
   it('resumes an owned Ticket whose Step is pending before dispatching an earlier created CR', async () => {
@@ -440,7 +486,7 @@ describe('PM WorkScheduler', () => {
     expect(seen[0]!.deliveryState).not.toBe('closed');
   });
 
-  // dbc2excel-6 P1: delivery closed its delivery Ticket and Epic, then failed writing the Phase. Every
+  // a validation project P1: delivery closed its delivery Ticket and Epic, then failed writing the Phase. Every
   // later attempt tried to close those Tickets again, and closed -> in_progress is not a transition.
   it('resumes a delivery interrupted after its delivery Ticket and Epic were closed', async () => {
     const fixture = await setup();

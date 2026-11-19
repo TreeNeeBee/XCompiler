@@ -10,7 +10,7 @@ import { Workspace } from '../../src/workspace/workspace.js';
 import { twoPhasePlan } from '../support/two_phase_plan.js';
 
 /**
- * dbc2excel-6 P1: delivery wrote the Phase from a copy read before the development report linked itself to
+ * a validation project P1: delivery wrote the Phase from a copy read before the development report linked itself to
  * it. The registry refused the write, but the repository had already written that revision's file over the
  * registered one, so the stored Phase said "delivered" while the registry recorded "in_progress".
  */

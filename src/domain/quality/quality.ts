@@ -29,6 +29,18 @@ export const KpiObservationSchema = z.object({
 
 export type KpiObservation = z.infer<typeof KpiObservationSchema>;
 
+const VerificationRunSchema = z.object({
+  runner: z.enum(['vitest', 'pytest']),
+  cwd: z.string().min(1),
+  selectors: z.array(z.string().min(1)).min(1),
+  /** Selectors with positive test-body and teardown evidence from the runner. */
+  executedSelectors: z.array(z.string().min(1)).min(1).optional(),
+  exitCode: z.literal(0),
+  callId: z.string().min(1).optional(),
+}).strict();
+
+export type VerificationRun = z.infer<typeof VerificationRunSchema>;
+
 export const QualityAssessmentSchema = ObjectEnvelopeSchema.extend({
   objectType: z.literal('quality-assessment'),
   subject: ObjectRefSchema,
@@ -49,6 +61,8 @@ export const QualityAssessmentSchema = ObjectEnvelopeSchema.extend({
    */
   unavailableMetrics: z.array(z.string().min(1)).default([]),
   evidence: z.array(z.string().min(1)).default([]),
+  /** Retained Runtime-owned test scope. Absence means a historical assessment has no scope record. */
+  verificationRuns: z.array(VerificationRunSchema).optional(),
   /** Independent gate findings retained until each has been converted into its own Ticket. */
   findings: z.array(DeliveryGateFindingSchema).default([]),
 }).strict();

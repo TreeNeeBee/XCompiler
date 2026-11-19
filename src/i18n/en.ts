@@ -440,6 +440,7 @@ const messages: Messages = {
     optChangeRequest: 'YAML file with a contract change for the Phase in progress; it is opened before work resumes',
     optRetryCrReview: 'Explicitly retry a failed model request for the current delivery of a change request',
     optRecheckCrDiagnosis: 'Collect candidate evidence and recheck a dismissed CR diagnosis once with its original verifier',
+    optRetryCrDiagnosis: 'Explicitly retry a proven failed model request of the current CR diagnosis round',
     optDebugWikiPath: 'debug wiki root directory path (default <XCompiler path>/.xcompiler/debug-wiki)',
     optRecordReplay: 'external interaction mode: off, record, replay, auto, or refresh',
     optRecordReplayPath: 'workspace-relative record/replay fixture directory',
@@ -924,6 +925,7 @@ const messages: Messages = {
     crDiagnosisReviewUnresolved: (ticket, detail) => `${ticket} is waiting for a resolution of its diagnosis review. ${detail}`,
     evidenceStorageFailed: (ticket, detail) =>
       `Required evidence storage failed; ${ticket} is pending without a defect Ticket: ${detail}`,
+    frameworkExecutionFailed: (ticket, detail) => `XCompiler interrupted verification; ${ticket} still awaits acceptance: ${detail}`,
     permissionBlocked: (ticket, detail) => `Permission blocked; ${ticket} is pending without a defect Ticket: ${detail}`,
     infrastructureFailure: (ticket, detail) => `LLM infrastructure failure; ${ticket} is pending for retry: ${detail}`,
     gateAuditPermissionDenied: () => 'project audit permission denied',

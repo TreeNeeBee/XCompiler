@@ -13,7 +13,7 @@ import { ProjectContainer } from '../../src/workspace/project_container.js';
 import { twoPhasePlan } from '../support/two_phase_plan.js';
 
 /**
- * What a Phase's delivery commits, on real Git: dbc2excel-5 released `v2.0.0` with the root README and
+ * What a Phase's delivery commits, on real Git: a validation project released `v2.0.0` with the root README and
  * quickstart still describing P1, its manifest written into P1's functional-test document and listing gate
  * scratch output and test caches no checkout contains, and its development report written after the tag.
  */

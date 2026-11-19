@@ -9,6 +9,7 @@ import {
   calculateQuality,
   evaluateKpi,
   type QualityAssessment,
+  type VerificationRun,
 } from '../../domain/quality/quality.js';
 
 export interface QualityMetricInput {
@@ -24,6 +25,7 @@ export class QualityAssessmentService {
     step: Step;
     metrics: readonly QualityMetricInput[];
     evidence?: string[];
+    verificationRuns?: readonly VerificationRun[];
     gaps?: string[];
     findings?: readonly DeliveryGateFinding[];
     scope?: QualityAssessment['scope'];
@@ -76,6 +78,7 @@ export class QualityAssessmentService {
       gaps: [...missingFunctional, ...failedMetrics, ...(input.gaps ?? [])],
       unavailableMetrics,
       evidence: input.evidence ?? [],
+      ...(input.verificationRuns === undefined ? {} : { verificationRuns: input.verificationRuns }),
       findings: input.findings ?? [],
     });
     await this.repository.insert(assessment, assessment.passed ? 'passed' : 'failed');

@@ -41,6 +41,10 @@ Confirmed by the user on 2026-09-07:
   states what it provides, and PM assembles an actor (role profile plus model pool) at runtime and
   registers it in the object registry. Plans record work only; they never choose a role. Eligibility
   and actor selection are deterministic business-layer policy, never RuleChain content.
+- PM derives its serial queue from persisted Tickets. A ready Bug reporter verification precedes
+  its own Step Story. Work that has only an Actor capacity conflict remains queued while PM checks
+  other candidates allowed by the Step and Ticket readiness rules. If none can proceed, PM reports
+  the waiting work and the assignments holding capacity. Attempt budgets apply after dispatch.
 - PM creates Project-context Epic and V-model Story Tickets. Inside a Phase, the actor with the
   technical context creates the work. Only S5-S8 verification Actors may create a new Bug, with that
   Actor as its reporter. S1-S4 retain their own failures on the current Ticket and use a CR for
@@ -99,6 +103,12 @@ only authority that changes Ticket state.
   Bug and its budgets; failures and evidence remain append-only.
   A delivered Bug's pending integration is reconciled before the original reporter starts a
   verification attempt. Pending integration cannot consume a reporter attempt.
+  During reporter verification, observed test case verdicts distinguish recurrence within the
+  original scope from independently failing cases. An independent failure has its own linked Bug.
+  The original Bug retains the observed passing cases and waits for that corrective work and a
+  full passing verification. A reproduced original failure reopens its existing Ticket. If case
+  evidence is unavailable, the original verdict remains outstanding. Runtime exceptions retain
+  their evidence on the interrupted Bug verification and return the execution slot and attempt.
 - A CR target passing its own gate submits an immutable delivery (`deliver`). The reporter invokes
   its own model to accept or reject that candidate and to decide whether another downstream CR is
   necessary. The next hop is persisted before the current hop closes, and restart reuses its identity.
@@ -112,7 +122,11 @@ only authority that changes Ticket state.
   acceptance identity. Each failed request can have one explicitly authorized successor.
   An interrupted submission resumes from its latest unsubmitted passing application and retains
   the candidate and assessment. A rejected delivery remains in history and cannot be resubmitted
-  as the replacement application.
+  as the replacement application. A new attempt needs a content change in the current Step's
+  affected outputs or materially new verified test scope. Candidate commits and assessment IDs
+  alone do not prove progress. Tests used as replacement evidence retain their executed scope in
+  the assessment the reporter receives. Exhausted retry diagnostics retain the latest reporter's
+  original non-acceptance reason even when it has no comparable recurrence fingerprint.
 - Active legacy Tickets receive an explicit, audited reporter migration. An old development-created
   Bug retains its ID, creator, evidence and budget; its reporter becomes the original designated
   verifier. Old passing CR applications require independent acceptance; old repaired Bugs require
@@ -155,6 +169,12 @@ only authority that changes Ticket state.
   round, only in the current active Phase with the same active CR, candidate and original reporter.
   Authorization persists before replay; candidate artifacts, replay and a new logical request are
   retained before model review. Recovery preserves both rounds and cannot authorize a third one.
+  A diagnosis model request with proven terminal provider failure and no response candidate may
+  receive one explicitly authorized successor, within the same unjudged round. It retains the
+  original reporter, candidate and evidence; transport retry never adds a diagnosis round or proof
+  of Bug closure. For historical audit redaction damage, exact retained diagnosis material may
+  support this failure proof only when the original input and full provider request digests match
+  and the historical redaction exactly reproduces the old records. Original audit is not rewritten.
 
 ## Phase and V-model invariants
 

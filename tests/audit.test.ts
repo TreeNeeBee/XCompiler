@@ -145,6 +145,29 @@ describe('AuditLogger jsonl flush', () => {
     expect(jsonl).toContain('upstream denied the request');
   });
 
+  it('retains repeated evidence arrays while distinguishing a real cycle', async () => {
+    const audit = new AuditLogger({ root: tmp, command: 'evidence' });
+    const selectors = ['tests/original.py'];
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await audit.event('note', 'replay', { requestedSelectors: selectors, executedArgs: selectors, cyclic });
+    const event = JSON.parse(readFileSync(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8').trim());
+    expect(event.data).toEqual({ requestedSelectors: selectors, executedArgs: selectors, cyclic: { self: '[Circular]' } });
+  });
+
+  it('redacts secrets inside serialized JSON without changing safe formatting', async () => {
+    const audit = new AuditLogger({ root: tmp, command: 'evidence' });
+    const safe = '{ "evidence": "already protected", "result": 1 }';
+    await audit.event('note', 'JSON evidence', { safe, nested: JSON.stringify({ password: 'fixture-secret',
+      content: 'authorization=fixture-token' }) });
+    const bytes = readFileSync(path.join(tmp, 'audit', 'audit.jsonl'), 'utf8');
+    expect(bytes).not.toContain('fixture-secret');
+    expect(bytes).not.toContain('fixture-token');
+    const saved = JSON.parse(bytes.trim()).data;
+    expect(saved.safe).toBe(safe);
+    expect(JSON.parse(saved.nested)).toEqual({ password: '[REDACTED]', content: 'authorization=[REDACTED]' });
+  });
+
   it('retains own JSON prototype-named keys while redacting their nested credentials', async () => {
     const audit = new AuditLogger({ root: tmp, command: 'xcompiler_test' });
     await audit.start();

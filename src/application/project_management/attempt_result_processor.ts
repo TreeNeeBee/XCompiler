@@ -3,6 +3,7 @@ import type { Phase } from '../../domain/phases/phase.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
 import {
   VALIDATION_CONTRACT_DEFECT_CODE,
+  type BugTicket,
   type TicketSolution,
   type TicketWorkspaceBinding,
 } from '../../domain/tickets/ticket.js';
@@ -19,6 +20,7 @@ import type { Language } from '../../domain/planning/execution_plan.js';
 import { recordedRunStop, type RunStop } from './run_stop.js';
 import { OriginalVerificationUnavailableError } from './corrective_workflow_service.js';
 import { TicketModelFeedbackService } from './ticket_model_feedback.js';
+import { partitionBugReplayFailure } from './bug_verification.js';
 
 export interface AttemptResultProcessorOptions {
   repository: DomainObjectRepositoryPort;
@@ -222,6 +224,11 @@ export class AttemptResultProcessor {
       reason: result.reason,
       failureLog: result.failureLog,
     });
+    if (result.failure?.code === 'framework_execution_failed') {
+      const reason = result.failure.message;
+      await this.options.controller.deferFrameworkExecutionFailure(work, reason);
+      return stopFor({ code: 'framework_execution_failed', ticketName: work.ticket.name, detail: result.failureLog ?? reason });
+    }
     // Before anything else: a Step that needs a package it does not own has not produced a defect,
     // and opening a Bug against it would ask the wrong role to repair the wrong artifact. The need
     // goes back to the design that owns the manifest, and PM parks this Step until it answers.
@@ -280,6 +287,9 @@ export class AttemptResultProcessor {
       // budget and by the no-semantic-progress guard; exiting the process instead turned a model
       // hiccup into an operator action, and the Step's work was already complete on disk.
       return { action: 'continue' };
+    }
+    if (mode === 'verification' && work.ticket.type === 'bug' && result.failure?.code === 'test_command_failed') {
+      return this.routeBugReplayFailure(phase, work, work.ticket, result, result.failure);
     }
     const gateFindings = deduplicateGateFindings([
       ...(result.gateFindings ?? []),
@@ -524,6 +534,57 @@ export class AttemptResultProcessor {
     });
     await this.routeTicket(phase, work, routed.id, routed.type, routed.source.correlationId);
     return { action: 'continue' };
+  }
+
+  private async routeBugReplayFailure(
+    phase: Phase, work: ScheduledWork, bug: BugTicket, result: AttemptResult,
+    failure: NonNullable<AttemptResult['failure']>,
+  ): Promise<AttemptDisposition> {
+    const observed = partitionBugReplayFailure(bug, work.step, failure, result.testOutcomes);
+    if (!observed) return stopFor({
+      code: 'gate_unjudged',
+      detail: `${bug.name}: test results cannot distinguish an original failure from a new one. ${result.reason ?? failure.message}`,
+    });
+    const { repeated, independent, passedOriginal } = observed;
+    await this.options.audit.event('note', `${bug.name} reporter observed failed regression cases`, {
+      messageId: 'domain.bug_replay_failures', ticketId: bug.id, phaseId: phase.id, stepId: work.step.id,
+      repeated, independent, passedOriginal,
+    });
+    const common = {
+      creatorActorId: await this.options.tickets.ownerActorId(bug.id),
+      failedStepId: work.step.id,
+      message: result.failureLog ?? failure.message,
+      bugKind: 'test-failure' as const,
+      correlationId: bug.source.correlationId,
+      causationId: bug.id,
+      workspaceBinding: result.workspaceBinding,
+    };
+    if (independent.length > 0) {
+      // Persist the new defect, the observed cases and the old Bug's blocker together. If execution
+      // stops before recurrence routing, the original reporter judges the new candidate after repair.
+      const routed = await this.options.controller.routeFailure({
+        ...common,
+        summary: `Independent failure during ${bug.name} verification: ${independent.join(', ')}`,
+        failure: { ...failure, details: { ...failure.details, replayedBugId: bug.id,
+          passedOriginalSelectors: passedOriginal, repeatedOriginalSelectors: repeated } },
+        verificationSelectors: independent,
+        testOutcomes: result.testOutcomes.map(outcome => ({ ...outcome,
+          failedTests: (outcome.failedCaseSelectors ?? []).filter(selector => independent.includes(selector)),
+        })),
+        bugReplay: { ticketId: bug.id, verdict: 'independent' },
+      });
+      await this.routeTicket(phase, work, routed.id, routed.type, routed.source.correlationId);
+    }
+    if (repeated.length > 0) {
+      const routed = await this.options.controller.routeFailure({
+        ...common,
+        summary: `Original failure recurred during ${bug.name} verification: ${repeated.join(', ')}`,
+        failure,
+        bugReplay: { ticketId: bug.id, verdict: 'recurrence' },
+      });
+      await this.routeTicket(phase, work, routed.id, routed.type, routed.source.correlationId);
+    }
+    return { action: 'continue', integrate: false };
   }
 
   private async routeGateFindings(

@@ -454,6 +454,57 @@ describe('TicketWorkflow', () => {
     expect((await controller.next(graph.phases[0]!.id))?.ticket.id).toBe(request.id);
   });
 
+  it.each(['reject', 'needs-evidence'] as const)('reports the latest %s verdict after resuming an exhausted CR', async decision => {
+    const { graph, repository, registration } = await setup();
+    const reason = 'The frozen integration report still lacks the actual verification receipts.';
+    const reviewTicket = vi.fn<TicketReviewPort>(async input => ({
+      kind: 'ticket-acceptance', decision, reason, evidenceRefs: [input.payload.subjectId], propagation: null,
+    })).mockImplementationOnce(async input => ({
+      kind: 'ticket-acceptance', decision, reason: 'The initial candidate contains outdated evidence.',
+      evidenceRefs: [input.payload.subjectId], propagation: null,
+    }));
+    const controller = new ProjectController(repository, { reviewTicket });
+    const target = graph.steps[0]!;
+    const phase = graph.phases[0]!;
+    const request = await openChangeRequestFor(repository, graph, [target.id], await registration.discovererActorIdForStep(target.id));
+    const start = async () => controller.start({ phase, step: target,
+      ticket: (await registration.routeAndAssign(request.id)).ticket });
+    const finish = async (work: Awaited<ReturnType<typeof start>>) => controller.completeChangeRequestStep({
+      work, qualityAssessmentId: await passingAssessment(repository, work.step), summary: 'Candidate delivery', entries: [],
+    });
+    for (let attempt = 1; attempt < request.maxAttempts; attempt += 1) await finish(await start());
+    const last = await start();
+    const interruption = new Error('Interrupted after saving the reporter verdict');
+    const commit = repository.commit.bind(repository);
+    const spy = vi.spyOn(repository, 'commit').mockImplementation(async objects => {
+      if (objects.some(object => object.objectType === 'ticket' && object.id === request.id && object.state === 'reopened')) {
+        throw interruption;
+      }
+      return commit(objects);
+    });
+    try {
+      await expect(finish(last)).rejects.toBe(interruption);
+    } finally {
+      spy.mockRestore();
+    }
+
+    await repository.load();
+    const delivered = asTicket(await repository.read(request.id), 'change-request');
+    const delivery = delivered.deliveries.at(-1)!;
+    expect(delivered).toMatchObject({ state: 'deliver', attempts: request.maxAttempts, logIds: [] });
+    expect(delivered.acceptanceRecords.at(-1)).toMatchObject({ requestId: delivery.requestId, verdict: { decision, reason } });
+    const restarted = new ProjectController(repository, { reviewTicket });
+    expect(await restarted.resumeAcceptance(request.id)).toEqual({ status: 'rejected', closed: false });
+    const work = (await restarted.next(phase.id))!;
+    expect(work.ticket.id).toBe(request.id);
+    await expect(restarted.start(work)).rejects.toThrow(`reporter verdict ${decision} (${delivery.requestId}): ${reason}`);
+    expect(reviewTicket).toHaveBeenCalledTimes(request.maxAttempts);
+    expect(await repository.read(request.id)).toMatchObject({
+      state: 'reopened', attempts: request.maxAttempts, maxAttempts: request.maxAttempts,
+      acceptanceRecords: delivered.acceptanceRecords, deliveries: delivered.deliveries, logIds: [],
+    });
+  });
+
   it('recovers only the current CR application when a replacement uses the same Git revision', async () => {
     const { graph, repository, registration } = await setup();
     const reviewTicket = vi.fn<TicketReviewPort>(acceptReview).mockImplementationOnce(async input => ({
@@ -861,7 +912,7 @@ describe('TicketWorkflow', () => {
   });
 
   // `parentChangeRequestId` also names the CR a correction was raised inside. Only a child carrying the
-  // parent's sources is its next hop: dbc2excel-7 read a nested Bug's chain as the continuation of an
+  // parent's sources is its next hop: a validation project read a nested Bug's chain as the continuation of an
   // Enhancement chain's last hop, which then never carried the Enhancement to closure.
   it.each([
     ['closes an applied parent CR after its child hand-off was persisted before interruption', 'next-hop'],
@@ -2629,6 +2680,71 @@ describe('Change Request hop merging', () => {
     })).toBe(true);
     expect(asTicket(await repository.read(bug.id), 'bug').verificationRecords).toHaveLength(1);
   });
+
+  it.each(['same', 'independent', 'both', 'unobserved', 'skipped original', 'narrow file', 'unobserved legacy'] as const)(
+    'handles reporter regression evidence without conflating Bugs: %s', async scenario => {
+      const { graph, repository, workflow, registration } = await setup();
+      const phase = graph.phases[0]!;
+      const step = graph.steps.find(item => item.type === 'INTEGRATION_TEST')!;
+      const repair = graph.steps.find(item => item.type === 'DETAILED_DESIGN')!;
+      const controller = new ProjectController(repository);
+      const file = 'tests/integration/adapter.test.ts';
+      const original = `${file} > original requirement`;
+      const other = `${file} > independent requirement`;
+      const required = scenario === 'narrow file' ? file : original;
+      const source = await bugOn(repository, workflow, registration, graph, 'Original requirement failed', 'test_command_failed',
+        scenario === 'unobserved legacy' ? [] : [required]);
+      await controller.start({ phase, step: repair, ticket: (await registration.routeAndAssign(source.id)).ticket });
+      const assessment = await passingAssessment(repository, repair);
+      await workflow.recordChange({ ticketId: source.id, stepId: repair.id, verificationAssessmentId: assessment,
+        summary: 'Repair the original contract', entries: [{ path: 'docs/03-detailed-design.md', operation: 'update' }] });
+      const state = new ProjectStateService(repository);
+      await state.transitionStep(await state.requireStep(repair.id), 'delivered');
+      await workflow.awaitVerification(source.id, { stepId: repair.id, qualityAssessmentId: assessment });
+      const work = await controller.start({ phase, step, ticket: (await registration.routeAndAssign(source.id, { forStepId: step.id })).ticket });
+      const repeated = scenario === 'same' || scenario === 'both';
+      const independent = scenario === 'independent' || scenario === 'both';
+      const suitePassed = scenario === 'skipped original' || scenario === 'narrow file' || scenario === 'unobserved legacy';
+      const failedCases = [...(repeated ? [original] : []), ...(independent ? [other] : [])];
+      const passedCases = scenario === 'skipped original' ? [other] :
+        scenario === 'narrow file' || (independent && !repeated) ? [original] : [];
+      const result: AttemptResult = { ok: suitePassed, changedFiles: [], wikiEntryIds: [], testOutcomes: [{
+        ...(suitePassed ? passedTestOutcome(step, [scenario === 'narrow file' ? original : file]) : failedTestOutcome(step, failedCases)),
+        caseEvidenceRequested: true,
+        ...(scenario === 'unobserved' ? {} : { passedCaseSelectors: passedCases, failedCaseSelectors: failedCases }),
+      }], ...(!suitePassed ? { failure: { kind: 'execution', category: 'test', code: 'test_command_failed',
+          message: 'Reporter suite failed', retryable: true, switchProvider: false } } :
+        { assessment: asObject(await repository.read(await passingAssessment(repository, step)), 'quality-assessment') }) };
+      const processor = new AttemptResultProcessor({ repository, controller, tickets: registration,
+        audit: { event: async () => undefined } as unknown as AuditLogger, onTransition: async () => undefined });
+      expect((await processor.process({ phase, work, steps: graph.steps, result })).action)
+        .toBe(repeated || independent ? 'continue' : 'stop');
+
+      const bugs = (await workflow.list()).filter(ticket => ticket.type === 'bug');
+      expect(bugs).toHaveLength(independent ? 2 : 1);
+      const old = asTicket(await repository.read(source.id), 'bug');
+      const newBug = bugs.find(ticket => ticket.id !== old.id);
+      expect(old).toMatchObject({ state: repeated ? 'reopened' : 'deliver', attempts: 2, maxAttempts: source.maxAttempts,
+        reporterActorId: source.reporterActorId, blockedByTicketIds: newBug ? [newBug.id] : [], verificationRecords: [] });
+      if (independent) {
+        expect(newBug).toMatchObject({ state: 'created', attempts: 0, reporterActorId: source.reporterActorId,
+          relatedTicketIds: expect.arrayContaining([source.id]), verificationContract: { testSelectors: [other] },
+          failure: { details: { passedOriginalSelectors: repeated ? [] : [original] } } });
+        const reporter = await registration.actorById(source.reporterActorId!);
+        expect(reporter.activeAssignmentIds).not.toContain(work.ticket.activeAssignmentId);
+      }
+      if (scenario === 'independent') {
+        const successful = { ...passedTestOutcome(step, [file]), caseEvidenceRequested: true,
+          passedCaseSelectors: [original], failedCaseSelectors: [] };
+        const successfulAssessment = await passingAssessment(repository, step);
+        expect(await controller.verifyDeliveredBug({ work, qualityAssessmentId: successfulAssessment,
+          testOutcomes: [successful] })).toBe(false);
+        const assessedStep = await state.attachQuality(await state.requireStep(step.id), successfulAssessment);
+        expect(await workflow.closeBugsProvenAt(phase.projectId, assessedStep, [successful], [])).toEqual([]);
+        expect(asTicket(await repository.read(source.id), 'bug')).toMatchObject({ verificationRecords: [], solution: { status: 'applied' } });
+      }
+    },
+  );
 });
 
 /**

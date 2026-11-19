@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from 'node:util';
+import { redactCredentialText } from '../../audit/audit.js';
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import { stepContextFingerprint, xcompilerBuildId } from '../identity/build_identity.js';
 import { reviseObjectEnvelope } from '../../domain/objects/object_envelope.js';
@@ -26,6 +28,7 @@ import {
 import type { Changelist } from '../../domain/evidence/evidence.js';
 import type { PendingReason } from '../../domain/workflow/pending_reason.js';
 import { TicketWorkflow } from './ticket_workflow.js';
+import { releaseCapacityFor } from './ticket_lifecycle_service.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import { evaluateAttemptExtension } from '../../domain/tickets/retry_policy.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
@@ -35,6 +38,7 @@ import { createDomainEvent } from '../observability/domain_event_factory.js';
 import { DomainAuditTrail } from '../observability/domain_audit_trail.js';
 import type { AttemptFailure } from '../execution/failure_classification.js';
 import type { TestOutcome } from '../execution/test_outcome.js';
+import { latestChangeRequestRejection } from '../execution/ticket_prompt_context.js';
 import { buildDebugBrief, buildFailureSignature } from '../execution/debug_brief.js';
 import { WorkScheduler, workModeFor, type ScheduledWork } from './work_scheduler.js';
 import { CorrectiveWorkflowService } from './corrective_workflow_service.js';
@@ -140,6 +144,11 @@ export class ProjectController {
   }
 
   private async extendConvergingTicket(ticket: Ticket): Promise<Ticket> {
+    // The verdict already belongs to a durable, request-bound delivery. It explains the stop but
+    // lacks a stable issue identity for the recurrence policy.
+    const rejection = ticket.type === 'change-request'
+      ? latestChangeRequestRejection(ticket, ticket.targetStepId)
+      : undefined;
     const evidence: Array<{
       signature?: string;
       category?: string;
@@ -192,6 +201,7 @@ export class ProjectController {
     if (
       evidence.length === 0 &&
       ticket.type === 'change-request' &&
+      !rejection &&
       ticket.applications.length === 0 &&
       ticket.attempts > 0 &&
       recordedAttemptNumbers.size >= ticket.maxAttempts
@@ -215,8 +225,14 @@ export class ProjectController {
       const recurringDetail = recurring
         ? ` — ${recurring.code ? `${recurring.code}: ` : ''}${recurring.reason.split('\n')[0]!.slice(0, 300)}`
         : '';
+      let detail = `${decision.reason}${recurringDetail}`;
+      if (rejection) {
+        const reason = redactCredentialText(stripVTControlCharacters(rejection.reason)).replace(/\s+/gu, ' ').trim();
+        const reporterDetail = `reporter verdict ${rejection.decision} (${rejection.deliveryRequestId}): ${reason}`;
+        detail = evidence.length === 0 ? reporterDetail : `${detail} — ${reporterDetail}`;
+      }
       throw new Error(
-        `Ticket ${ticket.name} stopped after ${ticket.attempts} attempts: ${decision.reason}${recurringDetail}`,
+        `Ticket ${ticket.name} stopped after ${ticket.attempts} attempts: ${detail}`,
       );
     }
     const project = await this.requireProject(ticket.projectId);
@@ -322,6 +338,10 @@ export class ProjectController {
       'external-service',
       `Infrastructure failure deferred without V-model routing: ${reason}`,
     );
+  }
+
+  async deferFrameworkExecutionFailure(work: ScheduledWork, reason: string): Promise<void> {
+    await this.deferNonProjectAttempt(work, 'interrupted', `XCompiler interrupted verification: ${reason}`);
   }
 
   async deferPermissionBlocked(work: ScheduledWork, reason: string): Promise<void> {
@@ -452,19 +472,21 @@ export class ProjectController {
     const revisedTicket = TicketSchemaWithRevision(ticket, {
       attempts: Math.max(0, ticket.attempts - 1),
     });
-    await this.repository.commit([revisedStep, revisedTicket]);
+    // A reporter interruption leaves the Bug delivered. A no-op transition would keep the same
+    // revision and be rejected by the registry, so release the reserved reporter slot directly.
+    const released = ticket.state === 'deliver' ? await releaseCapacityFor(this.repository, ticket) : undefined;
+    await this.repository.commit([revisedStep, revisedTicket, ...(released ? [released] : [])]);
     for (const task of await this.ticketDescendants(revisedTicket.id)) {
       if (task.state === 'in_progress') {
         await this.state.transitionTicket(task, 'pending', pendingReason);
       }
     }
-    const parkedTicket = ticket.state === 'deliver'
-      ? await this.state.transitionTicket(revisedTicket, 'deliver')
-      : await this.state.transitionTicket(revisedTicket, 'pending', pendingReason);
+    if (ticket.state !== 'deliver') await this.state.transitionTicket(revisedTicket, 'pending', pendingReason);
     const parkedStep = await this.state.transitionStep(revisedStep, 'pending', pendingReason);
+    const ticketStatus = ticket.state === 'deliver' ? 'awaits reporter verification' : `is pending (${pendingReason})`;
     await this.checkpoint(
       parkedStep,
-      `${checkpoint}; ${parkedTicket.name} is pending (${pendingReason}) and actor capacity was released.`,
+      `${checkpoint}; ${ticket.name} ${ticketStatus} and actor capacity was released.`,
     );
   }
 
@@ -502,28 +524,7 @@ export class ProjectController {
     return this.corrective.routeWorkCorrection(input);
   }
 
-  async routeFailure(input: {
-    failedStepId: ObjectId;
-    targetStepId?: ObjectId;
-    message: string;
-    summary: string;
-    failure: AttemptFailure;
-    bugKind: BugTicket['bugKind'];
-    rawEvidenceRef?: string;
-    tool?: string;
-    exitCode?: number;
-    statusCode?: number;
-    correlationId: ObjectId;
-    causationId?: ObjectId;
-    parentChangeRequestId?: ObjectId;
-    discoveringStepId?: ObjectId;
-    creatorActorId: ObjectId;
-    sourceKind?: TicketSource['kind'];
-    sourceExternalId?: string;
-    workspaceBinding?: TicketWorkspaceBinding;
-    testOutcomes?: readonly TestOutcome[];
-    affectedArtifacts?: readonly string[];
-  }): Promise<BugTicket> {
+  async routeFailure(input: Parameters<CorrectiveWorkflowService['routeFailure']>[0]): Promise<BugTicket> {
     return this.corrective.routeFailure(input);
   }
 

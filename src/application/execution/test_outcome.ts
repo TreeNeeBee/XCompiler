@@ -1,7 +1,9 @@
+import path from 'node:path';
 import type { ToolCallRecord } from '../../agents/executor.js';
+import type { VerificationRun } from '../../domain/quality/quality.js';
 import type { StepType } from '../../domain/steps/step.js';
 import { isPytestInvocation, isTestRunnerInvocation } from '../../tools/sandbox.js';
-import { isTestRunWithoutVerdict } from '../../tools/types.js';
+import { isPathPattern, isTestRunWithoutVerdict } from '../../tools/types.js';
 
 export type TestOutcomeStatus =
   | 'passed'
@@ -24,6 +26,9 @@ export interface TestOutcome {
   summary?: string;
   failure?: string;
   failedTests: string[];
+  caseEvidenceRequested?: boolean;
+  passedCaseSelectors?: string[];
+  failedCaseSelectors?: string[];
   recordedAt: string;
 }
 
@@ -45,6 +50,8 @@ export function collectTestOutcomes(
     const failedTests = Array.isArray(data.failedTests)
       ? data.failedTests.filter((value): value is string => typeof value === 'string')
       : [];
+    const caseEvidenceRequested = data.caseEvidenceRequested === true;
+    const cases = caseEvidenceRequested && !timedOut && !call.executionStatus ? caseSelectors(data.caseResults) : undefined;
     return {
       status: call.executionStatus === 'permission-blocked' ? 'denied'
         : call.executionStatus === 'tool-not-allowed' || call.code === 'baseline_execution_deferred' ? 'skipped'
@@ -63,9 +70,107 @@ export function collectTestOutcomes(
       summary: call.summary,
       failure,
       failedTests,
+      ...(caseEvidenceRequested ? { caseEvidenceRequested: true } : {}),
+      ...cases,
       recordedAt: new Date().toISOString(),
     };
   });
+}
+
+function caseSelectors(input: unknown): Pick<TestOutcome, 'passedCaseSelectors' | 'failedCaseSelectors'> | undefined {
+  if (!isRecord(input) || !isSelectorArray(input.passed) || !isSelectorArray(input.failed)) return undefined;
+  const failed = new Set(input.failed);
+  return { passedCaseSelectors: [...new Set(input.passed)].filter(selector => !failed.has(selector)), failedCaseSelectors: [...failed] };
+}
+
+function isSelectorArray(input: unknown): input is string[] {
+  return Array.isArray(input) && input.every(item => typeof item === 'string' && item.length > 0);
+}
+
+/** Keep attempted scopes, but only attest execution against the candidate after its last write. */
+export function collectVerificationRuns(calls: readonly ToolCallRecord[], lastWrite = -1): VerificationRun[] | undefined {
+  const runs = new Map<string, VerificationRun>();
+  for (const [index, call] of calls.entries()) {
+    if (!call.ok || call.executionStatus || !isTestCall(call)) continue;
+    const data = call.data;
+    if (!isRecord(data) || data.exitCode !== 0 || data.timedOut !== false) return undefined;
+    const scope = data.testScope;
+    if (!isRecord(scope) || (scope.runner !== 'vitest' && scope.runner !== 'pytest') ||
+      typeof scope.cwd !== 'string' || !Array.isArray(scope.selectors) || scope.selectors.length === 0) return undefined;
+    const cwd = normalizedScopePath(scope.cwd);
+    const selectors = scope.selectors.map(normalizeSelector);
+    if (!cwd || selectors.some(selector => selector === undefined)) return undefined;
+    const scoped = [...new Set(selectors.filter(selector => selector !== undefined))].sort();
+    const executed = index > lastWrite && Array.isArray(scope.executedSelectors)
+      ? [...new Set(scope.executedSelectors.map(normalizeSelector)
+        .filter((selector): selector is string => selector !== undefined && scoped.includes(selector)))].sort() : [];
+    const run: VerificationRun = { runner: scope.runner, cwd, selectors: scoped, exitCode: 0, callId: call.callId,
+      ...(executed.length > 0 ? { executedSelectors: executed } : {}) };
+    const key = JSON.stringify([run.runner, cwd, scoped]);
+    if (run.executedSelectors || !runs.get(key)?.executedSelectors) runs.set(key, run);
+  }
+  return [...runs.values()];
+}
+
+/** An overlapping selection alone cannot prove that previously untested work was exercised. */
+export function newVerificationRuns(
+  prior: readonly VerificationRun[] | undefined,
+  current: readonly VerificationRun[],
+): VerificationRun[] {
+  if (!prior) return [];
+  const seen = new Map<VerificationRun['runner'], Set<string>>();
+  for (const run of prior) {
+    const previous = seen.get(run.runner) ?? new Set<string>();
+    for (const selector of run.selectors) previous.add(workspaceSelector(run.cwd, selector));
+    seen.set(run.runner, previous);
+  }
+  return current.filter(run => run.selectors.some(selector => {
+    const currentScope = workspaceSelector(run.cwd, selector);
+    return !isSelectorPattern(currentScope) && [...(seen.get(run.runner) ?? [])].every(earlier =>
+      !isSelectorPattern(earlier) && !scopeIncludes(earlier, currentScope) && !scopeIncludes(currentScope, earlier));
+  }));
+}
+
+/** Only evidence within the target's declared scope can advance independent acceptance. */
+export function verificationRunsWithinScope(
+  runs: readonly VerificationRun[],
+  allowed: readonly string[],
+): VerificationRun[] {
+  const owned = allowed.map(normalizeSelector)
+    .filter((selector): selector is string => selector !== undefined && !isSelectorPattern(selector));
+  return runs.flatMap(run => {
+    const selectors = (run.executedSelectors ?? []).filter(selector => {
+      const actual = workspaceSelector(run.cwd, selector);
+      return !isSelectorPattern(actual) && owned.some(scope => scopeIncludes(scope, actual));
+    });
+    return selectors.length > 0 ? [{ ...run, selectors, executedSelectors: selectors }] : [];
+  });
+}
+
+function workspaceSelector(cwd: string, selector: string): string {
+  const [file, ...nodes] = selector.split('::');
+  return [path.posix.join(cwd, file ?? ''), ...nodes].join('::');
+}
+
+function normalizeSelector(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.startsWith('-')) return undefined;
+  const [file, ...nodes] = value.split('::');
+  const normalized = normalizedScopePath(file ?? '');
+  return normalized && [normalized, ...nodes].join('::');
+}
+
+function normalizedScopePath(value: string): string | undefined {
+  if (!value.trim() || value.includes('\0') || path.win32.isAbsolute(value)) return undefined;
+  const normalized = path.posix.normalize(value.replaceAll('\\', '/')).replace(/\/$/u, '');
+  return normalized === '..' || normalized.startsWith('../') ? undefined : normalized;
+}
+
+function isSelectorPattern(selector: string): boolean {
+  return isPathPattern(selector.split('::', 1)[0] ?? '');
+}
+
+function scopeIncludes(scope: string, selector: string): boolean {
+  return scope === '.' || scope === selector || selector.startsWith(`${scope}/`) || selector.startsWith(`${scope}::`);
 }
 
 /**

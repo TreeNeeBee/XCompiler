@@ -14,7 +14,7 @@ const Material = z.object({
 }).strict();
 const Receipt = Material.extend({ digest: RuleDigestSchema });
 
-/** One explicit successor per proved failure. Domain delivery and acceptance still use the original ID. */
+/** One successor per proved failure, anchored to the original delivery or diagnosis-round request. */
 export class FileTicketReviewRetryStore {
   private readonly root: string;
 

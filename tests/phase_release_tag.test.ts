@@ -9,7 +9,7 @@ import { GitRepositoryService } from '../src/infrastructure/git/git_repository_s
 /**
  * Projects tag each version they release, and a delivered Phase is a release: the n-th Phase is
  * v<n>.0.0, and delivering it again after a reopening is the next patch. Without one, a delivered
- * Phase had no rollback point at all; dbc2excel-5's P1 could only be inferred from commit history.
+ * Phase had no rollback point at all; a validation project's P1 could only be inferred from commit history.
  */
 describe('the release tag of a delivered Phase', () => {
   const A = 'a'.repeat(40);

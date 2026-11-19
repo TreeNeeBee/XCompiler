@@ -21,6 +21,7 @@ export type RunStop =
   | { code: 'no_downstream_verification'; ticketName: string }
   | { code: 'cr_diagnosis_review_unresolved'; ticketName: string; detail: string }
   | { code: 'evidence_storage_failed'; ticketName: string; detail: string }
+  | { code: 'framework_execution_failed'; ticketName: string; detail: string }
   | { code: 'permission_blocked'; ticketName: string; detail: string }
   | { code: 'infrastructure_failure'; ticketName: string; detail: string }
   | { code: 'gate_audit_permission_denied' }
@@ -48,6 +49,7 @@ export function renderRunStop(stop: RunStop, messages: Messages['runStop']): str
     case 'no_downstream_verification': return messages.noDownstreamVerification(stop.ticketName);
     case 'cr_diagnosis_review_unresolved': return messages.crDiagnosisReviewUnresolved(stop.ticketName, stop.detail);
     case 'evidence_storage_failed': return messages.evidenceStorageFailed(stop.ticketName, stop.detail);
+    case 'framework_execution_failed': return messages.frameworkExecutionFailed(stop.ticketName, stop.detail);
     case 'permission_blocked': return messages.permissionBlocked(stop.ticketName, stop.detail);
     case 'infrastructure_failure': return messages.infrastructureFailure(stop.ticketName, stop.detail);
     case 'gate_audit_permission_denied': return messages.gateAuditPermissionDenied();

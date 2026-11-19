@@ -14,9 +14,12 @@ import type {
   ExecResult,
   ExecExtra,
   ExecProgressWatch,
+  TestRunExtra,
+  TestRunResult,
 } from './types.js';
 import { normalizeTypeScriptTestArgs } from './test_args.js';
 import { resolveTypeScriptProgramCommand, stripPythonInterpreterPrefix } from './program_args.js';
+import { runPytestWithCaseReport } from './pytest_case_report.js';
 
 export type { SandboxLimits, ExecResult } from './types.js';
 
@@ -409,11 +412,14 @@ export class SubprocessSandbox implements Sandbox {
   }
 
   /** 运行测试。Python → pytest；TypeScript → npm test（Vitest）。 */
-  async runTests(args: string[] = [], extra?: ExecExtra): Promise<ExecResult> {
+  async runTests(args: string[] = [], extra?: TestRunExtra): Promise<TestRunResult> {
     if (this.language === 'typescript') {
       const normalizedArgs = normalizeTypeScriptTestArgs(args);
       const argv = normalizedArgs.length > 0 ? ['test', '--silent', '--', ...normalizedArgs] : ['test', '--silent'];
       return this.exec('npm', argv, extra);
+    }
+    if (extra?.capturePytestCases) {
+      return runPytestWithCaseReport(args, this.opts.ws.root, argv => this.exec(this.pythonInVenv, argv, extra));
     }
     return this.exec(this.pythonInVenv, ['-m', 'pytest', ...args], extra);
   }

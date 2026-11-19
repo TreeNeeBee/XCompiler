@@ -38,7 +38,7 @@ solution: |
   official example or an upstream project's test corpus is next. Only simple text formats
   (CSV/JSON/INI) may be constructed from scratch, and only with immediate verification.
 evidence:
-  - "Live dbc2excel: all three inline DBC samples across S001/S002/S003 failed cantools with the identical 'Invalid syntax at line 3, column 5' — the NS_ section header was malformed in every one"
+  - "Live derived-project validation: all three inline DBC samples across S001/S002/S003 failed cantools with the identical 'Invalid syntax at line 3, column 5' — the NS_ section header was malformed in every one"
   - "The same run's real sample, examples/dbc2excel/vehicle.dbc, parsed cleanly: 217 messages / 462 signals"
   - "The test design itself was sound: multiplexed signals, a malformed-input path, and an empty-filter case were all covered"
 stats:

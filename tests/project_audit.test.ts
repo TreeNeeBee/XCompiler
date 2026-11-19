@@ -328,7 +328,7 @@ describe('project quality audit', () => {
     expect(result.checks.some((check) => check.name === 'doc:docs/iterations/P2/08-functional-test.md')).toBe(true);
   });
 
-  // dbc2excel-5 P2: the delivery gate checked the root README and quickstart, which still described P1,
+  // a validation project P2: the delivery gate checked the root README and quickstart, which still described P1,
   // so the P2 gate passed on what P1 had written. The Phase being delivered owns its delivery documents.
   it('checks the delivering Phase\'s documents at its delivery gate, not the root copies', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xcompiler-audit-'));
@@ -357,7 +357,7 @@ describe('project quality audit', () => {
     ]));
   });
 
-  // From the dbc2excel P2 gate: 39 failures, of which the twenty-line tail showed only the last, a
+  // From the a validation project P2 gate: 39 failures, of which the twenty-line tail showed only the last, a
   // stale P1 supplement. Routed to CODE on that tail, nine failures from a product defect and thirty
   // stale P1 assertions owned by other levels were never seen by anyone.
   describe('a failing Python test suite', () => {

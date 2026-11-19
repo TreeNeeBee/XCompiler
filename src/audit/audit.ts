@@ -514,20 +514,30 @@ export function protectAuditContent(value: unknown, mode: AuditContentMode): unk
   return redactValue(value);
 }
 
+/** Historical representation, used only to prove an explicitly retried request's old audit. */
+export function protectLegacyAuditContent(value: unknown): unknown {
+  return redactValue(value, new WeakSet<object>(), false);
+}
+
 function renderAuditContent(value: unknown): string {
   return typeof value === 'string' ? value : safeStringify(value);
 }
 
-function redactValue(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (typeof value === 'string') return redactText(value);
+function redactValue(value: unknown, seen = new WeakSet<object>(), structuredStrings = true): unknown {
+  if (typeof value === 'string') return structuredStrings ? redactText(value) : redactLiteralText(value);
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
-  // Provider payloads may contain own keys such as __proto__; keep them as data, not setters.
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-    key, isSensitiveKey(key) ? '[REDACTED]' : redactValue(item, seen),
-  ]));
+  try {
+    if (Array.isArray(value)) return value.map((item) => redactValue(item, seen, structuredStrings));
+    // Provider payloads may contain own keys such as __proto__; keep them as data, not setters.
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key, isSensitiveKey(key) ? '[REDACTED]' : redactValue(item, seen, structuredStrings),
+    ]));
+  } finally {
+    // Shared siblings are not cycles. Keep the former traversal only for historical proof.
+    if (structuredStrings) seen.delete(value);
+  }
 }
 
 const SENSITIVE_KEYS = new Set([
@@ -549,6 +559,21 @@ export function redactCredentialText(value: string): string {
 }
 
 function redactText(value: string): string {
+  // JSON is often a prompt or a nested evidence envelope. Redact decoded values so a literal
+  // backslash-n cannot become part of the preceding credential or redaction placeholder.
+  const start = value.trimStart()[0];
+  if (start === '{' || start === '[') {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); } catch { /* Ordinary text still uses the same credential policy. */ }
+    if (parsed && typeof parsed === 'object') {
+      const protectedValue = redactValue(parsed);
+      return JSON.stringify(protectedValue) === JSON.stringify(parsed) ? value : JSON.stringify(protectedValue);
+    }
+  }
+  return redactLiteralText(value);
+}
+
+function redactLiteralText(value: string): string {
   return value
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, 'Bearer [REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, 'sk-[REDACTED]')

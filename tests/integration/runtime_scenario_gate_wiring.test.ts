@@ -453,7 +453,7 @@ describe('Runtime run tagging a delivered Phase', () => {
   });
 });
 
-// dbc2excel-5: the development report was written after the release was tagged, and nothing said what a
+// a validation project: the development report was written after the release was tagged, and nothing said what a
 // delivery released. Runtime gives delivery a way to write the report and to read what a commit holds, and
 // prints the release read back from the records and the repository.
 describe('Runtime run reporting a delivered Phase', () => {

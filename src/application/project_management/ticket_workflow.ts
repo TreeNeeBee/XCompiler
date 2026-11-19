@@ -147,6 +147,7 @@ export class TicketWorkflow {
     workspaceBinding?: TicketWorkspaceBinding;
     identity: FailureIdentity;
     verificationContract: BugVerificationContract;
+    awaitingVerification?: BugTicket;
   }): Promise<BugTicket> {
     assertBugContractInput(input);
     const creator = await this.repository.read(input.creatorActorId);
@@ -193,7 +194,8 @@ export class TicketWorkflow {
         `Propagate the accepted correction through Change Requests until ${input.verificationStep.name} passes.`,
         'Persist the verified solution to debug-wiki.',
       ],
-      relatedTicketIds: [targetStory.id, ...(parentChangeRequest ? [parentChangeRequest.id] : [])],
+      relatedTicketIds: [targetStory.id, ...(parentChangeRequest ? [parentChangeRequest.id] : []),
+        ...(input.awaitingVerification ? [input.awaitingVerification.id] : [])],
       ...(workspaceBinding
         ? { workspaceBinding, workspaceBindingHistory: [workspaceBinding] }
         : {}),
@@ -243,12 +245,14 @@ export class TicketWorkflow {
     const blockedParent = parentChangeRequest
       ? await this.blockers.prepare(parentChangeRequest, bug.id, 'defect')
       : undefined;
+    const blockedVerification = input.awaitingVerification
+      ? await this.blockers.prepare(input.awaitingVerification, bug.id, 'defect') : [];
     await this.repository.commit([
       ...(input.routingObjects ?? []),
       bug,
-      ...blockedStory,
-      ...(blockedFailedStory ?? []),
-      ...(blockedParent ?? []),
+      ...await mergeActorCapacityEdits(this.repository, [
+        ...blockedStory, ...(blockedFailedStory ?? []), ...(blockedParent ?? []), ...blockedVerification,
+      ]),
     ]);
     return bug;
   }
@@ -1114,7 +1118,8 @@ export class TicketWorkflow {
       if (!accepted) return ticket;
     }
     if (ticket.type === 'bug' && ticket.state !== 'closed') {
-      if (ticket.state !== 'deliver' || (await this.processingActor(ticket)).id !== ticket.reporterActorId) return ticket;
+      if (ticket.state !== 'deliver' || ticket.blockedByTicketIds.length > 0 ||
+        (await this.processingActor(ticket)).id !== ticket.reporterActorId) return ticket;
       const chain = (await this.list()).filter((candidate): candidate is ChangeRequestTicket =>
         candidate.type === 'change-request' && candidate.sourceTicketIds.includes(ticket.id));
       if (chain.some(candidate => candidate.state !== 'closed')) return ticket;
@@ -1179,6 +1184,8 @@ export class TicketWorkflow {
     targetStep: Step;
     identity: FailureIdentity;
     reopenedByActorId: ObjectId;
+    originalBugId?: ObjectId;
+    awaitingVerification?: BugTicket;
     parentChangeRequestId?: ObjectId;
     routingObjects?: readonly PersistedDomainObject[];
   }): Promise<BugTicket | undefined> {
@@ -1191,6 +1198,7 @@ export class TicketWorkflow {
     }
     const waiting = (await this.list()).find((ticket): ticket is BugTicket =>
       ticket.type === 'bug' &&
+      (!input.originalBugId || ticket.id === input.originalBugId) &&
       (ticket.state === 'resolved' || ticket.state === 'deliver' ||
         (ticket.state === 'pending' && ticket.pendingReason === 'change-request')) &&
       ticket.duplicateOfTicketId === undefined &&
@@ -1241,12 +1249,13 @@ export class TicketWorkflow {
     const parentBlock = !parent || parent.blockedByTicketIds.includes(waiting.id)
       ? []
       : await this.blockers.prepare(parent, waiting.id, 'defect');
+    const verification = input.awaitingVerification;
+    const verificationBlock = verification && verification.id !== waiting.id && !verification.blockedByTicketIds.includes(waiting.id)
+      ? await this.blockers.prepare(verification, waiting.id, 'defect') : [];
     await this.repository.commit([
       ...(input.routingObjects ?? []),
-      ...targetBlock,
-      ...failedBlock,
-      ...parentBlock,
-      ...prepared.objects,
+      ...await mergeActorCapacityEdits(this.repository,
+        [...targetBlock, ...failedBlock, ...parentBlock, ...verificationBlock, ...prepared.objects]),
     ]);
     return prepared.ticket as BugTicket;
   }
@@ -1299,6 +1308,7 @@ export class TicketWorkflow {
     if (ticket.reporterActorId !== actor.id || ticket.state !== 'deliver' || !VERIFICATION_STEP_TYPES.some(type => type === step.type)) {
       throw new Error('Only the original verification reporter may accept a delivered Bug');
     }
+    if (ticket.blockedByTicketIds.length > 0) return ticket;
     const assessment = await this.repository.read(qualityAssessmentId);
     if (assessment.objectType !== 'quality-assessment' || !assessment.passed || assessment.scope !== 'full-step' || assessment.subject.id !== step.id) {
       throw new Error('Bug acceptance requires a full passing assessment at its original verification Step');
@@ -1378,6 +1388,7 @@ export class TicketWorkflow {
       ticket.type === 'bug' &&
       ticket.projectId === projectId &&
       ticket.state === 'deliver' &&
+      ticket.blockedByTicketIds.length === 0 &&
       ticket.duplicateOfTicketId === undefined &&
       ticket.verificationContract.verificationStepId === step.id &&
       bugVerificationSatisfied(ticket, step, testOutcomes));
@@ -1424,7 +1435,7 @@ export class TicketWorkflow {
       const solution = ticket.solution;
       if (!solution) continue;
       if (ticket.type === 'bug') {
-        if (!bugVerificationSatisfied(ticket, step, testOutcomes)) continue;
+        if (ticket.blockedByTicketIds.length > 0 || !bugVerificationSatisfied(ticket, step, testOutcomes)) continue;
         if (!step.qualityAssessmentId) {
           throw new Error(`Step ${step.name} has no Quality Assessment for Bug verification`);
         }
@@ -1822,6 +1833,32 @@ export class TicketWorkflow {
   private async nextName(prefix: string, phaseName: string): Promise<string> {
     return this.catalog.nextName(prefix, phaseName);
   }
+}
+
+/** Apply independent slot releases and acquisitions against the same saved Actor revision. */
+async function mergeActorCapacityEdits(
+  repository: DomainObjectRepositoryPort, objects: PersistedDomainObject[],
+): Promise<PersistedDomainObject[]> {
+  const changes: PersistedDomainObject[] = [];
+  const actors = new Map<ObjectId, ActorRegistration>();
+  for (const object of objects) {
+    if (object.objectType !== 'actor-registration') {
+      changes.push(object);
+      continue;
+    }
+    const other = actors.get(object.id);
+    if (!other) {
+      actors.set(object.id, object);
+      continue;
+    }
+    const base = await repository.read(object.id);
+    if (base.objectType !== 'actor-registration') throw new Error('Cannot merge capacity edits for a missing Actor');
+    const held = new Set(base.activeAssignmentIds);
+    const retained = base.activeAssignmentIds.filter(id => other.activeAssignmentIds.includes(id) && object.activeAssignmentIds.includes(id));
+    const added = [...other.activeAssignmentIds, ...object.activeAssignmentIds].filter(id => !held.has(id));
+    actors.set(object.id, { ...other, activeAssignmentIds: [...new Set([...retained, ...added])] });
+  }
+  return [...changes, ...actors.values()];
 }
 
 function severityPriority(severity: BugTicket['severity']): number {

@@ -8,7 +8,7 @@ import { createObjectId, type ObjectId } from '../../domain/identity/object_id.j
 import type { Phase } from '../../domain/phases/phase.js';
 import { STEP_TYPE_ORDER, type Step } from '../../domain/steps/step.js';
 import { ProjectController, type ScheduledWork } from './project_controller.js';
-import { workModeFor } from './work_scheduler.js';
+import { QueueCapacityError, workModeFor } from './work_scheduler.js';
 import { TicketRegistrationService } from './ticket_registration_service.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
 import type { RoutingActor } from './role_registry.js';
@@ -935,7 +935,13 @@ export class ProjectOrchestrator {
   private async stopIfSameDeliveredBug(
     repair: ScheduledWork, totalSteps: number, executed: number, reason: string | RunStop,
   ): Promise<ProjectOrchestratorResult | undefined> {
-    const next = await this.scheduler.resume(repair.phase.id);
+    let next: ScheduledWork | undefined;
+    try {
+      next = await this.scheduler.resume(repair.phase.id);
+    } catch (error) {
+      if (!(error instanceof QueueCapacityError)) throw error;
+      return this.failure(repair.phase.id, totalSteps, executed, repair.step, error.message);
+    }
     // If intake or conflict recovery queued other work, let the scheduler run it first. An
     // unchanged rejected delivery cannot go to verification or run its merge gate in a loop.
     if (!next || (next.ticket.id === repair.ticket.id && next.ticket.state === 'deliver')) {

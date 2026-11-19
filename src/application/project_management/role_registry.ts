@@ -172,6 +172,18 @@ export class RoleRegistry {
     }));
   }
 
+  /** Returns the qualified actors that currently prevent a normal dispatch from proceeding. */
+  async capacityBlockers(ticket: Ticket, step: Step): Promise<ActorRegistration[]> {
+    const qualified = await this.eligible(ticket, step, { ignoreCapacity: true });
+    if (qualified.length === 0 || qualified.some(candidate => candidate.availableCapacity > 0)) return [];
+    // Normal routing can assemble an unregistered default role. Let it do so before declaring
+    // the remaining registered actors' reservations a blocker.
+    const language = await this.projectLanguage(ticket.projectId);
+    if (language && !(await this.actors(ticket.projectId)).some(actor =>
+      actor.roleId === defaultRoleForStep(step.type, language))) return [];
+    return qualified.map(candidate => candidate.actor);
+  }
+
   async route(
     ticket: Ticket,
     step?: Step,

@@ -1,6 +1,7 @@
 import type { AuditLogger } from '../audit/audit.js';
 import { redactCredentialText } from '../audit/audit.js';
-import { BusinessRequestInputError, TicketReviewOwnerSchema, type BusinessRequestInput } from '../application/execution/business_request_input.js';
+import { BusinessRequestInputError, TicketReviewOwnerSchema, validateBusinessRequestInput,
+  assertBusinessRequestInputRecord, type BusinessRequestInput } from '../application/execution/business_request_input.js';
 import { OperationActorBindingSchema } from '../application/execution/execution_turn_request.js';
 import {
   buildTicketReviewMessages, consumeTicketReview, TICKET_REVIEW_PROTOCOL, TICKET_REVIEW_RULE_ID,
@@ -84,6 +85,44 @@ export async function resolveRuntimeCrReviewRetry(input: {
   throw unfinishedReview(requestId, 'ticket_review_retry_scope');
 }
 
+/** A transport retry keeps the existing diagnosis round; it never adds another evidence round. */
+export async function resolveRuntimeCrDiagnosisRetry(input: {
+  requestId: string; container: ProjectContainer; repository: Pick<DomainObjectRepositoryPort, 'read'>;
+  projectId: ObjectId; phaseId: ObjectId;
+}) {
+  const { requestId, container, repository, projectId, phaseId } = input;
+  const root = container.state.abs('llm', 'business-inputs');
+  const inputs = new FileBusinessRequestInputStore(root, container.root);
+  const record = await inputs.read(requestId);
+  const owner = record?.owner;
+  const phase = await repository.read(phaseId);
+  const project = await repository.read(projectId);
+  if (phase.objectType !== 'phase' || phase.state !== 'in_progress' || phase.projectId !== projectId ||
+    project.objectType !== 'project' || project.currentPhaseId !== phaseId ||
+    owner?.kind !== 'ticket-review' || owner.projectId !== projectId || owner.phaseId !== phaseId) {
+    throw unfinishedReview(requestId, 'diagnosis_retry_scope');
+  }
+  const review = phase.problemReviews.find(item => item.id === owner.subjectId);
+  const round = review?.rounds.at(-1);
+  const source = review?.sourceTicketId && await repository.read(review.sourceTicketId);
+  if (!review || review.origin !== 'change-request-contradiction' || !round || round.verdict ||
+    review.reporterActorId !== owner.actorId || !source || source.objectType !== 'ticket' ||
+    source.type !== 'change-request' || source.phaseId !== phaseId || source.state === 'closed' || source.state === 'cancelled' ||
+    source.workspaceBinding?.revision !== review.candidateIdentity) throw unfinishedReview(requestId, 'diagnosis_retry_scope');
+  const retries = new FileTicketReviewRetryStore(root, container.root);
+  const visited = new Set<string>();
+  let current = round.requestId.toLowerCase();
+  while (!visited.has(current)) {
+    if (current === requestId.toLowerCase()) return review.id;
+    visited.add(current);
+    const previous = await inputs.read(current);
+    const receipt = previous && await retries.read(round.requestId, previous);
+    if (!receipt) break;
+    current = receipt.retryRequestId;
+  }
+  throw unfinishedReview(requestId, 'diagnosis_retry_scope');
+}
+
 /** The request id belongs to a persisted delivery/report, never to a transient run invocation. */
 export async function judgeRuntimeTicketReview(input: TicketReviewInput & {
   config: XCompilerRuleConfig; container: ProjectContainer; recordReplay: RecordReplayController;
@@ -96,7 +135,8 @@ export async function judgeRuntimeTicketReview(input: TicketReviewInput & {
   const recovery = createRuntimeBusinessRequestRecovery(container, audit);
   const inputs = createRuntimeBusinessRequestInputs(container, audit);
   const root = container.state.abs('llm', 'business-inputs');
-  const retries = payload.kind === 'ticket-acceptance' ? new FileTicketReviewRetryStore(root, container.root) : undefined;
+  const diagnosis = payload.kind === 'problem-confirmation' && payload.confirmationMode === 'change-request-contradiction';
+  const retries = payload.kind === 'ticket-acceptance' || diagnosis ? new FileTicketReviewRetryStore(root, container.root) : undefined;
   const requested = input.retryFailedRequestId?.toLowerCase();
   let logicalRequestId = deliveryRequestId;
   let authorizedBy: string | undefined;
@@ -118,6 +158,35 @@ export async function judgeRuntimeTicketReview(input: TicketReviewInput & {
       return consumeTicketReview(restored.assessment, payload, correction?.text);
     }
 
+    if (diagnosis && retries) {
+      const record = await new FileBusinessRequestInputStore(root, container.root).read(logicalRequestId);
+      let receipt = record && await retries.read(deliveryRequestId, record);
+      if (record && (receipt || requested === logicalRequestId)) {
+        const original = validateBusinessRequestInput({ schemaVersion: record.schemaVersion, logicalRequestId,
+          owner: record.owner, templateVersion: record.templateVersion, outputProtocol: record.outputProtocol,
+          snapshotDigest: record.snapshotDigest, messages });
+        assertBusinessRequestInputRecord(record, original);
+        assertReviewInput(original, actor, payload, messages);
+        const proof = await readFailedTicketReviewAttempt({ root: container.state.abs('audit'), containerRoot: container.root,
+          inputRecord: record, originalInput: original, attemptStore: new FileBusinessRequestAttemptStore(root, container.root) }, signal);
+        if (!proof) throw unfinishedReview(logicalRequestId, 'ticket_review_failure_unproven');
+        if (receipt && (receipt.providerAttemptId !== proof.providerAttemptId || receipt.attemptDigest !== proof.attemptDigest)) {
+          throw unfinishedReview(logicalRequestId, 'ticket_review_retry_failure');
+        }
+        if (!receipt) {
+          if (proof.restoredFromRetainedInput) await audit.event('note', 'Verified failed diagnosis evidence against its retained original digests', {
+            messageId: 'llm.diagnosis_retry_evidence_verified', logicalRequestId, inputDigest: record.inputDigest,
+            providerAttemptId: proof.providerAttemptId, attemptDigest: proof.attemptDigest,
+            source: 'retained-diagnosis-round',
+          }, { persistence: 'required' });
+          receipt = await retries.create(deliveryRequestId, record,
+            { providerAttemptId: proof.providerAttemptId, attemptDigest: proof.attemptDigest });
+        }
+        authorizedBy = logicalRequestId;
+        logicalRequestId = receipt.retryRequestId;
+        continue;
+      }
+    }
     const retained = await inputs.resume({ logicalRequestId, signal });
     if (retained.status === 'not-found') {
       if (authorizedBy === requested) break;

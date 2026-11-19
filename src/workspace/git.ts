@@ -84,9 +84,10 @@ export class GitService {
   }
 
   /** 在某个 Step 的某次重试前打快照；返回 commit sha。 */
-  async snapshot(stepId: string, retry: number, message?: string): Promise<string> {
+  async snapshot(stepId: string, retry: number, message?: string, validateIndex?: () => Promise<void>): Promise<string> {
     await this.ensureRepo();
     await this.prepareSnapshotIndex();
+    await validateIndex?.();
     const tag = `[xcompiler] ${stepId}#${retry}${message ? ` ${message}` : ''}`;
     // 没有变化也产生一个空 commit，便于精准 revert；同时避免 status/diff 在损坏 HEAD tree 上失败。
     const r = await this.git.commit(tag, undefined, { '--allow-empty': null });

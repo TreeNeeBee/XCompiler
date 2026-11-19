@@ -72,6 +72,15 @@ describe('required original business request input audit', () => {
     });
   });
 
+  it('recovers JSON evidence containing previously protected source without swallowing escaped newlines', async () => {
+    const source = 'token = [REDACTED]\n    return value\n';
+    const content = JSON.stringify({ evidence: [{ ref: 'candidate:src/parser.py', content: source }] });
+    const current = await capture(content);
+    expect(await adapters().audit.recover(current.record)).toEqual(current.input);
+    const saved = (await rows())[0]!.data!.input as BusinessRequestInput;
+    expect(JSON.parse(saved.messages[1]!.content).evidence[0].content).toBe(source);
+  });
+
   it('writes protected evidence but refuses to restore redacted values', async () => {
     const current = await capture('Observed authorization: test-credential-value');
     const protectedInput = protectAuditContent(current.input, 'redacted');

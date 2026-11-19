@@ -39,7 +39,7 @@ solution: |
   assertions against the real product module, then rerun. Never change the selector to a path that
   happens to exist, and never delete the selector to make the failure go away.
 evidence:
-  - "Live dbc2excel CODE Step: 10 identical pytest exit=4 results across 6 attempts, 69 accurate 'outputs still missing' messages ignored, run stopped by the non-convergence guard at 11/8"
+  - "Live derived-project validation CODE Step: 10 identical pytest exit=4 results across 6 attempts, 69 accurate 'outputs still missing' messages ignored, run stopped by the non-convergence guard at 11/8"
   - "The five unwritten outputs were the Step's own declared unit tests plus its unit-test plan"
 stats:
   uses: 0

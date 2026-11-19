@@ -393,7 +393,7 @@ describe('ProjectOrchestrator', () => {
         : { messageId: 'domain.phase_release_tagged', tag: 'v1.0.0', revision: head, created: true }));
     });
 
-    // dbc2excel-5: each Phase's development report was written after its release was tagged, so no release
+    // a validation project: each Phase's development report was written after its release was tagged, so no release
     // held its own report. Delivery writes it first; the revision recorded and tagged is the one holding it.
     it('writes the development report into the revision it records on the Phase and tags', async () => {
       const setup = await fixture();
@@ -431,7 +431,7 @@ describe('ProjectOrchestrator', () => {
       expect(tagged).toEqual([revisions[2]]);
     });
 
-    // dbc2excel-6 P1: the report a non-final delivery writes links itself to the Phase, inside delivery.
+    // a validation project P1: the report a non-final delivery writes links itself to the Phase, inside delivery.
     // completePhase then transitioned the copy it had read before, and the registry refused it.
     it('delivers the Phase its own report was linked to while delivery was assembled', async () => {
       const setup = await fixture();

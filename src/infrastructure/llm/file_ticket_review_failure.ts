@@ -1,11 +1,13 @@
 import { z } from 'zod';
+import { protectLegacyAuditContent } from '../../audit/audit.js';
+import { canonicalRuleJson } from '../../application/rules/rule_evidence_encoding.js';
 import {
   assertBusinessRequestAttemptInput, assertBusinessRequestAttemptRecord, BusinessRequestAttemptError,
   validateBusinessRequestAttempt, type BusinessRequestAttemptStore,
 } from '../../application/execution/business_request_attempt.js';
 import {
   assertBusinessRequestInputRecord, validateBusinessRequestInput, validateBusinessRequestInputRecord,
-  type BusinessRequestInputRecord,
+  type BusinessRequestInputRecord, type BusinessRequestInput,
 } from '../../application/execution/business_request_input.js';
 import { RuleDigestSchema } from '../../domain/rules/vector_index.js';
 import { readRawLLMAudit } from './raw_llm_audit.js';
@@ -34,10 +36,15 @@ const EvidenceKinds = new Map([
 export async function readFailedTicketReviewAttempt(input: {
   root: string; containerRoot: string; inputRecord: BusinessRequestInputRecord;
   attemptStore: Pick<BusinessRequestAttemptStore, 'read'>;
-}, signal?: AbortSignal): Promise<Readonly<{ providerAttemptId: string; attemptDigest: string }> | undefined> {
+  /** Exact material from a retained diagnosis round, never a guessed reversal of redaction. */
+  originalInput?: BusinessRequestInput;
+}, signal?: AbortSignal): Promise<Readonly<{ providerAttemptId: string; attemptDigest: string; restoredFromRetainedInput?: true }> | undefined> {
   const { logicalRequestId } = input.inputRecord;
   const original = validateBusinessRequestInputRecord(input.inputRecord, logicalRequestId);
   if (original.owner.kind !== 'ticket-review') return undefined;
+  const provided = input.originalInput && validateBusinessRequestInput(input.originalInput);
+  if (provided) assertBusinessRequestInputRecord(original, provided);
+  let restoredFromRetainedInput = false;
   const fail = (reason: 'audit_invalid' | 'audit_ambiguous' | 'audit_mismatch' | 'audit_missing', field: string, cause?: unknown) =>
     new BusinessRequestAttemptError(reason, { logicalRequestId, field }, { cause });
   const parse = <T>(schema: z.ZodType<T>, data: unknown, field: string): T => {
@@ -80,7 +87,12 @@ export async function readFailedTicketReviewAttempt(input: {
     throw fail('audit_mismatch', capture.messageId);
   }
   try { assertBusinessRequestInputRecord(original, validateBusinessRequestInput(captured.input)); }
-  catch (cause) { throw fail('audit_mismatch', capture.messageId, cause); }
+  catch (cause) {
+    if (!provided || canonicalRuleJson(protectLegacyAuditContent(provided)) !== canonicalRuleJson(captured.input)) {
+      throw fail('audit_mismatch', capture.messageId, cause);
+    }
+    restoredFromRetainedInput = true;
+  }
 
   const attempts = prepared.map(event => parse(Attempt, event.data, event.messageId));
   if (new Set(attempts.map(attempt => attempt.providerAttemptId)).size !== attempts.length) {
@@ -99,11 +111,24 @@ export async function readFailedTicketReviewAttempt(input: {
   if (attemptRecord.digest !== last.attemptRecordDigest || attemptRecord.finalRequestDigest !== last.finalRequestDigest
     || attemptRecord.provider !== failure.provider) throw fail('audit_mismatch', failed.messageId);
   try { assertBusinessRequestAttemptRecord(attemptRecord, validateBusinessRequestAttempt(last.request)); }
-  catch (cause) { throw fail('audit_mismatch', 'llm.business_request_attempt', cause); }
+  catch (cause) {
+    if (!provided) throw fail('audit_mismatch', 'llm.business_request_attempt', cause);
+    const retained = validateBusinessRequestAttempt(last.request);
+    if (retained.messages.length < provided.messages.length) throw fail('audit_mismatch', 'llm.business_request_attempt', cause);
+    const recovered = validateBusinessRequestAttempt({ ...retained,
+      messages: [...retained.messages.slice(0, retained.messages.length - provided.messages.length), ...provided.messages] });
+    // Keep the recorded Rules prefix and prove the complete provider request against its old digest.
+    assertBusinessRequestAttemptRecord(attemptRecord, recovered);
+    if (canonicalRuleJson(protectLegacyAuditContent(recovered)) !== canonicalRuleJson(retained)) {
+      throw fail('audit_mismatch', 'llm.business_request_attempt', cause);
+    }
+    restoredFromRetainedInput = true;
+  }
   const started = parse(Route, start.data, start.messageId);
   const ended = parse(Route, end.data, end.messageId);
   if (started.model !== ended.model || started.role !== attemptRecord.role || ended.role !== attemptRecord.role) {
     throw fail('audit_mismatch', end.messageId);
   }
-  return Object.freeze({ providerAttemptId: last.providerAttemptId, attemptDigest: attemptRecord.digest });
+  return Object.freeze({ providerAttemptId: last.providerAttemptId, attemptDigest: attemptRecord.digest,
+    ...(restoredFromRetainedInput ? { restoredFromRetainedInput: true as const } : {}) });
 }

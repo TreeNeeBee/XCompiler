@@ -1,8 +1,10 @@
 import type { ObjectId } from '../../domain/identity/object_id.js';
 import type { Phase } from '../../domain/phases/phase.js';
 import type { DomainObjectRepositoryPort } from '../../domain/ports/repository.js';
+import type { ActorRegistration } from '../../domain/project_management/index.js';
 import { STEP_TYPE_ORDER, stepSatisfiesDependency, type Step } from '../../domain/steps/step.js';
 import { isActiveTicket, workStepId, type Ticket, type WorkTicket } from '../../domain/tickets/ticket.js';
+import { TicketRegistrationService } from './ticket_registration_service.js';
 import { TicketWorkflow } from './ticket_workflow.js';
 
 export type WorkMode = 'normal' | 'debug' | 'verification' | 'enhancement' | 'change-request';
@@ -13,86 +15,83 @@ export interface ScheduledWork {
   ticket: Ticket;
 }
 
+export class QueueCapacityError extends Error {
+  constructor(readonly waiting: readonly string[]) {
+    super(`Work is waiting for Actor capacity: ${waiting.join('; ')}`);
+  }
+}
+
 export class WorkScheduler {
   private readonly tickets: TicketWorkflow;
+  private readonly registration: TicketRegistrationService;
 
   constructor(private readonly repository: DomainObjectRepositoryPort) {
     this.tickets = new TicketWorkflow(repository);
+    this.registration = new TicketRegistrationService(repository);
   }
 
   async next(phaseId: ObjectId): Promise<ScheduledWork | undefined> {
-    const phase = await this.requirePhase(phaseId);
-    const steps = await this.phaseSteps(phase);
-    const tickets = await this.tickets.list();
-    const resumed = await this.inProgressWork(phase, steps, tickets);
-    if (resumed) return resumed;
-    for (const step of steps) {
-      const corrective = await this.readyCorrectiveTicket(step, tickets);
-      if (corrective) {
-        return { phase, step, ticket: corrective };
-      }
-      // Closed Steps suppress their ordinary Story only. A queued corrective Ticket is allowed to
-      // reopen one, and was therefore considered above — and unready dependencies suppress it the
-      // same way, for the same reason. A corrective Ticket is matched against the Step it repairs,
-      // which is routinely upstream of where the defect was found, so gating it on that Step's
-      // dependencies hid every repair queued behind a reopened Step. A live Phase stopped with
-      // every actor idle and seven such repairs waiting, none of them blocked and none of them
-      // out of attempts.
-      if (step.state === 'closed') continue;
-      if (!(await this.stepDependenciesReady(step))) continue;
-      const story = tickets.find(
-        (ticket): ticket is WorkTicket =>
-          ticket.type === 'story' &&
-          ticket.workKind === 'v-model-step' &&
-          ticket.stepId === step.id,
-      );
-      if (
-        story &&
-        (story.state === 'created' || story.state === 'pending' ||
-          story.state === 'reopened' || story.state === 'in_progress') &&
-        story.blockedByTicketIds.length === 0 &&
-        await this.ticketDependenciesReady(story, tickets)
-      ) {
-        return { phase, step, ticket: story };
-      }
-    }
-    return undefined;
+    return this.selectWork(phaseId, false);
   }
 
   async resume(phaseId: ObjectId): Promise<ScheduledWork | undefined> {
+    return this.selectWork(phaseId, true);
+  }
+
+  private async selectWork(phaseId: ObjectId, resume: boolean): Promise<ScheduledWork | undefined> {
     const phase = await this.requirePhase(phaseId);
     const steps = await this.phaseSteps(phase);
-    const inProgress = steps.filter((step) => step.state === 'in_progress');
+    const inProgress = resume ? steps.filter((step) => step.state === 'in_progress') : [];
     if (inProgress.length > 1) {
       throw new Error(
         `Phase ${phase.name} has multiple in-progress Steps: ${inProgress.map((step) => step.name).join(', ')}`,
       );
     }
     const tickets = await this.tickets.list();
-    const resumed = await this.inProgressWork(phase, steps, tickets);
-    if (resumed) return resumed;
-    if (inProgress.length === 0) return this.next(phaseId);
-    const step = inProgress[0]!;
-    const active = await this.readyCorrectiveTicket(step, tickets) ?? tickets.find(
-      (ticket) => ticket.type === 'story' && ticket.stepId === step.id && ticket.state === 'in_progress',
-    );
-    if (!active) throw new Error(`In-progress Step ${step.name} has no active Ticket`);
-    return { phase, step, ticket: active };
+    const activeStep = inProgress[0];
+    const waiting: { work: ScheduledWork; actors: ActorRegistration[] }[] = [];
+    const seen = new Set<ObjectId>();
+    for await (const work of this.orderedWork(phase, activeStep ? [activeStep] : steps, tickets, activeStep)) {
+      if (seen.has(work.ticket.id)) continue;
+      seen.add(work.ticket.id);
+      const actors = await this.registration.capacityBlockers(work.ticket, work.step);
+      if (actors.length === 0) return work;
+      waiting.push({ work, actors });
+    }
+    if (waiting.length > 0) {
+      throw new QueueCapacityError(await Promise.all(waiting.map(async ({ work, actors }) => {
+        const blockers = await Promise.all(actors.map(async (actor) => {
+          const holders = await Promise.all(actor.activeAssignmentIds.map(async (id) => {
+            const assignment = await this.repository.read(id);
+            if (assignment.objectType !== 'ticket-assignment') throw new Error(`Actor ${actor.name} has an invalid assignment`);
+            const ticket = await this.repository.read(assignment.ticketId);
+            if (ticket.objectType !== 'ticket') throw new Error(`Assignment ${id} has an invalid Ticket`);
+            return ticket.name;
+          }));
+          return `${actor.name} (${actor.activeAssignmentIds.length}/${actor.capacity}, held by ${holders.join(', ')})`;
+        }));
+        return `${work.ticket.name} → ${blockers.join(', ')}`;
+      })));
+    }
+    if (activeStep) throw new Error(`In-progress Step ${activeStep.name} has no active Ticket`);
+    return undefined;
   }
 
   /**
-   * Resume owned work before dispatching anything new.
+   * Resume owned work before dispatching anything new, with reporter verification ahead of the
+   * same Step's ordinary Story. The durable Tickets are the queue.
    *
    * A corrective child parks its parent Ticket and Step. Closing the child restores the parent
    * Ticket to `in_progress`; the Step intentionally remains `pending` until `ProjectController`
    * starts that Ticket again. Looking only at Step state loses this hand-off and lets an earlier
    * created Ticket compete with the parent's already-reserved actor capacity.
    */
-  private async inProgressWork(
+  private async *orderedWork(
     phase: Phase,
     steps: readonly Step[],
     tickets: readonly Ticket[],
-  ): Promise<ScheduledWork | undefined> {
+    activeStep?: Step,
+  ): AsyncGenerator<ScheduledWork> {
     const stepById = new Map(steps.map((step) => [step.id, step]));
     const candidates = tickets
       .filter((ticket) => ticket.state === 'in_progress')
@@ -113,14 +112,33 @@ export class WorkScheduler {
         await this.stepDependenciesReady(candidate.step) &&
         await this.ticketDependenciesReady(candidate.ticket, tickets)
       ) {
-        return {
-          phase,
-          step: candidate.step,
-          ticket: candidate.ticket,
-        };
+        if (candidate.ticket.type === 'story') {
+          for (const ticket of activeCorrectiveTickets(candidate.step, tickets)) {
+            if (workModeFor(ticket) === 'verification' && await this.ticketDependenciesReady(ticket, tickets)) {
+              yield { phase, step: candidate.step, ticket };
+            }
+          }
+        }
+        yield { phase, ...candidate };
       }
     }
-    return undefined;
+    for (const step of steps) {
+      // Corrective work can reopen a finished Step. It uses its own ticket dependencies,
+      // because ordinary Story dependencies may point at the work that its repair will unblock.
+      for (const ticket of activeCorrectiveTickets(step, tickets)) {
+        if (await this.ticketDependenciesReady(ticket, tickets)) yield { phase, step, ticket };
+      }
+      if (step.state === 'closed' || (!activeStep && !(await this.stepDependenciesReady(step)))) continue;
+      const story = tickets.find(
+        (ticket): ticket is WorkTicket =>
+          ticket.type === 'story' && ticket.workKind === 'v-model-step' && ticket.stepId === step.id,
+      );
+      if (!story) continue;
+      if (activeStep ? story.state === 'in_progress' : (
+        (story.state === 'created' || story.state === 'pending' || story.state === 'reopened' || story.state === 'in_progress') &&
+        story.blockedByTicketIds.length === 0 && await this.ticketDependenciesReady(story, tickets)
+      )) yield { phase, step, ticket: story };
+    }
   }
 
   async phaseSteps(phase: Phase): Promise<Step[]> {
@@ -144,16 +162,6 @@ export class WorkScheduler {
       const dependency = tickets.find((candidate) => candidate.id === dependencyId);
       return !!dependency && (dependency.state === 'resolved' || dependency.state === 'closed');
     });
-  }
-
-  private async readyCorrectiveTicket(
-    step: Step,
-    tickets: readonly Ticket[],
-  ): Promise<Ticket | undefined> {
-    for (const candidate of activeCorrectiveTickets(step, tickets)) {
-      if (await this.ticketDependenciesReady(candidate, tickets)) return candidate;
-    }
-    return undefined;
   }
 
   private async requirePhase(id: ObjectId): Promise<Phase> {
@@ -199,6 +207,7 @@ function activeCorrectiveTickets(step: Step, tickets: readonly Ticket[]): Ticket
 }
 
 function correctionRank(ticket: Ticket): number {
+  if (workModeFor(ticket) === 'verification') return 4;
   if (ticket.type === 'change-request') return 3;
   if (ticket.type === 'bug') return 2;
   if (ticket.type === 'enhancement') return 1;

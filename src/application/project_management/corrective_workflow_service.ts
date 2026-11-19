@@ -236,11 +236,22 @@ export class CorrectiveWorkflowService {
     testOutcomes?: readonly TestOutcome[];
     verificationSelectors?: readonly string[];
     affectedArtifacts?: readonly string[];
+    bugReplay?: { ticketId: ObjectId; verdict: 'recurrence' | 'independent' };
   }): Promise<BugTicket> {
     let failed = await this.state.requireStep(input.failedStepId);
+    const sourceBug = input.bugReplay ? await this.state.requireTicket(input.bugReplay.ticketId) : undefined;
+    if (sourceBug && (sourceBug.type !== 'bug' || sourceBug.state !== 'deliver' ||
+      sourceBug.phaseId !== failed.phaseId || sourceBug.reporterActorId !== input.creatorActorId ||
+      sourceBug.verificationContract.verificationStepId !== failed.id)) {
+      throw new Error('Bug replay routing requires the delivered Bug and its original reporter');
+    }
+    const replayed = sourceBug?.type === 'bug' ? sourceBug : undefined;
+    const recurrence = input.bugReplay?.verdict === 'recurrence' ? replayed : undefined;
+    const awaitingVerification = input.bugReplay?.verdict === 'independent' ? replayed : undefined;
     if (!failed.pairedStepId) throw new Error(`Failure routing requires a paired Step: ${failed.name}`);
-    let target = input.targetStepId
-      ? await this.state.requireStep(input.targetStepId)
+    const targetId = recurrence?.failure.targetStepId ?? input.targetStepId;
+    let target = targetId
+      ? await this.state.requireStep(targetId)
       : isVerificationStep(failed)
         ? failureConfinedToSupplement(failed, input.failure, input.testOutcomes ?? [],
           inheritedSupplementRoots(failed.type, await earlierPhaseTestOwners(this.repository, failed.phaseId)))
@@ -277,7 +288,9 @@ export class CorrectiveWorkflowService {
     const reopened = await this.tickets.reopenResolvedForRecurrence({
       failedStep: failed,
       targetStep: target,
-      identity: contracts.identity,
+      identity: recurrence?.failure.identity ?? contracts.identity,
+      originalBugId: recurrence?.id,
+      awaitingVerification,
       reopenedByActorId: input.creatorActorId,
       parentChangeRequestId: input.parentChangeRequestId,
       routingObjects: [...routing.objects, ...(discovering?.objects ?? [])],
@@ -290,6 +303,7 @@ export class CorrectiveWorkflowService {
       }
       return reopened;
     }
+    if (recurrence) throw new Error(`Cannot reopen the delivered Bug ${recurrence.name}`);
     const bug = await this.tickets.openBug({
       creatorActorId: input.creatorActorId,
       failedStep: failed,
@@ -317,6 +331,7 @@ export class CorrectiveWorkflowService {
       workspaceBinding: input.workspaceBinding,
       identity: contracts.identity,
       verificationContract: contracts.verificationContract,
+      awaitingVerification,
     });
     await this.state.checkpoint(failed, `Failure routed to ${target.name} through ${bug.name}`);
     await this.state.checkpoint(target, `Reopened by ${bug.name}`);
@@ -530,6 +545,7 @@ export class CorrectiveWorkflowService {
   async verifyDeliveredBug(input: { work: ScheduledWork; qualityAssessmentId: ObjectId; testOutcomes: readonly TestOutcome[] }): Promise<boolean> {
     const bug = await this.state.requireTicket(input.work.ticket.id);
     if (bug.type !== 'bug' || bug.state !== 'deliver') throw new Error('Bug acceptance requires a delivered Bug');
+    if (bug.blockedByTicketIds.length > 0) return false;
     const step = await this.state.requireStep(input.work.step.id);
     if (!bugVerificationSatisfied(bug, step, input.testOutcomes)) return false;
     let phaseGateAssessmentId: ObjectId | undefined;
