@@ -1,34 +1,28 @@
 name: Release
 
-# 触发条件：推送形如 v0.1.0 / v1.2.3-beta1 的 tag。
-# 流水线职责：
-#   1. checkout 该 tag
-#   2. 装 Node 24 + pnpm/npm 依赖
-#   3. 跑 vitest + tsc 作为发版门
-#   4. 跨平台打 4 个 pkg 产物（linux-x64 / linux-arm64 / macos-arm64 / win-x64）
-#   5. 算 SHA256SUMS
-#   6. 从 git tag annotation（优先）/ commit message（回退）抽取 RELEASE_NOTES
-#   7. 调 softprops/action-gh-release 创建 GitHub Release，上传全部产物
-#
-# 注：二进制产物**不入版本库**，分发完全走 GitHub Releases；本地 release/ 目录
-# 已在 .gitignore 中忽略，仅作为打包脚本的本地输出位置。
+# 推送 v* tag 后，先完成共同发版门禁，再发布 GitHub Release 和已构建的 npm 归档。
 on:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write   # 创建 release / 上传 asset 必需
-  id-token: write   # npm trusted publishing / provenance 必需
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      npm-spec: ${{ steps.version.outputs.npm-spec }}
+      npm-tag: ${{ steps.version.outputs.npm-tag }}
     steps:
       - name: Checkout tag
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0   # 需要完整历史以便 git tag -l --format / git log 抽 notes
+          fetch-depth: 0   # Release notes use the tag's reachable history.
+          persist-credentials: false
 
       - name: Setup Node 24
         uses: actions/setup-node@v6
@@ -40,6 +34,7 @@ jobs:
         run: npm ci
 
       - name: Verify release version
+        id: version
         run: |
           npm run version:check
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
@@ -48,6 +43,13 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION" >&2
             exit 1
           fi
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          case "${PACKAGE_VERSION%%+*}" in
+            *-*) NPM_TAG=next ;;
+            *) NPM_TAG=latest ;;
+          esac
+          echo "npm-spec=$PACKAGE_NAME@$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "npm-tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Type-check (product and tests)
         run: npm run typecheck
@@ -58,6 +60,20 @@ jobs:
       - name: Test (vitest)
         run: npx vitest run
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Build npm package
+        run: npm run build
+
+      - name: Verify npm package contents
+        run: npm run package:verify
+
+      - name: Pack npm release artifact
+        run: |
+          mkdir -p "$RUNNER_TEMP/xcompiler-npm-release"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/xcompiler-npm-release"
+
       - name: Package all targets (linux-x64 / linux-arm64 / macos-arm64 / win-x64)
         run: npm run package:all
 
@@ -65,13 +81,20 @@ jobs:
         working-directory: dist/pkg
         run: sha256sum --check SHA256SUMS
 
+      - name: Upload npm release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcompiler-npm-package
+          path: ${{ runner.temp }}/xcompiler-npm-release/*.tgz
+          if-no-files-found: error
+          overwrite: true
+
       - name: Extract release notes (commits between prev tag → this tag, or README excerpt for first release)
         id: notes
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # 取上一个 v 开头的 tag（按 creatordate 倒序，跳过当前 tag）
-          PREV_TAG="$(git tag --list 'v*' --sort=-creatordate | grep -v "^${TAG}$" | head -n1 || true)"
+          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" "$TAG" 2>/dev/null || true)"
 
           {
             echo "# XCompiler ${TAG}"
@@ -125,8 +148,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: XCompiler ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.notes_file }}
-          # 含 - 视为 prerelease（v0.1.0-rc1 / v1.0.0-beta 等）；正式版去掉 -
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ steps.version.outputs.npm-tag == 'next' }}
+          fail_on_unmatched_files: true
           files: |
             dist/pkg/xcompiler-linux-x64.tar.gz
             dist/pkg/xcompiler-linux-arm64.tar.gz
@@ -137,10 +160,11 @@ jobs:
   npm-publish:
     name: Publish npm package
     runs-on: ubuntu-22.04
+    needs: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Checkout tag
-        uses: actions/checkout@v7
-
       - name: Setup Node 24
         uses: actions/setup-node@v6
         with:
@@ -148,36 +172,27 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
-      - name: Install deps
-        run: npm ci
-
-      - name: Verify release version
-        run: |
-          npm run version:check
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION" >&2
-            exit 1
-          fi
-
-      - name: Audit production dependencies
-        run: npm audit --omit=dev
-
-      - name: Build npm package
-        run: npm run build
-
-      - name: Verify npm package contents
-        run: npm pack --dry-run
+      - name: Download checked npm artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: xcompiler-npm-package
+          path: ${{ runner.temp }}/xcompiler-npm-release
 
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_SPEC: ${{ needs.release.outputs.npm-spec }}
+          NPM_TAG: ${{ needs.release.outputs.npm-tag }}
         run: |
           set -euo pipefail
-          PACKAGE_SPEC="$(node -p "const p=require('./package.json'); p.name + '@' + p.version")"
+          shopt -s nullglob
+          PACKAGES=("$RUNNER_TEMP"/xcompiler-npm-release/*.tgz)
+          if [[ "${#PACKAGES[@]}" -ne 1 ]]; then
+            echo "Expected exactly one checked npm package archive." >&2
+            exit 1
+          fi
 
-          if npm publish --provenance --access public; then
+          if npm publish "${PACKAGES[0]}" --provenance --access public --tag "$NPM_TAG"; then
             exit 0
           fi
 
@@ -191,4 +206,4 @@ jobs:
             echo "Trusted publishing failed and NPM_TOKEN is not configured." >&2
             exit 1
           fi
-          npm publish --access public
+          npm publish "${PACKAGES[0]}" --access public --tag "$NPM_TAG"

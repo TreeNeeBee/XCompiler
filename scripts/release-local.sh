@@ -12,13 +12,13 @@ Usage:
 
 Prepares a local XCompiler release without pushing anything:
   1. Sync package.json, package-lock.json, and src/version.ts to the tag version.
-  2. Run release gates: version:check, npm audit, typecheck, lint, test, build, npm pack dry-run.
+  2. Run release gates: version:check, npm audit, typecheck, lint, test, build, package:verify.
   3. Commit the version metadata as "chore: release <tag>".
   4. Create an annotated local git tag.
 
 Options:
-  --replace-local-tag  Delete an existing local tag with the same name before recreating it.
-                       This does not delete or modify any remote tag.
+  --replace-local-tag  Replace an existing local tag with the same name after all checks pass.
+                       Remote tags are unaffected.
   --skip-audit         Skip npm audit --omit=dev for offline/local-only preparation.
   --package-all        Also run npm run package:all after the npm package dry-run.
   -h, --help           Show this help.
@@ -87,12 +87,9 @@ if [[ -z "$BRANCH" ]]; then
   BRANCH="HEAD"
 fi
 
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  if [[ "$REPLACE_LOCAL_TAG" -eq 1 ]]; then
-    git tag -d "$TAG"
-  else
-    die "local tag $TAG already exists; rerun with --replace-local-tag if this is a failed local tag"
-  fi
+EXISTING_TAG="$(git rev-parse -q --verify "refs/tags/$TAG" || true)"
+if [[ -n "$EXISTING_TAG" && "$REPLACE_LOCAL_TAG" -ne 1 ]]; then
+  die "local tag $TAG already exists; rerun with --replace-local-tag if this is a failed local tag"
 fi
 
 echo "Preparing local release $TAG on $BRANCH"
@@ -115,36 +112,14 @@ npm run typecheck
 npm run lint
 npm run test
 npm run build
-
-PACK_JSON="$(mktemp "${TMPDIR:-/tmp}/xcompiler-pack.XXXXXX.json")"
-cleanup() {
-  rm -f "$PACK_JSON"
-}
-trap cleanup EXIT
-
-NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-${TMPDIR:-/tmp}/xcompiler-npm-cache}" \
-  npm pack --dry-run --json --ignore-scripts > "$PACK_JSON"
-
-node --input-type=module - "$PACK_JSON" <<'NODE'
-import { readFileSync } from 'node:fs';
-
-const file = process.argv[2];
-const packs = JSON.parse(readFileSync(file, 'utf8'));
-const files = new Set((packs[0]?.files ?? []).map((entry) => entry.path));
-const required = ['config.example.yaml', '.env.example', 'package.json', 'README.md'];
-const forbidden = ['config.yaml', 'llm_scores.yaml'];
-
-const missing = required.filter((name) => !files.has(name));
-const leaked = forbidden.filter((name) => files.has(name));
-if (missing.length > 0 || leaked.length > 0) {
-  if (missing.length > 0) console.error(`npm package missing required files: ${missing.join(', ')}`);
-  if (leaked.length > 0) console.error(`npm package leaks local runtime files: ${leaked.join(', ')}`);
-  process.exit(1);
-}
-NODE
+NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-${TMPDIR:-/tmp}/xcompiler-npm-cache}" npm run package:verify
 
 if [[ "$PACKAGE_ALL" -eq 1 ]]; then
   npm run package:all
+fi
+
+if [[ "$(git rev-parse -q --verify "refs/tags/$TAG" || true)" != "$EXISTING_TAG" ]]; then
+  die "local tag $TAG changed during release checks"
 fi
 
 git add package.json package-lock.json src/version.ts
@@ -154,7 +129,11 @@ else
   git commit -m "chore: release $TAG"
 fi
 
-git tag -a "$TAG" -m "XCompiler $TAG"
+if [[ -n "$EXISTING_TAG" ]]; then
+  git tag --force -a "$TAG" -m "XCompiler $TAG"
+else
+  git tag -a "$TAG" -m "XCompiler $TAG"
+fi
 
 echo
 echo "Local release ready: $TAG"

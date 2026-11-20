@@ -205,8 +205,11 @@ sign_macos() {
       msg package.codesign_missing >&2
       return 1
     fi
-    codesign --force --sign - --timestamp=none "$binary"
-    codesign --verify --verbose=2 "$binary"
+    if ! codesign --force --sign - --timestamp=none "$binary" ||
+        ! codesign --verify --verbose=2 "$binary"; then
+      msg package.signing_failed "$binary" >&2
+      return 1
+    fi
     msg package.signed "$(command -v codesign)"
     return 0
   fi
@@ -214,7 +217,10 @@ sign_macos() {
   local signer
   signer="$(ensure_ldid || true)"
   if [[ -n "$signer" ]]; then
-    "$signer" -S "$binary"
+    if ! "$signer" -S "$binary"; then
+      msg package.signing_failed "$binary" >&2
+      return 1
+    fi
     msg package.signed "$signer"
     return 0
   fi
@@ -231,16 +237,50 @@ smoke_native() {
 
   local actual_version
   if ! actual_version="$("$binary" --version)"; then
-    msg package.smoke_failed "$binary" >&2
+    msg package.smoke_failed "$binary" --version >&2
     return 1
   fi
   if [[ "$actual_version" != "$VERSION" ]]; then
     msg package.smoke_version_mismatch "$VERSION" "$actual_version" >&2
     return 1
   fi
-  "$binary" --help >/dev/null
+  if ! "$binary" --help >/dev/null; then
+    msg package.smoke_failed "$binary" --help >&2
+    return 1
+  fi
   msg package.smoke_passed "$short" "$actual_version"
 }
+
+# Keep all changes outside the public output until every requested target succeeds.
+# The lock also protects the CJS output used by pkg from another package.sh run.
+mkdir -p dist
+LOCK_DIR="$ROOT/dist/.pkg-lock"
+if ! mkdir "$LOCK_DIR"; then
+  msg package.output_locked "$LOCK_DIR" >&2
+  exit 1
+fi
+WORK_ROOT=""
+cleanup() {
+  if [[ -n "$WORK_ROOT" ]]; then
+    if [[ -e "$WORK_ROOT/previous" || -L "$WORK_ROOT/previous" ]]; then
+      if [[ ! -e "$OUT_ROOT" && ! -L "$OUT_ROOT" ]]; then
+        if ! mv "$WORK_ROOT/previous" "$OUT_ROOT"; then
+          msg package.restore_failed "$WORK_ROOT/previous" >&2
+          rmdir "$LOCK_DIR"
+          return 1
+        fi
+      fi
+    fi
+    rm -rf "$WORK_ROOT"
+  fi
+  rmdir "$LOCK_DIR"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+WORK_ROOT="$(mktemp -d "$ROOT/dist/.pkg-stage.XXXXXX")"
+STAGED_OUTPUT="$WORK_ROOT/pkg"
+mkdir "$STAGED_OUTPUT"
 
 # ---------------- 1. 生成 CJS 单文件包 ----------------
 msg package.cjs_build "$ENTRY"
@@ -259,45 +299,84 @@ fi
 echo
 msg package.cross_compile
 
-mkdir -p "$OUT_ROOT"
-# dist/pkg only ever holds one version under one SHA256SUMS: artifacts of another version, archives
-# whose directory is gone and staging left by an interrupted run are removed before building.
-# Targets of this version packed by an earlier run stay, so targets can be packed one at a time.
-for stale_dir in "$OUT_ROOT"/xcompiler-*/; do
-  [[ -d "$stale_dir" ]] || continue
-  stale_name="$(basename "$stale_dir")"
-  stale_version="$(cat "$stale_dir/VERSION" 2>/dev/null || true)"
-  if [[ "$stale_name" == *.staging || "$stale_version" != "$VERSION" ]]; then
-    msg package.stale_removed "$stale_name" "${stale_version:-?}"
-    rm -rf "$stale_dir" "$OUT_ROOT/$stale_name.tar.gz" "$OUT_ROOT/$stale_name.zip"
-  fi
-done
-for stale_archive in "$OUT_ROOT"/xcompiler-*.tar.gz "$OUT_ROOT"/xcompiler-*.zip; do
-  [[ -f "$stale_archive" ]] || continue
-  stale_name="$(basename "$stale_archive")"
-  stale_name="${stale_name%.tar.gz}"
-  stale_name="${stale_name%.zip}"
-  if [[ ! -d "$OUT_ROOT/$stale_name" ]]; then
-    msg package.stale_removed "$(basename "$stale_archive")" "?"
-    rm -f "$stale_archive"
-  fi
-done
-# 共享附件
-ASSETS=(README.md LICENSE NOTICE config.example.yaml .env.example rules debug-wiki skills)
-DOC_ASSETS=(docs/agent_skills.md)
+ASSET_SNAPSHOT="$WORK_ROOT/assets"
+mkdir "$ASSET_SNAPSHOT"
+node scripts/package-assets.mjs copy "$ASSET_SNAPSHOT"
+
+# A bundle and its attachments can change even when package.json keeps the same version.
+BUILD_ID="$(node --input-type=module - "$ASSET_SNAPSHOT" "$ENTRY" <<'NODE'
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const [, , snapshot, entry] = process.argv;
+const inputs = [entry, 'package-lock.json', 'scripts/package.sh']
+  .map((file) => [file, createHash('sha256').update(readFileSync(file)).digest('hex')]);
+
+function hashAssets(directory, prefix = '') {
+  for (const child of readdirSync(directory, { withFileTypes: true })) {
+    const file = join(directory, child.name);
+    const relative = prefix + child.name;
+    if (child.isDirectory()) {
+      hashAssets(file, relative + '/');
+    } else {
+      inputs.push(['assets/' + relative, createHash('sha256').update(readFileSync(file)).digest('hex')]);
+    }
+  }
+}
+
+hashAssets(snapshot);
+console.log(createHash('sha256').update(JSON.stringify(inputs.sort())).digest('hex'));
+NODE
+)"
+printf '%s\n' "$BUILD_ID" > "$STAGED_OUTPUT/.build-sha256"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  SHA256=(shasum -a 256)
+else
+  msg package.checksum_tool_missing >&2
+  exit 1
+fi
+
+archive_name() {
+  case "$1" in
+    win-*) echo "xcompiler-$1.zip" ;;
+    *) echo "xcompiler-$1.tar.gz" ;;
+  esac
+}
+
+if [[ ! -L "$OUT_ROOT" && -f "$OUT_ROOT/.build-sha256" &&
+      "$(cat "$OUT_ROOT/.build-sha256")" == "$BUILD_ID" ]]; then
+  for t in $ALL_TARGETS macos-x64; do
+    [[ " $TARGETS " != *" $t "* ]] || continue
+    dir="xcompiler-$t"
+    archive="$(archive_name "$t")"
+    [[ -e "$OUT_ROOT/$dir" || -e "$OUT_ROOT/$archive" ]] || continue
+    if [[ ! -L "$OUT_ROOT/$dir" && ! -L "$OUT_ROOT/$archive" &&
+          -d "$OUT_ROOT/$dir" && -f "$OUT_ROOT/$archive" &&
+          -f "$OUT_ROOT/SHA256SUMS" &&
+          "$(cat "$OUT_ROOT/$dir/VERSION")" == "$VERSION" ]] &&
+        checksum="$(cd "$OUT_ROOT" && "${SHA256[@]}" "$archive")" &&
+        grep -Fxq -- "$checksum" "$OUT_ROOT/SHA256SUMS"; then
+      cp -R "$OUT_ROOT/$dir" "$OUT_ROOT/$archive" "$STAGED_OUTPUT/"
+    else
+      msg package.artifact_not_reused "$dir" >&2
+    fi
+  done
+fi
 
 build_one() {
   local short="$1"               # linux-x64 / linux-arm64 / macos-arm64 / win-x64
   local pkg_target="${NODE_VER}-${short}"
-  local outdir="$OUT_ROOT/xcompiler-${short}"
-  local staging_dir="${outdir}.staging"
+  local staging_dir="$STAGED_OUTPUT/xcompiler-${short}"
   local exe_name="xcompiler"
   [[ "$short" == win-* ]] && exe_name="xcompiler.exe"
 
   echo
   msg package.target "$pkg_target"
-  rm -rf "$staging_dir"
-  mkdir -p "$staging_dir"
+  mkdir "$staging_dir"
 
   # 注：必须 --no-bytecode（搭配 --public）禁用 V8 bytecode snapshot。
   # snapshot 在 Node20 + readline + 后续 NDJSON HTTP 流场景下会触发 SIGSEGV
@@ -309,26 +388,17 @@ build_one() {
       --no-bytecode \
       --public \
       --public-packages "*"; then
-    rm -rf "$staging_dir"
     msg package.target_failed "$pkg_target" >&2
     return 1
   fi
 
   # 附带文档与示例配置
-  for f in "${ASSETS[@]}"; do
-    [[ -f "$f" ]] && cp "$f" "$staging_dir/"
-    [[ -d "$f" ]] && cp -R "$f" "$staging_dir/"
-  done
+  cp -R "$ASSET_SNAPSHOT/." "$staging_dir/"
   for rule_source in "${REQUIRED_RULE_SOURCES[@]}"; do
     if [[ ! -f "$staging_dir/$rule_source" ]]; then
       msg package.required_asset_missing "$rule_source" >&2
-      rm -rf "$staging_dir"
       return 1
     fi
-  done
-  mkdir -p "$staging_dir/docs"
-  for f in "${DOC_ASSETS[@]}"; do
-    cp "$f" "$staging_dir/docs/"
   done
   printf '%s\n' "$VERSION" > "$staging_dir/VERSION"
 
@@ -338,18 +408,13 @@ build_one() {
   # macOS 本机使用系统 codesign；Linux 交叉打包使用 ldid。
   if [[ "$short" == macos-* ]]; then
     if ! sign_macos "$staging_dir/$exe_name"; then
-      rm -rf "$staging_dir"
       return 1
     fi
   fi
 
   if ! smoke_native "$short" "$staging_dir/$exe_name"; then
-    rm -rf "$staging_dir"
     return 1
   fi
-
-  rm -rf "$outdir"
-  mv "$staging_dir" "$outdir"
 }
 
 for t in $TARGETS; do
@@ -360,30 +425,26 @@ done
 echo
 msg package.archive
 
-cd "$OUT_ROOT"
+cd "$STAGED_OUTPUT"
 for t in $TARGETS; do
   dir="xcompiler-${t}"
-  [[ -d "$dir" ]] || continue
+  archive="$(archive_name "$t")"
   if [[ "$t" == win-* ]]; then
     if command -v zip >/dev/null 2>&1; then
-      rm -f "${dir}.zip"
-      zip -qr "${dir}.zip" "$dir" -x '*/._*'
-      msg package.created "${dir}.zip"
+      zip -qr "$archive" "$dir" -x '*/._*'
     else
       msg package.zip_missing "$dir" >&2
       exit 1
     fi
   else
-    rm -f "${dir}.tar.gz"
-    COPYFILE_DISABLE=1 tar --exclude='._*' -czf "${dir}.tar.gz" "$dir"
-    msg package.created "${dir}.tar.gz"
+    COPYFILE_DISABLE=1 tar --exclude='._*' -czf "$archive" "$dir"
   fi
+  msg package.created "$archive"
 done
 
 
 # ---------------- 4. 校验和 ----------------
-# Every archive in dist/pkg is this version (see step 2), so SHA256SUMS covers all of them, including
-# targets packed by an earlier run, rather than only the targets of this run.
+# Include both new archives and verified archives retained from the same build.
 msg package.checksum
 archives=()
 for archive in xcompiler-*.tar.gz xcompiler-*.zip; do
@@ -393,16 +454,16 @@ done
 if [[ ${#archives[@]} -eq 0 ]]; then
   msg package.no_archives >&2
   exit 1
-elif command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "${archives[@]}" > SHA256SUMS
-elif command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 "${archives[@]}" > SHA256SUMS
-else
-  msg package.checksum_tool_missing >&2
-  exit 1
 fi
+"${SHA256[@]}" "${archives[@]}" > SHA256SUMS
+"${SHA256[@]}" -c SHA256SUMS
 msg package.created "SHA256SUMS"
 cd "$ROOT"
+
+if [[ -e "$OUT_ROOT" || -L "$OUT_ROOT" ]]; then
+  mv "$OUT_ROOT" "$WORK_ROOT/previous"
+fi
+mv "$STAGED_OUTPUT" "$OUT_ROOT"
 
 echo
 msg package.complete "$OUT_ROOT"

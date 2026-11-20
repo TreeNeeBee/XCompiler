@@ -157,16 +157,15 @@ dist/pkg/
 ├── xcompiler-win-x64/
 │   ├── xcompiler.exe                  # PE32+, x86_64 — ⚠️ v0.1.0 未在 Windows 实机验证
 │   └── ...
-├── xcompiler-win-x64.zip              # 需要本机有 zip 命令；否则只产生目录
+├── xcompiler-win-x64.zip              # 需要本机有 zip 命令
 └── SHA256SUMS                         # 覆盖目录中的全部压缩包
 ```
 
 单文件可执行程序随包携带 `rules/`、`debug-wiki/`、`skills/`，运行时从可执行文件所在目录读取；未设置 `XC_PATH` 时，debug wiki 的工作副本也写在该目录的 `.xcompiler/debug-wiki`。重新打包会替换整个目录，要长期保留 debug wiki 积累的修复经验，运行时设置 `XC_PATH`（例如 `~/.xc`）。
 
-`dist/pkg` 只保存当前版本：
-- 打包前删除其他版本的产物、中断留下的 `.staging` 目录，以及没有对应目录的压缩包；
-- 同一版本分几次打包的目标会保留，所以可以逐个目标打包；
-- `SHA256SUMS` 每次按目录中的全部压缩包重新生成。
+`dist/pkg` 保存最近一次完整构建的产物。可逐个目标打包，只有构建输入相同、归档校验通过的旧目标才会保留。所有本次目标通过签名、适用的冒烟检查和归档校验后，才替换输出目录。打包失败时保留上一次完整输出。
+
+原生包与 npm 包都从 `package.json` 的 `files` 读取发布资源清单。新增随包发布的 Rule、Skill 或 Debug Wiki 页面时，把文件路径加入清单。
 
 > **macOS Apple Silicon 原生目标为 macos-arm64**；`npm run package` 会在 Apple Silicon Mac 上自动选择该目标。
 > 关键点：

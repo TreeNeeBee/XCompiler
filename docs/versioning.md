@@ -11,7 +11,7 @@
 
 `src/version.ts` 是自动生成的运行时常量，`package-lock.json` 由同一工具同步。不要手工修改这两个位置。
 
-`npm run build` 通过 npm 的 `prebuild` 生命周期强制先执行 `version:check`；直接调用底层 `tsup` 不属于受支持的发布路径。`prepack` 和自举 qualification 也会独立重复校验，避免调用方使用 `--ignore-scripts` 时漏掉版本门禁。
+`npm run build` 通过 `prebuild` 先执行 `version:check`。手工打包时先运行 `npm run build`，再运行 `npm pack`。`prepack` 会校验版本及包文件清单，缺少构建入口或发布资源时直接报错。`npm run package:verify` 可单独校验包文件清单。
 
 ## 常用命令
 
@@ -31,14 +31,14 @@ npm run release:local -- v0.1.4
 
 核心版本遵循 SemVer。发布 tag 必须是 `v<package version>`，例如 `v0.1.3`；Release workflow 会在测试和打包前强制校验，版本不一致时停止发布。二进制分发包内包含 `VERSION` 文件，CLI 的 `--version` 也读取同一个生成常量。
 
-`release:local` 会要求工作区干净，然后同步 `package.json`、`package-lock.json` 与 `src/version.ts`，执行本地发版门禁（`version:check`、`npm audit --omit=dev`、`typecheck`、`lint`、`test`、`build`、`npm pack --dry-run`），提交 `chore: release <tag>`，并创建本地 annotated tag。它不会 push；完成后手工执行：
+`release:local` 会要求工作区干净，然后同步 `package.json`、`package-lock.json` 与 `src/version.ts`，执行本地发版门禁（`version:check`、`npm audit --omit=dev`、`typecheck`、`lint`、`test`、`build`、`package:verify`），提交 `chore: release <tag>`，并创建本地 annotated tag。需要发布时，手工执行以下命令。
 
 ```bash
 git push origin <branch>
 git push origin <tag>
 ```
 
-如果上一次本地 tag 创建错了但还没有推送远端，可使用 `npm run release:local -- v0.1.4 --replace-local-tag` 删除并重建本地 tag；该选项不会删除远端 tag。离线环境可加 `--skip-audit` 跳过本地 `npm audit`，但 GitHub Release workflow 仍会执行审计。
+如果上一次本地 tag 创建错了但还没有推送远端，可使用 `npm run release:local -- v0.1.4 --replace-local-tag`，所有本地门禁通过后才替换 tag。离线环境可加 `--skip-audit` 跳过本地依赖审计，GitHub Release workflow 仍会执行该审计。GitHub Release 和 npm 发布使用同一组发版门禁。npm 正式版本发布到 `latest`，预发行版本发布到 `next`。
 
 Plugin API 版本独立于核心版本，只在插件公共接口出现不兼容修改时递增整数主版本。Plugin API 3 移除了旧的内存 Skill 对象注册接口，改为 Agent Skills Specification 目录和 `registerSkillDirectory()`；不提供旧接口兼容层。Plugin API 4（XCompiler 0.4）随角色与工作拆分修改了 `step.attempt.*` 的 `role`/`work` 字段和 Hook 中的 `Plan`/`Step` 形状，详见 [plugin_api.md](plugin_api.md)；声明 `apiVersion: 3` 的插件需要按新形状更新后改为 4。插件自身使用 SemVer，并在 manifest 中强制声明 `apiVersion` 和 `minXCompilerVersion`；详细规则见 [plugin_api.md](plugin_api.md)。
 

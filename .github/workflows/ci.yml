@@ -55,7 +55,7 @@ jobs:
         run: npm run build
 
       - name: Verify npm package contents
-        run: npm pack --dry-run
+        run: npm run package:verify
 
       - name: Package all targets (linux-x64 / linux-arm64 / macos-arm64 / win-x64)
         run: npm run package:all
